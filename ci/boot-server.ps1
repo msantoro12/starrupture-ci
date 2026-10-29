@@ -65,7 +65,7 @@ $argLine = '-Log -port=7777'
 if ($ExtraArgs) { $argLine = "$argLine $ExtraArgs" }
 Write-Host "[$Label] starting: $launcher $argLine"
 $start = Get-Date
-$null = Start-Process -FilePath $launcher -ArgumentList $argLine -WorkingDirectory $ServerRoot -WindowStyle Hidden -PassThru
+$launch = Start-Process -FilePath $launcher -ArgumentList $argLine -WorkingDirectory $ServerRoot -WindowStyle Hidden -PassThru
 
 $proc = $null
 $readySec = $null
@@ -81,6 +81,7 @@ while ($true) {
         $proc = Get-Process -Name 'StarRuptureServerEOS-Win64-Shipping' -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($proc) { $procSec = $t; $null = $proc.Handle; Write-Host "[$Label] +${t}s shipping process PID $($proc.Id)" }
     }
+    if (-not $proc -and $launch.HasExited -and $t -ge 30) { Write-Host "[$Label] +${t}s launcher exited (code $($launch.ExitCode)) and no Shipping process appeared"; break }
     if ($proc) {
         $proc.Refresh()
         if ($proc.HasExited) { $exitedEarly = $true; $exitCode = $proc.ExitCode; Write-Host "[$Label] +${t}s process exited, code $exitCode"; break }

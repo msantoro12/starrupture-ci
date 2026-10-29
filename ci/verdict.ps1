@@ -111,6 +111,28 @@ foreach ($p in $ExpectPlugins) {
     Add-Check "plugin_loaded_$p" ($null -ne $loaded) $loaded
 }
 
+# A plugin whose PluginInit returns false is logged at INFO level, so the error
+# check below cannot see it. The summary counts must show no failures.
+foreach ($p in $ExpectPlugins) {
+    $badInit = First-Match $ml ('Plugin initialization failed: ' + [regex]::Escape($p))
+    Add-Check "plugin_init_$p" (($null -ne $ml) -and $ml.Count -gt 0 -and $null -eq $badInit) $(if ($badInit) { "FOUND: $badInit" } elseif ($ml -and $ml.Count -gt 0) { 'no init failure line' } else { '' })
+}
+$sums = @()
+if ($ml) { $sums = @($ml | Where-Object { $_ -match 'InitAllLoadedPlugins: (\d+) initialized, (\d+) failed' }) }
+$sumOk = $false; $sumEv = ''
+if ($sums.Count -gt 0) {
+    $maxInit = 0; $anyFail = $false
+    foreach ($l in $sums) {
+        if ($l -match 'InitAllLoadedPlugins: (\d+) initialized, (\d+) failed') {
+            $maxInit = [Math]::Max($maxInit, [int]$Matches[1])
+            if ([int]$Matches[2] -gt 0) { $anyFail = $true }
+        }
+    }
+    $sumOk = (-not $anyFail) -and ($maxInit -ge @($ExpectPlugins).Count)
+    $sumEv = "$($sums[-1])  (max initialized $maxInit, expected at least $(@($ExpectPlugins).Count))"
+}
+Add-Check 'plugins_initialized' $sumOk $sumEv
+
 # ---- errors and crashes -------------------------------------------------------
 $errLines = @()
 if ($ml) { $errLines += @($ml | Where-Object { $_ -match '^\[[\d:.]+\]\s+\[ERROR\s*\]' -or $_ -match 'CRASHED' }) }
@@ -124,9 +146,13 @@ Add-Check 'no_engine_fatal' (($null -ne $game) -and $game.Count -gt 0 -and $null
 
 # ---- world -------------------------------------------------------------------
 # Evidence is re-read from the logs here, not taken from boot.json.
+# Both must hold: the boot script saw the ready line before its timeout, and the
+# logs themselves contain it.
 $world = First-Match $ml $ReadyRegex
 if (-not $world) { $world = First-Match $game $ReadyRegex }
-Add-Check 'world_reached' ($null -ne $world) $(if ($world) { "$world  (regex $ReadyRegex)" } else { '' })
+$bootReady = ($null -ne $boot) -and ($null -ne $boot.ready_s)
+$readyS = if ($boot) { $boot.ready_s } else { 'n/a' }
+Add-Check 'world_reached' (($null -ne $world) -and $bootReady) $(if ($world) { "$world  (regex $ReadyRegex; boot ready_s=$readyS)" } else { '' })
 
 # ---- offline scanner -----------------------------------------------------------
 $exitPath = Join-Path $OutDir 'scanner.exit'

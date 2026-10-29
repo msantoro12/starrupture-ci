@@ -19,6 +19,7 @@ $ml = @(
 '[16:51:40.164] [INFO ] [T:01484] [ModLoader] Loading plugin: C:\srds\Waila.dll',
 '[16:51:40.166] [INFO ] [T:01484] [ModLoader] Plugin info - Name: Waila, Version: v0.19.0, Author: AlienX, Interface: 70 (modloader expects [70, 70])',
 '[16:51:40.166] [INFO ] [T:01484] [ModLoader] Successfully loaded plugin DLL: Waila vv0.19.0 (PluginInit deferred)',
+'[16:51:41.000] [INFO ] [T:75664] [ModLoader] InitAllLoadedPlugins: 1 initialized, 0 failed (of 1 deferred)',
 "[16:52:03.427] [INFO ] [T:75664] [Plugin:Compass] OnAnyWorldBeginPlay: 'ChimeraMain' -- loading"
 )
 $game = @('[2026.10.29-16.51.00:000][  0]LogInit: Build: ++Earth20+Neon-CL-127004', '[2026.10.29-16.52.03:100][  0]LogWorld: Bringing World /Game/Maps/ChimeraMain up for play')
@@ -66,6 +67,10 @@ $cases = [ordered]@{
  'exited_early'           = { param($c) $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 3 }
  'crash_files'            = { param($c) $c.boot.crash_files = @('StarRupture\Saved\Crashes\crash1\UE4Minidump.dmp') }
  'no_build_line'          = { param($c) $c.ml = $c.ml | Where-Object { $_ -notmatch 'auto-update check' } }
+ 'plugin_init_failed'     = { param($c) $c.ml += '[16:51:41.100] [INFO ] [T:75664] [ModLoader] Plugin initialization failed: Waila' }
+ 'init_summary_failed'    = { param($c) $c.ml = $c.ml -replace '1 initialized, 0 failed', '0 initialized, 1 failed' }
+ 'init_summary_missing'   = { param($c) $c.ml = $c.ml | Where-Object { $_ -notmatch 'InitAllLoadedPlugins' } }
+ 'boot_ready_timeout'     = { param($c) $c.boot.ready_s = $null }
  'no_server_build'        = { param($c) $c.ml = $c.ml | Where-Object { $_ -notmatch 'server build' } }
 }
 $expectPass = @('good', 'world_in_game_only')

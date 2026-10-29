@@ -9,7 +9,7 @@ name: Engine load test
 #                 (baseline: disk, download, boot time, log layout)
 #   mode=full     build, then download, install, scan, boot and judge
 #
-# The server is the free-to-download Steam app 3809400. Its files live only on
+# The server is Steam app 3809400 (anonymous download, to be confirmed by the first run). Its files live only on
 # the runner: they are never cached, uploaded or committed. Artifacts hold our
 # own build outputs and trimmed logs.
 
@@ -190,7 +190,7 @@ jobs:
           # Loader README: dwmapi.dll next to the Shipping exe, core and plugins under ModLoader.
           Copy-Item stage\dwmapi.dll $dir
           New-Item -ItemType Directory -Force "$dir\ModLoader\Plugins\config" | Out-Null
-          Copy-Item stage\ModLoader\*.dll "$dir\ModLoader" -ErrorAction SilentlyContinue
+          Copy-Item stage\ModLoader\*.dll "$dir\ModLoader"
           Copy-Item stage\Plugins\Waila.dll "$dir\ModLoader\Plugins"
           # The test judges the build under test: no self-update, no plugin swaps.
           Set-Content "$dir\ModLoader\modloader.ini" "[AutoUpdate]`r`nEnabled=0`r`n" -Encoding ascii
@@ -209,28 +209,33 @@ jobs:
           $sw = [Diagnostics.Stopwatch]::StartNew()
           & stage\tools\sr-aobscan-server.exe $exe.FullName --verbose *> out\scanner.txt
           $code = $LASTEXITCODE
-          & stage\tools\sr-aobscan-server.exe $exe.FullName --json > out\scanner.json
           Set-Content out\scanner.exit "$code" -Encoding ascii
           Get-Content out\scanner.txt | Select-Object -Last 40
           "sr-aobscan exit code $code in $([int]$sw.Elapsed.TotalSeconds) s"
-          # The verdict step reads scanner.exit, so a non-zero code is reported there, not here.
+          # The verdict step judges scanner.exit. Do not let the scanner's code fail this
+          # step: the boot data is still wanted when a pattern no longer matches.
+          exit 0
 
       - name: Boot the server headless
         id: boot
         shell: pwsh
         env:
           SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
+          MODE: ${{ inputs.mode }}
+          READY_REGEX: ${{ inputs.ready_regex }}
+          SETTLE_SEC: ${{ inputs.settle_sec }}
         run: |
           ./ci/boot-server.ps1 -ServerRoot $env:SERVER_ROOT -OutDir out `
-            -Label '${{ inputs.mode }}' -ReadyRegex '${{ inputs.ready_regex }}' `
-            -SettleSec ${{ inputs.settle_sec }} -TimeoutSec 900
+            -Label $env:MODE -ReadyRegex $env:READY_REGEX `
+            -SettleSec ([int]$env:SETTLE_SEC) -TimeoutSec 900
 
       - name: Verdict
         if: ${{ inputs.mode == 'full' && !cancelled() }}
         shell: pwsh
         env:
           EXPECT_TAG: ${{ env.BUILD_TAG }}
-        run: ./ci/verdict.ps1 -OutDir out -ExpectTag $env:EXPECT_TAG -ExpectPlugins Waila
+          READY_REGEX: ${{ inputs.ready_regex }}
+        run: ./ci/verdict.ps1 -OutDir out -ExpectTag $env:EXPECT_TAG -ExpectPlugins Waila -ReadyRegex $env:READY_REGEX
 
       - name: Runner after
         if: ${{ !cancelled() }}

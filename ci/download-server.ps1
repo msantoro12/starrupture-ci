@@ -2,7 +2,7 @@
 # anonymous SteamCMD login and records what it cost: bytes on the wire, bytes
 # on disk, seconds, and free disk space before and after.
 #
-# The server is "freetodownload" (no account, no key). Nothing from the
+# The server is expected to be anonymous-downloadable (no account, no key); this script tests that. Nothing from the
 # install is ever uploaded or cached: the folder only lives on the runner.
 
 param(
@@ -29,17 +29,22 @@ function Get-NetReceivedBytes {
 }
 
 # ---- live lookup of the current public build ------------------------------
-$info = Invoke-RestMethod -Uri "https://api.steamcmd.net/v1/info/$AppId" -TimeoutSec 60
-$app = $info.data.$AppId
-$liveBuild = [string]$app.depots.branches.public.buildid
-$depotSize = $null
-foreach ($p in $app.depots.PSObject.Properties) {
-    if ($p.Value -is [psobject] -and $p.Value.PSObject.Properties['manifests']) {
-        $depotSize = [int64]$p.Value.manifests.public.size
+# Informational only (the install does not depend on it), so a failed lookup is
+# reported and the download goes ahead.
+$liveBuild = 'unknown'; $depotSize = $null; $depotDownload = $null; $appName = $AppId
+try {
+    $info = Invoke-RestMethod -Uri "https://api.steamcmd.net/v1/info/$AppId" -TimeoutSec 60
+    $app = $info.data.$AppId
+    $appName = [string]$app.common.name
+    $liveBuild = [string]$app.depots.branches.public.buildid
+    foreach ($p in $app.depots.PSObject.Properties) {
+        if ($p.Value -is [psobject] -and $p.Value.PSObject.Properties['manifests']) {
+            $depotSize = [int64]$p.Value.manifests.public.size
+            $depotDownload = [int64]$p.Value.manifests.public.download
+        }
     }
-}
-if (-not $liveBuild) { throw "api.steamcmd.net returned no public buildid for app $AppId" }
-Write-Host "Live lookup: app $AppId '$($app.common.name)' public buildid $liveBuild, depot manifest size $depotSize bytes"
+} catch { Write-Host "::warning::Live lookup failed: $($_.Exception.Message)" }
+Write-Host "Live lookup: app $AppId '$appName' public buildid $liveBuild, depot size $depotSize bytes (on disk), download $depotDownload bytes"
 
 # ---- pick the volume with the most free space ----------------------------
 $vols = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null -and $_.Free -ne $null }
@@ -103,7 +108,7 @@ $measured = ($files | Measure-Object -Property Length -Sum).Sum
 $freeAfter = Get-FreeGb $best.Root
 
 if ($stateFlags -ne '4') { throw "appmanifest StateFlags is '$stateFlags', not 4 (fully installed)" }
-if ($installedBuild -ne $liveBuild) {
+if ($liveBuild -ne 'unknown' -and $installedBuild -ne $liveBuild) {
     Write-Host "::warning::Installed buildid $installedBuild differs from the live lookup $liveBuild (third-party API can lag)."
 }
 
@@ -111,7 +116,8 @@ $rows = [ordered]@{
     'Install dir'                   = $installDir
     'Live public buildid (lookup)'  = $liveBuild
     'Installed buildid (manifest)'  = $installedBuild
-    'Depot manifest size (bytes)'   = $depotSize
+    'Depot size, on disk (API)'     = $depotSize
+    'Depot download (API)'          = $depotDownload
     'SizeOnDisk (manifest, bytes)'  = $sizeOnDisk
     'Measured on disk (bytes)'      = $measured
     'Files'                         = @($files).Count
