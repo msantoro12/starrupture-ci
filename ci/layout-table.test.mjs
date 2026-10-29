@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadLayout, matchUsed, parseUsedList, parseAssertions } from './layout-diff.mjs';
+import { buildReport, loadLayout, matchUsed, parseAssertions, parseUsedList } from './layout-diff.mjs';
 import { KIND, buildTable, compareTables, parseHeader, parseSdkHeaders, renderHeader } from './layout-table.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +67,7 @@ public:
 	int32                                         Count[4];    // 0x0038(0x0010)(Edit, ZeroConstructor, IsPlainOldData, NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic)
 	uint8                                         bLow : 1;    // 0x0048(0x0001)(BitIndex: 0x00, PropSize: 0x0001 (NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic))
 	uint8                                         bHigh : 1;    // 0x0048(0x0001)(BitIndex: 0x03, PropSize: 0x0001 (NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic))
+	uint8                                         BitPad_48_2 : 1;    // 0x0048(0x0001)(Fixing Bit-Field Size Between Bits [ Dumper-7 ])
 	class TArray<struct FCrThing>                 Things;    // 0x0050(0x0010)(Edit, NativeAccessSpecifierPublic)
 	class UObject*                                Outer;    // 0x0020(0x0008)(NOT AUTO-GENERATED PROPERTY)
 
@@ -133,7 +134,7 @@ test('header parser: sizes, bool and bit-field masks, kinds and paths; padding a
   const w = sdk.get('UCrWidget');
   assert.equal(w.kind, KIND.class);
   assert.equal(w.path, 'Chimera.CrWidget');
-  assert.deepEqual([...w.members.keys()], ['bEnabled', 'Count', 'bLow', 'bHigh', 'Things', 'Outer']);
+  assert.deepEqual([...w.members.keys()], ['bEnabled', 'Count', 'bLow', 'bHigh', 'Things', 'Outer'], 'Pad_ and BitPad_ members are not rows');
   assert.deepEqual(w.members.get('bEnabled'), { offset: 0x30, size: 1, mask: 0xff, bits: false, reflected: true });
   assert.equal(w.members.get('Count').size, 0x10, 'an array reports its total size');
   assert.equal(w.members.get('bHigh').mask, 1 << 3);
@@ -172,6 +173,25 @@ test('buildTable: needs a build number and a class that exists', () => {
   const layout = parseAssertions(inl(WIDGET), 'test');
   assert.throws(() => buildTable(layout, ['UCrWidget'], {}), /--cl/);
   assert.throws(() => buildTable(layout, ['UNope'], { cl: 1 }), /not in the layout/);
+});
+
+test('buildTable with headers: the reflected base classes of a listed class are listed too', () => {
+  const layout = parseAssertions(inl(WIDGET), 'test');
+  const t = buildTable(layout, ['UCrBlueprintWidget_C'], { cl: 1, sdk: parseSdkHeaders(writeSdk()) });
+  assert.deepEqual(t.classes.map((c) => c.name), ['UCrBlueprintWidget_C', 'UCrWidget']);
+  assert.deepEqual(buildTable(layout, ['UCrBlueprintWidget_C'], { cl: 1 }).classes.map((c) => c.name), ['UCrBlueprintWidget_C'], 'no headers, no base links');
+});
+
+test('buildTable with headers: a wrong or empty --sdk directory is an error, not an empty table', () => {
+  const layout = parseAssertions(inl(WIDGET), 'test');
+  const empty = parseSdkHeaders(tmp());
+  assert.equal(empty.size, 0);
+  assert.throws(() => buildTable(layout, ['UCrWidget', 'FCrThing'], { cl: 1, sdk: empty }), /no classes to write/);
+  // Most of the selection without a declaration: the line format changed under the parser.
+  const sdk = parseSdkHeaders(writeSdk());
+  sdk.delete('FCrThing');
+  sdk.delete('UCrBlueprintWidget_C');
+  assert.throws(() => buildTable(layout, ['UCrWidget', 'FCrThing', 'UCrBlueprintWidget_C', 'CrWidget_SetCount'], { cl: 1, sdk }), /no declaration/);
 });
 
 // ---- rendering ------------------------------------------------------------------
@@ -236,12 +256,12 @@ test('fixtures: a table compared with itself breaks nothing, and the hotfix 1258
   assert.equal(compareTables(fixtureTable('f3eb06b', 125897), a).broken.length, 0);
 });
 
-test('fixtures: every transition breaks the used classes the layout diff reports', () => {
-  const steps = [['abd0ebd', 125368, 'f3eb06b', 125897], ['0b3c9e6', 126119, '659656c', 127004]];
+test('fixtures: every transition breaks exactly the used classes the layout diff reports as moved', () => {
+  const steps = [['abd0ebd', 125368, 'f3eb06b', 125897], ['f3eb06b', 125897, '0b3c9e6', 126119], ['0b3c9e6', 126119, '659656c', 127004]];
   for (const [o, ocl, n, ncl] of steps) {
     const r = compareTables(fixtureTable(o, ocl), fixtureTable(n, ncl));
-    assert.ok(r.brokenClasses.includes('ACrCharacterPlayerBase') || ocl === 125368, `${o} -> ${n}`);
-    assert.ok(r.broken.length > 0);
+    const diff = buildReport(loadLayout(join(FIX, `Client-${o}.inl`)), loadLayout(join(FIX, `Client-${n}.inl`)), USED);
+    assert.deepEqual(r.brokenClasses, diff.changedUsed.filter((c) => c.layoutMoved).map((c) => c.class), `${o} -> ${n}`);
   }
 });
 
@@ -303,6 +323,9 @@ test('CLI: gen with --sdk and --src (the source scan), usage errors exit 2', () 
   const r = run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--out', out);
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(parseHeader(readFileSync(out, 'utf8')).classes.map((c) => c.name), ['FCrThing', 'UCrWidget']);
+  const wrong = run('gen', asserts, '--cl', '9', '--src', src, '--sdk', dir, '--out', join(dir, 'wrong.h'));
+  assert.equal(wrong.code, 2, 'an --sdk directory without headers fails');
+  assert.match(wrong.err, /no classes to write/);
   assert.equal(run('gen', asserts, '--cl', '9').code, 2, 'no used list');
   assert.equal(run('gen', asserts, '--used', join(FIX, 'used-all.txt')).code, 2, 'no --cl');
   assert.equal(run('gen').code, 2);

@@ -31,7 +31,10 @@ node ci/layout-table.mjs gen <Client/Assertions.inl> --cl <built CL> \
   reflect.
 - `--cl` is the built CL, written to `kBuiltCL`.
 - The tool prints counts to stderr: classes, rows, bytes, used names not in the
-  layout, and what `--sdk` left out.
+  layout, and what `--sdk` left out. An `--sdk` directory with none of the
+  selected classes, or one that lacks a declaration for more than a quarter of
+  them, is an error (wrong directory, or a header format the parser no longer
+  reads), never an empty table.
 
 A header offset that disagrees with the `Assertions.inl` stops the run (the
 headers are from a different build than the assertions).
@@ -79,7 +82,14 @@ appears twice is stored once.
 | `path` | the reflection path from the Dumper-7 comment above the declaration (`Package.Name`; for kind 3 `Package.Class.Function`); `0xFFFFFFFF` when `kDetail` is 0 |
 
 The A/U/F prefix is a C++ convention and is not part of the reflected name; use
-`path` instead of stripping prefixes. For kind 4 the first segment of `path` is
+`path` instead of stripping prefixes. For kinds 1 to 3 the first segment of
+`path` is the module (`Engine`, `CoreUObject`, `Chimera`, ...), so the object
+path is `/Script/` + module + `.` + the rest: `/Script/Chimera.CrCharacterPlayerBase`
+for a class or struct. Kind 3 is the parameter block of one function:
+`Package.Class.Function` names the `UFunction` `/Script/Package.Class:Function`
+(find the `UClass`, then `FindFunctionByName`), and the `UFunction` is itself the
+`UStruct` to check (its `PropertiesSize` is the block's size, its
+`ChildProperties` the parameters, `ReturnValue` included). For kind 4 the first segment of `path` is
 the Blueprint's own name, not a package path, so find those classes by their
 object name (the last segment) and load them late: a Blueprint class is only
 in memory once its asset has loaded. A missing kind-4 class at startup is not a
@@ -96,10 +106,12 @@ mismatch, only an unchecked class.
 
 ### What a table holds, and does not
 
-- Only the members a class declares itself. Members inherited from a base
-  class are in the base's own row set if that class is in the table; the
-  consumer never walks base classes for a row.
-- Padding (`Pad_*`) and members the Dumper predefines without a reflected
+- Only the members a class declares itself; the consumer never walks base
+  classes for a row. With `--sdk`, the generator adds every reflected base class
+  of a listed class (and its bases in turn), so a reordered base member is
+  caught on the base even when the derived class keeps its `sizeof`. Without
+  `--sdk` there are no base links and the table is compare-only anyway.
+- Padding (`Pad_*`, `BitPad_*`) and members the Dumper predefines without a reflected
   property (`UObject::Outer`, `UStruct::Size`, ...) have no row. Classes that
   exist only as Dumper predefines (`FName`, `FField`, `FProperty`, ...) have no
   entry.
@@ -119,7 +131,8 @@ For every class in `kClasses`, at startup (Blueprint classes: when they load):
    Not found: the class is gone, which is a mismatch (kind 4: not loaded yet,
    skip and retry).
 2. `UStruct::PropertiesSize` must equal `sizeOf` and `MinAlignment` must equal
-   `alignOf` (the property size of a class is the SDK's `sizeof`).
+   `alignOf` (the property size of a class is the SDK's `sizeof`). An `alignOf`
+   of 0 means unknown: do not compare it.
 3. For each row, find the `FProperty` named `name` in the struct's own
    `ChildProperties` (not its super). Not found is a mismatch. Otherwise:
    - `Offset_Internal == offset`;
@@ -140,15 +153,15 @@ Measured at CL 127004 with the full used list, with `--sdk`:
 
 | module | header |
 |---|---|
-| loader | 61 KB |
-| WAILA | 46 KB |
-| BetterDrone | 130 KB |
-| BetterCheats | 94 KB |
-| Codex | 12 KB |
-| every used class, all modules | 208 KB |
+| loader | 80 KB |
+| WAILA | 56 KB |
+| BetterDrone | 151 KB |
+| BetterCheats | 126 KB |
+| Codex | 23 KB |
+| every used class, all modules | 235 KB |
 
-The design estimated 300-600 KB; the real figure is three to five times
-smaller.
+The design estimated 300-600 KB; the real figure is two to four times smaller
+(about 3,700 rows for all modules together).
 
 ## Tests
 

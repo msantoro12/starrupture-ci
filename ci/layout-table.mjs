@@ -29,12 +29,10 @@
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { EXIT_ERROR, EXIT_USED_CHANGED, isMain, loadLayout, matchUsed, parseUsedList, ParseError } from './layout-diff.mjs';
+import { ALIGN, EXIT_ERROR, EXIT_USED_CHANGED, SIZE, isMain, loadLayout, matchUsed, parseUsedList, ParseError } from './layout-diff.mjs';
 import { collectUsed, knownFilter } from './used-classes.mjs';
 
 export const FORMAT_VERSION = 1;
-export const SIZE = '@size';
-export const ALIGN = '@align';
 const DEFAULT_NAMESPACE = 'SrLayoutTable';
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -42,7 +40,7 @@ const hex = (n) => '0x' + n.toString(16).toUpperCase();
 
 // ---- Dumper-7 headers: member sizes and bool masks --------------------------
 
-const RE_DECL = /^(?:class|struct) (?:(?:SDK_ALIGN|alignas)\(\w+\) )?([A-Za-z0-9_:]+)(?: final)?(?: : public .+)?$/;
+const RE_DECL = /^(?:class|struct) (?:(?:SDK_ALIGN|alignas)\(\w+\) )?([A-Za-z0-9_:]+)(?: final)?(?: : public (.+))?$/;
 // `<type> <name>[N]... [: bits];  // 0xOFFSET(0xSIZE)(...`; the type may hold spaces.
 const RE_MEMBER = /^\t(.*?)\s+(\w+)((?:\[[^\]]*\])*)( : \d+)?;\s+\/\/ 0x([0-9A-Fa-f]+)\(0x([0-9A-Fa-f]+)\)\((.*)$/;
 // The comment above every declaration: `// Class Engine.Actor`, `// Function Engine.Foo.Bar`, ...
@@ -55,7 +53,7 @@ const RE_BIT = /^BitIndex: 0x([0-9A-Fa-f]+),/;
 // reflected is false for the members Dumper-7 predefines (UObject::Outer, UStruct::Size, ...): the
 // native class has them but UClass->ChildProperties does not.
 // mask is the FBoolProperty::FieldMask: 0xFF for a native bool, 1 << BitIndex for a
-// bit-field, 0 for everything else. Padding members are skipped. Function parameter
+// bit-field, 0 for everything else. Padding members (Pad_*, BitPad_*) are skipped. Function parameter
 // structs are keyed by their bare name, the way Assertions.inl names them.
 export const KIND = { unknown: 0, class: 1, struct: 2, function: 3, blueprint: 4 };
 const kindOf = (word) => (word === 'Class' ? KIND.class : word === 'Function' ? KIND.function : /BlueprintGeneratedClass$/.test(word) ? KIND.blueprint : /Struct$|^PropertyBag$/.test(word) ? KIND.struct : KIND.unknown);
@@ -74,13 +72,13 @@ export function parseSdkHeaders(dir) {
         origin = { kind: kindOf(d[1]), path: d[2] };
       } else if ((d = RE_DECL.exec(line))) {
         members = new Map();
-        classes.set(d[1], { kind: origin?.kind ?? KIND.unknown, path: origin?.path ?? '', members });
+        classes.set(d[1], { kind: origin?.kind ?? KIND.unknown, path: origin?.path ?? '', base: d[2] ?? null, members });
         origin = null;
       } else if (line.startsWith('};')) {
         members = null;
       } else if (members && (d = RE_MEMBER.exec(line))) {
         const [, type, name, , bits, off, size, rest] = d;
-        if (/^Pad_[0-9A-Fa-f]+$/.test(name) && rest.startsWith('Fixing ')) continue;
+        if (rest.startsWith('Fixing ')) continue; // Pad_* and BitPad_*: Dumper-7 padding, not properties
         let mask = 0;
         if (bits) {
           const b = RE_BIT.exec(rest);
@@ -106,7 +104,15 @@ export function buildTable(layout, selected, { cl, sdk = null } = {}) {
   if (!Number.isInteger(cl) || cl <= 0) throw new Error('a build number (--cl) is required');
   const classes = [];
   const skipped = { classes: [], members: 0, unmatched: 0 };
-  for (const name of [...new Set(selected)].sort(cmp)) {
+  const wanted = new Set(selected);
+  // A derived class's rows say nothing about a base-class member it reads, and its own sizeof can stay
+  // the same when two base members swap, so every reflected base of a listed class is listed too.
+  if (sdk) {
+    for (const n of [...wanted]) {
+      for (let b = sdk.get(n)?.base; b && layout.has(b) && !wanted.has(b); b = sdk.get(b)?.base) wanted.add(b);
+    }
+  }
+  for (const name of [...wanted].sort(cmp)) {
     const members = layout.get(name);
     if (!members) throw new Error(`class ${name} is not in the layout`);
     const cls = sdk?.get(name);
@@ -139,6 +145,9 @@ export function buildTable(layout, selected, { cl, sdk = null } = {}) {
       rows: [...rows.values()].sort((a, b) => a.offset - b.offset || cmp(a.member, b.member)),
     });
   }
+  // A wrong --sdk directory, or a Dumper-7 line format this parser no longer reads, must not pass for a table.
+  if (classes.length === 0) throw new Error('no classes to write' + (sdk ? ': the --sdk directory has none of the selected classes' : ''));
+  if (skipped.classes.length * 4 > wanted.size) throw new Error(`${skipped.classes.length} of ${wanted.size} selected classes have no declaration in the --sdk headers (${skipped.classes.slice(0, 8).join(', ')}...); wrong directory or unreadable format`);
   return { cl, detail: sdk ? 1 : 0, classes, skipped };
 }
 
