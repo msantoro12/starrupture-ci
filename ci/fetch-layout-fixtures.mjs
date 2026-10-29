@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMain } from './layout-diff.mjs';
 
 // The four builds: CL-125368, CL-125897, CL-126119, CL-127004.
 export const COMMITS = {
@@ -59,7 +59,7 @@ function main(argv) {
 }
 
 try {
-  if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main(process.argv.slice(2));
+  if (isMain(import.meta.url)) main(process.argv.slice(2));
 } catch (e) {
   console.error(`fetch-layout-fixtures: ${e.message}`);
   process.exitCode = 1;

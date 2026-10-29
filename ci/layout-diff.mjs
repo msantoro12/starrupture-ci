@@ -19,8 +19,19 @@
 // usage error. Without --used every class counts as used, so any change exits 3.
 // A class present in only one of the two files counts as changed.
 
-import { readFileSync, writeFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// True when the module at `moduleUrl` is the script node was started with. Both
+// sides go through realpath, so a symlink or junction to the script still runs it.
+export function isMain(moduleUrl) {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
 export const EXIT_OK = 0;
 export const EXIT_USED_CHANGED = 3;
@@ -34,7 +45,7 @@ const ALIGN = '@align';
 const RE_ALIGN = /^static_assert\(alignof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong alignment on .*"\);( \\)?$/;
 const RE_SIZE = /^static_assert\(sizeof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong size on .*"\);( \\)?$/;
 const RE_OFFSET = /^static_assert\(offsetof\((.+), ([A-Za-z0-9_]+)\) == 0x([0-9A-Fa-f]+), "Member '.*' has a wrong offset!"\);( \\)?$/;
-const RE_IGNORED = /^(\/\/|\/\*|\*|#pragma|SDK_NAMESPACE_START|#define DUMPER7_ASSERTS_)/;
+const RE_IGNORED = /^(\/\/|\/\*|\*|#pragma|SDK_NAMESPACE_START|#define DUMPER7_ASSERTS_\S+ \\$)/;
 
 // A layout is a Map<class, Map<member, number>>; @size and @align are members.
 function setValue(layout, cls, member, value, where) {
@@ -119,7 +130,7 @@ export function loadLayout(path) {
 
 export function parseUsedList(text) {
   const names = new Set();
-  for (const raw of text.split('\n')) {
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/#.*$/, '').trim();
     if (line === '') continue;
     names.add(line.replace(/^(::)?(SDK::)?/, ''));
@@ -326,6 +337,9 @@ export function main(argv) {
       const used = opt.used ? parseUsedList(readFileSync(opt.used, 'utf8')) : null;
       if (used && used.size === 0) throw new ParseError(`${opt.used}: used-class list is empty`);
       const report = buildReport(loadLayout(args[0]), loadLayout(args[1]), used, { old: args[0], new: args[1] });
+      if (used && report.used.matchedClasses === 0) {
+        throw new ParseError(`${opt.used}: none of the ${used.size} used names matches a class in either file`);
+      }
       emit(opt, JSON.stringify(report, null, 2) + '\n');
       return report.changedUsedClasses > 0 ? EXIT_USED_CHANGED : EXIT_OK;
     }
@@ -347,7 +361,7 @@ export function main(argv) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   try {
     process.exitCode = main(process.argv.slice(2));
   } catch (e) {

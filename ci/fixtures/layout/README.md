@@ -3,7 +3,7 @@
 `{Client,Server}-<commit>.inl` are trimmed copies of `Assertions.inl` from
 [AlienXAXS/StarRupture-Game-SDK](https://github.com/AlienXAXS/StarRupture-Game-SDK)
 at the four builds below. The full files are 30 MB each; these keep 23 classes
-(about 118 KB each) so the unit tests run anywhere.
+(about 80 KB each) so the unit tests run anywhere.
 
 | Short sha | Build |
 |---|---|

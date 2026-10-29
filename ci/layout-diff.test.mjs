@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -177,6 +177,33 @@ test('CLI exit codes: 0 unchanged, 3 used class changed, 2 on parse error or bad
   assert.equal(report.changedUsed[0].deltas[0].member, '@size');
 });
 
+test('a used list that matches no class is an error, not "unchanged"; CRLF used lists keep their names', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'layout-diff-'));
+  const w = (n, text) => { const p = join(dir, n); writeFileSync(p, text); return p; };
+  const old = w('old.inl', inl({ AUsed: A }));
+  const next = w('new.inl', inl({ AUsed: { ...A, size: 0x50 } }));
+  assert.equal(run('diff', old, next, '--used', w('wrong.txt', 'ANoSuchClass\n')).code, 2);
+  assert.deepEqual([...parseUsedList('AUsed # note\r\nSDK::FOther\r\n')].sort(), ['AUsed', 'FOther']);
+  assert.equal(run('diff', old, next, '--used', w('crlf.txt', 'AUsed # note\r\n')).code, 3);
+});
+
+test('the scripts still run when started through a symlink or junction', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'layout-diff-'));
+  const link = join(dir, 'ci-link');
+  try {
+    symlinkSync(here, link, 'junction');
+  } catch (e) {
+    t.skip(`cannot create a link here: ${e.code}`);
+    return;
+  }
+  const r = spawnSync(process.execPath, [join(link, 'layout-diff.mjs'), 'diff', fx('Client', '0b3c9e6'), fx('Client', '659656c'), '--used', join(FIX, 'used-all.txt')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 3);
+  assert.ok(JSON.parse(r.stdout).changedUsedClasses > 0);
+  const u = spawnSync(process.execPath, [join(link, 'used-classes.mjs'), here], { encoding: 'utf8', windowsHide: true });
+  assert.equal(u.status, 0);
+  assert.match(u.stdout, /^# SDK classes used/);
+});
+
 // ---- synthesis -------------------------------------------------------------
 
 test('synthesis: newClient = newServer + (oldClient - oldServer)', () => {
@@ -292,9 +319,8 @@ test('used-classes: comments and string literals are blanked, lengths preserved'
 
 const FULL = process.env.LAYOUT_FULL_DIR;
 const full = (side, c) => join(FULL, `${side}-${c}.inl`);
-const haveFull = FULL && existsSync(full('Client', '659656c'));
 
-test('full data: layout changes per transition (design: 628 / 0 / 300 on the client dumps, 629 / 0 / 300 on the server)', { skip: !haveFull && 'LAYOUT_FULL_DIR not set' }, () => {
+test('full data: layout changes per transition (design: 628 / 0 / 300 on the client dumps, 629 / 0 / 300 on the server)', { skip: !FULL && 'LAYOUT_FULL_DIR not set' }, () => {
   const client = [628, 0, 300];
   const server = [629, 0, 300];
   STEPS.forEach(([a, b], i) => {
@@ -310,7 +336,7 @@ test('full data: layout changes per transition (design: 628 / 0 / 300 on the cli
   });
 });
 
-test('full data: synthesis reproduces 184,789 and 183,914 shared rows exactly', { skip: !haveFull && 'LAYOUT_FULL_DIR not set' }, () => {
+test('full data: synthesis reproduces 184,789 and 183,914 shared rows exactly', { skip: !FULL && 'LAYOUT_FULL_DIR not set' }, () => {
   const rows = { 'abd0ebd>f3eb06b': 184789, '0b3c9e6>659656c': 183914 };
   for (const [key, expected] of Object.entries(rows)) {
     const [a, b] = key.split('>');

@@ -11,6 +11,11 @@
 //   * Unqualified names in a file that says `using namespace SDK;`, and inside
 //     `namespace SDK { ... }` blocks (forward declarations).
 //
+// Limits: the match is by name and is not transitive. A member reached through
+// a derived class but declared on a base class, an `auto` result, or a call on
+// an instance whose type is never spelled out is not seen unless the owning
+// class is named somewhere in the sources. Add such classes to the list by hand.
+//
 // Without --known an unqualified token is accepted when it looks like a UE type
 // name (U/A/F/E/T/I/S + capital) and every prefix of an `SDK::` chain is listed:
 // an over-approximation, which only costs unmatched names downstream. With
@@ -23,8 +28,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { loadLayout } from './layout-diff.mjs';
+import { isMain, loadLayout } from './layout-diff.mjs';
 
 const SOURCE_EXT = /\.(cpp|cc|cxx|c|h|hpp|hxx|inl)$/i;
 // Dumper's own output, vendored libraries, tests and build trees are not mod code.
@@ -186,7 +190,7 @@ function main(argv) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   try {
     main(process.argv.slice(2));
   } catch (e) {
