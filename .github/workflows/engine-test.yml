@@ -51,6 +51,8 @@ jobs:
     if: ${{ inputs.mode != 'vanilla' }}
     runs-on: windows-latest
     timeout-minutes: 30
+    outputs:
+      required_cl: ${{ steps.cl.outputs.required_cl }}
     steps:
       - name: Check out the loader (with its pinned Game SDK)
         uses: actions/checkout@v7.0.1
@@ -81,6 +83,15 @@ jobs:
           repository: ${{ env.OWNER }}/StarRupture-Plugin-WAILA
           path: waila
           persist-credentials: false
+
+      - name: Read the CL the loader requires
+        id: cl
+        shell: pwsh
+        run: |
+          $f = 'loader\StarRupture-ModLoader-Core\coreersion_check.cpp'
+          $m = Select-String -Path $f -Pattern 'kRequiredVersionSuffix\[\]\s*=\s*L"([^"]+)"'
+          if (-not $m) { throw 'required CL not found in version_check.cpp' }
+          "required_cl=$($m.Matches[0].Groups[1].Value)" >> $env:GITHUB_OUTPUT
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
@@ -147,6 +158,8 @@ jobs:
   engine:
     name: engine
     needs: build
+    outputs:
+      server_product_version: ${{ steps.g3.outputs.server_product_version }}
     # Runs in vanilla mode (build skipped) and in full mode (build succeeded);
     # never after a failed build, never in build mode.
     if: ${{ !cancelled() && inputs.mode != 'build' && (needs.build.result == 'success' || (inputs.mode == 'vanilla' && needs.build.result == 'skipped')) }}
@@ -210,11 +223,32 @@ jobs:
           & stage\tools\sr-aobscan-server.exe $exe.FullName --verbose *> out\scanner.txt
           $code = $LASTEXITCODE
           Set-Content out\scanner.exit "$code" -Encoding ascii
+          # Gate G4 verdict as JSON (OK / MISSING / AMBIGUOUS per pattern), uploaded with the logs.
+          & stage	ools\sr-aobscan-server.exe $exe.FullName --json > out\scanner.json
+          $j = Get-Content out\scanner.json -Raw | ConvertFrom-Json
+          "G4 counts: OK=$($j.summary.ok) MISSING=$($j.summary.missing) AMBIGUOUS=$($j.summary.ambiguous) of $($j.summary.total)"
           Get-Content out\scanner.txt | Select-Object -Last 40
           "sr-aobscan exit code $code in $([int]$sw.Elapsed.TotalSeconds) s"
           # The verdict step judges scanner.exit. Do not let the scanner's code fail this
           # step: the boot data is still wanted when a pattern no longer matches.
           exit 0
+
+      - name: Gate G3, server exe ProductVersion against the loader's required CL
+        id: g3
+        if: ${{ inputs.mode == 'full' }}
+        shell: pwsh
+        env:
+          SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
+          REQUIRED_CL: ${{ needs.build.outputs.required_cl }}
+        run: |
+          $exe = Get-ChildItem -Path $env:SERVER_ROOT -Recurse -Filter 'StarRuptureServerEOS-Win64-Shipping.exe' -File | Select-Object -First 1
+          $pv = $exe.VersionInfo.ProductVersion
+          $ok = $pv -and $pv.EndsWith($env:REQUIRED_CL)
+          "server_product_version=$pv" >> $env:GITHUB_OUTPUT
+          "G3 server ProductVersion=$pv required=$($env:REQUIRED_CL) match=$ok"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Set-Content out\g3.txt "ProductVersion=$pv`nRequired=$($env:REQUIRED_CL)`nMatch=$ok" -Encoding ascii
+          if (-not $ok) { Write-Host "::error::G3 failed: ProductVersion does not end in the required CL" ; exit 1 }
 
       - name: Boot the server headless
         id: boot
