@@ -14,6 +14,7 @@
 //   a gate result missing, unreadable, malformed, or reporting an error -> HOLD
 //   G1 compile or G2 interface not ok                    -> HOLD
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
+//   GObjects, GNames, AppendString or GWorld not re-resolved by the G4 scan -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty)        -> HOLD, path C (held until shadow mode is proven)
 //   a required pattern missed (G4 requiredFailing > 0)   -> B, if autopilot.paths has B
 //   everything clean                                     -> A, if autopilot.paths has A
@@ -23,7 +24,9 @@
 // Gate result shapes:
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl optional
-//   G4:     the raw `sr-aobscan --json` output of the SERVER exe
+//   G4:     the raw `sr-aobscan --json` output of the SERVER exe. It must hold one required
+//           row each for GObjects, GNames, AppendString and GWorld (an optional "X::" prefix
+//           on the name is fine), and a matched row carries its "rva".
 //   G5:     { "ok": true, "usedChanged": ["UFoo", ...] }   used classes whose layout changed
 // History (rate limits):
 //   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>" }],
@@ -40,6 +43,7 @@ export const LIMITS = Object.freeze({
   maxReleasesPerClPerRepo: 1,
 });
 const VALID_PATHS = ['A', 'B', 'C'];
+export const SDK_GLOBALS = Object.freeze(['GObjects', 'GNames', 'AppendString', 'GWorld']);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -106,7 +110,25 @@ function checkG4(loaded) {
   if (s.total !== v.patterns.length || s.requiredFailing !== missed.length) {
     return { error: 'G4: summary disagrees with the pattern rows' };
   }
-  return { missed, softMissed };
+  return { missed, softMissed, globalsError: checkSdkGlobals(v.patterns) };
+}
+
+// The SDK dumps hard-code the exe offsets of GObjects, GNames, AppendString and
+// GWorld, and they move on every game patch. A CL bump alone would ship stale
+// ones, so a release needs all four re-resolved from the new exe: one required
+// pattern row each in the G4 scan, with a resolved RVA when it matched. A row
+// that is present but did not match is an ordinary pattern miss (path B);
+// a row that is absent, optional, duplicated or has no RVA is a HOLD.
+function checkSdkGlobals(rows) {
+  const problems = [];
+  for (const key of SDK_GLOBALS) {
+    const hits = rows.filter((p) => p.name.replace(/^.*::/, '').toLowerCase() === key.toLowerCase());
+    if (hits.length === 0) problems.push(`${key}: no pattern in the scan, so the offset is not re-resolved`);
+    else if (hits.length > 1) problems.push(`${key}: ${hits.length} pattern rows, expected one`);
+    else if (!hits[0].required) problems.push(`${key}: pattern is not required`);
+    else if (hits[0].result === 'OK' && !/^0x[0-9a-f]+$/i.test(String(hits[0].rva))) problems.push(`${key}: matched but no resolved RVA`);
+  }
+  return problems.length ? `SDK global offsets not verified: ${problems.join('; ')}` : null;
 }
 
 function checkG5(loaded) {
@@ -193,6 +215,13 @@ export function decide(inputs) {
 
   // Without a usable gate picture there is no path to name.
   if (g3.error || g4.error || g5.error || g1.error || g2.error) return out('HOLD', null, g3.cl);
+
+  // A CL-only or pattern-fix release is unsafe while the SDK's hard-coded
+  // global offsets are stale, so unverified globals block every path.
+  if (g4.globalsError) {
+    fail(g4.globalsError);
+    return out('HOLD', null, g3.cl);
+  }
 
   let path = 'A';
   if (g5.usedChanged.length > 0) {

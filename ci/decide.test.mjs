@@ -8,15 +8,18 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, LIMITS } from './decide.mjs';
+import { decide, LIMITS, SDK_GLOBALS } from './decide.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const NOW = Date.parse('2026-10-29T12:00:00Z');
 const ago = (min) => new Date(NOW - min * 60000).toISOString();
 const ok = (value) => ({ ok: true, value });
 
-const aobRow = (name, result = 'OK', required = true) => ({ name, kind: 'function', required, result, matches: result === 'OK' ? 1 : 0 });
-function aob(rows) {
+const aobRow = (name, result = 'OK', required = true) => ({ name, kind: 'function', required, result, matches: result === 'OK' ? 1 : 0, ...(result === 'OK' ? { rva: '0x1A2B3C0' } : {}) });
+const globalRows = () => SDK_GLOBALS.map((n) => aobRow(n));
+// By default every scan carries the four SDK global rows; pass noGlobals to leave them out.
+function aob(rows, { noGlobals = false } = {}) {
+  if (!noGlobals) rows = [...rows, ...globalRows()];
   const failing = rows.filter((r) => r.required && r.result !== 'OK').length;
   return { target: 'server', imageSize: 1000, summary: { total: rows.length, ok: rows.filter((r) => r.result === 'OK').length, missing: 0, ambiguous: 0, other: 0, requiredFailing: failing }, patterns: rows };
 }
@@ -115,6 +118,56 @@ test('HOLD: path not enabled in autopilot.paths', () => {
 test('HOLD: G1 or G2 not ok', () => {
   holds(decide(base({ g1: ok({ ok: false }) })), /G1/);
   holds(decide(base({ g2: ok({ ok: false }) })), /G2/);
+});
+
+// ------------------------------------------------------------ SDK globals
+
+test('SDK globals: all four re-resolved and verified is the precondition for A', () => {
+  assert.deepEqual([...SDK_GLOBALS], ['GObjects', 'GNames', 'AppendString', 'GWorld']);
+  assert.equal(decide(base()).decision, 'A');
+  const prefixed = SDK_GLOBALS.map((n) => aobRow(`Offsets::${n.toLowerCase()}`));
+  assert.equal(decide(base({ g4: ok(aob(prefixed, { noGlobals: true })) })).decision, 'A');
+});
+
+test('SDK globals: a scan without them (today registry) is HOLD, never A', () => {
+  const r = decide(base({ g4: ok(aob([aobRow('GetWorld'), aobRow('SpawnActor')], { noGlobals: true })) }));
+  holds(r, /SDK global offsets not verified/);
+  assert.equal(r.path, null);
+  for (const k of SDK_GLOBALS) assert.match(r.reasons.join(), new RegExp(`${k}: no pattern`));
+});
+
+for (const key of SDK_GLOBALS) {
+  test(`SDK globals: ${key} absent, optional, duplicated, lookalike or without an RVA is HOLD`, () => {
+    const others = SDK_GLOBALS.filter((n) => n !== key).map((n) => aobRow(n));
+    const run = (extra) => decide(base({ g4: ok(aob([...others, ...extra], { noGlobals: true })) }));
+    holds(run([]), new RegExp(`${key}: no pattern`));
+    holds(run([aobRow(key, 'OK', false)]), /not required/);
+    holds(run([aobRow(key), aobRow(key)]), /2 pattern rows/);
+    holds(run([aobRow(`${key}Cache`), aobRow(`My${key}`)]), new RegExp(`${key}: no pattern`));
+    for (const rva of [undefined, '', '0x', 'zz', null]) {
+      const row = aobRow(key);
+      if (rva === undefined) delete row.rva; else row.rva = rva;
+      holds(run([row]), /no resolved RVA/);
+    }
+  });
+
+  test(`SDK globals: ${key} present but not matching is an ordinary pattern miss (B), and still never A`, () => {
+    const others = SDK_GLOBALS.filter((n) => n !== key).map((n) => aobRow(n));
+    for (const result of ['MISSING', 'AMBIGUOUS']) {
+      const r = decide(base({ g4: ok(aob([...others, aobRow(key, result)], { noGlobals: true })) }));
+      assert.equal(r.decision, 'B');
+      assert.ok(r.notes.join().includes(`${key} (${result})`));
+    }
+    // B only when B is enabled; with only A enabled it is HOLD
+    const onlyA = ok({ enabled: true, paths: ['A'], max_releases_per_day: 2 });
+    holds(decide(base({ autopilot: onlyA, g4: ok(aob([...others, aobRow(key, 'MISSING')], { noGlobals: true })) })), /path B is not enabled/);
+  });
+}
+
+test('SDK globals: unverified globals also block a would-be C and a would-be B', () => {
+  const noG = (rows) => ok(aob(rows, { noGlobals: true }));
+  holds(decide(base({ g4: noG([aobRow('SpawnActor', 'MISSING')]) })), /SDK global/);
+  holds(decide(base({ g4: noG([aobRow('GetWorld')]), g5: ok({ ok: true, usedChanged: ['UFoo'] }) })), /SDK global/);
 });
 
 // ------------------------------------------------------------ fail closed
