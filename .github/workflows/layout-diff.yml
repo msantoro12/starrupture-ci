@@ -1,0 +1,59 @@
+name: layout-diff
+
+# Tests for ci/layout-diff.mjs and ci/used-classes.mjs. The unit tests use the
+# trimmed fixtures in ci/fixtures/layout. The second job downloads the full
+# Game-SDK files and checks the figures from the update-pipeline design.
+
+on:
+  push:
+    paths:
+      - 'ci/layout-diff.mjs'
+      - 'ci/layout-diff.test.mjs'
+      - 'ci/used-classes.mjs'
+      - 'ci/fetch-layout-fixtures.mjs'
+      - 'ci/fixtures/layout/**'
+      - '.github/workflows/layout-diff.yml'
+  pull_request:
+    paths:
+      - 'ci/layout-diff.mjs'
+      - 'ci/layout-diff.test.mjs'
+      - 'ci/used-classes.mjs'
+      - 'ci/fetch-layout-fixtures.mjs'
+      - 'ci/fixtures/layout/**'
+      - '.github/workflows/layout-diff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      - name: Unit tests (trimmed fixtures)
+        run: node --test ci/layout-diff.test.mjs
+
+  full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      - name: Fetch the full Assertions.inl files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          start=$SECONDS
+          node ci/fetch-layout-fixtures.mjs --out out/layout-full
+          echo "fetch took $((SECONDS - start)) s"
+      - name: Full-size tests
+        env:
+          LAYOUT_FULL_DIR: out/layout-full
+        run: node --test ci/layout-diff.test.mjs
