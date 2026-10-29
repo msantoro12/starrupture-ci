@@ -364,8 +364,6 @@ jobs:
           cat report.md >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$PR" =~ ^[0-9]+$ ]]; then
-            # A read-only token (a PR from a fork) cannot comment; that is
-            # not a failure of the check.
-            gh issue comment "$ISSUE" --body-file report.md \
-              || echo "::warning::Could not comment on issue #$ISSUE (read-only token?); result is in the run summary."
+            gh pr comment "$PR" --body-file report.md \
+              || echo "::warning::Could not comment on PR #$PR; result is in the run summary."
           fi
