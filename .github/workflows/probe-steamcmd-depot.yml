@@ -1,0 +1,51 @@
+name: probe steamcmd download_depot
+# Temporary measurement (anonymous server app only). Deleted after use.
+on:
+  push:
+    branches: [probe/steamcmd-depot]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $d = 'C:\steamcmd'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Invoke-WebRequest https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip -OutFile "$env:RUNNER_TEMP\s.zip"
+          Expand-Archive "$env:RUNNER_TEMP\s.zip" $d -Force
+          $sc = "$d\steamcmd.exe"
+          & $sc +quit | Out-Null
+          "== help"
+          & $sc +find download_depot +help download_depot +quit 2>&1 | Select-Object -Last 30
+          $gid = '3659990775896995763'
+          $fl = "$env:RUNNER_TEMP\flist.txt"
+          Set-Content $fl "StarRuptureServerEOS\Binaries\Win64\StarRuptureServerEOS-Win64-Shipping.exe" -Encoding ascii
+          $fl2 = "$env:RUNNER_TEMP\flist2.txt"
+          Set-Content $fl2 "regex:.*Shipping\.exe$" -Encoding ascii
+          $variants = @(
+            @('+download_depot','3809400','3809401',$gid,'0',$fl),
+            @('+download_depot','3809400','3809401',$gid,$fl),
+            @('+download_depot','3809400','3809401',$gid,'0',$fl2)
+          )
+          $i = 0
+          foreach ($v in $variants) {
+            $i++
+            $content = "$d\steamapps\content"
+            if (Test-Path $content) { Remove-Item $content -Recurse -Force }
+            "== variant $i : $($v -join ' ')"
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $args2 = @('+@ShutdownOnFailedCommand','1','+@NoPromptForPassword','1','+login','anonymous') + $v + @('+quit')
+            $p = Start-Process $sc -ArgumentList $args2 -NoNewWindow -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\o$i.txt"
+            if (-not $p.WaitForExit(600000)) { 'TIMEOUT'; $p.Kill() }
+            "exit $($p.ExitCode) after $([int]$sw.Elapsed.TotalSeconds)s"
+            Get-Content "$env:RUNNER_TEMP\o$i.txt" | Where-Object { $_ -notmatch 'progress' } | Select-Object -Last 15
+            if (Test-Path $content) {
+              $f = Get-ChildItem $content -Recurse -File
+              "files=$(@($f).Count) bytes=$(($f | Measure-Object Length -Sum).Sum)"
+              $f | Select-Object -First 8 | ForEach-Object { "  $($_.Length) $($_.FullName)" }
+            } else { 'no content dir' }
+          }
