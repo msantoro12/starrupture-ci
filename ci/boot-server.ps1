@@ -12,7 +12,7 @@ param(
     [Parameter(Mandatory)][string]$OutDir,
     [string]$Label = 'boot',
     # Regex on the engine log (or ModLoader.log) that means "the world is up".
-    [string]$ReadyRegex = 'ChimeraMain',
+    [string]$ReadyRegex = 'LogLoad: Took [\d.]+ seconds to LoadMap\(/Game/Chimera/Maps/ChimeraMain/ChimeraMain\)',
     [int]$TimeoutSec = 600,
     # Keep running this long after the ready line so late errors surface.
     [int]$SettleSec = 60,

@@ -32,7 +32,7 @@ on:
       ready_regex:
         description: 'Regex on the engine log or ModLoader.log meaning "the world is up"'
         type: string
-        default: 'ChimeraMain'
+        default: 'LogLoad: Took [\d.]+ seconds to LoadMap\(/Game/Chimera/Maps/ChimeraMain/ChimeraMain\)'
       settle_sec:
         description: 'Seconds to keep the server running after the ready line'
         type: string

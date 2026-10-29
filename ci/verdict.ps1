@@ -20,7 +20,7 @@ param(
     # Plugin names that must report a "Plugin info" line.
     [Parameter(Mandatory)][string[]]$ExpectPlugins,
     # Same regex boot-server.ps1 waited for; re-checked here against the logs.
-    [string]$ReadyRegex = 'ChimeraMain'
+    [string]$ReadyRegex = 'LogLoad: Took [\d.]+ seconds to LoadMap\(/Game/Chimera/Maps/ChimeraMain/ChimeraMain\)'
 )
 
 Set-StrictMode -Version Latest

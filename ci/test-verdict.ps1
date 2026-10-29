@@ -22,7 +22,7 @@ $ml = @(
 '[16:51:41.000] [INFO ] [T:75664] [ModLoader] InitAllLoadedPlugins: 1 initialized, 0 failed (of 1 deferred)',
 "[16:52:03.427] [INFO ] [T:75664] [Plugin:Compass] OnAnyWorldBeginPlay: 'ChimeraMain' -- loading"
 )
-$game = @('[2026.10.29-16.51.00:000][  0]LogInit: Build: ++Earth20+Neon-CL-127004', '[2026.10.29-16.52.03:100][  0]LogWorld: Bringing World /Game/Maps/ChimeraMain up for play')
+$game = @('[2026.10.29-16.51.00:000][  0]LogInit: Build: ++Earth20+Neon-CL-127004', '[2026.10.29-16.52.03:100][  0]LogLoad: Took 3.811666 seconds to LoadMap(/Game/Chimera/Maps/ChimeraMain/ChimeraMain)')
 $boot = [ordered]@{ label='full'; process_found=$true; process_found_s=6; ready_s=90; ready_line='x'; exited_early=$false; exit_code=$null; alive_at_end=$true; crash_files=@() }
 
 function New-Case([string]$Name, [scriptblock]$Mutate) {
@@ -62,6 +62,7 @@ $cases = [ordered]@{
  'plugin_crashed'         = { param($c) $c.ml += "[16:53:00.000] [WARN ] [T:01484] [PluginManager] Plugin 'Waila' CRASHED during init" }
  'engine_fatal'           = { param($c) $c.game += '[2026.10.29-16.54.00:000]Fatal error: [File:X] [Line: 1]' }
  'no_world'               = { param($c) $c.ml = $c.ml | Where-Object { $_ -notmatch 'ChimeraMain' }; $c.game = @('[x]LogInit: Build') }
+ 'world_start_map_only'   = { param($c) $c.game = @('[x]LogInit: Build', '[x]LogOnlineSession: EOS: EOS_SessionModification_AddAttribute() named (MapName) with value (/Game/Chimera/Maps/ChimeraMain/ChimeraMain)', '[x]LogLoad: Took 6.855587 seconds to LoadMap(/Game/Chimera/Maps/DedicatedServerStart)') }
  'world_in_game_only'     = { param($c) $c.ml = $c.ml | Where-Object { $_ -notmatch 'ChimeraMain' } }
  'process_not_found'      = { param($c) $c.boot.process_found = $false }
  'exited_early'           = { param($c) $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 3 }
