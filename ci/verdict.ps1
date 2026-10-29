@@ -140,10 +140,12 @@ $errLines = @()
 # later, see the Resolve UFunction warnings). Seen on a clean run before any plugin loads.
 $knownBenign = @("ResolveUFunction: class 'World' not found in GObjects")
 if ($ml) {
-    $errLines += @($ml | Where-Object {
-        ($_ -match '^\[[\d:.]+\]\s+\[ERROR\s*\]' -or $_ -match 'CRASHED') -and
-        -not ($knownBenign | Where-Object { $_.Contains($_) -and $true } | Out-Null)
-    })
+    foreach ($l in $ml) {
+        if (-not ($l -match '^\[[\d:.]+\]\s+\[ERROR\s*\]' -or $l -match 'CRASHED')) { continue }
+        $benign = $false
+        foreach ($b in $knownBenign) { if ($l.Contains($b)) { $benign = $true } }
+        if (-not $benign) { $errLines += $l }
+    }
 }
 Add-Check 'no_loader_errors' (($null -ne $ml) -and $ml.Count -gt 0 -and $errLines.Count -eq 0) $(
     if ($errLines.Count -gt 0) { "$($errLines.Count) found, first: $($errLines[0])" } elseif ($ml -and $ml.Count -gt 0) { 'no ERROR or CRASHED line in ModLoader.log' } else { '' })

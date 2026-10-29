@@ -120,6 +120,18 @@ jobs:
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Mark WAILA as a server plugin (test only)
+        shell: pwsh
+        working-directory: waila
+        run: |
+          # WAILA declares PLUGIN_TARGET_CLIENT, so the server loader refuses it. The engine
+          # test only needs a plugin that loads on the server, so flip the target in this
+          # throwaway checkout. Nothing is committed or released.
+          $f = 'Waila\plugin.cpp'
+          $t = (Get-Content $f -Raw) -replace 'PLUGIN_TARGET_CLIENT(\s*\r?\n\};)', 'PLUGIN_TARGET_SERVER$1'
+          if ($t -notmatch 'PLUGIN_TARGET_SERVER') { throw 'target marker not found in plugin.cpp' }
+          Set-Content $f $t -NoNewline
+
       - name: Build WAILA Server Release
         shell: pwsh
         working-directory: waila
