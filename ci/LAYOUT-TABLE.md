@@ -130,9 +130,13 @@ For every class in `kClasses`, at startup (Blueprint classes: when they load):
    `UScriptStruct`, or the function's parameter struct from the `UFunction`).
    Not found: the class is gone, which is a mismatch (kind 4: not loaded yet,
    skip and retry).
-2. `UStruct::PropertiesSize` must equal `sizeOf` and `MinAlignment` must equal
-   `alignOf` (the property size of a class is the SDK's `sizeof`). An `alignOf`
-   of 0 means unknown: do not compare it.
+2. `UStruct::PropertiesSize` must equal `sizeOf` (the property size of a class
+   is the SDK's `sizeof`). For kinds 1, 2 and 4, `MinAlignment` must also equal
+   `alignOf`. For kind 3 (function parameters) the alignment is not compared:
+   the SDK's `alignOf` is the alignment of the parameter block, but a native
+   `UFunction` reflects `MinAlignment` 1, so the two are not comparable at
+   runtime and the consumer skips the check. An `alignOf` of 0 also means
+   unknown: do not compare it.
 3. For each row, find the `FProperty` named `name` in the struct's own
    `ChildProperties` (not its super). Not found is a mismatch. Otherwise:
    - `Offset_Internal == offset`;
