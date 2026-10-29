@@ -37,10 +37,13 @@ why it reports 13 / 0 / 2.
 
 ```
 node ci/fetch-layout-fixtures.mjs                    # about 270 MB, sha256-checked
-LAYOUT_FULL_DIR=out/layout-full node --test ci/layout-diff.test.mjs
+LAYOUT_FULL_DIR=out/layout-full node --test ci/layout-diff.test.mjs ci/layout-table.test.mjs
 ```
 
 This asserts the figures measured on the full data: layout-changed classes
 628 / 0 / 300 (client) and 629 / 0 / 300 (server), used classes 6 / 0 / 2 and
 13 / 0 / 2, and the synthesized client matching the real one on 184,789 and
 183,914 shared rows with no wrong row.
+
+The table generator that consumes these files (and the format it writes) is
+described in `ci/LAYOUT-TABLE.md`.

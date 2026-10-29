@@ -39,8 +39,8 @@ export const EXIT_ERROR = 2;
 
 export class ParseError extends Error {}
 
-const SIZE = '@size';
-const ALIGN = '@align';
+export const SIZE = '@size';
+export const ALIGN = '@align';
 
 const RE_ALIGN = /^static_assert\(alignof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong alignment on .*"\);( \\)?$/;
 const RE_SIZE = /^static_assert\(sizeof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong size on .*"\);( \\)?$/;
