@@ -1,0 +1,248 @@
+name: Engine load test
+
+# Experiment: can a GitHub-hosted Windows runner start the free StarRupture
+# Dedicated Server with our loader and plugins installed, and show that they
+# load into the engine?
+#
+#   mode=build    only compile (loader Server Release, sr-aobscan, WAILA)
+#   mode=vanilla  only download the server and boot it with no loader
+#                 (baseline: disk, download, boot time, log layout)
+#   mode=full     build, then download, install, scan, boot and judge
+#
+# The server is the free-to-download Steam app 3809400. Its files live only on
+# the runner: they are never cached, uploaded or committed. Artifacts hold our
+# own build outputs and trimmed logs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'build | vanilla | full'
+        type: choice
+        options: [build, vanilla, full]
+        default: full
+      loader_repo:
+        description: 'Loader repository (owner/name)'
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
+      loader_ref:
+        description: 'Loader branch or tag'
+        type: string
+        default: 'ci/aobscan'
+      ready_regex:
+        description: 'Regex on the engine log or ModLoader.log meaning "the world is up"'
+        type: string
+        default: 'ChimeraMain'
+      settle_sec:
+        description: 'Seconds to keep the server running after the ready line'
+        type: string
+        default: '60'
+
+permissions:
+  contents: read
+
+env:
+  OWNER: AlienXAXS
+  BUILD_TAG: v0.0.0-cilab.${{ github.run_number }}
+
+jobs:
+  build:
+    name: build
+    if: ${{ inputs.mode != 'vanilla' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the loader (with its pinned Game SDK)
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.loader_ref }}
+          path: loader
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check out the Plugin SDK
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ env.OWNER }}/StarRupture-Plugin-SDK
+          path: plugin-sdk
+          persist-credentials: false
+
+      - name: Check out the Game SDK
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ env.OWNER }}/StarRupture-Game-SDK
+          path: game-sdk
+          persist-credentials: false
+
+      - name: Check out WAILA
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ env.OWNER }}/StarRupture-Plugin-WAILA
+          path: waila
+          persist-credentials: false
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Build loader Server Release
+        shell: pwsh
+        working-directory: loader
+        run: |
+          # Arguments as in the loader's release.yml "Build Server Release".
+          msbuild "StarRupture-ModLoader.sln" `
+            /p:Configuration="Server Release" `
+            /p:Platform=x64 `
+            /p:PostBuildEventUseInBuild=false `
+            /p:ModLoaderBuildTag="$env:BUILD_TAG" `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build sr-aobscan (Server Release)
+        shell: pwsh
+        working-directory: loader
+        run: |
+          # The solution lists the tool but does not build it by default.
+          msbuild "tools\AobScan\AobScan.vcxproj" `
+            /p:Configuration="Server Release" `
+            /p:Platform=x64 `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build WAILA Server Release
+        shell: pwsh
+        working-directory: waila
+        run: |
+          # Arguments as in the plugin's release.yml, Server Release instead of Client.
+          msbuild "StarRupture-Plugin-Waila.sln" `
+            /p:Configuration="Server Release" `
+            /p:Platform=x64 `
+            /p:PostBuildEventUseInBuild=false `
+            /p:ModLoaderBuildTag="$env:BUILD_TAG" `
+            /p:GameSDKRoot="${{ github.workspace }}\game-sdk" `
+            /p:PluginSDKInclude="${{ github.workspace }}\plugin-sdk\include" `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage our build outputs
+        shell: pwsh
+        run: |
+          $s = Join-Path $env:GITHUB_WORKSPACE 'stage'
+          New-Item -ItemType Directory -Force "$s\ModLoader", "$s\Plugins", "$s\tools" | Out-Null
+          $lb = "loader\build\Server Release"
+          Copy-Item "$lb\dwmapi.dll" "$s\dwmapi.dll"
+          if (Test-Path "$lb\ModLoader") { Copy-Item "$lb\ModLoader\*.dll" "$s\ModLoader" }
+          Copy-Item "waila\build\Server Release\Plugins\Waila.dll" "$s\Plugins\Waila.dll"
+          Copy-Item "loader\build\tools\sr-aobscan-server.exe" "$s\tools\sr-aobscan-server.exe"
+          Get-ChildItem $s -Recurse -File | ForEach-Object { '{0,12:N0}  {1}' -f $_.Length, $_.FullName.Substring($s.Length + 1) }
+
+      - name: Upload our build outputs
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: engine-test-build
+          path: stage
+          if-no-files-found: error
+          retention-days: 1
+
+  engine:
+    name: engine
+    needs: build
+    # Runs in vanilla mode (build skipped) and in full mode (build succeeded);
+    # never after a failed build, never in build mode.
+    if: ${{ !cancelled() && inputs.mode != 'build' && (needs.build.result == 'success' || (inputs.mode == 'vanilla' && needs.build.result == 'skipped')) }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out the test scripts
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Runner before
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $null -ne $_.Used } | ForEach-Object { '{0} free {1:N1} GB used {2:N1} GB' -f $_.Root, ($_.Free/1GB), ($_.Used/1GB) }
+          $os = Get-CimInstance Win32_OperatingSystem
+          'RAM total {0:N1} GB free {1:N1} GB; CPUs {2}' -f ($os.TotalVisibleMemorySize/1MB), ($os.FreePhysicalMemory/1MB), (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+          $os.Caption + ' ' + $os.Version
+
+      - name: Download the dedicated server
+        id: dl
+        shell: pwsh
+        run: ./ci/download-server.ps1
+
+      - name: Download our build outputs
+        if: ${{ inputs.mode == 'full' }}
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: engine-test-build
+          path: stage
+
+      - name: Install the loader and WAILA
+        if: ${{ inputs.mode == 'full' }}
+        shell: pwsh
+        env:
+          SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          $exe = Get-ChildItem -Path $env:SERVER_ROOT -Recurse -Filter 'StarRuptureServerEOS-Win64-Shipping.exe' -File | Select-Object -First 1
+          if (-not $exe) { throw 'Shipping exe not found' }
+          $dir = $exe.DirectoryName
+          # Loader README: dwmapi.dll next to the Shipping exe, core and plugins under ModLoader.
+          Copy-Item stage\dwmapi.dll $dir
+          New-Item -ItemType Directory -Force "$dir\ModLoader\Plugins\config" | Out-Null
+          Copy-Item stage\ModLoader\*.dll "$dir\ModLoader" -ErrorAction SilentlyContinue
+          Copy-Item stage\Plugins\Waila.dll "$dir\ModLoader\Plugins"
+          # The test judges the build under test: no self-update, no plugin swaps.
+          Set-Content "$dir\ModLoader\modloader.ini" "[AutoUpdate]`r`nEnabled=0`r`n" -Encoding ascii
+          Set-Content "$dir\ModLoader\Plugins\config\Waila.ini" "[General]`r`nEnabled=true`r`n" -Encoding ascii
+          Get-ChildItem $dir -Filter dwmapi.dll | ForEach-Object { '{0:N0}  {1}' -f $_.Length, $_.FullName }
+          Get-ChildItem "$dir\ModLoader" -Recurse -File | ForEach-Object { '{0:N0}  {1}' -f $_.Length, $_.FullName.Substring($dir.Length) }
+
+      - name: Offline pattern scan of the server exe
+        if: ${{ inputs.mode == 'full' }}
+        shell: pwsh
+        env:
+          SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $exe = Get-ChildItem -Path $env:SERVER_ROOT -Recurse -Filter 'StarRuptureServerEOS-Win64-Shipping.exe' -File | Select-Object -First 1
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          & stage\tools\sr-aobscan-server.exe $exe.FullName --verbose *> out\scanner.txt
+          $code = $LASTEXITCODE
+          & stage\tools\sr-aobscan-server.exe $exe.FullName --json > out\scanner.json
+          Set-Content out\scanner.exit "$code" -Encoding ascii
+          Get-Content out\scanner.txt | Select-Object -Last 40
+          "sr-aobscan exit code $code in $([int]$sw.Elapsed.TotalSeconds) s"
+          # The verdict step reads scanner.exit, so a non-zero code is reported there, not here.
+
+      - name: Boot the server headless
+        id: boot
+        shell: pwsh
+        env:
+          SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          ./ci/boot-server.ps1 -ServerRoot $env:SERVER_ROOT -OutDir out `
+            -Label '${{ inputs.mode }}' -ReadyRegex '${{ inputs.ready_regex }}' `
+            -SettleSec ${{ inputs.settle_sec }} -TimeoutSec 900
+
+      - name: Verdict
+        if: ${{ inputs.mode == 'full' && !cancelled() }}
+        shell: pwsh
+        env:
+          EXPECT_TAG: ${{ env.BUILD_TAG }}
+        run: ./ci/verdict.ps1 -OutDir out -ExpectTag $env:EXPECT_TAG -ExpectPlugins Waila
+
+      - name: Runner after
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $null -ne $_.Used } | ForEach-Object { '{0} free {1:N1} GB used {2:N1} GB' -f $_.Root, ($_.Free/1GB), ($_.Used/1GB) }
+
+      - name: Upload the trimmed logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: engine-test-logs-${{ inputs.mode }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 3
