@@ -1,0 +1,127 @@
+name: SR Steam watch
+
+# Polls Steam build ids for StarRupture (1631270) and the dedicated server
+# (3809400). The recorded ids live in state/steam.json on main. On a change:
+# pushes a game-update/* branch with the new ids, opens (or updates) a pull
+# request with the per-component checklist and runs the compile check
+# (sr-build-all.yml), which comments its result on the PR. Merging the PR
+# means "handled" and advances the baseline on main.
+#
+# Only writes: the first baseline commit to main, and game-update/* branches.
+# No issues, no tags, no releases.
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Refresh the open update PR and run the build check even if no build id changed'
+        type: boolean
+        default: false
+
+concurrency:
+  group: sr-watch
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  poll:
+    name: poll
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write        # baseline commit to main, game-update/* branches
+      pull-requests: write   # open and update the update PR, create its label
+    outputs:
+      changed: ${{ steps.poll.outputs.changed }}
+      pr: ${{ steps.pr.outputs.number }}
+      skip: ${{ steps.pr.outputs.skip }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: main
+
+      - name: Poll Steam
+        id: poll
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          flags=()
+          if [ "$FORCE" = "true" ]; then flags+=(--force); fi
+          node .github/sr-pipeline/poll-steam.mjs \
+            --state state/steam.json --out-dir "$RUNNER_TEMP/sr" "${flags[@]}"
+
+      - name: Seed the baseline on main
+        if: steps.poll.outputs.changed != 'true' && steps.poll.outputs.dirty == 'true'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state/steam.json
+          git commit -m "Record Steam build ids"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Open or update the game-update PR
+        id: pr
+        if: steps.poll.outputs.changed == 'true'
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          gh label create game-update --color D93F0B \
+            --description 'Steam reported a new StarRupture build' --force
+          sr="$RUNNER_TEMP/sr"
+          title="$(cat "$sr/pr-title.txt")"
+          want="$(cat "$sr/pr-branch.txt")"
+          existing="$(gh pr list --state open --limit 100 --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("game-update/"))][0] // empty')"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          number=""
+          branch="$want"
+          if [ -n "$existing" ]; then
+            number="$(jq -r .number <<<"$existing")"
+            branch="$(jq -r .headRefName <<<"$existing")"
+          fi
+          if [ -z "$branch" ]; then
+            # Forced run with nothing to propose: no PR, the build still runs.
+            exit 0
+          fi
+          if [ -n "$number" ] && [ "$branch" = "$want" ] && [ "$FORCE" != "true" ]; then
+            # Same build already proposed: do not re-alert or rebuild.
+            echo "Update PR #$number already covers this build."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$want" ]; then
+            git checkout -B "$branch"
+            git add state/steam.json
+            git commit -m "Game build update"
+            # The bot owns game-update/* branches; they are rebuilt from main.
+            git push origin "+HEAD:refs/heads/$branch"
+          fi
+          if [ -z "$number" ]; then
+            url="$(gh pr create --base main --head "$branch" --title "$title" \
+              --body-file "$sr/pr-body.md" --label game-update)"
+            number="${url##*/}"
+          else
+            gh pr edit "$number" --title "$title" --body-file "$sr/pr-body.md"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build-all
+    needs: poll
+    if: needs.poll.outputs.changed == 'true' && needs.poll.outputs.skip != 'true'
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    uses: ./.github/workflows/sr-build-all.yml
+    with:
+      pr: ${{ needs.poll.outputs.pr }}
