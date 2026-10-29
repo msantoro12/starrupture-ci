@@ -224,7 +224,7 @@ jobs:
           $code = $LASTEXITCODE
           Set-Content out\scanner.exit "$code" -Encoding ascii
           # Gate G4 verdict as JSON (OK / MISSING / AMBIGUOUS per pattern), uploaded with the logs.
-          & stage	ools\sr-aobscan-server.exe $exe.FullName --json > out\scanner.json
+          & stage\tools\sr-aobscan-server.exe $exe.FullName --json > out\scanner.json
           $j = Get-Content out\scanner.json -Raw | ConvertFrom-Json
           "G4 counts: OK=$($j.summary.ok) MISSING=$($j.summary.missing) AMBIGUOUS=$($j.summary.ambiguous) of $($j.summary.total)"
           Get-Content out\scanner.txt | Select-Object -Last 40
