@@ -142,6 +142,8 @@ test('generate: CLs that are not newer or not numbers are refused', () => {
   assert.throws(() => gen(repo, { cl: '127999; rm -rf /' }), /digits/);
   assert.throws(() => gen(repo, { cl: '' }), /digits/);
   assert.throws(() => gen(repo, { cl: '1234567890' }), /digits/);
+  assert.throws(() => gen(repo, { cl: '0127999' }), /no leading zero/);
+  assert.throws(() => gen(repo, { cl: '0' }), /no leading zero/);
 });
 
 test('generate: no CL line, or two CL lines, is refused', () => {
@@ -159,6 +161,7 @@ test('generate: a dirty or wrongly based checkout is refused', () => {
   assert.throws(() => gen(repo2), /not clean/);
   const repo3 = fixtureRepo();
   assert.throws(() => gen(repo3, { base: 'deadbeef' }), /expected deadbeef/);
+  assert.throws(() => gen(repo3, { base: '' }), /expected /);
   const head = git(repo3, 'rev-parse', 'HEAD').trim();
   assert.equal(gen(repo3, { base: head.slice(0, 8) }).base, head);
 });
@@ -228,101 +231,164 @@ const newFile = (path, lines) => [
   `diff --git a/${path} b/${path}`, 'new file mode 100644', 'index 0000000..2222222', '--- /dev/null', `+++ b/${path}`,
   `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => `+${l}`),
 ].join('\n') + '\n';
+// Structural cases pass arbitrary content, so they switch content pinning off.
+const loose = (t, o = {}) => checkPatch(t, { pin: false, ...o });
 const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i}`);
 
 test('G0: plain edits to allowlisted files pass', () => {
-  assert.equal(checkPatch(file(CL_FILE, ['b'], ['a'])).ok, true);
-  assert.equal(checkPatch(newFile(VERSION_FILE, ['1.2.3'])).ok, true);
-  assert.equal(checkPatch(file(CL_FILE, ['b'], ['a']) + newFile(NOTES_FILE, ['n'])).ok, true);
+  assert.equal(loose(file(CL_FILE, ['b'], ['a'])).ok, true);
+  assert.equal(loose(newFile(VERSION_FILE, ['1.2.3'])).ok, true);
+  assert.equal(loose(file(CL_FILE, ['b'], ['a']) + newFile(NOTES_FILE, ['n'])).ok, true);
 });
 
 test('G0: a file outside the allowlist is rejected', () => {
   for (const p of ['.github/workflows/release.yml', 'README.md', 'StarRupture-ModLoader-Core/core/init_thread.cpp', 'Version', 'version/x', 'a/version']) {
-    const r = checkPatch(file(p, ['x'], ['y']));
+    const r = loose(file(p, ['x'], ['y']));
     assert.equal(r.ok, false, p);
     assert.match(r.errors.join(), /allowlist/, p);
   }
 });
 
 test('G0: one bad file among good ones rejects the patch', () => {
-  const r = checkPatch(file(CL_FILE, ['b'], ['a']) + file('.github/workflows/release.yml', ['x'], ['y']));
+  const r = loose(file(CL_FILE, ['b'], ['a']) + file('.github/workflows/release.yml', ['x'], ['y']));
   assert.equal(r.ok, false);
 });
 
 test('G0: the 60-line limit counts additions plus removals', () => {
-  assert.equal(checkPatch(newFile(NOTES_FILE, lines(60))).ok, true);
-  const r61 = checkPatch(newFile(NOTES_FILE, lines(61)));
+  assert.equal(loose(newFile(NOTES_FILE, lines(60))).ok, true);
+  const r61 = loose(newFile(NOTES_FILE, lines(61)));
   assert.equal(r61.ok, false);
   assert.match(r61.errors.join(), /61 changed lines/);
-  assert.equal(checkPatch(file(NOTES_FILE, lines(30), lines(30))).ok, true);
-  assert.equal(checkPatch(file(NOTES_FILE, lines(31), lines(30))).ok, false);
+  assert.equal(loose(file(NOTES_FILE, lines(30), lines(30))).ok, true);
+  assert.equal(loose(file(NOTES_FILE, lines(31), lines(30))).ok, false);
   // the limit is across files
-  assert.equal(checkPatch(newFile(NOTES_FILE, lines(31)) + newFile(VERSION_FILE, lines(30))).ok, false);
-  assert.equal(checkPatch(newFile(NOTES_FILE, lines(11)), { maxLines: 10 }).ok, false);
+  assert.equal(loose(newFile(NOTES_FILE, lines(31)) + newFile(VERSION_FILE, lines(30))).ok, false);
+  assert.equal(loose(newFile(NOTES_FILE, lines(11)), { maxLines: 10 }).ok, false);
 });
 
 test('G0: lines starting with "++" or "--" inside a hunk are counted as content', () => {
-  const r = checkPatch(file(NOTES_FILE, ['++ plus', '--- dashes'], ['-- old']));
+  const r = loose(file(NOTES_FILE, ['++ plus', '--- dashes'], ['-- old']));
   assert.equal(r.ok, true, r.errors.join());
   assert.equal(r.changedLines, 3);
 });
 
 test('G0: renames, copies, deletes, mode changes, symlinks, binaries are rejected', () => {
   const rename = `diff --git a/${NOTES_FILE} b/${VERSION_FILE}\nsimilarity index 100%\nrename from ${NOTES_FILE}\nrename to ${VERSION_FILE}\n`;
-  assert.equal(checkPatch(rename).ok, false);
+  assert.equal(loose(rename).ok, false);
   const del = `diff --git a/${NOTES_FILE} b/${NOTES_FILE}\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/${NOTES_FILE}\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n`;
-  assert.equal(checkPatch(del).ok, false);
+  assert.equal(loose(del).ok, false);
   const mode = `diff --git a/${CL_FILE} b/${CL_FILE}\nold mode 100644\nnew mode 100755\n`;
-  assert.equal(checkPatch(mode).ok, false);
+  assert.equal(loose(mode).ok, false);
   const modeAndEdit = `diff --git a/${CL_FILE} b/${CL_FILE}\nold mode 100644\nnew mode 100755\nindex 1111111..2222222\n--- a/${CL_FILE}\n+++ b/${CL_FILE}\n@@ -1 +1 @@\n-a\n+b\n`;
-  assert.equal(checkPatch(modeAndEdit).ok, false);
+  assert.equal(loose(modeAndEdit).ok, false);
   const exec = `diff --git a/${VERSION_FILE} b/${VERSION_FILE}\nnew file mode 100755\nindex 0000000..2222222\n--- /dev/null\n+++ b/${VERSION_FILE}\n@@ -0,0 +1 @@\n+x\n`;
-  assert.equal(checkPatch(exec).ok, false);
+  assert.equal(loose(exec).ok, false);
   const link = `diff --git a/${VERSION_FILE} b/${VERSION_FILE}\nnew file mode 120000\nindex 0000000..2222222\n--- /dev/null\n+++ b/${VERSION_FILE}\n@@ -0,0 +1 @@\n+../../etc/passwd\n`;
-  assert.equal(checkPatch(link).ok, false);
+  assert.equal(loose(link).ok, false);
   const bin = `diff --git a/${VERSION_FILE} b/${VERSION_FILE}\nnew file mode 100644\nindex 0000000..2222222\nGIT binary patch\nliteral 3\nKcmZ?\n`;
-  assert.equal(checkPatch(bin).ok, false);
+  assert.equal(loose(bin).ok, false);
   const bin2 = `diff --git a/${VERSION_FILE} b/${VERSION_FILE}\nindex 1111111..2222222 100644\nBinary files a/${VERSION_FILE} and b/${VERSION_FILE} differ\n`;
-  assert.equal(checkPatch(bin2).ok, false);
+  assert.equal(loose(bin2).ok, false);
 });
 
 test('G0: paths that escape or hide are rejected', () => {
   for (const p of ['../version', 'a/../version', './version', 'version ', '"version"']) {
     const t = file('version', ['x'], ['y']).replaceAll('version', p);
-    assert.equal(checkPatch(t).ok, false, p);
+    assert.equal(loose(t).ok, false, p);
   }
   // a/ and b/ names that disagree
   const mismatch = file(NOTES_FILE, ['x'], ['y']).replace(`+++ b/${NOTES_FILE}`, `+++ b/${VERSION_FILE}`);
-  assert.equal(checkPatch(mismatch).ok, false);
+  assert.equal(loose(mismatch).ok, false);
   const mismatch2 = file(NOTES_FILE, ['x'], ['y']).replace(`diff --git a/${NOTES_FILE} b/${NOTES_FILE}`, `diff --git a/${VERSION_FILE} b/${NOTES_FILE}`);
-  assert.equal(checkPatch(mismatch2).ok, false);
+  assert.equal(loose(mismatch2).ok, false);
 });
 
 test('G0: malformed or smuggling patches are rejected', () => {
-  assert.equal(checkPatch('').ok, false);
-  assert.equal(checkPatch('\n').ok, false);
-  assert.equal(checkPatch('just some text\n').ok, false);
+  assert.equal(loose('').ok, false);
+  assert.equal(loose('\n').ok, false);
+  assert.equal(loose('just some text\n').ok, false);
   // hunk header claims 1 line, body carries 3: extra lines would otherwise slip past the count
   const lie = `diff --git a/${NOTES_FILE} b/${NOTES_FILE}\nindex 1..2 100644\n--- a/${NOTES_FILE}\n+++ b/${NOTES_FILE}\n@@ -1 +1 @@\n-a\n+b\n+c\n+d\n`;
-  assert.equal(checkPatch(lie).ok, false);
+  assert.equal(loose(lie).ok, false);
   // hunk claims more lines than present
   const short = `diff --git a/${NOTES_FILE} b/${NOTES_FILE}\nindex 1..2 100644\n--- a/${NOTES_FILE}\n+++ b/${NOTES_FILE}\n@@ -1,3 +1,3 @@\n-a\n+b\n`;
-  assert.equal(checkPatch(short).ok, false);
+  assert.equal(loose(short).ok, false);
   // trailing garbage after a valid patch
-  assert.equal(checkPatch(file(NOTES_FILE, ['b'], ['a']) + 'garbage\n').ok, false);
+  assert.equal(loose(file(NOTES_FILE, ['b'], ['a']) + 'garbage\n').ok, false);
   // same file twice
-  assert.equal(checkPatch(file(NOTES_FILE, ['b'], ['a']) + file(NOTES_FILE, ['c'], ['b'])).ok, false);
+  assert.equal(loose(file(NOTES_FILE, ['b'], ['a']) + file(NOTES_FILE, ['c'], ['b'])).ok, false);
   // header-only entry for another file hidden before real content
-  assert.equal(checkPatch(`diff --git a/README.md b/README.md\n` + file(NOTES_FILE, ['b'], ['a'])).ok, false);
+  assert.equal(loose(`diff --git a/README.md b/README.md\n` + file(NOTES_FILE, ['b'], ['a'])).ok, false);
   // a header with CR
-  assert.equal(checkPatch(file(NOTES_FILE, ['b'], ['a']).replace(`+++ b/${NOTES_FILE}`, `+++ b/${NOTES_FILE}\r`)).ok, false);
+  assert.equal(loose(file(NOTES_FILE, ['b'], ['a']).replace(`+++ b/${NOTES_FILE}`, `+++ b/${NOTES_FILE}\r`)).ok, false);
   // an unknown extended header
-  assert.equal(checkPatch(file(NOTES_FILE, ['b'], ['a']).replace('index', 'weird')).ok, false);
+  assert.equal(loose(file(NOTES_FILE, ['b'], ['a']).replace('index', 'weird')).ok, false);
 });
 
 test('G0: "\\ No newline" markers are accepted', () => {
   const t = `diff --git a/${NOTES_FILE} b/${NOTES_FILE}\nindex 1..2 100644\n--- a/${NOTES_FILE}\n+++ b/${NOTES_FILE}\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n`;
-  assert.equal(checkPatch(t).ok, true);
+  assert.equal(loose(t).ok, true);
+});
+
+
+// ---- content pinning
+
+const clPatch = (oldCl, newCl, over = {}) => file(CL_FILE,
+  [over.add ?? `static constexpr wchar_t kRequiredVersionSuffix[] = L"CL-${newCl}";`],
+  [over.del ?? `static constexpr wchar_t kRequiredVersionSuffix[] = L"CL-${oldCl}";`]);
+const pinErrors = (t) => checkPatch(t).errors.join(' | ');
+
+test('G0 pin: the CL file may only swap the CL number to a higher one', () => {
+  assert.equal(checkPatch(clPatch('127004', '127999')).ok, true);
+  assert.match(pinErrors(clPatch('127999', '127004')), /not newer/);
+  assert.match(pinErrors(clPatch('127004', '127004')), /not newer/);
+  assert.match(pinErrors(clPatch('127004', '0127999')), /not the kRequiredVersionSuffix/);
+  assert.match(pinErrors(clPatch('127004', '1234567890')), /not the kRequiredVersionSuffix/);
+  assert.match(pinErrors(file(CL_FILE, ['int x;'], ['int y;'])), /not the kRequiredVersionSuffix/);
+  assert.match(pinErrors(clPatch('1', '2', { add: 'static constexpr wchar_t kRequiredVersionSuffix[] = L"CL-2"; system("x");' })), /not the kRequiredVersionSuffix/);
+  const two = file(CL_FILE, ['// c', 'static constexpr wchar_t kRequiredVersionSuffix[] = L"CL-2";'], ['static constexpr wchar_t kRequiredVersionSuffix[] = L"CL-1";']);
+  assert.match(pinErrors(two), /exactly one removed and one added/);
+  assert.match(pinErrors(newFile(CL_FILE, ['x'])), /exactly one removed and one added/);
+  const crlf = clPatch('127004', '127999').replace(/^([+-]static.*)$/gm, '$1\r');
+  assert.equal(checkPatch(crlf).ok, true);
+});
+
+test('G0 pin: the version file takes one x.y.z line', () => {
+  assert.equal(checkPatch(file(VERSION_FILE, ['1.22.2'], ['1.22.1'])).ok, true);
+  assert.equal(checkPatch(newFile(VERSION_FILE, ['1.22.2'])).ok, true);
+  for (const bad of ['1.22', '1.22.2-rc1', 'v1.22.2', '1.22.2 && x', '01.22.2', '']) {
+    assert.match(pinErrors(file(VERSION_FILE, [bad], ['1.22.1'])), /expected one added x\.y\.z/, bad);
+  }
+  assert.match(pinErrors(file(VERSION_FILE, ['1.22.2', '1.22.3'], ['1.22.1'])), /expected one added/);
+  assert.match(pinErrors(file(VERSION_FILE, ['1.22.2'], ['payload'])), /removed line is not x\.y\.z/);
+});
+
+test('G0 pin: the notes file takes one "Supports game build" line of printable ASCII', () => {
+  for (const l of ['Supports game build CL-127999 (Fake Update)', 'Supports game build CL-127999']) {
+    assert.equal(checkPatch(file(NOTES_FILE, [l], ['old', 'older'])).ok, true, l);
+  }
+  for (const bad of ['Hello', 'Supports game build CL-1 (x) extra', 'Supports game build CL-01', 'Supports game build CL-1 ()',
+    'Supports game build CL-1 (caf\u00e9)', 'Supports game build CL-1 (' + 'x'.repeat(121) + ')']) {
+    assert.match(pinErrors(file(NOTES_FILE, [bad], ['old'])), /expected one added "Supports game build/, bad);
+  }
+  assert.match(pinErrors(file(NOTES_FILE, ['Supports game build CL-1', 'Supports game build CL-2'], ['old'])), /expected one added/);
+  assert.match(pinErrors(file(NOTES_FILE, [], ['old'])), /expected one added/);
+});
+
+test('G0 pin: pin:false skips the content rules but keeps the structural ones', () => {
+  assert.equal(checkPatch(file(NOTES_FILE, ['anything'], ['old']), { pin: false }).ok, true);
+  assert.equal(checkPatch(file('README.md', ['anything'], ['old']), { pin: false }).ok, false);
+});
+
+test('G0: maxLines must be a positive integer', () => {
+  const p = file(NOTES_FILE, ['Supports game build CL-1'], ['old']);
+  for (const bad of [NaN, 0, -1, 1.5, '10', Infinity, null]) {
+    const r = checkPatch(p, { maxLines: bad });
+    assert.equal(r.ok, false, String(bad));
+    assert.match(r.errors.join(), /positive integer/);
+  }
+  assert.equal(checkPatch(p, { maxLines: 2 }).ok, true);
+  assert.equal(checkPatch(p, { maxLines: 1 }).ok, false);
 });
 
 test('G0: sha256 verification', () => {
@@ -353,6 +419,12 @@ test('cli --check: rejects a tampered patch, a wrong sha256 and a policy violati
   assert.equal(run([bad]).status, 1);
   assert.equal(run([bad, '--allow', '.github/workflows/release.yml']).status, 0, 'an explicit allowlist is honoured');
   assert.equal(run([join(tmp('none-'), 'missing.patch')]).status, 1, 'a missing file is a rejection');
+  assert.equal(run([r.patch, '--max-lines', '12']).status, 0);
+  assert.equal(run([r.patch, '--max-lines', '2']).status, 1);
+  for (const bad of ['abc', '0', '-5', '1.5', '']) assert.equal(run([r.patch, '--max-lines', bad]).status, 2, '--max-lines ' + bad);
+  const edited = join(tmp('pin-'), 'x.patch');
+  writeFileSync(edited, readFileSync(r.patch, 'latin1').replace('+Supports game build', '+Hello world, see'), 'latin1');
+  assert.equal(run([edited]).status, 1, 'a notes line that is not the pinned shape is rejected');
 });
 
 // ------------------------------------------------------------ live

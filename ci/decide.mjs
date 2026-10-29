@@ -5,16 +5,17 @@
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json \
 //       --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
 //
-// Prints the decision as JSON on stdout. Exit code 0 means "go ahead with the
-// patch" (decision A or B). Anything else, including a crash, means do not
-// ship: exit 1 is a HOLD, exit 2 is a usage error.
+// Prints the decision as JSON on stdout. Exit codes: 0 = path A (build the Path A
+// patch), 10 = path B (auto-fix; the Path A patch must NOT be built), 1 = HOLD,
+// 2 = usage error. Anything else, including a crash, means do not ship.
 //
 // Decision table (the first row that applies wins):
 //   autopilot unreadable, malformed or enabled != true  -> HOLD
 //   a gate result missing, unreadable, malformed, or reporting an error -> HOLD
 //   G1 compile or G2 interface not ok                    -> HOLD
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
-//   GObjects, GNames, AppendString or GWorld not re-resolved by the G4 scan -> HOLD, no path
+//   GObjects, GNames, AppendString or GWorld not resolved, or resolved to a value that differs
+//   from the SDK's baked offset (G4 scan)                -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty)        -> HOLD, path C (held until shadow mode is proven)
 //   a required pattern missed (G4 requiredFailing > 0)   -> B, if autopilot.paths has B
 //   everything clean                                     -> A, if autopilot.paths has A
@@ -23,11 +24,13 @@
 //
 // Gate result shapes:
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
-//   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl optional
+//   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
 //   G4:     the raw `sr-aobscan --json` output of the SERVER exe. It must hold one required
 //           row each for GObjects, GNames, AppendString and GWorld (an optional "X::" prefix
-//           on the name is fine), and a matched row carries its "rva".
-//   G5:     { "ok": true, "usedChanged": ["UFoo", ...] }   used classes whose layout changed
+//           on the name is fine). A matched row carries its resolved "rva" and "sdkRva", the offset the SDK
+//           (Basic.hpp Offsets::) bakes in today; they must be equal, because a CL-only or pattern
+//           patch cannot change the SDK's baked offsets.
+//   G5:     the `layout-diff.mjs diff --used ...` report: { "changedUsedClasses": n, "changedUsed": [{ "class": "UFoo" }, ...] }
 // History (rate limits):
 //   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>" }],
 //     "attempts": { "<cl>": <Claude attempts so far> } }
@@ -47,13 +50,13 @@ export const SDK_GLOBALS = Object.freeze(['GObjects', 'GNames', 'AppendString', 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const isCl = (v) => typeof v === 'string' && /^[0-9]{1,9}$/.test(v);
+const isCl = (v) => typeof v === 'string' && /^[1-9][0-9]{0,8}$/.test(v);
 
 // Reads one JSON input. Never throws: a failure becomes { ok: false, error }.
 export function loadJson(file) {
   if (typeof file !== 'string' || file === '') return { ok: false, error: 'no file given' };
   try {
-    return { ok: true, value: JSON.parse(readFileSync(file, 'utf8').replace(/^﻿/, '')) };
+    return { ok: true, value: JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')) };
   } catch (e) {
     return { ok: false, error: `cannot read ${file}: ${e.code || e.message}` };
   }
@@ -83,8 +86,8 @@ function checkG3(loaded) {
   const v = loaded.value;
   if (v.ok !== true) return { error: 'G3: gate did not pass (ok is not true)' };
   if (!isCl(v.cl)) return { error: 'G3: cl is missing or not a plain number' };
-  if (v.previousCl !== undefined && !isCl(v.previousCl)) return { error: 'G3: previousCl is not a plain number' };
-  if (v.previousCl !== undefined && Number(v.cl) <= Number(v.previousCl)) {
+  if (!isCl(v.previousCl)) return { error: 'G3: previousCl is missing or not a plain number' };
+  if (Number(v.cl) <= Number(v.previousCl)) {
     return { error: `G3: CL-${v.cl} is not newer than CL-${v.previousCl}` };
   }
   return { cl: v.cl };
@@ -114,19 +117,29 @@ function checkG4(loaded) {
 }
 
 // The SDK dumps hard-code the exe offsets of GObjects, GNames, AppendString and
-// GWorld, and they move on every game patch. A CL bump alone would ship stale
-// ones, so a release needs all four re-resolved from the new exe: one required
-// pattern row each in the G4 scan, with a resolved RVA when it matched. A row
-// that is present but did not match is an ordinary pattern miss (path B);
-// a row that is absent, optional, duplicated or has no RVA is a HOLD.
+// GWorld, and they move on every game patch. A CL-only (or pattern-fix) patch
+// cannot change them, so a release needs all four re-resolved from the new exe
+// and found equal to what the SDK bakes in. One required pattern row each in the
+// G4 scan: matched (OK), with the resolved "rva" and the SDK's baked "sdkRva"
+// equal and non-zero. Absent, optional, duplicated, unmatched or unequal is a HOLD.
+const hexValue = (v) => (typeof v === 'string' && /^0x[0-9a-f]+$/i.test(v) ? BigInt(v) : null);
+
 function checkSdkGlobals(rows) {
   const problems = [];
   for (const key of SDK_GLOBALS) {
     const hits = rows.filter((p) => p.name.replace(/^.*::/, '').toLowerCase() === key.toLowerCase());
-    if (hits.length === 0) problems.push(`${key}: no pattern in the scan, so the offset is not re-resolved`);
-    else if (hits.length > 1) problems.push(`${key}: ${hits.length} pattern rows, expected one`);
-    else if (!hits[0].required) problems.push(`${key}: pattern is not required`);
-    else if (hits[0].result === 'OK' && !/^0x[0-9a-f]+$/i.test(String(hits[0].rva))) problems.push(`${key}: matched but no resolved RVA`);
+    if (hits.length === 0) { problems.push(`${key}: no pattern in the scan, so the offset is not re-resolved`); continue; }
+    if (hits.length > 1) { problems.push(`${key}: ${hits.length} pattern rows, expected one`); continue; }
+    const row = hits[0];
+    if (!row.required) problems.push(`${key}: pattern is not required`);
+    else if (row.result !== 'OK') problems.push(`${key}: did not resolve (${row.result})`);
+    else {
+      const rva = hexValue(row.rva);
+      const baked = hexValue(row.sdkRva);
+      if (rva === null || rva === 0n) problems.push(`${key}: matched but no resolved RVA`);
+      else if (baked === null) problems.push(`${key}: the SDK's baked offset is unknown`);
+      else if (rva !== baked) problems.push(`${key}: resolved ${row.rva} but the SDK bakes in ${row.sdkRva}`);
+    }
   }
   return problems.length ? `SDK global offsets not verified: ${problems.join('; ')}` : null;
 }
@@ -135,11 +148,16 @@ function checkG5(loaded) {
   const bad = checkEnvelope('G5', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
-  if (v.ok !== true) return { error: 'G5: gate did not pass (ok is not true)' };
-  if (!Array.isArray(v.usedChanged) || v.usedChanged.some((c) => typeof c !== 'string' || c === '')) {
-    return { error: 'G5: usedChanged is missing or not a list of class names' };
+  // The layout-diff report carries no ok flag of its own; a wrapper that adds one must set it true.
+  if ('ok' in v && v.ok !== true) return { error: 'G5: gate did not pass (ok is not true)' };
+  if (!Number.isInteger(v.changedUsedClasses) || !Array.isArray(v.changedUsed)) {
+    return { error: 'G5: not a layout-diff report (changedUsedClasses / changedUsed missing)' };
   }
-  return { usedChanged: v.usedChanged };
+  if (v.changedUsed.some((c) => !isObj(c) || typeof c.class !== 'string' || c.class === '')) {
+    return { error: 'G5: changedUsed rows need a class name' };
+  }
+  if (v.changedUsedClasses !== v.changedUsed.length) return { error: 'G5: changedUsedClasses disagrees with changedUsed' };
+  return { usedChanged: v.changedUsed.map((c) => c.class) };
 }
 
 // Fail closed: only an exactly well-formed file with enabled === true passes.
@@ -278,7 +296,7 @@ function main() {
   const text = JSON.stringify(result, null, 2) + '\n';
   if (args.out) writeFileSync(args.out, text);
   process.stdout.write(text);
-  process.exit(result.ship ? 0 : 1);
+  process.exit(result.decision === 'A' ? 0 : result.decision === 'B' ? 10 : 1);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

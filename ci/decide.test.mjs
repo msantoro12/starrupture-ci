@@ -14,8 +14,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const NOW = Date.parse('2026-10-29T12:00:00Z');
 const ago = (min) => new Date(NOW - min * 60000).toISOString();
 const ok = (value) => ({ ok: true, value });
+// The layout-diff report shape (PR #3): changedUsed rows carry the class name.
+const layout = (...classes) => ({ changedUsedClasses: classes.length, changedUsed: classes.map((c) => ({ class: c })) });
 
-const aobRow = (name, result = 'OK', required = true) => ({ name, kind: 'function', required, result, matches: result === 'OK' ? 1 : 0, ...(result === 'OK' ? { rva: '0x1A2B3C0' } : {}) });
+const aobRow = (name, result = 'OK', required = true) => ({ name, kind: 'function', required, result, matches: result === 'OK' ? 1 : 0, ...(result === 'OK' ? { rva: '0x1A2B3C0', sdkRva: '0x1A2B3C0' } : {}) });
 const globalRows = () => SDK_GLOBALS.map((n) => aobRow(n));
 // By default every scan carries the four SDK global rows; pass noGlobals to leave them out.
 function aob(rows, { noGlobals = false } = {}) {
@@ -34,7 +36,7 @@ function base(over = {}) {
     g2: ok({ ok: true }),
     g3: ok({ ok: true, cl: '127999', previousCl: '127004' }),
     g4: ok(aob([aobRow('GetWorld'), aobRow('SpawnActor'), aobRow('Optional', 'OK', false)])),
-    g5: ok({ ok: true, usedChanged: [] }),
+    g5: ok(layout()),
     history: ok({ releases: [], attempts: {} }),
     ...over,
   };
@@ -84,7 +86,7 @@ test('B: an ambiguous required pattern counts as a miss', () => {
 test('C: a used class moved is HOLD with path C, even with every path enabled', () => {
   const r = decide(base({
     autopilot: ok({ enabled: true, paths: ['A', 'B', 'C'], max_releases_per_day: 2 }),
-    g5: ok({ ok: true, usedChanged: ['UInventoryComponent'] }),
+    g5: ok(layout('UInventoryComponent')),
   }));
   holds(r, /path C held until shadow mode is proven/);
   assert.equal(r.path, 'C');
@@ -93,7 +95,7 @@ test('C: a used class moved is HOLD with path C, even with every path enabled', 
 test('C wins over B when both a pattern missed and a class moved', () => {
   const r = decide(base({
     g4: ok(aob([aobRow('SpawnActor', 'MISSING')])),
-    g5: ok({ ok: true, usedChanged: ['UFoo'] }),
+    g5: ok(layout('UFoo')),
   }));
   holds(r);
   assert.equal(r.path, 'C');
@@ -151,23 +153,38 @@ for (const key of SDK_GLOBALS) {
     }
   });
 
-  test(`SDK globals: ${key} present but not matching is an ordinary pattern miss (B), and still never A`, () => {
+  test(`SDK globals: ${key} not matching, or resolved to a different offset than the SDK bakes in, is HOLD`, () => {
     const others = SDK_GLOBALS.filter((n) => n !== key).map((n) => aobRow(n));
+    const run = (row, ap) => decide(base({ ...(ap ? { autopilot: ap } : {}), g4: ok(aob([...others, row], { noGlobals: true })) }));
     for (const result of ['MISSING', 'AMBIGUOUS']) {
-      const r = decide(base({ g4: ok(aob([...others, aobRow(key, result)], { noGlobals: true })) }));
-      assert.equal(r.decision, 'B');
-      assert.ok(r.notes.join().includes(`${key} (${result})`));
+      const r = run(aobRow(key, result));
+      holds(r, /SDK global/);
+      assert.ok(r.reasons.join().includes(`${key}: did not resolve (${result})`));
+      assert.equal(r.path, null, 'never routed to B or A');
     }
-    // B only when B is enabled; with only A enabled it is HOLD
-    const onlyA = ok({ enabled: true, paths: ['A'], max_releases_per_day: 2 });
-    holds(decide(base({ autopilot: onlyA, g4: ok(aob([...others, aobRow(key, 'MISSING')], { noGlobals: true })) })), /path B is not enabled/);
+    // even with every path enabled
+    holds(run(aobRow(key, 'MISSING'), ok({ enabled: true, paths: ['A', 'B', 'C'], max_releases_per_day: 2 })), /SDK global/);
+    // moved offset: resolved differs from the baked one
+    const moved = aobRow(key); moved.rva = '0x1A2B3D0';
+    holds(run(moved), /bakes in 0x1A2B3C0/);
+    // equal values written differently are equal
+    const same = aobRow(key); same.rva = '0x01a2b3c0'; same.sdkRva = '0X1A2B3C0';
+    assert.equal(run(same).decision, 'A');
+    // baked offset missing, zero, or not hex
+    for (const bad of [undefined, null, '', '0x', 'zz', 5, '1A2B3C0']) {
+      const row = aobRow(key);
+      if (bad === undefined) delete row.sdkRva; else row.sdkRva = bad;
+      holds(run(row), /baked offset is unknown/);
+    }
+    const zero = aobRow(key); zero.rva = '0x0'; zero.sdkRva = '0x0';
+    holds(run(zero), /no resolved RVA/);
   });
 }
 
 test('SDK globals: unverified globals also block a would-be C and a would-be B', () => {
   const noG = (rows) => ok(aob(rows, { noGlobals: true }));
   holds(decide(base({ g4: noG([aobRow('SpawnActor', 'MISSING')]) })), /SDK global/);
-  holds(decide(base({ g4: noG([aobRow('GetWorld')]), g5: ok({ ok: true, usedChanged: ['UFoo'] }) })), /SDK global/);
+  holds(decide(base({ g4: noG([aobRow('GetWorld')]), g5: ok(layout('UFoo')) })), /SDK global/);
 });
 
 // ------------------------------------------------------------ fail closed
@@ -208,13 +225,15 @@ test('fail closed: ok must be exactly true', () => {
   for (const bad of [false, 'true', 1, null, undefined]) {
     holds(decide(base({ g1: ok({ ok: bad }) })));
     holds(decide(base({ g2: ok({ ok: bad }) })));
-    holds(decide(base({ g3: ok({ ok: bad, cl: '127999' }) })));
-    holds(decide(base({ g5: ok({ ok: bad, usedChanged: [] }) })));
+    holds(decide(base({ g3: ok({ ok: bad, cl: '127999', previousCl: '127004' }) })));
+    holds(decide(base({ g5: ok({ ...layout(), ok: bad }) })));
   }
 });
 
 test('fail closed: G3 CL', () => {
   holds(decide(base({ g3: ok({ ok: true }) })), /cl is missing/);
+  holds(decide(base({ g3: ok({ ok: true, cl: '127999' }) })), /previousCl/);
+  holds(decide(base({ g3: ok({ ok: true, cl: '0127999', previousCl: '127004' }) })), /cl is missing/);
   holds(decide(base({ g3: ok({ ok: true, cl: 'CL-127999' }) })), /cl is missing/);
   holds(decide(base({ g3: ok({ ok: true, cl: 127999 }) })), /cl is missing/);
   holds(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '127004' }) })), /not newer/);
@@ -238,11 +257,17 @@ test('fail closed: G4 must be a consistent server scan', () => {
   holds(decide(base({ g4: ok({ ...good, patterns: [{ name: 'x', result: 'OK', required: 'yes' }] }) })), /malformed/);
 });
 
-test('fail closed: G5 usedChanged must be a list of names', () => {
-  holds(decide(base({ g5: ok({ ok: true }) })), /usedChanged/);
-  holds(decide(base({ g5: ok({ ok: true, usedChanged: 'none' }) })), /usedChanged/);
-  holds(decide(base({ g5: ok({ ok: true, usedChanged: [1] }) })), /usedChanged/);
-  holds(decide(base({ g5: ok({ ok: true, usedChanged: [''] }) })), /usedChanged/);
+test('fail closed: G5 must be a consistent layout-diff report', () => {
+  holds(decide(base({ g5: ok({ ok: true }) })), /not a layout-diff report/);
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 0 }) })), /not a layout-diff report/);
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 'none', changedUsed: [] }) })), /not a layout-diff report/);
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 0, changedUsed: 'none' }) })), /not a layout-diff report/);
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 1, changedUsed: [{}] }) })), /need a class name/);
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 1, changedUsed: [{ class: '' }] }) })), /need a class name/);
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 1, changedUsed: ['UFoo'] }) })), /need a class name/);
+  // a count that hides a changed class must not turn a C into an A
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 0, changedUsed: [{ class: 'UFoo' }] }) })), /disagrees/);
+  holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 2, changedUsed: [{ class: 'UFoo' }] }) })), /disagrees/);
 });
 
 test('fail closed: missing repo name or clock', () => {
@@ -361,8 +386,24 @@ test('cli: unparseable or empty JSON is a HOLD', () => {
 });
 
 test('cli: a BOM in a JSON file is tolerated', () => {
-  const r = runCli(cliFiles({ g1: '﻿{"ok":true}' }));
+  const r = runCli(cliFiles({ g1: String.fromCharCode(0xfeff) + '{"ok":true}' }));
   assert.equal(r.out.decision, 'A');
+  assert.equal(r.status, 0);
+});
+
+test('cli: exit 10 for B, so a caller that only checks "zero" cannot ship an auto-fix as a CL-only', () => {
+  const r = runCli(cliFiles({ g4: aob([aobRow('SpawnActor', 'MISSING')]) }));
+  assert.equal(r.status, 10);
+  assert.equal(r.out.decision, 'B');
+});
+
+test('cli: exit 1 for a path C hold and for an unverified SDK global', () => {
+  const c = runCli(cliFiles({ autopilot: { schema: 1, enabled: true, paths: ['A', 'B', 'C'], max_releases_per_day: 2 }, g5: layout('UFoo') }));
+  assert.equal(c.status, 1);
+  assert.equal(c.out.path, 'C');
+  const g = runCli(cliFiles({ g4: aob([aobRow('GetWorld')], { noGlobals: true }) }));
+  assert.equal(g.status, 1);
+  assert.match(g.out.reasons.join(), /SDK global/);
 });
 
 test('cli: an input that is a directory is a HOLD', () => {
