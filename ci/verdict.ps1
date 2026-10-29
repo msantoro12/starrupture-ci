@@ -135,7 +135,16 @@ Add-Check 'plugins_initialized' $sumOk $sumEv
 
 # ---- errors and crashes -------------------------------------------------------
 $errLines = @()
-if ($ml) { $errLines += @($ml | Where-Object { $_ -match '^\[[\d:.]+\]\s+\[ERROR\s*\]' -or $_ -match 'CRASHED' }) }
+# Known loader behaviour on the server, not a regression: the delegate hook resolves
+# class 'World' before GObjects is filled, logs ERROR, and falls back (the hook installs
+# later, see the Resolve UFunction warnings). Seen on a clean run before any plugin loads.
+$knownBenign = @("ResolveUFunction: class 'World' not found in GObjects")
+if ($ml) {
+    $errLines += @($ml | Where-Object {
+        ($_ -match '^\[[\d:.]+\]\s+\[ERROR\s*\]' -or $_ -match 'CRASHED') -and
+        -not ($knownBenign | Where-Object { $_.Contains($_) -and $true } | Out-Null)
+    })
+}
 Add-Check 'no_loader_errors' (($null -ne $ml) -and $ml.Count -gt 0 -and $errLines.Count -eq 0) $(
     if ($errLines.Count -gt 0) { "$($errLines.Count) found, first: $($errLines[0])" } elseif ($ml -and $ml.Count -gt 0) { 'no ERROR or CRASHED line in ModLoader.log' } else { '' })
 
