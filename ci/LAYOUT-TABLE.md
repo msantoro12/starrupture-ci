@@ -26,6 +26,9 @@ node ci/layout-table.mjs gen <Client/Assertions.inl> --cl <built CL> \
 - `--sdk` points at the Dumper-7 `SDK` directory next to the `Assertions.inl`.
   The `Assertions.inl` has no member sizes, no bit-fields and no reflection
   paths; the `*_classes.hpp`, `*_structs.hpp` and `*_parameters.hpp` files do.
+  Their comment on a static array (`LineBatchers[0x4]; // 0x00F0(0x0008)`)
+  gives the size of one element; the generator multiplies it by the dimension,
+  so a row's `size` is the whole member, as the game reflects it.
   Without `--sdk` the table is `kDetail = 0` and is for `compare` only: it is
   never to be embedded, because it still holds classes the game does not
   reflect.
