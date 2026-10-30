@@ -46,7 +46,7 @@ on:
         default: 'test/replay-update2'
       scanner_ref:
         type: string
-        default: 'test/replay-update2'
+        default: 'ci/aobscan'
       plugins:
         type: string
         default: 'msantoro12/StarRupture-Plugin-BetterCheats@test/replay-update2 msantoro12/StarRupture-Plugin-BetterDrone@test/replay-update2 msantoro12/StarRupture-Plugin-WAILA@test/replay-update2 msantoro12/StarRupture-Plugin-Codex@test/replay-update2'
@@ -78,7 +78,7 @@ on:
       scanner_ref:
         description: 'Branch of the loader repository holding tools/AobScan'
         type: string
-        default: 'test/replay-update2'
+        default: 'ci/aobscan'
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
