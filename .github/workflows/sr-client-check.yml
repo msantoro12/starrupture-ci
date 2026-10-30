@@ -610,6 +610,8 @@ jobs:
       - name: Check the plugins' patterns
         id: plugins
         if: always() && steps.dl.outcome == 'success' && needs.plugin-plan.result == 'success'
+        # A plugin that hangs must not hold up the loader's result.
+        timeout-minutes: 15
         shell: pwsh
         env:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
