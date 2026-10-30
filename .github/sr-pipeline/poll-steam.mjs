@@ -10,6 +10,10 @@
 // should raise an alert. Sets these step outputs when GITHUB_OUTPUT is set:
 //   changed=true|false   alert wanted (real change, or --force)
 //   dirty=true|false     state file was rewritten
+//   client_matrix=<json> client branches for sr-client-check.yml, as
+//                        [{"branch":"public","buildid":"..."}]: the changed
+//                        ones, or every recorded one on a forced run; []
+//                        when there is no alert
 //
 // Failure policy: an API problem never raises an alert. Each request is
 // retried; an app that still fails is skipped for this run and its recorded
@@ -155,6 +159,12 @@ if (dirty) {
 }
 
 const alert = changes.length > 0 || (force && !everyoneFailed);
+const CLIENT_APP = APPS[0].id;
+const clientMatrix = !alert
+  ? []
+  : changes.length > 0
+    ? changes.filter((c) => c.app.id === CLIENT_APP).map((c) => ({ branch: c.branch, buildid: c.now }))
+    : Object.entries(state.apps[CLIENT_APP]?.branches ?? {}).map(([branch, v]) => ({ branch, buildid: v.buildid }));
 const lines = [];
 if (alert) {
   const news = await fetchNewestNews();
@@ -184,13 +194,13 @@ if (alert) {
       ? `Newest Steam news post: [${news.title}](${news.url}) (${iso(news.date)})`
       : 'Newest Steam news post: unavailable this run.',
     '',
-    'A compile check of every component below is running; its per-component result will be posted as a comment on this pull request. Merging this PR means the update is handled: it records the new build ids on main. It says whether the tree compiles, not whether the mods work in game.',
+    'A compile check of every component below is running; its per-component result will be posted as a comment on this pull request. When a client branch changed, an offline check of the new client build follows as its own comment. Merging this PR means the update is handled: it records the new build ids on main. It says whether the tree compiles, not whether the mods work in game.',
     '',
     '### Update checklist',
     '',
     'Release lines are always manual. Each needs the owner\'s OK and is versioned independently from the component\'s own version file.',
     '',
-    '- [ ] **Loader (Client)**: compile check; pattern scan (placeholder, scan tool not available yet)',
+    '- [ ] **Loader (Client)**: compile check; offline check of the new client build (CL, pattern scan, SDK globals), posted as its own comment',
     '  - [ ] release: manual, needs owner\'s OK',
     '- [ ] **Loader (Server)**: compile check; pattern scan (placeholder, scan tool not available yet)',
     '  - [ ] release: manual, needs owner\'s OK',
@@ -226,6 +236,6 @@ const summary = [
 console.log(summary.join('\n'));
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join('\n') + '\n');
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `changed=${alert}\ndirty=${dirty}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT, `changed=${alert}\ndirty=${dirty}\nclient_matrix=${JSON.stringify(clientMatrix)}\n`);
 }
 for (const l of lines) console.log(l);
