@@ -1,0 +1,585 @@
+name: SR client check
+
+# Offline check of a new StarRupture client build (Steam app 1631270): logs in
+# to Steam with the saved CI login, downloads the build, and checks it without
+# running it:
+#   - the exe's ProductVersion ends with the CL the loader requires
+#   - sr-aobscan runs every PreflightRegistry pattern (with the four Game-SDK
+#     globals) against the exe and resolves their RVAs
+#   - the resolved SDK globals are compared with the Game SDK's Offsets::
+# The result is a JSON artifact and a comment on the game-update PR.
+#
+# Login: a separate Steam account that owns the game, never the owner's main
+# account. Its steamcmd login cache (config.vdf) is the secret
+# STEAM_CI_LOGIN_CACHE in the environment `steam-client` (deployment branch:
+# main only), made by steam-ci-login.ps1 on the owner's PC. No password ever
+# reaches CI. Without the secret the check is skipped and says so, green.
+#
+# Game files only live on the runner: never cached, never uploaded.
+# No pull_request trigger: the login secret is never reachable from a PR.
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: 'Client branch: public or public_test_branch'
+        type: string
+        required: true
+      buildid:
+        description: 'Build id the watcher saw (compared with what Steam installs)'
+        type: string
+        default: ''
+      pr:
+        description: 'Pull request number to post the result on'
+        type: string
+        default: ''
+      loader_repo:
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
+      loader_ref:
+        type: string
+        default: 'gss/loader-work'
+      scanner_ref:
+        type: string
+        default: 'ci/aobscan'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Client branch (expiry-only: just check the saved login age)'
+        type: choice
+        options: [public, public_test_branch, expiry-only]
+        default: public
+      pr:
+        description: 'Pull request number to post the result on (blank: no comment)'
+        type: string
+        default: ''
+      loader_repo:
+        description: 'Loader repository the patterns come from'
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
+      loader_ref:
+        description: 'Loader branch the patterns come from'
+        type: string
+        default: 'gss/loader-work'
+      scanner_ref:
+        description: 'Branch of the loader repository holding tools/AobScan'
+        type: string
+        default: 'ci/aobscan'
+  schedule:
+    # Weekly: warn ahead of the saved Steam login expiring.
+    - cron: '17 6 * * 1'
+
+permissions: {}
+
+env:
+  APP_ID: '1631270'
+  # Steam does not publish the refresh-token lifetime; about 200 days is the
+  # commonly observed value. Warn this many days ahead.
+  LOGIN_DAYS: '200'
+  WARN_DAYS: '30'
+
+jobs:
+  # ---- sr-aobscan, built from the loader's live patterns (no secrets) ------
+  build:
+    name: build-scanner
+    if: inputs.branch && inputs.branch != 'expiry-only'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      required_cl: ${{ steps.read.outputs.required_cl }}
+      sdk_offsets: ${{ steps.read.outputs.sdk_offsets }}
+    steps:
+      - name: Check out the loader (with its pinned Game SDK)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.loader_ref }}
+          path: loader
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check out tools/AobScan
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.scanner_ref }}
+          path: scanner-src
+          sparse-checkout: tools/AobScan
+          persist-credentials: false
+
+      - name: Read the required CL and the SDK offsets
+        id: read
+        shell: pwsh
+        run: |
+          # The scanner source comes from its own branch; the patterns, the
+          # scan code and the SDK are the loader branch's, so the scan always
+          # checks what that branch would ship.
+          Copy-Item -Recurse -Force scanner-src\tools\AobScan loader\tools\
+
+          $f = 'loader\StarRupture-ModLoader-Core\core\version_check.cpp'
+          $m = Select-String -Path $f -Pattern 'kRequiredVersionSuffix\[\]\s*=\s*L"([^"]+)"'
+          if (-not $m) { throw 'required CL not found in version_check.cpp' }
+          $cl = $m.Matches[0].Groups[1].Value
+
+          $basic = 'loader\StarRupture SDK\Client\SDK\Basic.hpp'
+          $offsets = [ordered]@{}
+          foreach ($k in 'GObjects', 'AppendString', 'GNames', 'GWorld') {
+            $o = Select-String -Path $basic -Pattern "constexpr\s+int32\s+$k\s*=\s*(0x[0-9A-Fa-f]+)"
+            $offsets[$k] = if ($o) { $o.Matches[0].Groups[1].Value } else { '' }
+          }
+          $json = $offsets | ConvertTo-Json -Compress
+          "Required CL: $cl"
+          "SDK Offsets: $json"
+          "required_cl=$cl" >> $env:GITHUB_OUTPUT
+          "sdk_offsets=$json" >> $env:GITHUB_OUTPUT
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+
+      - name: Build sr-aobscan (Client Release)
+        shell: pwsh
+        working-directory: loader
+        run: |
+          msbuild "tools\AobScan\AobScan.vcxproj" `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload the scanner
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sr-aobscan-client-${{ inputs.branch }}
+          path: loader/build/tools/sr-aobscan-client.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---- Job A: Steam login, download, offline checks ------------------------
+  # The only job that can read the login secret: environment steam-client,
+  # contents: read, no checkout of any repository. The login cache is deleted
+  # from the runner before the scanner runs.
+  check:
+    name: check
+    needs: build
+    if: inputs.branch && inputs.branch != 'expiry-only'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    environment: steam-client
+    permissions:
+      contents: read
+    concurrency:
+      group: sr-client-check-${{ inputs.branch }}
+      cancel-in-progress: false
+    env:
+      BRANCH: ${{ inputs.branch }}
+      EXPECTED_BUILDID: ${{ inputs.buildid }}
+    steps:
+      - name: Is a Steam login configured?
+        id: gate
+        shell: pwsh
+        env:
+          HAS_LOGIN: ${{ secrets.STEAM_CI_LOGIN_CACHE != '' && secrets.STEAM_CI_USERNAME != '' }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          if ($env:HAS_LOGIN -eq 'true') {
+            "has_login=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          "has_login=false" >> $env:GITHUB_OUTPUT
+          Write-Host "::notice title=Client check skipped::No Steam login for CI is configured (environment steam-client has no STEAM_CI_LOGIN_CACHE / STEAM_CI_USERNAME). Run steam-ci-login.ps1 once to set it up."
+          [ordered]@{ schema = 1; status = 'skipped'; branch = $env:BRANCH; expectedBuildid = $env:EXPECTED_BUILDID;
+                      reason = 'no Steam login configured for CI' } |
+            ConvertTo-Json | Set-Content out\result.json -Encoding utf8
+
+      - name: Download the client build
+        id: dl
+        if: steps.gate.outputs.has_login == 'true'
+        timeout-minutes: 70
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          New-Item -ItemType Directory -Force out | Out-Null
+          $dl = [ordered]@{ login = 'not tried'; step0 = ''; installed = $false; reason = ''; detail = ''; installDir = '';
+                            buildid = ''; attempts = 0; seconds = 0; sizeOnDisk = ''; cacheRewritten = $null }
+          $failed = $false
+          $root = 'C:\steamcmd'
+          try {
+            if ($env:BRANCH -notmatch '^[A-Za-z0-9_]+$') { throw "bad branch name '$env:BRANCH'" }
+            $user = "$env:STEAM_USER".Trim()
+            Write-Host "::add-mask::$user"
+
+            # Valve's steamcmd, checked to be Valve-signed before and after
+            # its self-update.
+            New-Item -ItemType Directory -Force $root | Out-Null
+            $zip = Join-Path $env:RUNNER_TEMP 'steamcmd.zip'
+            Invoke-WebRequest -Uri 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip' -OutFile $zip -TimeoutSec 120
+            Expand-Archive -Path $zip -DestinationPath $root -Force
+            $steamcmd = Join-Path $root 'steamcmd.exe'
+            function Assert-ValveSigned {
+              $sig = Get-AuthenticodeSignature $steamcmd
+              if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O=Valve(,|$)') {
+                throw "steamcmd.exe is not Valve-signed (status $($sig.Status))"
+              }
+            }
+            Assert-ValveSigned
+            Write-Host '::group::steamcmd self-update'
+            & $steamcmd +quit | ForEach-Object { Write-Host $_ }
+            Write-Host "self-update exit code: $LASTEXITCODE"
+            Write-Host '::endgroup::'
+            Assert-ValveSigned
+
+            # Restore the saved login cache. GitHub masks the secret as
+            # stored (base64); the decoded token values are masked here.
+            try { $bytes = [Convert]::FromBase64String("$env:STEAM_CACHE".Trim()) }
+            catch { $dl.reason = 'cache-unreadable'; throw 'STEAM_CI_LOGIN_CACHE is not base64' }
+            $text = [Text.Encoding]::UTF8.GetString($bytes)
+            foreach ($m in [regex]::Matches($text, '"([^"]{16,})"')) { Write-Host "::add-mask::$($m.Groups[1].Value)" }
+            if ($text -notmatch '"ConnectCache"') {
+              $dl.reason = 'cache-unreadable'
+              throw 'STEAM_CI_LOGIN_CACHE is not a steamcmd config.vdf with a ConnectCache entry'
+            }
+            $cfgDir = Join-Path $root 'config'
+            New-Item -ItemType Directory -Force $cfgDir | Out-Null
+            $cfg = Join-Path $cfgDir 'config.vdf'
+            [IO.File]::WriteAllBytes($cfg, $bytes)
+            $text = $null; $bytes = $null
+            $hashBefore = (Get-FileHash $cfg).Hash
+
+            $vol = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free } | Sort-Object Free -Descending | Select-Object -First 1
+            $install = Join-Path $vol.Root 'sr-client'
+            New-Item -ItemType Directory -Force $install | Out-Null
+            $dl.installDir = $install
+            Write-Host ("Installing to {0} ({1:N1} GB free)" -f $install, ($vol.Free / 1GB))
+
+            $cmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
+                     '+force_install_dir', $install, '+login', $user, '+app_update', $env:APP_ID)
+            if ($env:BRANCH -ne 'public') { $cmd += @('-beta', $env:BRANCH) }
+            $cmd += '+quit'
+
+            $manifest = Join-Path $install "steamapps\appmanifest_$($env:APP_ID).acf"
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $installed = $false
+            for ($i = 1; $i -le 3 -and -not $installed; $i++) {
+              $dl.attempts = $i
+              Write-Host "::group::steamcmd attempt $i of 3"
+              $lines = [Collections.Generic.List[string]]::new()
+              $lastBucket = -1
+              & $steamcmd @cmd 2>&1 | ForEach-Object {
+                # Account ids out of the log (the account name is masked).
+                $line = "$_" -replace '\[U:1:\d+\]', '[U:1:***]' -replace '7656119\d{10}', '***'
+                $lines.Add($line)
+                if ($line -match 'progress:\s+([\d.]+)') {
+                  $bucket = [int]([double]$Matches[1] / 10)
+                  if ($bucket -ne $lastBucket) { $lastBucket = $bucket; Write-Host ("[{0:N0}s] {1}" -f $sw.Elapsed.TotalSeconds, $line) }
+                } else { Write-Host $line }
+              }
+              $code = $LASTEXITCODE
+              Write-Host "steamcmd exit code: $code after $([int]$sw.Elapsed.TotalSeconds) s"
+              Write-Host '::endgroup::'
+              $all = $lines -join "`n"
+              $loginOk = $all -match 'to Steam Public\.\.\.OK|Waiting for user info\.\.\.OK'
+              $installed = ($code -eq 0) -and (Test-Path $manifest) -and ((Get-Content $manifest -Raw) -match '"StateFlags"\s+"4"')
+              if ($loginOk -or $installed) { $dl.login = 'ok' }
+              if ($installed) { $dl.installed = $true; $dl.reason = ''; $dl.detail = ''; break }
+              $errLine = ($lines | Where-Object { $_ -match 'FAILED|ERROR|Invalid Password|Logon Denied|credentials|password|Guard|Rate Limit|No subscription|license' } | Select-Object -First 1)
+              $dl.detail = "$errLine".Trim()
+              if ($dl.login -ne 'ok') {
+                # Login failures are never retried: a retry cannot fix the
+                # token and repeated attempts get the account rate-limited.
+                $dl.login = 'failed'
+                $dl.reason = if ($all -match 'Rate Limit') { 'rate-limited' } else { 'login-rejected' }
+                break
+              }
+              if ($all -match 'No subscription|missing license|No license') { $dl.reason = 'no-license'; break }
+              $dl.reason = 'download-failed'
+            }
+            $sw.Stop()
+            $dl.seconds = [int]$sw.Elapsed.TotalSeconds
+            $dl.cacheRewritten = ((Get-FileHash $cfg).Hash -ne $hashBefore)
+
+            switch ($dl.login) {
+              'ok' { $dl.step0 = 'PASS'; Write-Host 'STEP0 PASS: the restored login cache was accepted on a fresh runner (no password, no Steam Guard code).' }
+              default {
+                if ($dl.reason -eq 'rate-limited') {
+                  $dl.step0 = 'UNDECIDED'; Write-Host 'STEP0 UNDECIDED: Steam rate-limited the login before it could use the cache; re-run later.'
+                } else {
+                  $dl.step0 = 'FAIL'; Write-Host "STEP0 FAIL: the restored login cache was NOT accepted on a fresh runner ($($dl.detail))."
+                }
+              }
+            }
+            Write-Host ("Login cache after the login: {0}" -f $(if ($dl.cacheRewritten) { 'rewritten by steamcmd (the saved secret is unchanged)' } else { 'unchanged' }))
+
+            if (-not $installed) {
+              $failed = $true
+              switch ($dl.reason) {
+                'login-rejected' { Write-Host "::error title=Steam login::login expired, run steam-ci-login.ps1 -Renew (Steam rejected the saved CI login: $($dl.detail))" }
+                'rate-limited'   { Write-Host "::error title=Steam login::Steam rate-limited the CI login. Not a token problem: re-run this check later." }
+                'no-license'     { Write-Host "::error title=Steam license::The CI Steam account logged in but does not own StarRupture (app $($env:APP_ID))." }
+                default          { Write-Host "::error title=Steam download::Logged in, but the download failed after $($dl.attempts) attempts ($($dl.detail))." }
+              }
+            } else {
+              $acf = Get-Content $manifest -Raw
+              if ($acf -match '"buildid"\s+"(\d+)"') { $dl.buildid = $Matches[1] }
+              if ($acf -match '"SizeOnDisk"\s+"(\d+)"') { $dl.sizeOnDisk = $Matches[1] }
+              Write-Host "Installed build $($dl.buildid) ($([math]::Round([double]$dl.sizeOnDisk / 1GB, 1)) GB on disk) in $($dl.seconds) s"
+              if ($env:EXPECTED_BUILDID -and $dl.buildid -ne $env:EXPECTED_BUILDID) {
+                Write-Host "::warning::Steam installed build $($dl.buildid), the watcher saw $($env:EXPECTED_BUILDID); the branch moved again. The check covers $($dl.buildid)."
+              }
+              "install_dir=$install" >> $env:GITHUB_OUTPUT
+            }
+          } catch {
+            $failed = $true
+            if (-not $dl.reason) { $dl.reason = 'error' }
+            if ($dl.reason -eq 'cache-unreadable') {
+              Write-Host "::error title=Steam login::$($_.Exception.Message). Run steam-ci-login.ps1 (without -Renew) to save a fresh login."
+            } else {
+              Write-Host "::error::$($_.Exception.Message)"
+            }
+          } finally {
+            $dl | ConvertTo-Json | Set-Content out\download.json -Encoding utf8
+          }
+          if ($failed) { exit 1 }
+
+      - name: Remove the login cache from the runner
+        if: always() && steps.gate.outputs.has_login == 'true'
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force C:\steamcmd -ErrorAction SilentlyContinue
+          if (Test-Path C:\steamcmd) { Write-Host '::error::C:\steamcmd could not be removed'; exit 1 }
+          'steamcmd and its login cache are removed from the runner.'
+
+      - name: Download the scanner
+        if: steps.dl.outcome == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sr-aobscan-client-${{ inputs.branch }}
+          path: scanner
+
+      - name: Check the client build
+        id: scan
+        if: steps.dl.outcome == 'success'
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          REQUIRED_CL: ${{ needs.build.outputs.required_cl }}
+          SDK_OFFSETS: ${{ needs.build.outputs.sdk_offsets }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $warnings = [Collections.Generic.List[string]]::new()
+          $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $pv = [string]$exe.VersionInfo.ProductVersion
+          $clOk = [bool]($pv -and $env:REQUIRED_CL -and $pv.EndsWith($env:REQUIRED_CL))
+          $sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "exe: $($exe.FullName.Substring($env:INSTALL_DIR.Length))"
+          "ProductVersion=$pv required=$($env:REQUIRED_CL) match=$clOk"
+          "SHA-256=$sha"
+
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          & $scanner $exe.FullName --verbose *> out\scanner.txt
+          & $scanner $exe.FullName --json > out\scanner.json
+          $scanCode = $LASTEXITCODE
+          Get-Content out\scanner.txt | Write-Host
+          $scan = Get-Content out\scanner.json -Raw | ConvertFrom-Json
+          $notOk = @($scan.patterns | Where-Object { $_.result -ne 'OK' } |
+            ForEach-Object { [ordered]@{ name = $_.name; required = $_.required; result = $_.result } })
+          foreach ($p in $notOk) { if (-not $p.required) { $warnings.Add("optional pattern $($p.name): $($p.result)") } }
+
+          # The Game-SDK globals. GObjects and AppendString must equal the
+          # SDK's Offsets::; the SDK's GNames and GWorld are not the engine
+          # globals (see the SDK's Basic.hpp disclaimer), so those two are
+          # shown for information only.
+          $sdk = $env:SDK_OFFSETS | ConvertFrom-Json
+          $names = [ordered]@{ GObjects = 'GObjects (GUObjectArray.ObjObjects)'; AppendString = 'FName::AppendString';
+                               GNames = 'GNames (NamePoolData)'; GWorld = 'GWorld' }
+          $globals = foreach ($k in $names.Keys) {
+            $row = $scan.patterns | Where-Object { $_.name -eq $names[$k] } | Select-Object -First 1
+            $rva = if ($row -and $row.result -eq 'OK' -and $row.PSObject.Properties['rva']) { [Convert]::ToInt64(($row.rva -replace '^0x', ''), 16) } else { $null }
+            $sdkv = if ($sdk.$k) { [Convert]::ToInt64(($sdk.$k -replace '^0x', ''), 16) } else { $null }
+            $byDesign = $k -in 'GNames', 'GWorld'
+            $match = if ($null -ne $rva -and $null -ne $sdkv) { $rva -eq $sdkv } else { $null }
+            if ($null -eq $rva) { $warnings.Add("SDK global $k did not resolve ($(if ($row) { $row.result } else { 'not in the registry' }))") }
+            elseif (-not $byDesign -and $match -eq $false) { $warnings.Add(("SDK Offsets::{0} is 0x{1:X}, this build has 0x{2:X}: the Game SDK needs a fresh dump" -f $k, $sdkv, $rva)) }
+            [ordered]@{ name = $k; result = $(if ($row) { $row.result } else { 'absent' });
+                        rva = $(if ($null -ne $rva) { '0x{0:X}' -f $rva } else { '' });
+                        sdk = $(if ($null -ne $sdkv) { '0x{0:X}' -f $sdkv } else { '' });
+                        match = $match; informational = $byDesign }
+          }
+
+          $fail = (-not $clOk) -or ($scanCode -ne 0)
+          [ordered]@{
+            exe = [ordered]@{ productVersion = $pv; requiredCl = $env:REQUIRED_CL; clOk = $clOk; sha256 = $sha }
+            scan = [ordered]@{ exitCode = $scanCode; summary = $scan.summary; notOk = $notOk }
+            sdkGlobals = @($globals)
+            warnings = @($warnings)
+            fail = $fail
+          } | ConvertTo-Json -Depth 6 | Set-Content out\checks.json -Encoding utf8
+          foreach ($w in $warnings) { Write-Host "::warning::$w" }
+          if (-not $clOk) { Write-Host "::error::ProductVersion '$pv' does not end with the loader's required '$($env:REQUIRED_CL)'" }
+          if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code $scanCode ($($scan.summary.requiredFailing) required patterns failing)" }
+          if ($fail) { exit 1 }
+
+      - name: Write the result
+        if: always() && steps.gate.outputs.has_login == 'true'
+        shell: pwsh
+        env:
+          REQUIRED_CL: ${{ needs.build.outputs.required_cl }}
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+        run: |
+          $r = [ordered]@{ schema = 1; status = ''; branch = $env:BRANCH; expectedBuildid = $env:EXPECTED_BUILDID }
+          $dl = if (Test-Path out\download.json) { Get-Content out\download.json -Raw | ConvertFrom-Json } else { $null }
+          $ck = if (Test-Path out\checks.json) { Get-Content out\checks.json -Raw | ConvertFrom-Json } else { $null }
+          $r.download = $dl
+          $r.checks = $ck
+          $r.status =
+            if (-not $dl) { 'error' }
+            elseif ($dl.login -ne 'ok') { 'login-failed' }
+            elseif (-not $dl.installed) { 'download-failed' }
+            elseif (-not $ck) { 'error' }
+            elseif ($ck.fail) { 'fail' }
+            elseif (@($ck.warnings).Count -gt 0) { 'pass-with-warnings' }
+            else { 'pass' }
+          $r | ConvertTo-Json -Depth 8 | Set-Content out\result.json -Encoding utf8
+          "Client check: $($r.status)"
+          Remove-Item out\download.json, out\checks.json -ErrorAction SilentlyContinue
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: client-check-${{ inputs.branch }}
+          path: |
+            out/result.json
+            out/scanner.txt
+            out/scanner.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---- Job B: comment on the update PR (no secrets, no environment) --------
+  report:
+    name: report
+    needs: [build, check]
+    if: always() && inputs.branch && inputs.branch != 'expiry-only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write    # comment on the game-update PR
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ inputs.pr }}
+      BRANCH: ${{ inputs.branch }}
+      EXPECTED_BUILDID: ${{ inputs.buildid }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      CHECK_RESULT: ${{ needs.check.result }}
+      LOGIN_AT: ${{ vars.STEAM_CI_LOGIN_AT }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Download the result
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: client-check-${{ inputs.branch }}
+          path: res
+
+      - name: Summarise and comment
+        shell: pwsh
+        run: |
+          $r = if (Test-Path res/result.json) { Get-Content res/result.json -Raw | ConvertFrom-Json } else { $null }
+          $status = if ($r) { $r.status } elseif ($env:BUILD_RESULT -ne 'success') { 'scanner-build-failed' } else { "no-result ($($env:CHECK_RESULT))" }
+          $build = if ($r -and $r.download -and $r.download.buildid) { $r.download.buildid } else { $env:EXPECTED_BUILDID }
+          $md = [Collections.Generic.List[string]]::new()
+          $md.Add("### Client build check: $($status.ToUpperInvariant()) ($($env:BRANCH), build $build)")
+          $md.Add('')
+          $md.Add("Run: $($env:RUN_URL)")
+          $md.Add('')
+          if ($status -eq 'skipped') {
+            $md.Add('No Steam login is configured for CI (environment `steam-client` has no `STEAM_CI_LOGIN_CACHE`), so the new client build was not checked offline. The owner sets it up once with `steam-ci-login.ps1`.')
+          } elseif ($r) {
+            $dl = $r.download; $ck = $r.checks
+            $md.Add('| Check | Result |')
+            $md.Add('|---|---|')
+            $login = switch ($dl.step0) {
+              'PASS'      { 'accepted (saved cache, no password)' }
+              'FAIL'      { "REJECTED: login expired, run ``steam-ci-login.ps1 -Renew`` ($($dl.detail))" }
+              'UNDECIDED' { 'rate-limited by Steam; re-run later' }
+              default     { "$($dl.reason) $($dl.detail)".Trim() }
+            }
+            $md.Add("| Steam login | $login |")
+            if ($dl.login -eq 'ok') {
+              $dlText = if ($dl.installed) { '{0} GB on disk in {1} min' -f [math]::Round([double]$dl.sizeOnDisk / 1GB, 1), [math]::Round($dl.seconds / 60, 1) } else { "FAILED ($($dl.reason): $($dl.detail))" }
+              $md.Add("| Download | $dlText |")
+            }
+            if ($ck) {
+              $md.Add(('| ProductVersion | `{0}`, loader requires `{1}`: {2} |' -f $ck.exe.productVersion, $ck.exe.requiredCl, $(if ($ck.exe.clOk) { 'match' } else { '**MISMATCH**' })))
+              $s = $ck.scan.summary
+              $md.Add("| Pattern scan | $($s.total) patterns: $($s.ok) OK, $($s.missing) missing, $($s.ambiguous) ambiguous, $($s.other) other; **$($s.requiredFailing) required failing** |")
+              foreach ($p in @($ck.scan.notOk)) { $md.Add("| - $($p.name) | $($p.result)$(if ($p.required) { ' (required)' }) |") }
+              foreach ($g in @($ck.sdkGlobals)) {
+                $cmp = if ($g.informational) { "SDK value $($g.sdk) is not the engine global (by design)" } elseif ($g.match) { 'equals the SDK' } elseif ($null -eq $g.match) { 'not compared' } else { "**SDK has $($g.sdk): SDK dump needed**" }
+                $md.Add("| SDK global $($g.name) | $($g.result) $($g.rva); $cmp |")
+              }
+              $md.Add("| exe SHA-256 | ``$($ck.exe.sha256)`` |")
+              if (@($ck.warnings).Count -gt 0) {
+                $md.Add('')
+                $md.Add('Warnings:')
+                foreach ($w in @($ck.warnings)) { $md.Add("- $w") }
+              }
+            }
+          } else {
+            $md.Add("The check produced no result (scanner build: $($env:BUILD_RESULT), check: $($env:CHECK_RESULT)). See the run.")
+          }
+
+          # Age of the saved login (set by steam-ci-login.ps1).
+          $md.Add('')
+          if ($env:LOGIN_AT -match '^\d{4}-\d{2}-\d{2}$') {
+            $exp = ([datetime]::ParseExact($env:LOGIN_AT, 'yyyy-MM-dd', $null)).AddDays([int]$env:LOGIN_DAYS)
+            $left = [int][math]::Floor(($exp - [datetime]::UtcNow.Date).TotalDays)
+            $line = "Steam CI login saved $($env:LOGIN_AT); assumed to last about $($env:LOGIN_DAYS) days (until about $($exp.ToString('yyyy-MM-dd')), $left days left)."
+            if ($left -lt [int]$env:WARN_DAYS) { $line = "**Warning:** $line Run ``steam-ci-login.ps1 -Renew`` before then." }
+            $md.Add($line)
+          } elseif ($status -ne 'skipped') {
+            $md.Add('Steam CI login age unknown (repo variable `STEAM_CI_LOGIN_AT` is not set).')
+          }
+          $md.Add('')
+          $md.Add('Offline check of the downloaded build only: the game is never run. Game files stay on the runner.')
+
+          $md -join "`n" | Set-Content report.md -Encoding utf8
+          Get-Content report.md -Raw | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          if ($env:PR -match '^[0-9]+$') {
+            gh pr comment $env:PR --body-file report.md
+            if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Could not comment on PR #$($env:PR); the result is in the run summary." }
+          }
+
+  # ---- Weekly: is the saved login about to expire? -------------------------
+  expiry:
+    name: login-expiry
+    if: ${{ !inputs.branch || inputs.branch == 'expiry-only' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      LOGIN_AT: ${{ vars.STEAM_CI_LOGIN_AT }}
+    steps:
+      - name: Check the login age
+        run: |
+          if ! [[ "$LOGIN_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::notice::No Steam CI login recorded (repo variable STEAM_CI_LOGIN_AT unset); nothing to check."
+            exit 0
+          fi
+          expires="$(date -u -d "$LOGIN_AT + $LOGIN_DAYS days" +%F)"
+          left=$(( ( $(date -u -d "$expires" +%s) - $(date -u -d "$(date -u +%F)" +%s) ) / 86400 ))
+          echo "Steam CI login saved $LOGIN_AT, assumed to expire about $expires: $left days left."
+          if [ "$left" -lt "$WARN_DAYS" ]; then
+            echo "::error title=Steam CI login::The saved Steam CI login expires in about $left days ($expires). Run steam-ci-login.ps1 -Renew."
+            exit 1
+          fi

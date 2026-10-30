@@ -4,8 +4,10 @@ name: SR Steam watch
 # (3809400). The recorded ids live in state/steam.json on main. On a change:
 # pushes a game-update/* branch with the new ids, opens (or updates) a pull
 # request with the per-component checklist and runs the compile check
-# (sr-build-all.yml), which comments its result on the PR. Merging the PR
-# means "handled" and advances the baseline on main.
+# (sr-build-all.yml), which comments its result on the PR. When a client
+# branch changed, it also runs the offline client check (sr-client-check.yml)
+# per changed branch, which comments its own result. Merging the PR means
+# "handled" and advances the baseline on main.
 #
 # Only writes: the first baseline commit to main, and game-update/* branches.
 # No issues, no tags, no releases.
@@ -36,6 +38,7 @@ jobs:
       pull-requests: write   # open and update the update PR, create its label
     outputs:
       changed: ${{ steps.poll.outputs.changed }}
+      client_matrix: ${{ steps.poll.outputs.client_matrix }}
       pr: ${{ steps.pr.outputs.number }}
       skip: ${{ steps.pr.outputs.skip }}
     env:
@@ -124,4 +127,23 @@ jobs:
       actions: read
     uses: ./.github/workflows/sr-build-all.yml
     with:
+      pr: ${{ needs.poll.outputs.pr }}
+
+  client-check:
+    name: client-check (${{ matrix.branch }})
+    needs: poll
+    if: needs.poll.outputs.changed == 'true' && needs.poll.outputs.skip != 'true' && startsWith(needs.poll.outputs.client_matrix, '[{')
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.poll.outputs.client_matrix) }}
+    # No secrets are passed: only sr-client-check's own check job reads the
+    # Steam login, from the steam-client environment.
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/sr-client-check.yml
+    with:
+      branch: ${{ matrix.branch }}
+      buildid: ${{ matrix.buildid }}
       pr: ${{ needs.poll.outputs.pr }}

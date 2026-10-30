@@ -186,7 +186,7 @@ jobs:
             /v:minimal
 
       - name: Pattern scan (placeholder)
-        run: echo "::notice::Pattern scan not available yet. The in-game preflight is the only check of the loader's AOB patterns today."
+        run: echo "::notice::No pattern scan in the compile check. The client patterns are scanned against a new client build by sr-client-check.yml (its own PR comment); the server patterns are only checked in game."
 
       - name: Upload build
         uses: actions/upload-artifact@v7.0.2
@@ -359,7 +359,7 @@ jobs:
             echo
             echo "Each component stands alone: a failure in one does not hide the others. Plugins build against the Game SDK branch given above; the loader builds against the SDK commit it pins (its submodule). The Game SDK row is never automatic: it needs a fresh dump from a running game."
             echo
-            echo "This only says whether the code compiles and the plugin interface version matches. It does not say whether the mods work in game: the loader's AOB patterns (scan not available yet) and every hard offset are only exercised in game."
+            echo "This only says whether the code compiles and the plugin interface version matches. It does not say whether the mods work in game: the client build check (its own comment, when a client branch changed) scans the loader's client AOB patterns offline; the server patterns and every hard offset are only exercised in game."
           } > report.md
           cat report.md >> "$GITHUB_STEP_SUMMARY"
 
