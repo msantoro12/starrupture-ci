@@ -1,5 +1,10 @@
 name: SR client check
 
+# REPLAY BRANCH test/replay-update2: the client check exactly as on main,
+# pointed at the pre-Update-2 loader (fork branch test/replay-update2) and
+# run under its own environment, steam-client-replay, whose Steam login only
+# this branch can read. Nothing on this branch can release.
+
 # Offline check of a new StarRupture client build (Steam app 1631270): logs in
 # to Steam with the saved CI login, downloads the build, and checks it without
 # running it:
@@ -38,10 +43,10 @@ on:
         default: 'msantoro12/StarRupture-ModLoader'
       loader_ref:
         type: string
-        default: 'gss/loader-work'
+        default: 'test/replay-update2'
       scanner_ref:
         type: string
-        default: 'ci/aobscan'
+        default: 'test/replay-update2'
   workflow_dispatch:
     inputs:
       branch:
@@ -60,11 +65,11 @@ on:
       loader_ref:
         description: 'Loader branch the patterns come from'
         type: string
-        default: 'gss/loader-work'
+        default: 'test/replay-update2'
       scanner_ref:
         description: 'Branch of the loader repository holding tools/AobScan'
         type: string
-        default: 'ci/aobscan'
+        default: 'test/replay-update2'
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -186,7 +191,7 @@ jobs:
     if: inputs.branch && inputs.branch != 'expiry-only'
     runs-on: windows-latest
     timeout-minutes: 90
-    environment: steam-client
+    environment: steam-client-replay
     permissions:
       contents: read
     concurrency:
