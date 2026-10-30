@@ -247,11 +247,11 @@ jobs:
           $list = [Collections.Generic.List[object]]::new()
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^(msantoro12|AlienXAXS)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
-            $list.Add([ordered]@{ name = $Matches[2] -replace '^StarRupture-Plugin-', ''; source = 'build'; repo = "$($Matches[1])/$($Matches[2])"; ref = $Matches[3]; manifest = '' })
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = "$($Matches[1])/$($Matches[2])"; ref = $Matches[3]; manifest = '' })
           }
           foreach ($u in ("$env:MANIFESTS" -split '\s+' | Where-Object { $_ })) {
             if ($u -notmatch '^https://github\.com/(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)/releases/latest/download/[A-Za-z0-9._-]+\.json$') { throw "manifest '$u' is not a latest-release asset of an allowed owner's plugin repository" }
-            $list.Add([ordered]@{ name = $Matches[2] -replace '^StarRupture-Plugin-', ''; source = 'release'; repo = "$($Matches[1])/$($Matches[2])"; ref = 'latest release'; manifest = $u })
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'release'; repo = "$($Matches[1])/$($Matches[2])"; ref = 'latest release'; manifest = $u })
           }
           $twice = @($list | Group-Object { $_.name } | Where-Object Count -gt 1 | ForEach-Object Name)
           if ($twice.Count) { throw "listed more than once: $($twice -join ', ')" }
