@@ -52,6 +52,9 @@ const RE_BIT = /^BitIndex: 0x([0-9A-Fa-f]+),/;
 // `Package.Class.Function` for a function's parameter struct.
 // reflected is false for the members Dumper-7 predefines (UObject::Outer, UStruct::Size, ...): the
 // native class has them but UClass->ChildProperties does not.
+// size is the whole member: Dumper-7 comments a static array with the size of one element
+// (`LineBatchers[0x4]; // 0x00F0(0x0008)`), so it is multiplied by the dimension, the way the
+// game reflects ElementSize * ArrayDim.
 // mask is the FBoolProperty::FieldMask: 0xFF for a native bool, 1 << BitIndex for a
 // bit-field, 0 for everything else. Padding members (Pad_*, BitPad_*) are skipped. Function parameter
 // structs are keyed by their bare name, the way Assertions.inl names them.
@@ -77,8 +80,14 @@ export function parseSdkHeaders(dir) {
       } else if (line.startsWith('};')) {
         members = null;
       } else if (members && (d = RE_MEMBER.exec(line))) {
-        const [, type, name, , bits, off, size, rest] = d;
+        const [, type, name, dims, bits, off, size, rest] = d;
         if (rest.startsWith('Fixing ')) continue; // Pad_* and BitPad_*: Dumper-7 padding, not properties
+        let count = 1;
+        for (const [, dim] of dims.matchAll(/\[([^\]]*)\]/g)) {
+          const n = Number(dim);
+          if (!Number.isInteger(n) || n <= 0) throw new Error(`${file}: ${name}[${dim}] is not an array dimension the parser can read`);
+          count *= n;
+        }
         let mask = 0;
         if (bits) {
           const b = RE_BIT.exec(rest);
@@ -86,7 +95,7 @@ export function parseSdkHeaders(dir) {
         } else if (type === 'bool') {
           mask = 0xff;
         }
-        members.set(name, { offset: parseInt(off, 16), size: parseInt(size, 16), mask, bits: !!bits, reflected: !rest.startsWith('NOT AUTO-GENERATED PROPERTY') });
+        members.set(name, { offset: parseInt(off, 16), size: parseInt(size, 16) * count, mask, bits: !!bits, reflected: !rest.startsWith('NOT AUTO-GENERATED PROPERTY') });
       }
     }
   }

@@ -64,7 +64,7 @@ class SDK_ALIGN(0x10) UCrWidget : public UObject
 public:
 	bool                                          bEnabled;    // 0x0030(0x0001)(Edit, ZeroConstructor, IsPlainOldData, NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic)
 	uint8                                         Pad_31[0x7];    // 0x0031(0x0007)(Fixing Size After Last Property [ Dumper-7 ])
-	int32                                         Count[4];    // 0x0038(0x0010)(Edit, ZeroConstructor, IsPlainOldData, NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic)
+	int32                                         Count[0x4];    // 0x0038(0x0004)(Edit, ZeroConstructor, IsPlainOldData, NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic)
 	uint8                                         bLow : 1;    // 0x0048(0x0001)(BitIndex: 0x00, PropSize: 0x0001 (NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic))
 	uint8                                         bHigh : 1;    // 0x0048(0x0001)(BitIndex: 0x03, PropSize: 0x0001 (NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic))
 	uint8                                         BitPad_48_2 : 1;    // 0x0048(0x0001)(Fixing Bit-Field Size Between Bits [ Dumper-7 ])
@@ -147,6 +147,32 @@ test('header parser: sizes, bool and bit-field masks, kinds and paths; padding a
   assert.equal(p.kind, KIND.function);
   assert.equal(p.path, 'Chimera.CrWidget.SetCount');
   assert.equal(p.members.has('Pad_5'), false);
+});
+
+test('header parser: a static array is the size of one element times its dimension, as the game reflects it', () => {
+  // UWorld::LineBatchers in the 127004 client SDK: Dumper-7 comments the size of one pointer.
+  const dir = tmp();
+  writeFileSync(join(dir, 'Engine_classes.hpp'), `// Class Engine.World
+// 0x08F0 (0x0920 - 0x0030)
+class UWorld final : public UObject
+{
+public:
+	class ULineBatchComponent*                    LineBatchers[0x4];                                 // 0x00F0(0x0008)(ExportObject, ZeroConstructor, Transient, InstancedReference, NoDestructor, UObjectWrapper, HasGetValueTypeHash, NativeAccessSpecifierPrivate, TObjectPtr)
+	class UPhysicalMaterial*                      PhysicalMaterialMap[0x8];                          // 0x0110(0x0008)(Edit, ZeroConstructor, NoDestructor, UObjectWrapper, HasGetValueTypeHash, NativeAccessSpecifierPublic, TObjectPtr)
+	float                                         Scalar;                                            // 0x0150(0x0004)(Edit, ZeroConstructor, IsPlainOldData, NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic)
+};
+`);
+  const w = parseSdkHeaders(dir).get('UWorld');
+  assert.equal(w.members.get('LineBatchers').size, 0x20, 'ElementSize 0x8 * ArrayDim 4');
+  assert.equal(w.members.get('PhysicalMaterialMap').size, 0x40);
+  assert.equal(w.members.get('Scalar').size, 4, 'a plain member keeps the commented size');
+
+  writeFileSync(join(dir, 'Engine_classes.hpp'), `class UWorld final : public UObject
+{
+	int32                                         Counts[kCount];                                    // 0x00F0(0x0004)(Edit, NativeAccessSpecifierPublic)
+};
+`);
+  assert.throws(() => parseSdkHeaders(dir), /Counts\[kCount\] is not an array dimension/);
 });
 
 test('buildTable with headers: sizes and masks filled, bit-fields added, predefined classes and members left out', () => {
