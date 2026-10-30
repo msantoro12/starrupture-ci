@@ -135,6 +135,7 @@ jobs:
     if: needs.poll.outputs.changed == 'true' && needs.poll.outputs.skip != 'true' && startsWith(needs.poll.outputs.client_matrix, '[{')
     strategy:
       fail-fast: false
+      max-parallel: 1    # one Steam login on the CI account at a time
       matrix:
         include: ${{ fromJSON(needs.poll.outputs.client_matrix) }}
     # No secrets are passed: only sr-client-check's own check job reads the

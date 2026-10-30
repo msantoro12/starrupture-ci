@@ -90,7 +90,19 @@ jobs:
     outputs:
       required_cl: ${{ steps.read.outputs.required_cl }}
       sdk_offsets: ${{ steps.read.outputs.sdk_offsets }}
+      scanner_sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
+      - name: Check the loader repository
+        shell: pwsh
+        env:
+          LOADER_REPO: ${{ inputs.loader_repo }}
+        run: |
+          # The scanner built here runs in the job that holds the Steam login,
+          # so it only ever comes from the owner's fork or the upstream repo.
+          if ($env:LOADER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
+            throw "loader_repo '$($env:LOADER_REPO)' is not allowed"
+          }
+
       - name: Check out the loader (with its pinned Game SDK)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -147,6 +159,14 @@ jobs:
             /p:Platform=x64 `
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Hash the scanner
+        id: hash
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash loader\build\tools\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sr-aobscan-client.exe SHA-256 $h"
+          "sha256=$h" >> $env:GITHUB_OUTPUT
 
       - name: Upload the scanner
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -212,7 +232,10 @@ jobs:
           try {
             if ($env:BRANCH -notmatch '^[A-Za-z0-9_]+$') { throw "bad branch name '$env:BRANCH'" }
             $user = "$env:STEAM_USER".Trim()
+            if ($user -notmatch '^[A-Za-z0-9_]{3,64}$') { throw 'STEAM_CI_USERNAME is not a valid Steam account name' }
             Write-Host "::add-mask::$user"
+            # Cut from every steamcmd line, so it cannot reach result.json or the PR.
+            $userRx = '(?i)' + [regex]::Escape($user)
 
             # Valve's steamcmd, checked to be Valve-signed before and after
             # its self-update.
@@ -223,7 +246,7 @@ jobs:
             $steamcmd = Join-Path $root 'steamcmd.exe'
             function Assert-ValveSigned {
               $sig = Get-AuthenticodeSignature $steamcmd
-              if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O=Valve(,|$)') {
+              if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '^CN="?Valve(?: Corp\.)?"?,' -or $sig.SignerCertificate.Subject -notmatch ',\s*O="?Valve(?: Corp\.)?"?(,|$)') {
                 throw "steamcmd.exe is not Valve-signed (status $($sig.Status))"
               }
             }
@@ -272,7 +295,7 @@ jobs:
               $lastBucket = -1
               & $steamcmd @cmd 2>&1 | ForEach-Object {
                 # Account ids out of the log (the account name is masked).
-                $line = "$_" -replace '\[U:1:\d+\]', '[U:1:***]' -replace '7656119\d{10}', '***'
+                $line = "$_" -replace '\[U:1:\d+\]', '[U:1:***]' -replace '7656119\d{10}', '***' -replace $userRx, '***'
                 $lines.Add($line)
                 if ($line -match 'progress:\s+([\d.]+)') {
                   $bucket = [int]([double]$Matches[1] / 10)
@@ -287,8 +310,8 @@ jobs:
               $installed = ($code -eq 0) -and (Test-Path $manifest) -and ((Get-Content $manifest -Raw) -match '"StateFlags"\s+"4"')
               if ($loginOk -or $installed) { $dl.login = 'ok' }
               if ($installed) { $dl.installed = $true; $dl.reason = ''; $dl.detail = ''; break }
-              $errLine = ($lines | Where-Object { $_ -match 'FAILED|ERROR|Invalid Password|Logon Denied|credentials|password|Guard|Rate Limit|No subscription|license' } | Select-Object -First 1)
-              $dl.detail = "$errLine".Trim()
+              $errLine = ($lines | Where-Object { $_ -match 'FAILED|ERROR|Invalid Password|Logon Denied|Guard|Rate Limit|No subscription|license' } | Select-Object -First 1)
+              $dl.detail = "$errLine".Trim() -replace '\|', '/'
               if ($dl.login -ne 'ok') {
                 # Login failures are never retried: a retry cannot fix the
                 # token and repeated attempts get the account rate-limited.
@@ -369,6 +392,7 @@ jobs:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
           REQUIRED_CL: ${{ needs.build.outputs.required_cl }}
           SDK_OFFSETS: ${{ needs.build.outputs.sdk_offsets }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
@@ -384,6 +408,8 @@ jobs:
           "SHA-256=$sha"
 
           $scanner = 'scanner\sr-aobscan-client.exe'
+          $scannerSha = (Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($scannerSha -ne $env:SCANNER_SHA256) { throw "sr-aobscan-client.exe hash $scannerSha is not the one build-scanner made ($($env:SCANNER_SHA256))" }
           & $scanner $exe.FullName --verbose *> out\scanner.txt
           & $scanner $exe.FullName --json > out\scanner.json
           $scanCode = $LASTEXITCODE
@@ -510,7 +536,11 @@ jobs:
             $md.Add('|---|---|')
             $login = switch ($dl.step0) {
               'PASS'      { 'accepted (saved cache, no password)' }
-              'FAIL'      { "REJECTED: login expired, run ``steam-ci-login.ps1 -Renew`` ($($dl.detail))" }
+              'FAIL'      {
+                if ($env:LOGIN_AT -and $env:LOGIN_AT -ge [datetime]::UtcNow.AddDays(-1).ToString('yyyy-MM-dd')) {
+                  "REJECTED right after the login was saved: Step 0 failed, the saved cache does not carry over to a fresh runner, and -Renew will not fix that ($($dl.detail))"
+                } else { "REJECTED: login expired, run ``steam-ci-login.ps1 -Renew`` ($($dl.detail))" }
+              }
               'UNDECIDED' { 'rate-limited by Steam; re-run later' }
               default     { "$($dl.reason) $($dl.detail)".Trim() }
             }
@@ -559,6 +589,7 @@ jobs:
             gh pr comment $env:PR --body-file report.md
             if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Could not comment on PR #$($env:PR); the result is in the run summary." }
           }
+          exit 0
 
   # ---- Weekly: is the saved login about to expire? -------------------------
   expiry:
