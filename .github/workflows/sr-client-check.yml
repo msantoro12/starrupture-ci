@@ -246,7 +246,7 @@ jobs:
             $steamcmd = Join-Path $root 'steamcmd.exe'
             function Assert-ValveSigned {
               $sig = Get-AuthenticodeSignature $steamcmd
-              if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '^CN="?Valve(?: Corp\.)?"?,' -or $sig.SignerCertificate.Subject -notmatch ',\s*O="?Valve(?: Corp\.)?"?(,|$)') {
+              if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -cnotmatch '^CN=Valve(?: Corp\.)?, (?:OU=[^,"]+, )?O=Valve(?: Corp\.)?, (?:L=Bellevue, )?S=Washington, C=US$') {
                 throw "steamcmd.exe is not Valve-signed (status $($sig.Status))"
               }
             }
