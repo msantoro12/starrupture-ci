@@ -1,10 +1,5 @@
 name: SR client check
 
-# REPLAY BRANCH test/replay-update2: the client check exactly as on main,
-# pointed at the pre-Update-2 loader (fork branch test/replay-update2) and
-# run under its own environment, steam-client-replay, whose Steam login only
-# this branch can read. Nothing on this branch can release.
-
 # Offline check of a new StarRupture client build (Steam app 1631270): logs in
 # to Steam with the saved CI login, downloads the build, and checks it without
 # running it:
@@ -15,13 +10,21 @@ name: SR client check
 #   - each plugin's own OnPluginLoadHooks resolves its patterns against the
 #     exe (sr-aobscan --plugin); plugins in `plugins` are built from source,
 #     those in `plugin_manifests` are the released DLL players get
+#   - auto-apply: a plugin's failing patterns are patched with the proposals
+#     at or above apply_confidence (high unless a replay says otherwise), the
+#     plugin is rebuilt and scanned again on this build and the public one,
+#     and a verified fix of one of the owner's forks is pushed to that fork as
+#     auto/update-<CL> (ci/apply-proposals.mjs)
 # The result is a JSON artifact and a comment on the game-update PR.
 #
 # Trust: the scanner and plugin code run in the job that held the Steam
 # login, after the login cache is deleted from disk. Deleting it does not
 # clear it from the runner's memory, so that code only ever comes from the
 # owners the inputs allow (msantoro12 and AlienXAXS; for released DLLs also
-# LetMeInside, MiniMap's author), the same trust as scanner_ref.
+# LetMeInside, MiniMap's author), the same trust as scanner_ref. The fork
+# deploy keys are only in the auto-apply job (environment fork-push), which
+# runs no plugin code and no action but actions/checkout, and checks every
+# field of its work list; each key can write only auto/** on its fork.
 #
 # Login: a separate Steam account that owns the game, never the owner's main
 # account. Its steamcmd login cache (config.vdf) is the secret
@@ -52,22 +55,26 @@ on:
         default: 'msantoro12/StarRupture-ModLoader'
       loader_ref:
         type: string
-        default: 'test/replay-update2'
+        default: 'gss/loader-work'
       scanner_ref:
         type: string
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@test/replay-update2 msantoro12/StarRupture-Plugin-BetterDrone@test/replay-update2 msantoro12/StarRupture-Plugin-WAILA@test/replay-update2 msantoro12/StarRupture-Plugin-Codex@test/replay-update2'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work'
       plugin_manifests:
         type: string
-        default: ''
+        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
       plugin_sdk_ref:
         type: string
-        default: '4196e1fe3a83c120133daad824cbaff94780898b'
+        default: 'main'
       game_sdk_ref:
         type: string
-        default: '4ab6473c15a0c1975a7e89b867e321e28b2645e8'
+        default: 'main'
+      apply_confidence:
+        description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
+        type: string
+        default: 'high'
   workflow_dispatch:
     inputs:
       branch:
@@ -86,7 +93,7 @@ on:
       loader_ref:
         description: 'Loader branch the patterns come from'
         type: string
-        default: 'test/replay-update2'
+        default: 'gss/loader-work'
       scanner_ref:
         description: 'Branch of the loader repository holding tools/AobScan'
         type: string
@@ -94,19 +101,24 @@ on:
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@test/replay-update2 msantoro12/StarRupture-Plugin-BetterDrone@test/replay-update2 msantoro12/StarRupture-Plugin-WAILA@test/replay-update2 msantoro12/StarRupture-Plugin-Codex@test/replay-update2'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work'
       plugin_manifests:
         description: 'Released plugins, checked as players get them: the update-manifest URL from each one''s sidecar .json, space-separated'
         type: string
-        default: ''
+        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
       plugin_sdk_ref:
         description: 'AlienXAXS/StarRupture-Plugin-SDK ref the plugins build against'
         type: string
-        default: '4196e1fe3a83c120133daad824cbaff94780898b'
+        default: 'main'
       game_sdk_ref:
         description: 'AlienXAXS/StarRupture-Game-SDK ref the plugins build against'
         type: string
-        default: '4ab6473c15a0c1975a7e89b867e321e28b2645e8'
+        default: 'main'
+      apply_confidence:
+        description: 'Lowest proposal confidence that is auto-applied (medium only for a replay)'
+        type: choice
+        options: [high, medium]
+        default: high
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -347,6 +359,7 @@ jobs:
           NAME: ${{ matrix.name }}
           REPO: ${{ matrix.repo }}
           REF: ${{ matrix.ref }}
+          LOADER_REPO: ${{ inputs.loader_repo }}
         run: |
           $ErrorActionPreference = 'Stop'
           # Built against the interface of the loader being checked, as it is in game.
@@ -367,7 +380,11 @@ jobs:
           if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
           New-Item -ItemType Directory -Force ..\out | Out-Null
           Copy-Item $dll[0].FullName ..\out\
-          [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $env:REF; sha = (git rev-parse HEAD); dll = $dll[0].Name
+          # What it was built from, so the check job can rebuild it with a fix
+          # applied from exactly the same sources.
+          [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $env:REF; sha = (git rev-parse HEAD); dll = $dll[0].Name; tag = $tag
+                      pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdk = (git -C ..\game-sdk rev-parse HEAD)
+                      loaderRepo = $env:LOADER_REPO; loaderInterface = (git -C ..\loader-interface rev-parse HEAD)
                       sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
             ConvertTo-Json | Set-Content ..\out\plugin.json -Encoding utf8
           Get-Content ..\out\plugin.json
@@ -382,8 +399,8 @@ jobs:
 
   # ---- Job A: Steam login, download, offline checks ------------------------
   # The only job that can read the login secret: environment steam-client,
-  # contents: read, no checkout of any repository. The login cache is deleted
-  # from the runner before the scanner runs.
+  # contents: read. The login cache is deleted from the runner before the
+  # scanner runs; the only checkout is this repository's apply tool, after it.
   check:
     name: check
     needs: [build, plugin-plan, plugins]
@@ -391,12 +408,14 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
     timeout-minutes: 120
-    environment: steam-client-replay
+    environment: steam-client
     permissions:
       contents: read
     concurrency:
       group: sr-client-check-${{ inputs.branch }}
       cancel-in-progress: false
+    outputs:
+      autofix: ${{ steps.fix.outputs.autofix }}
     env:
       BRANCH: ${{ inputs.branch }}
       EXPECTED_BUILDID: ${{ inputs.buildid }}
@@ -431,7 +450,7 @@ jobs:
           Set-StrictMode -Version Latest
           New-Item -ItemType Directory -Force out | Out-Null
           $dl = [ordered]@{ login = 'not tried'; step0 = ''; installed = $false; reason = ''; detail = ''; installDir = '';
-                            buildid = ''; attempts = 0; seconds = 0; sizeOnDisk = ''; cacheRewritten = $null }
+                            buildid = ''; betaKey = ''; attempts = 0; seconds = 0; sizeOnDisk = ''; cacheRewritten = $null }
           $failed = $false
           $root = 'C:\steamcmd'
           try {
@@ -485,10 +504,21 @@ jobs:
             $dl.installDir = $install
             Write-Host ("Installing to {0} ({1:N1} GB free)" -f $install, ($vol.Free / 1GB))
 
+            # The branch is always named, public included: steamcmd otherwise
+            # installs the branch it last used for the app.
             $cmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
-                     '+force_install_dir', $install, '+login', $user, '+app_update', $env:APP_ID)
-            if ($env:BRANCH -ne 'public') { $cmd += @('-beta', $env:BRANCH) }
-            $cmd += '+quit'
+                     '+force_install_dir', $install, '+login', $user, '+app_update', $env:APP_ID, '-beta', $env:BRANCH, '+quit')
+            # What an install really is, from its manifest: the branch Steam
+            # mounted (MountedConfig BetaKey) and the build id.
+            function Read-Manifest([string]$path) {
+              $acf = Get-Content $path -Raw
+              $mounted = if ($acf -match '"MountedConfig"\s*\{([^{}]*)\}') { $Matches[1] } else { '' }
+              [ordered]@{
+                betaKey = if ($mounted -match '"BetaKey"\s+"([^"]*)"') { $Matches[1] } else { '' }
+                buildid = if ($acf -match '"buildid"\s+"(\d+)"') { $Matches[1] } else { '' }
+                size    = if ($acf -match '"SizeOnDisk"\s+"(\d+)"') { $Matches[1] } else { '0' }
+              }
+            }
 
             $manifest = Join-Path $install "steamapps\appmanifest_$($env:APP_ID).acf"
             $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -552,10 +582,17 @@ jobs:
                 default          { Write-Host "::error title=Steam download::Logged in, but the download failed after $($dl.attempts) attempts ($($dl.detail))." }
               }
             } else {
-              $acf = Get-Content $manifest -Raw
-              if ($acf -match '"buildid"\s+"(\d+)"') { $dl.buildid = $Matches[1] }
-              if ($acf -match '"SizeOnDisk"\s+"(\d+)"') { $dl.sizeOnDisk = $Matches[1] }
-              Write-Host "Installed build $($dl.buildid) ($([math]::Round([double]$dl.sizeOnDisk / 1GB, 1)) GB on disk) in $($dl.seconds) s"
+              $mf = Read-Manifest $manifest
+              $dl.buildid = $mf.buildid
+              $dl.sizeOnDisk = $mf.size
+              $dl.betaKey = $mf.betaKey
+              if ($mf.betaKey -ne $env:BRANCH -or -not $mf.buildid) {
+                $dl.installed = $false
+                $dl.reason = 'wrong-branch'
+                $dl.detail = "the manifest says branch '$($mf.betaKey)', build '$($mf.buildid)'"
+                throw "Steam installed the wrong thing for branch $($env:BRANCH): $($dl.detail)"
+              }
+              Write-Host "Installed build $($dl.buildid) of branch $($mf.betaKey) ($([math]::Round([double]$dl.sizeOnDisk / 1GB, 1)) GB on disk) in $($dl.seconds) s"
               if ($env:EXPECTED_BUILDID -and $dl.buildid -ne $env:EXPECTED_BUILDID) {
                 Write-Host "::warning::Steam installed build $($dl.buildid), the watcher saw $($env:EXPECTED_BUILDID); the branch moved again. The check covers $($dl.buildid)."
               }
@@ -571,7 +608,7 @@ jobs:
                   $refDir = Join-Path $vol.Root 'sr-ref'
                   New-Item -ItemType Directory -Force $refDir | Out-Null
                   $refCmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
-                              '+force_install_dir', $refDir, '+login', $user, '+app_update', $env:APP_ID, '+quit')
+                              '+force_install_dir', $refDir, '+login', $user, '+app_update', $env:APP_ID, '-beta', 'public', '+quit')
                   $refManifest = Join-Path $refDir "steamapps\appmanifest_$($env:APP_ID).acf"
                   $refWatch = [Diagnostics.Stopwatch]::StartNew()
                   Write-Host '::group::steamcmd: the public build, for the pattern proposals'
@@ -582,17 +619,28 @@ jobs:
                   $refCode = $LASTEXITCODE
                   Write-Host '::endgroup::'
                   $refOk = ($refCode -eq 0) -and (Test-Path $refManifest) -and ((Get-Content $refManifest -Raw) -match '"StateFlags"\s+"4"')
-                  $dl.reference = [ordered]@{ installed = $refOk; buildid = ''; seconds = [int]$refWatch.Elapsed.TotalSeconds }
-                  if ($refOk) {
-                    if ((Get-Content $refManifest -Raw) -match '"buildid"\s+"(\d+)"') { $dl.reference.buildid = $Matches[1] }
-                    Write-Host "Installed the public build $($dl.reference.buildid) in $($dl.reference.seconds) s"
-                    "reference_dir=$refDir" >> $env:GITHUB_OUTPUT
-                  } else {
+                  $dl.reference = [ordered]@{ installed = $false; reason = ''; buildid = ''; betaKey = ''; seconds = [int]$refWatch.Elapsed.TotalSeconds }
+                  $rm = if ($refOk) { Read-Manifest $refManifest } else { $null }
+                  if ($rm) { $dl.reference.buildid = $rm.buildid; $dl.reference.betaKey = $rm.betaKey }
+                  if (-not $refOk) {
+                    $dl.reference.reason = 'download-failed'
                     Write-Host "::warning title=Pattern proposals::The public build did not download (steamcmd exit $refCode); proposals cover this build only."
+                  } elseif ($rm.betaKey -ne 'public' -or -not $rm.buildid) {
+                    # A reference that is not the build players run would make
+                    # every both-builds claim, and every auto-apply, wrong.
+                    $dl.reference.reason = 'wrong-branch'
+                    Write-Host "::error title=Pattern proposals::The reference download is not the public build (its manifest says branch '$($rm.betaKey)', build '$($rm.buildid)'). It is dropped: proposals cover this build only, and nothing is auto-applied against it."
+                  } elseif ($rm.buildid -eq $dl.buildid) {
+                    $dl.reference.reason = 'same-build'
+                    Write-Host "::notice title=Pattern proposals::public is the same build ($($dl.buildid)); proposals cover this build only."
+                  } else {
+                    $dl.reference.installed = $true
+                    Write-Host "Installed the public build $($rm.buildid) (branch $($rm.betaKey)) in $($dl.reference.seconds) s"
+                    "reference_dir=$refDir" >> $env:GITHUB_OUTPUT
                   }
                 } catch {
                   Write-Host '::endgroup::'
-                  $dl.reference = [ordered]@{ installed = $false; buildid = ''; seconds = 0 }
+                  $dl.reference = [ordered]@{ installed = $false; reason = 'error'; buildid = ''; betaKey = ''; seconds = 0 }
                   $why = "$($_.Exception.Message)" -replace $userRx, '***'
                   Write-Host "::warning title=Pattern proposals::The public build did not download ($why); proposals cover this build only."
                 }
@@ -658,6 +706,8 @@ jobs:
             Get-ChildItem -Path $env:REFERENCE_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
               Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
           if ($refExe) { $suggest += @('--reference', $refExe.FullName) }
+          $refPv = if ($refExe) { [string]$refExe.VersionInfo.ProductVersion } else { '' }
+          if ($refExe) { "Reference (public build): ProductVersion=$refPv" }
           foreach ($e in @(@($exe) + @($refExe) | Where-Object { $_ })) {
             $pdb = [IO.Path]::ChangeExtension($e.FullName, '.pdb')
             $which = if ($refExe -and $e.FullName -eq $refExe.FullName) { 'public build' } else { 'this build' }
@@ -702,7 +752,8 @@ jobs:
 
           $fail = (-not $clOk) -or ($scanCode -ne 0)
           [ordered]@{
-            exe = [ordered]@{ productVersion = $pv; requiredCl = $env:REQUIRED_CL; clOk = $clOk; sha256 = $sha }
+            exe = [ordered]@{ productVersion = $pv; cl = $(if ($pv -match 'CL-(\d+)$') { $Matches[1] } else { '' }); requiredCl = $env:REQUIRED_CL; clOk = $clOk; sha256 = $sha }
+            reference = $(if ($refExe) { [ordered]@{ productVersion = $refPv; cl = $(if ($refPv -match 'CL-(\d+)$') { $Matches[1] } else { '' }) } } else { $null })
             scan = [ordered]@{ exitCode = $scanCode; summary = $scan.summary; notOk = $notOk
                      suggest = $(if ($scan.PSObject.Properties['suggest']) { $scan.suggest } else { $null }) }
             sdkGlobals = @($globals)
@@ -809,6 +860,158 @@ jobs:
           } | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
           foreach ($r in $results) { "$($r.name): $($r.verdict)" }
 
+      # ---- Auto-apply, part 1: build and scan the proposed fixes -----------
+      # The apply tool is this workflow's own code at the same commit.
+      - name: Check out the apply tool
+        id: tool
+        if: always() && steps.plugins.outcome == 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-tool
+          sparse-checkout: ci/apply-proposals.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Build the proposed fixes
+        id: fix
+        if: always() && steps.tool.outcome == 'success'
+        # A fix that fails to build or scan costs only the fix.
+        continue-on-error: true
+        timeout-minutes: 45
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
+          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+          APPLY_CONFIDENCE: ${{ inputs.apply_confidence || 'high' }}
+        run: |
+          # Per plugin with failing patterns: apply the proposals at or above
+          # APPLY_CONFIDENCE to its source (ci/apply-proposals.mjs), rebuild it
+          # from exactly the sources its scan was built from, and scan the
+          # result on this build and on the public one. Writes
+          # out/autofix-<name>.* (verdict, source patch, scans) and the
+          # auto-apply job's work list: FIXED or PARTIAL fixes of the owner's
+          # forks. A released plugin (another author's) gets the patch only;
+          # the loader's own patterns stay proposals in the report.
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          if ($env:APPLY_CONFIDENCE -notin 'high', 'medium') { throw "apply_confidence '$($env:APPLY_CONFIDENCE)' is not high or medium" }
+          $tool = 'ci-tool\ci\apply-proposals.mjs'
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          function Find-Exe([string]$dir) {
+            if ($dir) { Get-ChildItem -Path $dir -Recurse -File -Filter '*-Win64-Shipping.exe' | Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
+          }
+          function Get-Cl($e) { if ([string]$e.VersionInfo.ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' } }
+          function Invoke-Native([string]$what) {
+            if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" }
+          }
+          # Source at an exact commit, bytes as committed (no CRLF rewrite), so
+          # the auto-apply job re-creates the same tree on Linux.
+          function Get-Source([string]$repo, [string]$rev, [string]$dir) {
+            git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
+            git -C $dir config core.autocrlf false
+            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
+          }
+          $exe = Find-Exe $env:INSTALL_DIR
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $refExe = Find-Exe $env:REFERENCE_DIR
+          $cl = Get-Cl $exe
+          $refCl = if ($refExe) { Get-Cl $refExe } else { '' }
+          if ($cl -notmatch '^\d+$') { throw "no CL in this build's ProductVersion" }
+          $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          $work = Join-Path $env:RUNNER_TEMP 'autofix'
+          $push = [Collections.Generic.List[object]]::new()
+          $results = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
+            $scan = "out\plugin-$($p.name).json"
+            if (-not ((Test-Path $scan) -and (Get-Item $scan).Length)) { continue }
+            $d = Join-Path $work $p.name
+            New-Item -ItemType Directory -Force $d | Out-Null
+            node $tool select --scan $scan --min-confidence $env:APPLY_CONFIDENCE --target-public $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }) > "$d\plan.json"
+            Invoke-Native 'select'
+            $plan = Get-Content "$d\plan.json" -Raw | ConvertFrom-Json
+            # Nothing failing, nothing to do.
+            if (-not @($plan.rows).Count -and -not @($plan.skipped).Count) { continue }
+            $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; sha = ''; verdict = 'NO-FIX'; reasons = @()
+                             applied = @(); skipped = @($plan.skipped); tree = ''; patch = '' }
+            try {
+              if (-not @($plan.rows).Count) { $r.reasons = @('no proposal was selected'); $r; continue }
+              $meta = Get-Content "plugins\plugin-$($env:BRANCH)-$($p.name)\plugin.json" -Raw | ConvertFrom-Json
+              $r.sha = [string]$meta.sha
+              if ($p.source -eq 'release') { Get-Source $p.repo "refs/tags/$($meta.ref)" "$d\src" }
+              else { Get-Source $p.repo $meta.sha "$d\src" }
+              node $tool apply --source "$d\src" --plan "$d\plan.json" > "$d\applied.json"
+              Invoke-Native 'apply'
+              $applied = Get-Content "$d\applied.json" -Raw | ConvertFrom-Json
+              $r.applied = @($applied.rows | Where-Object { $_.status -eq 'applied' })
+              $r.skipped = @(@($plan.skipped) + @($applied.rows | Where-Object { $_.status -ne 'applied' }))
+              if (-not $r.applied.Count) { $r.reasons = @('no proposal could be applied to the source'); $r; continue }
+              # The tree is taken before the build, which only adds ignored files.
+              git -C "$d\src" add -A; Invoke-Native 'git add'
+              $r.tree = [string](git -C "$d\src" write-tree); Invoke-Native 'git write-tree'
+              $r.patch = "autofix-$($p.name).patch"
+              git -C "$d\src" diff --cached > "out\$($r.patch)"; Invoke-Native 'git diff'
+              if ($p.source -eq 'release') { $r.verdict = 'PATCH'; $r.reasons = @("another author's released plugin: the patch only"); $r; continue }
+
+              # Rebuilt exactly as the plugins job built the scanned DLL.
+              if ($meta.loaderRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$' -or $meta.loaderInterface -notmatch '^[0-9a-f]{40}$') { throw 'plugin.json does not name the loader interface it was built against' }
+              Get-Source 'AlienXAXS/StarRupture-Plugin-SDK' $meta.pluginSdk "$d\plugin-sdk"
+              Get-Source 'AlienXAXS/StarRupture-Game-SDK' $meta.gameSdk "$d\game-sdk"
+              Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($meta.loaderRepo)/$($meta.loaderInterface)/StarRupture-ModLoader-Core/plugins/plugin_interface.h" `
+                -OutFile "$d\plugin-sdk\include\plugin_interface.h" -TimeoutSec 60
+              $sln = @(Get-ChildItem "$d\src" -File -Filter *.sln)
+              if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+              & $msbuild $sln[0].FullName `
+                /p:Configuration="Client Release" `
+                /p:Platform=x64 `
+                /p:PostBuildEventUseInBuild=false `
+                /p:ModLoaderBuildTag="$($meta.tag)" `
+                /p:GameSDKRoot="$d\game-sdk" `
+                /p:PluginSDKInclude="$d\plugin-sdk\include" `
+                /m /p:CL_MP=true /nodeReuse:false /v:minimal
+              if ($LASTEXITCODE -ne 0) { $r.verdict = 'FAILED'; $r.reasons = @("the fixed source did not build (msbuild exit $LASTEXITCODE)"); $r; continue }
+              $dll = @(Get-ChildItem "$d\src\build\Client Release\Plugins" -File -Filter *.dll)
+              if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
+
+              # Scanned on this build, and on the public one when there is one.
+              $scans = @{}
+              foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
+                $stem = "out\autofix-$($p.name)-$($b.key)"
+                $ErrorActionPreference = 'Continue'
+                & $scanner $b.exe.FullName --plugin $dll[0].FullName --json > "$stem.json" 2> "$stem.txt"
+                $code = $LASTEXITCODE
+                $ErrorActionPreference = 'Stop'
+                if ($code -eq 2 -or -not (Get-Item "$stem.json").Length) { throw "sr-aobscan could not run the fixed plugin on the $($b.key) build (exit $code)" }
+                $scans[$b.key] = "$stem.json"
+              }
+              $vArgs = @('--applied', "$d\applied.json", '--target', $scans.target)
+              if ($scans.ContainsKey('reference')) { $vArgs += @('--reference', $scans.reference) }
+              $v = node $tool verdict @vArgs | Out-String | ConvertFrom-Json
+              Invoke-Native 'verdict'
+              $r.verdict = $v.verdict
+              $r.reasons = @($v.reasons)
+              $r.rows = @($v.rows)
+              # Only the owner's forks are pushed to, and only a verified fix.
+              if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^msantoro12/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex)$') {
+                $push.Add([ordered]@{ name = $p.name; sha = $r.sha; tree = $r.tree; cl = $cl; referenceCl = $refCl; verdict = $r.verdict; plan = $plan })
+              }
+            } catch {
+              $r.verdict = 'FAILED'
+              $r.reasons = @($_.Exception.Message)
+            }
+            $r
+          }
+          $results = @($results)
+          foreach ($r in $results) {
+            "$($r.name): $($r.verdict) ($(@($r.applied).Count) applied, $(@($r.skipped).Count) skipped)$(if (@($r.reasons).Count) { ': ' + (@($r.reasons) -join '; ') })"
+            if ($r.verdict -eq 'FAILED') { Write-Host "::warning title=Auto-apply $($r.name)::$(@($r.reasons) -join '; ')" }
+          }
+          [ordered]@{ minConfidence = $env:APPLY_CONFIDENCE; cl = $cl; referenceCl = $refCl; plugins = $results } |
+            ConvertTo-Json -Depth 12 | Set-Content out\autofix.json -Encoding utf8
+          "autofix=$(ConvertTo-Json -InputObject @($push) -Depth 12 -Compress)" >> $env:GITHUB_OUTPUT
+
       - name: Write the result
         if: always() && steps.gate.outputs.has_login == 'true'
         shell: pwsh
@@ -825,6 +1028,15 @@ jobs:
           # below covers the loader only. Anything that blocks on plugins reads
           # plugins.status.
           $r.plugins = if (Test-Path out\plugins.json) { Get-Content out\plugins.json -Raw | ConvertFrom-Json } else { $null }
+          # The public build the proposals and fixes were checked against.
+          $ref = if ($dl -and $dl.PSObject.Properties['reference']) { $dl.reference } else { $null }
+          $ckRef = if ($ck -and $ck.PSObject.Properties['reference']) { $ck.reference } else { $null }
+          $r.reference =
+            if ($ref -and $ref.installed) { [ordered]@{ status = 'used'; buildid = $ref.buildid; cl = $(if ($ckRef) { $ckRef.cl } else { '' }); productVersion = $(if ($ckRef) { $ckRef.productVersion } else { '' }) } }
+            elseif ($ref) { [ordered]@{ status = 'none'; reason = $ref.reason; buildid = $ref.buildid; betaKey = $ref.betaKey } }
+            elseif ($env:BRANCH -eq 'public') { [ordered]@{ status = 'none'; reason = 'this is the public build' } }
+            else { [ordered]@{ status = 'none'; reason = 'not downloaded' } }
+          $r.autofix = if (Test-Path out\autofix.json) { Get-Content out\autofix.json -Raw | ConvertFrom-Json } else { $null }
           $r.status =
             if (-not $dl) { 'error' }
             elseif ($dl.login -ne 'ok') { 'login-failed' }
@@ -835,7 +1047,7 @@ jobs:
             else { 'pass' }
           $r | ConvertTo-Json -Depth 12 | Set-Content out\result.json -Encoding utf8
           "Client check: $($r.status)"
-          Remove-Item out\download.json, out\checks.json, out\plugins.json -ErrorAction SilentlyContinue
+          Remove-Item out\download.json, out\checks.json, out\plugins.json, out\autofix.json -ErrorAction SilentlyContinue
 
       - name: Upload the result
         if: always()
@@ -848,13 +1060,122 @@ jobs:
             out/scanner.json
             out/plugin-*.json
             out/plugin-*.txt
+            out/autofix-*
           if-no-files-found: warn
           retention-days: 14
+
+  # ---- Auto-apply, part 2: push the verified fixes to the owner's forks ----
+  # The only job that can read the fork deploy keys (environment fork-push),
+  # one key per fork, each limited by a ruleset on its fork to auto/**. It
+  # runs no plugin code and no action but actions/checkout: it re-creates the
+  # fix from the plugin's commit and the plan with the apply tool, and pushes
+  # only when the result is the tree the check job built and scanned. Never
+  # forces: a branch that already holds another tree gets a run-id suffix.
+  auto-apply:
+    name: auto-apply ${{ matrix.name }}
+    needs: check
+    if: ${{ !cancelled() && startsWith(needs.check.outputs.autofix, '[{') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: fork-push
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.check.outputs.autofix) }}
+    steps:
+      - name: Check the work item
+        env:
+          NAME: ${{ matrix.name }}
+          SHA: ${{ matrix.sha }}
+          TREE: ${{ matrix.tree }}
+          CL: ${{ matrix.cl }}
+          REFERENCE_CL: ${{ matrix.referenceCl }}
+        run: |
+          # The work list comes from the job that ran plugin code, so every
+          # field that picks a repository, a key or a ref is checked here.
+          [[ "$NAME" =~ ^(BetterCheats|BetterDrone|WAILA|Codex)$ ]] || { echo "::error::'$NAME' is not a fork this job pushes to"; exit 1; }
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$TREE" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::bad commit or tree id'; exit 1; }
+          [[ "$CL" =~ ^[0-9]+$ && "$REFERENCE_CL" =~ ^[0-9]*$ ]] || { echo '::error::bad CL'; exit 1; }
+
+      - name: Check out the apply tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci/apply-proposals.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check out the plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: msantoro12/StarRupture-Plugin-${{ matrix.name }}
+          ref: ${{ matrix.sha }}
+          path: plugin
+          persist-credentials: false
+
+      - name: Re-create the fix
+        env:
+          PLAN: ${{ toJSON(matrix.plan) }}
+          TREE: ${{ matrix.tree }}
+          CL: ${{ matrix.cl }}
+          REFERENCE_CL: ${{ matrix.referenceCl }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
+          node tool/ci/apply-proposals.mjs apply --source plugin --plan "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/applied.json"
+          git -C plugin add -A
+          tree="$(git -C plugin write-tree)"
+          if [ "$tree" != "$TREE" ]; then
+            echo "::error::the re-created fix is tree $tree, the check job built and scanned $TREE; nothing is pushed"
+            exit 1
+          fi
+          node tool/ci/apply-proposals.mjs message --applied "$RUNNER_TEMP/applied.json" --cl "$CL" ${REFERENCE_CL:+--reference-cl "$REFERENCE_CL"} > "$RUNNER_TEMP/message.txt"
+          git -C plugin -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -F "$RUNNER_TEMP/message.txt"
+          git -C plugin log -1 --format='%H %s'
+
+      - name: Push the branch
+        env:
+          NAME: ${{ matrix.name }}
+          CL: ${{ matrix.cl }}
+          VERDICT: ${{ matrix.verdict }}
+          RUN_ID: ${{ github.run_id }}
+          # This fork's key only.
+          DEPLOY_KEY: ${{ matrix.name == 'BetterCheats' && secrets.SR_DEPLOYKEY_BETTERCHEATS || matrix.name == 'BetterDrone' && secrets.SR_DEPLOYKEY_BETTERDRONE || matrix.name == 'WAILA' && secrets.SR_DEPLOYKEY_WAILA || matrix.name == 'Codex' && secrets.SR_DEPLOYKEY_CODEX || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_KEY" ]; then echo "::error::no deploy key for $NAME in environment fork-push"; exit 1; fi
+          ssh_dir="$RUNNER_TEMP/ssh"
+          mkdir -m 700 "$ssh_dir"
+          trap 'rm -f "$ssh_dir/key"' EXIT
+          (umask 077; printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key")
+          # GitHub's published host keys, not trust on first use.
+          curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
+          url="git@github.com:msantoro12/StarRupture-Plugin-$NAME.git"
+          branch="auto/update-$CL"
+          head="$(git -C plugin rev-parse HEAD)"
+          tree="$(git -C plugin rev-parse 'HEAD^{tree}')"
+          existing="$(git ls-remote "$url" "refs/heads/$branch" | cut -f1)"
+          if [ -n "$existing" ]; then
+            git -C plugin fetch -q --depth 1 "$url" "refs/heads/$branch"
+            if [ "$(git -C plugin rev-parse 'FETCH_HEAD^{tree}')" = "$tree" ]; then
+              echo "$branch already holds this fix at $existing; nothing to push."
+              echo "$NAME ($VERDICT): \`$branch\` already holds this fix at $existing." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            branch="auto/update-$CL-$RUN_ID"
+          fi
+          git -C plugin push -q "$url" "HEAD:refs/heads/$branch"
+          echo "Pushed $branch at $head to msantoro12/StarRupture-Plugin-$NAME."
+          echo "$NAME ($VERDICT): pushed \`$branch\` at $head." >> "$GITHUB_STEP_SUMMARY"
 
   # ---- Job B: comment on the update PR (no secrets, no environment) --------
   report:
     name: report
-    needs: [build, check]
+    needs: [build, check, auto-apply]
     if: always() && inputs.branch && inputs.branch != 'expiry-only'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -870,6 +1191,7 @@ jobs:
       BUILD_RESULT: ${{ needs.build.result }}
       CHECK_RESULT: ${{ needs.check.result }}
       LOGIN_AT: ${{ vars.STEAM_CI_LOGIN_AT }}
+      RUN_ID: ${{ github.run_id }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Download the result
@@ -910,6 +1232,10 @@ jobs:
             if ($dl.login -eq 'ok') {
               $dlText = if ($dl.installed) { '{0} GB on disk in {1} min' -f [math]::Round([double]$dl.sizeOnDisk / 1GB, 1), [math]::Round($dl.seconds / 60, 1) } else { "FAILED ($($dl.reason): $($dl.detail))" }
               $md.Add("| Download | $dlText |")
+            }
+            if ($r.PSObject.Properties['reference'] -and $r.reference) {
+              $rf = $r.reference
+              $md.Add("| Reference (public) | $(if ($rf.status -eq 'used') { "build $($rf.buildid), CL-$($rf.cl)" } else { "none: $($rf.reason)$(if ($rf.PSObject.Properties['buildid'] -and $rf.buildid) { " (build $($rf.buildid), branch '$($rf.betaKey)')" })" }) |")
             }
             if ($ck) {
               $md.Add(('| ProductVersion | `{0}`, loader requires `{1}`: {2} |' -f $ck.exe.productVersion, $ck.exe.requiredCl, $(if ($ck.exe.clOk) { 'match' } else { '**MISMATCH**' })))
@@ -986,12 +1312,41 @@ jobs:
               foreach ($q in $props) {
                 $ref = if ($q.PSObject.Properties['uniqueOnReference']) { [bool]$q.uniqueOnReference } else { $null }
                 $on = if ($q.uniqueOnTarget -and $ref) { 'both builds' }
-                      elseif ($q.uniqueOnTarget) { 'this build' + $(if ($null -eq $ref) { '' } elseif ($s.PSObject.Properties['referenceKeepsCurrent']) { '; public keeps the current pattern' } else { ' only' }) }
+                      elseif ($q.uniqueOnTarget) { 'this build' + $(if ($null -eq $ref) { '' } elseif ($s.PSObject.Properties['referenceKeepsCurrent'] -and $s.referenceKeepsCurrent) { '; public keeps the current pattern' } else { ' only' }) }
                       elseif ($ref) { 'public build only' } else { 'neither' }
                 $follow = if ($q.followRel32At -ge 0) { " (follow rel32 at +$($q.followRel32At))" } else { ' (direct)' }
                 $md.Add("| $($f.owner) | ``$($f.row.name)`` | $($f.row.result) | $how | $rva | ``$($q.pattern)``$follow | $on |")
               }
             }
+          }
+
+          # The proposals applied, rebuilt and scanned again; the branch the
+          # auto-apply job pushed is found by its tree.
+          $af = if ($r -and $r.PSObject.Properties['autofix'] -and $r.autofix) { $r.autofix } else { $null }
+          if ($af -and @($af.plugins).Count) {
+            $md.Add('')
+            $md.Add("#### Auto-apply (proposals at confidence $($af.minConfidence) and up)")
+            $md.Add('')
+            $md.Add("Each fix is rebuilt and scanned on this build (CL-$($af.cl))$(if ($af.referenceCl) { " and on the public build (CL-$($af.referenceCl))" }). FIXED: every failing pattern resolves to the function it resolved to before. PARTIAL: the same for the applied ones, and the rest were skipped. Only FIXED and PARTIAL fixes of the owner's forks are pushed.")
+            $md.Add('')
+            $md.Add('| Plugin | Verdict | Applied | Skipped | Branch | Note |')
+            $md.Add('|---|---|---|---|---|---|')
+            foreach ($p in @($af.plugins)) {
+              $where = '-'
+              if ($p.verdict -eq 'PATCH') { $where = "patch only: ``$($p.patch)`` in the run's artifact" }
+              elseif ($p.verdict -in 'FIXED', 'PARTIAL' -and $p.repo -match '^msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+$') {
+                $where = 'not pushed (see the auto-apply job)'
+                foreach ($b in "auto/update-$($af.cl)", "auto/update-$($af.cl)-$($env:RUN_ID)") {
+                  $sha = "$(git ls-remote "https://github.com/$($p.repo)" "refs/heads/$b" 2>$null)".Split("`t")[0]
+                  if ($sha -match '^[0-9a-f]{40}$' -and (gh api "repos/$($p.repo)/git/commits/$sha" --jq .tree.sha 2>$null) -eq $p.tree) { $where = "``$b`` ($($sha.Substring(0, 7)))"; break }
+                }
+              }
+              $skip = @($p.skipped | ForEach-Object { "$($_.name): $($_.reason)" })
+              $note = (@(@($p.reasons) + $skip) -join '; ') -replace '\|', '\|'
+              $md.Add("| $($p.name) | **$($p.verdict)** | $(@($p.applied).Count) | $(@($p.skipped).Count) | $where | $note |")
+            }
+            $md.Add('')
+            $md.Add('The loader''s own patterns are never auto-applied: its proposals are listed above.')
           }
 
           # Age of the saved login (set by steam-ci-login.ps1).
