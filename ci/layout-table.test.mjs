@@ -200,7 +200,11 @@ test('buildTable with usedMembers (granularity 1): a UClass keeps only the membe
   assert.deepEqual(rows('UCrBlueprintWidget_C'), []);
   assert.deepEqual(rows('FCrThing'), ['A', 'B']);
   assert.deepEqual(rows('CrWidget_SetCount'), ['NewCount', 'ReturnValue']);
-  assert.equal(t.classes.find((c) => c.name === 'UCrWidget').sizeOf, 0x70, 'the class size is still written');
+  const cls = (n) => t.classes.find((c) => c.name === n);
+  assert.deepEqual([cls('UCrWidget').sizeOf, cls('UCrWidget').alignOf], [0, 0], 'a UClass reached through pointers: size not compared');
+  assert.notEqual(cls('FCrThing').sizeOf, 0, 'a struct keeps its size');
+  const sized = buildTable(layout, layout.keys(), { cl: 127004, sdk, usedMembers: new Set(['Count']), sizedClasses: new Set(['UCrWidget']) });
+  assert.deepEqual([sized.classes.find((c) => c.name === 'UCrWidget').sizeOf, sized.classes.find((c) => c.name === 'UCrWidget').alignOf], [0x70, 0x10], 'a UClass the sources take sizeof of keeps its size');
   assert.match(renderHeader(t), /kGranularity = 1;/);
   assert.match(renderHeader(buildTable(layout, layout.keys(), { cl: 127004, sdk })), /kGranularity = 0;/);
 });
@@ -215,13 +219,19 @@ test('CLI: gen --granularity 1 keeps the members the sources read (., ->, ::; no
   writeFileSync(join(src, 'a.cpp'), [
     'int f(SDK::UCrWidget* w) { return w->Count[0] + (*w).bLow; } // w->Things',
     'const char* s = "w->bEnabled";',
+    'constexpr size_t kOff = offsetof(SDK::UCrWidget, Things); // a read at a fixed offset',
     '',
   ].join('\n'));
   const out = join(dir, 'out.h');
   const r = run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--granularity', '1', '--out', out);
   assert.equal(r.code, 0, r.err);
   const h = parseHeader(readFileSync(out, 'utf8'));
-  assert.deepEqual(h.classes.find((c) => c.name === 'UCrWidget').rows.map((x) => x.member), ['Count', 'bLow']);
+  const w = h.classes.find((c) => c.name === 'UCrWidget');
+  assert.deepEqual(w.rows.map((x) => x.member).sort(), ['Count', 'Things', 'bLow'], 'offsetof(T, M) keeps the row');
+  assert.equal(w.sizeOf, 0, 'no sizeof in the sources: size not compared');
+  writeFileSync(join(src, 'b.cpp'), 'void* g() { return Alloc(sizeof(const SDK::UCrWidget), alignof(SDK::UCrWidget)); }\n');
+  assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--granularity', '1', '--out', out).code, 0);
+  assert.equal(parseHeader(readFileSync(out, 'utf8')).classes.find((c) => c.name === 'UCrWidget').sizeOf, 0x70, 'sizeof(SDK::X) keeps the size');
   assert.equal(run('gen', asserts, '--cl', '9', '--used', join(FIX, 'used-all.txt'), '--granularity', '1').code, 2, 'granularity 1 needs --src');
   assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--granularity', '2').code, 2);
 });

@@ -17,9 +17,10 @@
 //   classes, as layout-diff.mjs does). Every member of a selected class goes in
 //   (class granularity). With --granularity 1 (needs --src), a UClass or
 //   Blueprint class keeps only the rows whose member name the sources use
-//   (`.X`, `->X`, `::X`): code reaches such classes through pointers, so only
-//   the members it reads matter. Script structs and parameter blocks are held
-//   by value and keep every row. --sdk adds member sizes and bool masks from the
+//   (`.X`, `->X`, `::X`, `offsetof(T, X)`): code reaches such classes through
+//   pointers, so only the members it reads matter, and its size is written as
+//   0 (not compared) unless the sources take `sizeof` or `alignof` of it.
+//   Script structs and parameter blocks are held by value and keep every row. --sdk adds member sizes and bool masks from the
 //   Dumper-7 *_classes.hpp, *_structs.hpp and *_parameters.hpp next to it;
 //   without it those columns are 0.
 //   The output is deterministic: classes sorted by name, rows by offset then
@@ -52,7 +53,7 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ALIGN, EXIT_ERROR, EXIT_USED_CHANGED, SIZE, isMain, loadLayout, matchUsed, parseUsedList, ParseError } from './layout-diff.mjs';
-import { collectMemberNames, collectUsed, knownFilter } from './used-classes.mjs';
+import { collectMemberNames, collectSizedNames, collectUsed, knownFilter } from './used-classes.mjs';
 
 export const FORMAT_VERSION = 1;
 const DEFAULT_NAMESPACE = 'SrLayoutTable';
@@ -131,8 +132,10 @@ export function parseSdkHeaders(dir) {
 // predefined FField, FName, ...) and a member the headers mark as predefined cannot be found through
 // reflection, so they are left out and counted in `skipped`.
 // Returns { cl, detail, classes: [{ name, sizeOf, alignOf, kind, path, rows: [{ member, offset, size, mask }] }], skipped }.
-// usedMembers: optional Set of member names (granularity 1): a UClass or Blueprint class keeps only those rows.
-export function buildTable(layout, selected, { cl, sdk = null, usedMembers = null } = {}) {
+// usedMembers: optional Set of member names (granularity 1): a UClass or Blueprint class keeps only those rows,
+// and its sizeOf and alignOf are written as 0 (not compared) unless its name is in sizedClasses, the types the
+// sources take sizeof or alignof of.
+export function buildTable(layout, selected, { cl, sdk = null, usedMembers = null, sizedClasses = new Set() } = {}) {
   if (!Number.isInteger(cl) || cl <= 0) throw new Error('a build number (--cl) is required');
   const classes = [];
   const skipped = { classes: [], members: 0, unmatched: 0 };
@@ -169,13 +172,15 @@ export function buildTable(layout, selected, { cl, sdk = null, usedMembers = nul
       if (d.bits && d.reflected && !rows.has(member)) rows.set(member, { member, offset: d.offset, size: d.size, mask: d.mask });
     }
     const kind = cls?.kind ?? KIND.unknown;
-    if (usedMembers && (kind === KIND.class || kind === KIND.blueprint)) {
+    const narrowed = usedMembers && (kind === KIND.class || kind === KIND.blueprint);
+    if (narrowed) {
       for (const member of [...rows.keys()]) if (!usedMembers.has(member)) rows.delete(member);
     }
+    const sized = !narrowed || sizedClasses.has(name);
     classes.push({
       name,
-      sizeOf: members.get(SIZE),
-      alignOf: members.get(ALIGN) ?? 0,
+      sizeOf: sized ? members.get(SIZE) : 0,
+      alignOf: sized ? members.get(ALIGN) ?? 0 : 0,
       kind,
       path: cls?.path ?? '',
       rows: [...rows.values()].sort((a, b) => a.offset - b.offset || cmp(a.member, b.member)),
@@ -220,7 +225,7 @@ export function renderHeader(table, { namespace = DEFAULT_NAMESPACE } = {}) {
   out.push(`inline constexpr uint32_t kClassCount = ${table.classes.length};`);
   out.push(`inline constexpr uint32_t kRowCount = ${rowCount};`);
   out.push('');
-  out.push('// name: index into kNames. sizeOf/alignOf: sizeof/alignof of the class. The class owns kRows[firstRow .. firstRow + rowCount).');
+  out.push('// name: index into kNames. sizeOf/alignOf: sizeof/alignof of the class (0 = not compared). The class owns kRows[firstRow .. firstRow + rowCount).');
   out.push('// kind: 0 unknown, 1 UClass, 2 UScriptStruct, 3 UFunction parameters, 4 Blueprint-generated class. path: index into kNames of the reflection path');
   out.push('// (`Package.Name`, or `Package.Class.Function` for kind 3), or 0xFFFFFFFF when kDetail is 0.');
   out.push('struct Class { uint32_t name; uint32_t sizeOf; uint32_t alignOf; uint32_t firstRow; uint32_t rowCount; uint32_t kind; uint32_t path; };');
@@ -299,7 +304,7 @@ export function parseHeader(text, label = 'input') {
 // ---- compare ------------------------------------------------------------------
 
 // What `next` breaks in `base`: each class and row of `base` must exist in `next` with the same
-// values. Rows only in `next` are reported separately and break nothing. A member size of 0 means
+// values. Rows only in `next` are reported separately and break nothing. A class or member size of 0 means
 // unknown and is not compared; size and mask are only compared when both tables have kDetail 1.
 export function compareTables(base, next) {
   const nextByName = new Map(next.classes.map((c) => [c.name, c]));
@@ -312,7 +317,7 @@ export function compareTables(base, next) {
       broken.push({ cls: c.name, member: null, kind: 'class-missing', old: null, new: null });
       continue;
     }
-    if (c.sizeOf !== n.sizeOf) broken.push({ cls: c.name, member: SIZE, kind: 'sizeof', old: c.sizeOf, new: n.sizeOf });
+    if (c.sizeOf !== 0 && n.sizeOf !== 0 && c.sizeOf !== n.sizeOf) broken.push({ cls: c.name, member: SIZE, kind: 'sizeof', old: c.sizeOf, new: n.sizeOf });
     if (c.alignOf !== 0 && n.alignOf !== 0 && c.alignOf !== n.alignOf) broken.push({ cls: c.name, member: ALIGN, kind: 'alignof', old: c.alignOf, new: n.alignOf });
     const nr = new Map(n.rows.map((r) => [r.member, r]));
     for (const r of c.rows) {
@@ -460,7 +465,8 @@ function main(argv) {
     if (opt.src.length) for (const n of collectUsed(opt.src, knownFilter([layout])).names.keys()) used.add(n);
     const { matched, unmatched } = matchUsed(used, layout.keys());
     const usedMembers = granularity === '1' ? collectMemberNames(opt.src) : null;
-    const table = buildTable(layout, matched.keys(), { cl, sdk: opt.sdk ? parseSdkHeaders(opt.sdk) : null, usedMembers });
+    const sizedClasses = granularity === '1' ? collectSizedNames(opt.src) : undefined;
+    const table = buildTable(layout, matched.keys(), { cl, sdk: opt.sdk ? parseSdkHeaders(opt.sdk) : null, usedMembers, sizedClasses });
     const text = renderHeader(table, { namespace: opt.namespace });
     if (opt.out) writeFileSync(opt.out, text);
     else process.stdout.write(text);
