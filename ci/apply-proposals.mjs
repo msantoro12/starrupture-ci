@@ -615,7 +615,7 @@ export function parseNativeKeys(text) {
 export function anchorSites(files, compiled) {
   const sites = [];
   for (const [file, text] of files) {
-    const path = file.split(sep).join('/');
+    const path = file.split(/[\\/]/).join('/');
     if (path !== compiled.file && !path.endsWith(`/${compiled.file}`)) continue;
     const rx = new RegExp(compiled.rx.source, 'gd');
     let m;
