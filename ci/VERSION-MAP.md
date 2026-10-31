@@ -47,7 +47,7 @@ node ci/version-map.mjs init <header> --flavour plugin|loader --built-cl <CL>
 node ci/version-map.mjs add-build <header> --cl <CL> --stamp <hex> --size <hex> --source <text>
 node ci/version-map.mjs add-function <header> --key <key> --cl <CL> --rva <hex>
      (--pattern <aob> | --rva-only) [--result-offset <n>] [--follow-rel32-at <n>]
-     [--follow-rip-disp-at <n>] [--kind <1-6>] [--fp <hex>]
+     [--follow-rip-disp-at <n>] [--kind <1-6> [--fp <hex>]]
 node ci/version-map.mjs add-absent <header> --key <key> --cl <CL> --kind <1-6>
      (--fp <hex> | --owners <owner>[,<owner>...])
 node ci/version-map.mjs add-field <header> --key <key> --cl <CL> --offset <hex> --size <hex>
@@ -70,11 +70,12 @@ node ci/version-map.mjs export-feed <header> --out <file>
   style, upper-case hex bytes and `??` separated by single spaces. `--rva-only`
   writes a row with no pattern, which the loader honours only on that exact
   exe (CL, stamp and size all equal). `--result-offset` and `--follow-rel32-at`
-  mean what they mean in a `PluginScanRequest`. The loader map's rows also take
-  `--kind`, `--fp` for a scoped key, and `--follow-rip-disp-at` for its own
-  global keys; a plugin map refuses all three.
+  mean what they mean in a `PluginScanRequest`. A loader map row needs
+  `--kind`, and `--fp` for a scoped key; `--follow-rip-disp-at` is for its own
+  global keys. A plugin map refuses all three.
 - `add-absent` (loader map only) records that CI could not place a key on a
-  build. A global key's absent row lists the owners whose requests CI tested;
+  build. A global key's absent row lists the owners whose requests CI tested (a `PluginInfo`
+  name or `ModLoader`: no `,`, no `/`, not `-`);
   adding it again with other owners adds them. A scoped key's absent row takes
   the `fp` CI tested instead and binds only the requests with it.
 - `add-field` adds the row for one field key on one build. `--member` is the

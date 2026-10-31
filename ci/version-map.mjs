@@ -16,7 +16,7 @@
 //   node ci/version-map.mjs add-build <header> --cl <CL> --stamp <hex> --size <hex> --source <text>
 //   node ci/version-map.mjs add-function <header> --key <key> --cl <CL> --rva <hex>
 //        (--pattern <aob> | --rva-only) [--result-offset <n>] [--follow-rel32-at <n>]
-//        [--follow-rip-disp-at <n>] [--kind <1-6>] [--fp <hex>]
+//        [--follow-rip-disp-at <n>] [--kind <1-6> [--fp <hex>]]   (--kind: loader map only, and needed there)
 //   node ci/version-map.mjs add-absent <header> --key <key> --cl <CL> --kind <1-6>
 //        (--fp <hex> | --owners <owner>[,<owner>...])
 //   node ci/version-map.mjs add-field <header> --key <key> --cl <CL> --offset <hex> --size <hex>
@@ -83,8 +83,9 @@ const MAX_ROWS = 0xffff; // Index::first and ::count are uint16_t
 const isInt = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
 const isText = (s) => typeof s === 'string' && RE_TEXT.test(s);
 // A PluginInfo name or ModLoader: it goes before the '/' of a scoped key and
-// into an absent row's comma-separated owner list.
-const isOwner = (s) => isText(s) && !/[,/]/.test(s);
+// into an absent row's comma-separated owner list. Not '-', which the feed
+// writes for no owners.
+const isOwner = (s) => isText(s) && s !== '-' && !/[,/]/.test(s);
 const isScopedKey = (key) => {
   const at = key.indexOf('/');
   return at > 0 && isOwner(key.slice(0, at)) && isText(key.slice(at + 1));
@@ -707,7 +708,8 @@ export function main(argv) {
   } else if (cmd === 'export-feed') {
     only(opt, ['out'], cmd);
     need(typeof opt.out === 'string', '--out is required');
-    need(resolve(opt.out) !== resolve(file), '--out must not be the header');
+    const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+    need(!same(resolve(opt.out), resolve(file)), '--out must not be the header');
     const text = exportFeed(load());
     writeFileSync(opt.out, text);
     process.stderr.write(`version-map: ${opt.out}: feed format ${FEED_FORMAT}, ${text.split('\n').length - 1} lines, ${Buffer.byteLength(text)} bytes\n`);

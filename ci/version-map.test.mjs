@@ -115,6 +115,7 @@ test('anything off the format is refused', () => {
     'owners out of order': [l, l.replace('"BetterCheats,WAILA"', '"WAILA,BetterCheats"')],
     'an owner twice': [l, l.replace('"BetterCheats,WAILA"', '"BetterCheats,BetterCheats"')],
     'an empty owner': [l, l.replace('"BetterCheats,WAILA"', '"BetterCheats,"')],
+    'an owner named -': [l, l.replace('"BetterCheats,WAILA"', '"-"')],
     'a scoped absent row with owners': [l, l.replace('2, 0xB3405899, true, nullptr, 0, -1, -1, 0x00000000, nullptr', '2, 0xB3405899, true, nullptr, 0, -1, -1, 0x00000000, "BetterCheats"')],
     'owners on a locator': [l, l.replace('0x01B00010, nullptr', '0x01B00010, "WAILA"')],
   };
@@ -150,6 +151,8 @@ test('the model refuses rows it cannot write', () => {
     () => addFunction(loader, { key: 'K', cl: 127004, kind: 4, fp: 5, pattern: '48', rva: 1 }),
     () => addAbsent(loader, { key: 'K', cl: 127004, kind: 1 }),
     () => addAbsent(loader, { key: 'K', cl: 127004, kind: 1, owners: ['A,B'] }),
+    () => addAbsent(loader, { key: 'K', cl: 127004, kind: 1, owners: ['-'] }),
+    () => addAbsent(loader, { key: 'K', cl: 127004, kind: 1, owners: ['A/B'] }),
     () => addAbsent(loader, { key: 'P/K', cl: 127004, kind: 2, fp: 5, owners: ['P'] }),
     () => addAbsent(loader, { key: 'P/K', cl: 127004, kind: 2 }),
     () => addField(plugin, { key: 'F', cl: 127004, offset: 0x10, size: 0 }),
@@ -488,6 +491,7 @@ test('the commands build the loader fixture, check it over two key lists, and ex
   assert.equal(run('add-absent', h, '--key', 'GWorld', '--kind', '4', '--cl', '127004', '--owners', 'WAILA').code, 2);
   assert.equal(run('add-absent', h, '--key', 'UCrSomething::Function', '--kind', '1', '--cl', '128786', '--owners', 'A,,B').code, 2);
   assert.equal(run('export-feed', h, '--out', h).code, 2);
+  if (process.platform === 'win32') assert.equal(run('export-feed', h, '--out', h.toUpperCase()).code, 2);
   assert.equal(readFileSync(h, 'utf8'), fixture('loader.h'));
   // A verified row replaces the absent one.
   ok('add-function', h, '--key', 'UCrSomething::Function', '--kind', '1', '--cl', '128786', '--pattern', '40 53 48 83 EC 20 48 8B D9', '--rva', '0x01B00020');
