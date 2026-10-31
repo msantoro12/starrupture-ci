@@ -29,7 +29,9 @@ name: SR client check
 # LetMeInside, MiniMap's author), the same trust as scanner_ref. The fork
 # deploy keys are only in the auto-apply job (environment fork-push), which
 # runs no plugin code and no action but actions/checkout, and checks every
-# field of its work list; each key can write only auto/** on its fork.
+# field of its work list: the commit must be the one plugin-plan resolved
+# from the inputs, before any plugin code ran. Each key can write only
+# auto/** branches on its fork, and no tags.
 #
 # Login: a separate Steam account that owns the game, never the owner's main
 # account. Its steamcmd login cache (config.vdf) is the secret
@@ -264,11 +266,25 @@ jobs:
           $list = [Collections.Generic.List[object]]::new()
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^(msantoro12|AlienXAXS)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
-            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = "$($Matches[1])/$($Matches[2])"; ref = $Matches[3]; manifest = '' })
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = "$($Matches[1])/$($Matches[2])"; ref = $Matches[3]; sha = ''; manifest = '' })
           }
           foreach ($u in ("$env:MANIFESTS" -split '\s+' | Where-Object { $_ })) {
             if ($u -notmatch '^https://github\.com/(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)/releases/latest/download/[A-Za-z0-9._-]+\.json$') { throw "manifest '$u' is not a latest-release asset of an allowed owner's plugin repository" }
-            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'release'; repo = "$($Matches[1])/$($Matches[2])"; ref = 'latest release'; manifest = $u })
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'release'; repo = "$($Matches[1])/$($Matches[2])"; ref = 'latest release'; sha = ''; manifest = $u })
+          }
+          # Each ref is resolved to its commit here, before any plugin code
+          # runs: the plugins job builds exactly that commit, and auto-apply
+          # pushes only on top of it.
+          foreach ($e in @($list | Where-Object { $_.source -eq 'build' })) {
+            if ($e.ref -match '^[0-9a-f]{40}$') { $e.sha = $e.ref; continue }
+            $refs = @(git ls-remote "https://github.com/$($e.repo)" "refs/heads/$($e.ref)" "refs/tags/$($e.ref)" "refs/tags/$($e.ref)^{}")
+            if ($LASTEXITCODE -ne 0) { throw "git ls-remote $($e.repo) failed (exit $LASTEXITCODE)" }
+            $hit = foreach ($want in "refs/heads/$($e.ref)", "refs/tags/$($e.ref)^{}", "refs/tags/$($e.ref)") {
+              $line = $refs | Where-Object { ($_ -split '\s+')[1] -eq $want } | Select-Object -First 1
+              if ($line) { ($line -split '\s+')[0]; break }
+            }
+            if ("$hit" -notmatch '^[0-9a-f]{40}$') { throw "$($e.repo) has no branch or tag '$($e.ref)'" }
+            $e.sha = "$hit"
           }
           $twice = @($list | Group-Object { $_.name } | Where-Object Count -gt 1 | ForEach-Object Name)
           if ($twice.Count) { throw "listed more than once: $($twice -join ', ')" }
@@ -319,7 +335,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ matrix.repo }}
-          ref: ${{ matrix.ref }}
+          ref: ${{ matrix.sha }}
           path: plugin
           persist-credentials: false
 
@@ -491,7 +507,7 @@ jobs:
             try { $bytes = [Convert]::FromBase64String("$env:STEAM_CACHE".Trim()) }
             catch { $dl.reason = 'cache-unreadable'; throw 'STEAM_CI_LOGIN_CACHE is not base64' }
             $text = [Text.Encoding]::UTF8.GetString($bytes)
-            foreach ($m in [regex]::Matches($text, '"([^"]{16,})"')) { Write-Host "::add-mask::$($m.Groups[1].Value)" }
+            foreach ($m in [regex]::Matches($text, '"[^"\r\n]*"[ \t]+"([^"\r\n]{16,})"')) { Write-Host "::add-mask::$($m.Groups[1].Value)" }
             if ($text -notmatch '"ConnectCache"') {
               $dl.reason = 'cache-unreadable'
               throw 'STEAM_CI_LOGIN_CACHE is not a steamcmd config.vdf with a ConnectCache entry'
@@ -864,6 +880,8 @@ jobs:
             plugins = $results
           } | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
           foreach ($r in $results) { "$($r.name): $($r.verdict)" }
+          # The verdicts are in plugins.json; the last scanner's exit code is not the step's result.
+          exit 0
 
       # ---- Auto-apply, part 1: build and scan the proposed fixes -----------
       # The apply tool is this workflow's own code at the same commit.
@@ -929,36 +947,43 @@ jobs:
           $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
           $work = Join-Path $env:RUNNER_TEMP 'autofix'
           $push = [Collections.Generic.List[object]]::new()
-          $results = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
+          # Collected with Add, so no stray output can land in the results.
+          $results = [Collections.Generic.List[object]]::new()
+          foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
             $scan = "out\plugin-$($p.name).json"
             if (-not ((Test-Path $scan) -and (Get-Item $scan).Length)) { continue }
             $d = Join-Path $work $p.name
             New-Item -ItemType Directory -Force $d | Out-Null
-            node $tool select --scan $scan --min-confidence $env:APPLY_CONFIDENCE --target-public $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }) > "$d\plan.json"
-            Invoke-Native 'select'
-            $plan = Get-Content "$d\plan.json" -Raw | ConvertFrom-Json
-            # Nothing failing, nothing to do.
-            if (-not @($plan.rows).Count -and -not @($plan.skipped).Count) { continue }
             $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; sha = ''; verdict = 'NO-FIX'; reasons = @()
-                             applied = @(); skipped = @($plan.skipped); tree = ''; patch = '' }
+                             applied = @(); skipped = @(); tree = ''; patch = '' }
             try {
-              if (-not @($plan.rows).Count) { $r.reasons = @('no proposal was selected'); $r; continue }
+              node $tool select --scan $scan --min-confidence $env:APPLY_CONFIDENCE --target-public $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }) > "$d\plan.json"
+              Invoke-Native 'select'
+              $plan = Get-Content "$d\plan.json" -Raw | ConvertFrom-Json
+              # Nothing failing, nothing to do.
+              if (-not @($plan.rows).Count -and -not @($plan.skipped).Count) { continue }
+              $r.skipped = @($plan.skipped)
+              if (-not @($plan.rows).Count) { $r.reasons = @('no proposal was selected'); $results.Add($r); continue }
               $meta = Get-Content "plugins\plugin-$($env:BRANCH)-$($p.name)\plugin.json" -Raw | ConvertFrom-Json
-              $r.sha = [string]$meta.sha
               if ($p.source -eq 'release') { Get-Source $p.repo "refs/tags/$($meta.ref)" "$d\src" }
-              else { Get-Source $p.repo $meta.sha "$d\src" }
+              else {
+                # The commit plugin-plan resolved, which the scanned DLL was built from.
+                if ([string]$meta.sha -ne $p.sha) { throw "the scanned DLL was built from $($meta.sha), not the planned commit $($p.sha)" }
+                $r.sha = $p.sha
+                Get-Source $p.repo $p.sha "$d\src"
+              }
               node $tool apply --source "$d\src" --plan "$d\plan.json" > "$d\applied.json"
               Invoke-Native 'apply'
               $applied = Get-Content "$d\applied.json" -Raw | ConvertFrom-Json
               $r.applied = @($applied.rows | Where-Object { $_.status -eq 'applied' })
               $r.skipped = @(@($plan.skipped) + @($applied.rows | Where-Object { $_.status -ne 'applied' }))
-              if (-not $r.applied.Count) { $r.reasons = @('no proposal could be applied to the source'); $r; continue }
+              if (-not $r.applied.Count) { $r.reasons = @('no proposal could be applied to the source'); $results.Add($r); continue }
               # The tree is taken before the build, which only adds ignored files.
               git -C "$d\src" add -A; Invoke-Native 'git add'
               $r.tree = [string](git -C "$d\src" write-tree); Invoke-Native 'git write-tree'
               $r.patch = "autofix-$($p.name).patch"
               git -C "$d\src" diff --cached > "out\$($r.patch)"; Invoke-Native 'git diff'
-              if ($p.source -eq 'release') { $r.verdict = 'PATCH'; $r.reasons = @("another author's released plugin: the patch only"); $r; continue }
+              if ($p.source -eq 'release') { $r.verdict = 'PATCH'; $r.reasons = @("another author's released plugin: the patch only"); $results.Add($r); continue }
 
               # Rebuilt exactly as the plugins job built the scanned DLL.
               if ($meta.loaderRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$' -or $meta.loaderInterface -notmatch '^[0-9a-f]{40}$') { throw 'plugin.json does not name the loader interface it was built against' }
@@ -975,8 +1000,8 @@ jobs:
                 /p:ModLoaderBuildTag="$($meta.tag)" `
                 /p:GameSDKRoot="$d\game-sdk" `
                 /p:PluginSDKInclude="$d\plugin-sdk\include" `
-                /m /p:CL_MP=true /nodeReuse:false /v:minimal
-              if ($LASTEXITCODE -ne 0) { $r.verdict = 'FAILED'; $r.reasons = @("the fixed source did not build (msbuild exit $LASTEXITCODE)"); $r; continue }
+                /m /p:CL_MP=true /nodeReuse:false /v:minimal | Out-Host
+              if ($LASTEXITCODE -ne 0) { $r.verdict = 'FAILED'; $r.reasons = @("the fixed source did not build (msbuild exit $LASTEXITCODE)"); $results.Add($r); continue }
               $dll = @(Get-ChildItem "$d\src\build\Client Release\Plugins" -File -Filter *.dll)
               if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
 
@@ -1006,9 +1031,8 @@ jobs:
               $r.verdict = 'FAILED'
               $r.reasons = @($_.Exception.Message)
             }
-            $r
+            $results.Add($r)
           }
-          $results = @($results)
           foreach ($r in $results) {
             "$($r.name): $($r.verdict) ($(@($r.applied).Count) applied, $(@($r.skipped).Count) skipped)$(if (@($r.reasons).Count) { ': ' + (@($r.reasons) -join '; ') })"
             if ($r.verdict -eq 'FAILED') { Write-Host "::warning title=Auto-apply $($r.name)::$(@($r.reasons) -join '; ')" }
@@ -1078,7 +1102,7 @@ jobs:
   # forces: a branch that already holds another tree gets a run-id suffix.
   auto-apply:
     name: auto-apply ${{ matrix.name }}
-    needs: check
+    needs: [plugin-plan, check]
     if: ${{ !cancelled() && startsWith(needs.check.outputs.autofix, '[{') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1097,12 +1121,19 @@ jobs:
           TREE: ${{ matrix.tree }}
           CL: ${{ matrix.cl }}
           REFERENCE_CL: ${{ matrix.referenceCl }}
+          VERDICT: ${{ matrix.verdict }}
+          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
         run: |
           # The work list comes from the job that ran plugin code, so every
-          # field that picks a repository, a key or a ref is checked here.
+          # field that picks a repository, a key or a ref is checked here. The
+          # commit must be the one plugin-plan resolved before plugin code ran;
+          # any commit in the fork network can be fetched by id.
           [[ "$NAME" =~ ^(BetterCheats|BetterDrone|WAILA|Codex)$ ]] || { echo "::error::'$NAME' is not a fork this job pushes to"; exit 1; }
           [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$TREE" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::bad commit or tree id'; exit 1; }
           [[ "$CL" =~ ^[0-9]+$ && "$REFERENCE_CL" =~ ^[0-9]*$ ]] || { echo '::error::bad CL'; exit 1; }
+          [[ "$VERDICT" =~ ^(FIXED|PARTIAL)$ ]] || { echo '::error::bad verdict'; exit 1; }
+          planned="$(jq -r --arg n "$NAME" '.[] | select(.name == $n and .source == "build" and .repo == "msantoro12/StarRupture-Plugin-" + $n) | .sha' <<< "$PLAN")"
+          [ "$planned" = "$SHA" ] || { echo "::error::$SHA is not the commit plugin-plan resolved for msantoro12/StarRupture-Plugin-$NAME"; exit 1; }
 
       - name: Check out the apply tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1147,6 +1178,7 @@ jobs:
           CL: ${{ matrix.cl }}
           VERDICT: ${{ matrix.verdict }}
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
           # This fork's key only.
           DEPLOY_KEY: ${{ matrix.name == 'BetterCheats' && secrets.SR_DEPLOYKEY_BETTERCHEATS || matrix.name == 'BetterDrone' && secrets.SR_DEPLOYKEY_BETTERDRONE || matrix.name == 'WAILA' && secrets.SR_DEPLOYKEY_WAILA || matrix.name == 'Codex' && secrets.SR_DEPLOYKEY_CODEX || '' }}
         run: |
@@ -1171,7 +1203,7 @@ jobs:
               echo "$NAME ($VERDICT): \`$branch\` already holds this fix at $existing." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            branch="auto/update-$CL-$RUN_ID"
+            branch="auto/update-$CL-$RUN_ID-$RUN_ATTEMPT"
           fi
           git -C plugin push -q "$url" "HEAD:refs/heads/$branch"
           echo "Pushed $branch at $head to msantoro12/StarRupture-Plugin-$NAME."

@@ -419,8 +419,8 @@ export function commitMessage(applied, { cl, referenceCl = '' }) {
   const rows = (applied.rows || []).filter((r) => r.status === 'applied');
   const lines = [`Update patterns for CL-${cl}`, ''];
   lines.push(referenceCl
-    ? `Re-derived for client CL-${cl}. Built and scanned against CL-${cl} and the public client CL-${referenceCl}: on both, each hook changed here resolves to the function it resolved to before.`
-    : `Re-derived for client CL-${cl}, the public client. Built and scanned against it: each hook changed here resolves to the function it resolved to before.`);
+    ? `Re-derived for client CL-${cl}. Built and scanned against CL-${cl} and the public client CL-${referenceCl}: on both, each hook changed here resolves uniquely, on CL-${cl} to the function the suggester located, and on the public client to the function it resolves to today.`
+    : `Re-derived for client CL-${cl}, the public client. Built and scanned against it: each hook changed here resolves uniquely to the function the suggester located.`);
   for (const r of rows) {
     lines.push('', r.name);
     lines.push(r.category === 'replace'
