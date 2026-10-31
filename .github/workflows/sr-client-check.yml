@@ -1,5 +1,10 @@
 name: SR client check
 
+# REPLAY BRANCH test/replay-update2: the client check exactly as on main,
+# pointed at the pre-Update-2 loader (fork branch test/replay-update2) and
+# run under its own environment, steam-client-replay, whose Steam login only
+# this branch can read. Nothing on this branch can release.
+
 # Offline check of a new StarRupture client build (Steam app 1631270): logs in
 # to Steam with the saved CI login, downloads the build, and checks it without
 # running it:
@@ -55,22 +60,22 @@ on:
         default: 'msantoro12/StarRupture-ModLoader'
       loader_ref:
         type: string
-        default: 'gss/loader-work'
+        default: 'test/replay-update2'
       scanner_ref:
         type: string
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@test/replay-update2 msantoro12/StarRupture-Plugin-BetterDrone@test/replay-update2 msantoro12/StarRupture-Plugin-WAILA@test/replay-update2 msantoro12/StarRupture-Plugin-Codex@test/replay-update2'
       plugin_manifests:
         type: string
-        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+        default: ''
       plugin_sdk_ref:
         type: string
-        default: 'main'
+        default: '4196e1fe3a83c120133daad824cbaff94780898b'
       game_sdk_ref:
         type: string
-        default: 'main'
+        default: '4ab6473c15a0c1975a7e89b867e321e28b2645e8'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
         type: string
@@ -93,7 +98,7 @@ on:
       loader_ref:
         description: 'Loader branch the patterns come from'
         type: string
-        default: 'gss/loader-work'
+        default: 'test/replay-update2'
       scanner_ref:
         description: 'Branch of the loader repository holding tools/AobScan'
         type: string
@@ -101,19 +106,19 @@ on:
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@test/replay-update2 msantoro12/StarRupture-Plugin-BetterDrone@test/replay-update2 msantoro12/StarRupture-Plugin-WAILA@test/replay-update2 msantoro12/StarRupture-Plugin-Codex@test/replay-update2'
       plugin_manifests:
         description: 'Released plugins, checked as players get them: the update-manifest URL from each one''s sidecar .json, space-separated'
         type: string
-        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+        default: ''
       plugin_sdk_ref:
         description: 'AlienXAXS/StarRupture-Plugin-SDK ref the plugins build against'
         type: string
-        default: 'main'
+        default: '4196e1fe3a83c120133daad824cbaff94780898b'
       game_sdk_ref:
         description: 'AlienXAXS/StarRupture-Game-SDK ref the plugins build against'
         type: string
-        default: 'main'
+        default: '4ab6473c15a0c1975a7e89b867e321e28b2645e8'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied (medium only for a replay)'
         type: choice
@@ -408,7 +413,7 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
     timeout-minutes: 120
-    environment: steam-client
+    environment: steam-client-replay
     permissions:
       contents: read
     concurrency:
