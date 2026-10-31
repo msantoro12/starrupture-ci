@@ -45,11 +45,12 @@ function follow(v) {
 
 export function selectRows(scan, { minConfidence = 'high', targetPublic = false } = {}) {
   if (!RANK[minConfidence]) throw new Error(`bad --min-confidence ${minConfidence}`);
-  const hasReference = !!(scan.suggest && scan.suggest.reference && scan.suggest.reference !== 'none');
+  const hasReference = !!(scan.suggest && scan.suggest.reference && scan.suggest.reference === 'mapped');
   const rows = [];
   const skipped = [];
   for (const row of scan.patterns || []) {
-    if (!row.recorded || row.result === 'OK' || !row.suggest) continue;
+    if (!row.recorded || row.result === 'OK') continue;
+    if (!row.suggest) { skipped.push({ name: row.name, call: row.call, result: row.result, status: 'skipped', reason: 'no proposal' }); continue; }
     const s = row.suggest;
     const base = { name: row.name, call: row.call, result: row.result, confidence: s.confidence || '', located: s.located || '' };
     const skip = (reason) => skipped.push({ ...base, status: 'skipped', reason });
@@ -363,8 +364,8 @@ export function commitMessage(applied, { cl, referenceCl = '' }) {
   const rows = (applied.rows || []).filter((r) => r.status === 'applied');
   const lines = [`Update patterns for CL-${cl}`, ''];
   lines.push(referenceCl
-    ? `Re-derived for client CL-${cl}. Built and scanned against CL-${cl} and the public client CL-${referenceCl}: each pattern resolves to the function it named before on both.`
-    : `Re-derived for client CL-${cl}, the public client. Built and scanned against it: each pattern resolves to the function it named before.`);
+    ? `Re-derived for client CL-${cl}. Built and scanned against CL-${cl} and the public client CL-${referenceCl}: on both, each hook changed here resolves to the function it resolved to before.`
+    : `Re-derived for client CL-${cl}, the public client. Built and scanned against it: each hook changed here resolves to the function it resolved to before.`);
   for (const r of rows) {
     lines.push('', r.name);
     lines.push(r.category === 'replace'
