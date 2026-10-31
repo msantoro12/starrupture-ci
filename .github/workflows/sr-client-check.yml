@@ -186,10 +186,12 @@ jobs:
           # checks what that branch would ship.
           Copy-Item -Recurse -Force scanner-src\tools\AobScan loader\tools\
 
+          # A loader with one required CL names it here. A loader that runs on
+          # every build in its version map has no such line; the scanner then
+          # reports that loader's own gate verdict (exe.supported).
           $f = 'loader\StarRupture-ModLoader-Core\core\version_check.cpp'
           $m = Select-String -Path $f -Pattern 'kRequiredVersionSuffix\[\]\s*=\s*L"([^"]+)"'
-          if (-not $m) { throw 'required CL not found in version_check.cpp' }
-          $cl = $m.Matches[0].Groups[1].Value
+          $cl = if ($m) { $m.Matches[0].Groups[1].Value } else { '' }
 
           $basic = 'loader\StarRupture SDK\Client\SDK\Basic.hpp'
           $offsets = [ordered]@{}
@@ -198,7 +200,7 @@ jobs:
             $offsets[$k] = if ($o) { $o.Matches[0].Groups[1].Value } else { '' }
           }
           $json = $offsets | ConvertTo-Json -Compress
-          "Required CL: $cl"
+          "Required CL: $(if ($cl) { $cl } else { 'none (the loader''s version map decides)' })"
           "SDK Offsets: $json"
           "required_cl=$cl" >> $env:GITHUB_OUTPUT
           "sdk_offsets=$json" >> $env:GITHUB_OUTPUT
@@ -709,10 +711,8 @@ jobs:
             Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
           if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
           $pv = [string]$exe.VersionInfo.ProductVersion
-          $clOk = [bool]($pv -and $env:REQUIRED_CL -and $pv.EndsWith($env:REQUIRED_CL))
           $sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           "exe: $($exe.FullName.Substring($env:INSTALL_DIR.Length))"
-          "ProductVersion=$pv required=$($env:REQUIRED_CL) match=$clOk"
           "SHA-256=$sha"
 
           # Proposals for failing patterns use the public build (when this is
@@ -738,7 +738,26 @@ jobs:
           $scanCode = $LASTEXITCODE
           Get-Content out\scanner.txt | Write-Host
           $scan = Get-Content out\scanner.json -Raw | ConvertFrom-Json
-          $notOk = @($scan.patterns | Where-Object { $_.result -ne 'OK' } |
+
+          # The loader's version gate. A required CL (kRequiredVersionSuffix)
+          # must end the ProductVersion; a scanner built from a loader with a
+          # version map reports that loader's own verdict. Every gate the
+          # loader has must pass, and at least one must be there.
+          $gates = [Collections.Generic.List[bool]]::new()
+          $required = [Collections.Generic.List[string]]::new()
+          if ($env:REQUIRED_CL) {
+            $gates.Add([bool]($pv -and $pv.EndsWith($env:REQUIRED_CL)))
+            $required.Add($env:REQUIRED_CL)
+          }
+          if ($scan.PSObject.Properties['exe'] -and $scan.exe.PSObject.Properties['supported']) {
+            $gates.Add($scan.exe.supported -is [bool] -and $scan.exe.supported)
+            $required.Add((@($scan.exe.supportedBuilds) | ForEach-Object { "CL-$_" }) -join ' or ')
+          }
+          $clOk = $gates.Count -gt 0 -and -not ($gates -contains $false)
+          $requiredCl = if ($required.Count) { $required -join ' and ' } else { 'no gate found' }
+          "ProductVersion=$pv required=$requiredCl match=$clOk"
+
+          $notOk =@($scan.patterns | Where-Object { $_.result -ne 'OK' } |
             ForEach-Object {
               $o = [ordered]@{ name = $_.name; required = $_.required; result = $_.result }
               if ($_.PSObject.Properties['suggest']) { $o.suggest = $_.suggest }
@@ -768,7 +787,7 @@ jobs:
 
           $fail = (-not $clOk) -or ($scanCode -ne 0)
           [ordered]@{
-            exe = [ordered]@{ productVersion = $pv; cl = $(if ($pv -match 'CL-(\d+)$') { $Matches[1] } else { '' }); requiredCl = $env:REQUIRED_CL; clOk = $clOk; sha256 = $sha }
+            exe = [ordered]@{ productVersion = $pv; cl = $(if ($pv -match 'CL-(\d+)$') { $Matches[1] } else { '' }); requiredCl = $requiredCl; clOk = $clOk; sha256 = $sha }
             reference = $(if ($refExe) { [ordered]@{ productVersion = $refPv; cl = $(if ($refPv -match 'CL-(\d+)$') { $Matches[1] } else { '' }) } } else { $null })
             scan = [ordered]@{ exitCode = $scanCode; summary = $scan.summary; notOk = $notOk
                      suggest = $(if ($scan.PSObject.Properties['suggest']) { $scan.suggest } else { $null }) }
@@ -777,7 +796,7 @@ jobs:
             fail = $fail
           } | ConvertTo-Json -Depth 12 | Set-Content out\checks.json -Encoding utf8
           foreach ($w in $warnings) { Write-Host "::warning::$w" }
-          if (-not $clOk) { Write-Host "::error::ProductVersion '$pv' does not end with the loader's required '$($env:REQUIRED_CL)'" }
+          if (-not $clOk) { Write-Host "::error::ProductVersion '$pv' is not a build the loader runs on ($requiredCl)" }
           if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code $scanCode ($($scan.summary.requiredFailing) required patterns failing)" }
           if ($fail) { exit 1 }
 
