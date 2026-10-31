@@ -578,6 +578,8 @@ export function applyPlan(files, plan) {
 //   changed    the member's size or bool mask differs between the builds.
 //   missing    the member is gone from the checked build (renamed or removed).
 //   unanchored the anchor matches nothing in the source: the check is stale.
+//   unchecked  the offsets could not be checked (no layout report, or the step
+//              crashed): the plugin fails, it never passes by default.
 //
 // Every state but ok fails the plugin; only patch is fixed by apply.
 
@@ -752,6 +754,12 @@ export function verdictOf(applied, { target = null, reference = null, offsetsAft
     if (reference.verdict !== 'PASS') fail(`the public build scans ${reference.verdict}`);
   }
   if (stillFailing.length ? target.verdict !== 'FAIL' : target.verdict !== 'PASS') fail(`the checked build scans ${target.verdict}`);
+  }
+
+  if (!rows.length && notApplied.size) {
+    // Offsets only: a skipped pattern row is still failing unless the scan of the
+    // rebuilt plugin says otherwise; without that scan it cannot be called fixed.
+    stillFailing = target ? recorded(target).filter((p) => p.result !== 'OK' && notApplied.has(p.name)).map((p) => p.name) : [...notApplied];
   }
 
   if (offsetsAfter) {

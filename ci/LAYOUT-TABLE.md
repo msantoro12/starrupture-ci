@@ -201,7 +201,8 @@ ok; patch (one new constant is right for every build that matters, and
 `apply-proposals.mjs apply` rewrites it); split (the offset moved between the
 builds and the source reads the public one: a person decides); wrong (matches
 neither build); changed (size or bool mask differs); missing (gone from the
-build); unanchored (the anchor matches nothing). Only ok passes.
+build); unanchored (the anchor matches nothing); unchecked (no layout report, or the
+step crashed). Only ok passes.
 
 `sr-client-check` runs this once the scan tool has built: one `--layout` pass
 per build over the keys of the loader and of each built plugin, then one

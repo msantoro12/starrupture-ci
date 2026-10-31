@@ -405,6 +405,14 @@ test('verdict and message: rewritten offsets must read ok on the rebuilt source;
   assert.equal(verdictOf(applied, { offsetsAfter: after(['UObj::Beta', 'b', 'ok']) }).verdict, 'FAILED');
   assert.equal(verdictOf(applied, {}).verdict, 'FAILED');
   assert.equal(verdictOf({ ...applied, offsets: [applied.offsets[1]] }, {}).verdict, 'NO-FIX');
+  // A pattern row that was skipped and still fails keeps an offsets-only fix PARTIAL,
+  // whether the rebuilt plugin's scan says so or there is no scan to say otherwise.
+  const skippedRow = { rows: [{ name: 'PatB', status: 'skipped' }], skipped: [{ name: 'PatB' }] };
+  const offsOnly = { ...applied, ...skippedRow, offsets: [applied.offsets[0]] };
+  const rebuilt = (result) => ({ verdict: result === 'OK' ? 'PASS' : 'FAIL', patterns: [{ call: 'Resolve', name: 'PatB', recorded: true, result }] });
+  assert.equal(verdictOf(offsOnly, { offsetsAfter: after([ALPHA, 'a', 'ok']) }).verdict, 'PARTIAL');
+  assert.equal(verdictOf(offsOnly, { target: rebuilt('MISSING'), offsetsAfter: after([ALPHA, 'a', 'ok']) }).verdict, 'PARTIAL');
+  assert.equal(verdictOf(offsOnly, { target: rebuilt('OK'), offsetsAfter: after([ALPHA, 'a', 'ok']) }).verdict, 'FIXED');
   const msg = commitMessage(applied, { cl: '128786' });
   assert.match(msg, /^Update offsets for CL-128786\n/);
   assert.match(msg, /UObj::Alpha\n {2}offset 0x78 -> 0x80 \(src\/wave\.cpp:1\)/);

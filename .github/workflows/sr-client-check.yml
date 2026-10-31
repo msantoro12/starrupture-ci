@@ -1026,50 +1026,65 @@ jobs:
           # (OFFSETS-UNCHECKED). The fix step rewrites the ones it can.
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
-          $tool = 'ci-tool\ci\apply-proposals.mjs'
-          $native = 'ci-tool\ci\native-keys.txt'
-          function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
-          $anchored = @(Get-Content $native | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s+\S') { $Matches[1] } } | Sort-Object -Unique)
-          $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
-          $work = Join-Path $env:RUNNER_TEMP 'offsets'
-          New-Item -ItemType Directory -Force $work | Out-Null
-          foreach ($p in @($pj.plugins | Where-Object { $_.source -eq 'build' -and $_.sha -and $_.name -in $anchored })) {
-            $json = "out\offsets-$($p.name).json"
-            try {
-              $src = Join-Path $work $p.name
-              git -c init.defaultBranch=main init -q $src; Invoke-Native "git init $src"
-              git -C $src fetch -q --depth 1 "https://github.com/$($p.repo)" $p.sha; Invoke-Native "fetching $($p.repo) $($p.sha)"
-              git -C $src checkout -q FETCH_HEAD; Invoke-Native "checking out $($p.repo)"
-              $a = @('offsets', '--native', $native, '--plugin', $p.name, '--source', $src, '--target-public', $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }))
-              if (Test-Path out\layout-target.json) { $a += @('--target', 'out\layout-target.json') }
-              if (Test-Path out\layout-reference.json) { $a += @('--reference', 'out\layout-reference.json') }
-              node $tool @a > $json
-              Invoke-Native "offsets ($($p.name))"
-            } catch {
-              [ordered]@{ plugin = $p.name; status = 'unchecked'; reason = $_.Exception.Message; counts = @{}; results = @(); plan = @(); blocked = @() } |
-                ConvertTo-Json -Depth 6 | Set-Content $json -Encoding utf8
-            }
-            $o = Get-Content $json -Raw | ConvertFrom-Json
-            $p | Add-Member -NotePropertyName offsets -NotePropertyValue ([ordered]@{
-              status = $o.status
-              reason = $(if ($o.PSObject.Properties['reason']) { $o.reason } else { '' })
-              counts = $o.counts
-              results = @($o.results | ForEach-Object { $_ | Select-Object key, state, file, line, source, target, reference, reason })
-            }) -Force
-            "$($p.name): offsets $($o.status) $($o.counts | ConvertTo-Json -Compress)"
-            if ($o.status -in 'fail', 'unchecked') {
-              $bad = @($o.results | Where-Object { $_.state -ne 'ok' } | ForEach-Object { "$($_.key.Split('::')[-1]) ($($_.state))" })
-              $why = if ($o.status -eq 'unchecked') { $o.reason } else { "$($bad.Count) of $(@($o.results).Count) fixed offsets do not match this build: $($bad -join ', ')" }
-              Write-Host "::error title=Plugin $($p.name)::$why"
-              $p | Add-Member -NotePropertyName note -NotePropertyValue $(if ($p.PSObject.Properties['note'] -and $p.note) { "$($p.note); $why" } else { $why }) -Force
-              if ($p.verdict -in 'PASS', 'NONE', 'GAME-CALL') {
-                $p | Add-Member -NotePropertyName patternVerdict -NotePropertyValue $p.verdict -Force
-                $p.verdict = $(if ($o.status -eq 'unchecked') { 'OFFSETS-UNCHECKED' } else { 'OFFSETS' })
+          try {
+            $tool = 'ci-tool\ci\apply-proposals.mjs'
+            $native = 'ci-tool\ci\native-keys.txt'
+            function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
+            $anchored = @(Get-Content $native | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s+\S') { $Matches[1] } } | Sort-Object -Unique)
+            $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
+            $work = Join-Path $env:RUNNER_TEMP 'offsets'
+            New-Item -ItemType Directory -Force $work | Out-Null
+            foreach ($p in @($pj.plugins | Where-Object { $_.source -eq 'build' -and $_.sha -and $_.name -in $anchored })) {
+              $json = "out\offsets-$($p.name).json"
+              try {
+                $src = Join-Path $work $p.name
+                git -c init.defaultBranch=main init -q $src; Invoke-Native "git init $src"
+                git -C $src fetch -q --depth 1 "https://github.com/$($p.repo)" $p.sha; Invoke-Native "fetching $($p.repo) $($p.sha)"
+                git -C $src checkout -q FETCH_HEAD; Invoke-Native "checking out $($p.repo)"
+                $a = @('offsets', '--native', $native, '--plugin', $p.name, '--source', $src, '--target-public', $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }))
+                if (Test-Path out\layout-target.json) { $a += @('--target', 'out\layout-target.json') }
+                if (Test-Path out\layout-reference.json) { $a += @('--reference', 'out\layout-reference.json') }
+                node $tool @a > $json
+                Invoke-Native "offsets ($($p.name))"
+              } catch {
+                [ordered]@{ plugin = $p.name; status = 'unchecked'; reason = $_.Exception.Message; counts = @{}; results = @(); plan = @(); blocked = @() } |
+                  ConvertTo-Json -Depth 6 | Set-Content $json -Encoding utf8
+              }
+              $o = Get-Content $json -Raw | ConvertFrom-Json
+              $p | Add-Member -NotePropertyName offsets -NotePropertyValue ([ordered]@{
+                status = $o.status
+                reason = $(if ($o.PSObject.Properties['reason']) { $o.reason } else { '' })
+                counts = $o.counts
+                results = @($o.results | ForEach-Object { $_ | Select-Object key, state, file, line, source, target, reference, reason })
+              }) -Force
+              "$($p.name): offsets $($o.status) $($o.counts | ConvertTo-Json -Compress)"
+              if ($o.status -in 'fail', 'unchecked') {
+                $bad = @($o.results | Where-Object { $_.state -ne 'ok' } | ForEach-Object { "$($_.key.Split('::')[-1]) ($($_.state))" })
+                $why = if ($o.status -eq 'unchecked') { $o.reason } else { "$($bad.Count) of $(@($o.results).Count) fixed offsets do not match this build: $($bad -join ', ')" }
+                Write-Host "::error title=Plugin $($p.name)::$why"
+                $p | Add-Member -NotePropertyName note -NotePropertyValue $(if ($p.PSObject.Properties['note'] -and $p.note) { "$($p.note); $why" } else { $why }) -Force
+                if ($p.verdict -in 'PASS', 'NONE', 'GAME-CALL') {
+                  $p | Add-Member -NotePropertyName patternVerdict -NotePropertyValue $p.verdict -Force
+                  $p.verdict = $(if ($o.status -eq 'unchecked') { 'OFFSETS-UNCHECKED' } else { 'OFFSETS' })
+                }
               }
             }
+            $pj.status = $(if (@($pj.plugins | Where-Object { $_.verdict -notin 'PASS', 'NONE', 'GAME-CALL' }).Count) { 'fail' } else { 'pass' })
+            $pj | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
+          } catch {
+            # The step itself crashed: no plugin passes on offsets nobody checked.
+            Write-Host "::error title=Fixed offsets::$($_.Exception.Message)"
+            $why = "fixed offsets not checked: $($_.Exception.Message)"
+            $anchored = @(Get-Content 'ci-tool\ci\native-keys.txt' | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s+\S') { $Matches[1] } } | Sort-Object -Unique)
+            $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
+            foreach ($p in @($pj.plugins | Where-Object { $_.source -eq 'build' -and $_.name -in $anchored -and $_.verdict -in 'PASS', 'NONE', 'GAME-CALL' })) {
+              $p | Add-Member -NotePropertyName patternVerdict -NotePropertyValue $p.verdict -Force
+              $p | Add-Member -NotePropertyName note -NotePropertyValue $why -Force
+              $p.verdict = 'OFFSETS-UNCHECKED'
+            }
+            $pj.status = 'fail'
+            $pj | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
           }
-          $pj.status = $(if (@($pj.plugins | Where-Object { $_.verdict -notin 'PASS', 'NONE', 'GAME-CALL' }).Count) { 'fail' } else { 'pass' })
-          $pj | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
           exit 0
 
       - name: Build the proposed fixes
