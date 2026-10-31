@@ -13,3 +13,35 @@ BetterCheats ACrTechnologyKeeper::bUnlockAllBuildings
 BetterCheats UCrUW_InventoryContainer::InventoryComponent
 BetterDrone ACrPlayerControllerBase::PlayerControlState
 WAILA ACrPackageTransportReplicator::SendingTime
+
+# A line may name where the plugin source holds the number, so the check can
+# compare it with the PDB and auto-apply can rewrite it:
+#   <plugin> <Class::Member> <file-suffix>:<regex>
+# In the regex @ is the number (hex or decimal) and ~ is \s*; see
+# ci/apply-proposals.mjs "fixed offsets in the source". Engine-internal
+# layouts (TArray, TSharedPtr counts) are engine invariants and are left out.
+RuptureTimer UCrEnviroWaveTimerSubsystem::WaitingDuration src/wave/wave_reader.cpp:kOff_WaitingDuration~=~@;
+RuptureTimer UCrEnviroWaveTimerSubsystem::NextWaveTimer src/wave/wave_reader.cpp:kOff_NextWaveTimer~=~@;
+RuptureTimer UCrEnviroWaveTimerSubsystem::bWaitingForNextWave src/wave/wave_reader.cpp:kOff_bWaitingForNextWave~=~@;
+RuptureTimer UCrEnviroWaveTimerSubsystem::bStopWaves src/wave/wave_reader.cpp:kOff_bStopWaves~=~@;
+RuptureTimer UCrEnviroWaveTimerSubsystem::TimerActor src/wave/wave_reader.cpp:kOff_TimerActor~=~@;
+Compass UObject::ObjectFlags src/compass/compass_textures.h:objFlags~=[^;]*\+~@\)
+Compass UObject::InternalIndex src/compass/compass_textures.h:\bidx~=[^;]*\+~@\)
+Compass FUObjectItem::Flags src/compass/compass_textures.h:itemFlags~=[^;]*\+~@\)
+Compass UStreamableRenderAsset::NeverStream src/compass/compass_textures.h:streamFlags~=[^;]*\+~@;
+Compass UTexture::bAsyncResourceReleaseHasBeenStarted src/compass/compass_textures.h:texFlags~=~\*\(base~\+~@\)
+Compass ACrPlayerControllerBase::bMapMenuOpen src/aob_patterns.h:ACrPlayerControllerBase_bMapMenuOpen~=~@;
+WaveOptimiser UMassEntitySubsystem::EntityManager src/wave_optimiser.cpp:\(massEntitySubsystem\)~\+~@\)
+WaveOptimiser UObject::OuterPrivate src/wave_optimiser.cpp:\(g_cachedWaveSubsystem\)~\+~@\)
+WaveOptimiser FCrMassTemperatureFragment::LastUpdateTime src/wave_optimiser.cpp:kLastUpdateTimeOffset~=~@;
+WaveOptimiser UMassActorSubsystem::ActorManager src/heat_sampler.cpp:\(subsystem\)~\+~@\)
+WaveOptimiser FCrMassActorReplicationHelper::Actor src/heat_sampler.cpp:helperBuf~\+~@,
+CameraControls AAuPlayerCameraManager::FOV src/fov_override.cpp:kFovOffset~=~@;
+CameraControls AAuPlayerCameraManager::AdditionalFOVOffset src/fov_override.cpp:kAdditionalFovOffset~=~@;
+CameraControls ULocalPlayer::Origin src/viewport_fit.cpp:kOriginOffset~=~@;
+CameraControls ULocalPlayer::Size src/viewport_fit.cpp:kSizeOffset~=~@;
+CameraControls APlayerController::bPlayerIsWaiting src/control_probe.cpp:kBitsOffset~=~@;
+ProductionViewer UCrGameInstance::ServerSessionName Storage/production_storage.cpp:kServerSessionNameOffset~=~@;
+ProductionViewer UMassEntitySubsystem::EntityManager Production Viewer/production_mass.cpp:\(subsystem\)~\+~@\)
+ProductionViewer FTransform::Translation Production Viewer/production_mass.cpp:fragment~\+~@,
+ProductionViewer UMassSignalSubsystem::CachedWorld Production Viewer/production_mass.cpp:\(self\)~\+~@\)

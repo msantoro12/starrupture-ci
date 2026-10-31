@@ -193,6 +193,17 @@ the same key list, one per build, key by key: same, moved, changed (size or
 bool mask), missing, added, unresolved. A renamed member counts as missing.
 It exits 3 when anything moved, changed or went missing, 0 otherwise.
 
+A `native-keys.txt` line may also carry an anchor, `<plugin> <Class::Member>
+<file-suffix>:<regex>`, where `@` stands for the number the plugin source holds
+(hex or decimal) and `~` for `\s*`. `apply-proposals.mjs offsets` finds the
+number with the anchor and compares it with the PDB of the checked build. States:
+ok; patch (one new constant is right for every build that matters, and
+`apply-proposals.mjs apply` rewrites it); split (the offset moved between the
+builds and the source reads the public one: a person decides); wrong (matches
+neither build); changed (size or bool mask differs); missing (gone from the
+build); unanchored (the anchor matches nothing); unchecked (no layout report, or the
+step crashed). Only ok passes.
+
 `sr-client-check` runs this once the scan tool has built: one `--layout` pass
 per build over the keys of the loader and of each built plugin, then one
 `pdb-diff` per component, written to `out/layout.json` (counts and the keys
