@@ -63,7 +63,7 @@ on:
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-BetterSaving@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-BetterMap@gss/plugin-work msantoro12/StarRupture-Plugin-BetterLoading@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-BetterSaving@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-BetterLoading@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work'
       plugin_manifests:
         type: string
         default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
@@ -103,7 +103,7 @@ on:
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-BetterSaving@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-BetterMap@gss/plugin-work msantoro12/StarRupture-Plugin-BetterLoading@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-BetterSaving@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-BetterLoading@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work'
       plugin_manifests:
         description: 'Released plugins, checked as players get them: the update-manifest URL from each one''s sidecar .json, space-separated'
         type: string
@@ -1043,7 +1043,7 @@ jobs:
               $r.reasons = @($v.reasons)
               $r.rows = @($v.rows)
               # Only the owner's forks are pushed to, and only a verified fix.
-              if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^msantoro12/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|BetterSaving|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|BetterMap|BetterLoading|CameraControls)$') {
+              if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^msantoro12/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|BetterSaving|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|BetterLoading|CameraControls)$') {
                 $push.Add([ordered]@{ name = $p.name; sha = $r.sha; tree = $r.tree; cl = $cl; referenceCl = $refCl; verdict = $r.verdict; plan = $plan })
               }
             } catch {
@@ -1243,7 +1243,7 @@ jobs:
           # field that picks a repository, a key or a ref is checked here. The
           # commit must be the one plugin-plan resolved before plugin code ran;
           # any commit in the fork network can be fetched by id.
-          [[ "$NAME" =~ ^(BetterCheats|BetterDrone|WAILA|Codex|BetterSaving|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|BetterMap|BetterLoading|CameraControls)$ ]] || { echo "::error::'$NAME' is not a fork this job pushes to"; exit 1; }
+          [[ "$NAME" =~ ^(BetterCheats|BetterDrone|WAILA|Codex|BetterSaving|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|BetterLoading|CameraControls)$ ]] || { echo "::error::'$NAME' is not a fork this job pushes to"; exit 1; }
           [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$TREE" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::bad commit or tree id'; exit 1; }
           [[ "$CL" =~ ^[0-9]+$ && "$REFERENCE_CL" =~ ^[0-9]*$ ]] || { echo '::error::bad CL'; exit 1; }
           [[ "$VERDICT" =~ ^(FIXED|PARTIAL)$ ]] || { echo '::error::bad verdict'; exit 1; }
@@ -1295,7 +1295,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           # This fork's key only.
-          DEPLOY_KEY: ${{ matrix.name == 'BetterCheats' && secrets.SR_DEPLOYKEY_BETTERCHEATS || matrix.name == 'BetterDrone' && secrets.SR_DEPLOYKEY_BETTERDRONE || matrix.name == 'WAILA' && secrets.SR_DEPLOYKEY_WAILA || matrix.name == 'Codex' && secrets.SR_DEPLOYKEY_CODEX || matrix.name == 'BetterSaving' && secrets.SR_DEPLOYKEY_BETTERSAVING || matrix.name == 'Compass' && secrets.SR_DEPLOYKEY_COMPASS || matrix.name == 'ProductionViewer' && secrets.SR_DEPLOYKEY_PRODUCTIONVIEWER || matrix.name == 'RuptureTimer' && secrets.SR_DEPLOYKEY_RUPTURETIMER || matrix.name == 'WaveOptimiser' && secrets.SR_DEPLOYKEY_WAVEOPTIMISER || matrix.name == 'BetterMap' && secrets.SR_DEPLOYKEY_BETTERMAP || matrix.name == 'BetterLoading' && secrets.SR_DEPLOYKEY_BETTERLOADING || matrix.name == 'CameraControls' && secrets.SR_DEPLOYKEY_CAMERACONTROLS || '' }}
+          DEPLOY_KEY: ${{ matrix.name == 'BetterCheats' && secrets.SR_DEPLOYKEY_BETTERCHEATS || matrix.name == 'BetterDrone' && secrets.SR_DEPLOYKEY_BETTERDRONE || matrix.name == 'WAILA' && secrets.SR_DEPLOYKEY_WAILA || matrix.name == 'Codex' && secrets.SR_DEPLOYKEY_CODEX || matrix.name == 'BetterSaving' && secrets.SR_DEPLOYKEY_BETTERSAVING || matrix.name == 'Compass' && secrets.SR_DEPLOYKEY_COMPASS || matrix.name == 'ProductionViewer' && secrets.SR_DEPLOYKEY_PRODUCTIONVIEWER || matrix.name == 'RuptureTimer' && secrets.SR_DEPLOYKEY_RUPTURETIMER || matrix.name == 'WaveOptimiser' && secrets.SR_DEPLOYKEY_WAVEOPTIMISER || matrix.name == 'BetterLoading' && secrets.SR_DEPLOYKEY_BETTERLOADING || matrix.name == 'CameraControls' && secrets.SR_DEPLOYKEY_CAMERACONTROLS || '' }}
         run: |
           set -euo pipefail
           if [ -z "$DEPLOY_KEY" ]; then echo "::error::no deploy key for $NAME in environment fork-push"; exit 1; fi
