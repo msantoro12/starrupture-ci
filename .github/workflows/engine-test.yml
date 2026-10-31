@@ -88,10 +88,15 @@ jobs:
         id: cl
         shell: pwsh
         run: |
+          # The server runs on one build: the loader's required CL, or, for a
+          # loader with a version map, the build it was written for (kBuiltCL).
           $f = 'loader\StarRupture-ModLoader-Core\core\version_check.cpp'
           $m = Select-String -Path $f -Pattern 'kRequiredVersionSuffix\[\]\s*=\s*L"([^"]+)"'
-          if (-not $m) { throw 'required CL not found in version_check.cpp' }
-          "required_cl=$($m.Matches[0].Groups[1].Value)" >> $env:GITHUB_OUTPUT
+          $map = 'loader\StarRupture-ModLoader-Core\hooks\game\version_map.generated.h'
+          $b = if (-not $m -and (Test-Path $map)) { Select-String -Path $map -Pattern 'kBuiltCL\s*=\s*(\d+)\s*;' }
+          $cl = if ($m) { $m.Matches[0].Groups[1].Value } elseif ($b) { "CL-$($b.Matches[0].Groups[1].Value)" } else { '' }
+          if (-not $cl) { throw 'required CL not found in version_check.cpp or kBuiltCL in version_map.generated.h' }
+          "required_cl=$cl" >> $env:GITHUB_OUTPUT
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
