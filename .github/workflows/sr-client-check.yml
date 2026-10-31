@@ -567,27 +567,34 @@ jobs:
               # builds. The login cache is gone once this step ends, so it is
               # fetched here; a failure costs only the both-builds proposals.
               if ($env:BRANCH -ne 'public') {
-                $refDir = Join-Path $vol.Root 'sr-ref'
-                New-Item -ItemType Directory -Force $refDir | Out-Null
-                $refCmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
-                            '+force_install_dir', $refDir, '+login', $user, '+app_update', $env:APP_ID, '+quit')
-                $refManifest = Join-Path $refDir "steamapps\appmanifest_$($env:APP_ID).acf"
-                $refWatch = [Diagnostics.Stopwatch]::StartNew()
-                Write-Host '::group::steamcmd: the public build, for the pattern proposals'
-                & $steamcmd @refCmd 2>&1 | ForEach-Object {
-                  $line = "$_" -replace '\[U:1:\d+\]', '[U:1:***]' -replace '7656119\d{10}', '***' -replace $userRx, '***'
-                  if ($line -notmatch 'progress:') { Write-Host $line }
-                }
-                $refCode = $LASTEXITCODE
-                Write-Host '::endgroup::'
-                $refOk = ($refCode -eq 0) -and (Test-Path $refManifest) -and ((Get-Content $refManifest -Raw) -match '"StateFlags"\s+"4"')
-                $dl.reference = [ordered]@{ installed = $refOk; buildid = ''; seconds = [int]$refWatch.Elapsed.TotalSeconds }
-                if ($refOk) {
-                  if ((Get-Content $refManifest -Raw) -match '"buildid"\s+"(\d+)"') { $dl.reference.buildid = $Matches[1] }
-                  Write-Host "Installed the public build $($dl.reference.buildid) in $($dl.reference.seconds) s"
-                  "reference_dir=$refDir" >> $env:GITHUB_OUTPUT
-                } else {
-                  Write-Host "::warning title=Pattern proposals::The public build did not download (steamcmd exit $refCode); proposals cover this build only."
+                try {
+                  $refDir = Join-Path $vol.Root 'sr-ref'
+                  New-Item -ItemType Directory -Force $refDir | Out-Null
+                  $refCmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
+                              '+force_install_dir', $refDir, '+login', $user, '+app_update', $env:APP_ID, '+quit')
+                  $refManifest = Join-Path $refDir "steamapps\appmanifest_$($env:APP_ID).acf"
+                  $refWatch = [Diagnostics.Stopwatch]::StartNew()
+                  Write-Host '::group::steamcmd: the public build, for the pattern proposals'
+                  & $steamcmd @refCmd 2>&1 | ForEach-Object {
+                    $line = "$_" -replace '\[U:1:\d+\]', '[U:1:***]' -replace '7656119\d{10}', '***' -replace $userRx, '***'
+                    if ($line -notmatch 'progress:') { Write-Host $line }
+                  }
+                  $refCode = $LASTEXITCODE
+                  Write-Host '::endgroup::'
+                  $refOk = ($refCode -eq 0) -and (Test-Path $refManifest) -and ((Get-Content $refManifest -Raw) -match '"StateFlags"\s+"4"')
+                  $dl.reference = [ordered]@{ installed = $refOk; buildid = ''; seconds = [int]$refWatch.Elapsed.TotalSeconds }
+                  if ($refOk) {
+                    if ((Get-Content $refManifest -Raw) -match '"buildid"\s+"(\d+)"') { $dl.reference.buildid = $Matches[1] }
+                    Write-Host "Installed the public build $($dl.reference.buildid) in $($dl.reference.seconds) s"
+                    "reference_dir=$refDir" >> $env:GITHUB_OUTPUT
+                  } else {
+                    Write-Host "::warning title=Pattern proposals::The public build did not download (steamcmd exit $refCode); proposals cover this build only."
+                  }
+                } catch {
+                  Write-Host '::endgroup::'
+                  $dl.reference = [ordered]@{ installed = $false; buildid = ''; seconds = 0 }
+                  $why = "$($_.Exception.Message)" -replace $userRx, '***'
+                  Write-Host "::warning title=Pattern proposals::The public build did not download ($why); proposals cover this build only."
                 }
               }
             }
@@ -981,7 +988,7 @@ jobs:
                 $on = if ($q.uniqueOnTarget -and $ref) { 'both builds' }
                       elseif ($q.uniqueOnTarget) { 'this build' + $(if ($null -eq $ref) { '' } elseif ($s.PSObject.Properties['referenceKeepsCurrent']) { '; public keeps the current pattern' } else { ' only' }) }
                       elseif ($ref) { 'public build only' } else { 'neither' }
-                $follow = if ($q.PSObject.Properties['followRel32At']) { " (follow rel32 at +$($q.followRel32At))" } else { '' }
+                $follow = if ($q.followRel32At -ge 0) { " (follow rel32 at +$($q.followRel32At))" } else { ' (direct)' }
                 $md.Add("| $($f.owner) | ``$($f.row.name)`` | $($f.row.result) | $how | $rva | ``$($q.pattern)``$follow | $on |")
               }
             }
