@@ -1359,7 +1359,7 @@ jobs:
             $md.Add('')
             $md.Add("#### Auto-apply (proposals at confidence $($af.minConfidence) and up)")
             $md.Add('')
-            $md.Add("Each fix is rebuilt and scanned on this build (CL-$($af.cl))$(if ($af.referenceCl) { " and on the public build (CL-$($af.referenceCl))" }). FIXED: every failing pattern resolves to the function it resolved to before. PARTIAL: the same for the applied ones, and the rest were skipped. Only FIXED and PARTIAL fixes of the owner's forks are pushed.")
+            $md.Add("Each fix is rebuilt and scanned on this build (CL-$($af.cl))$(if ($af.referenceCl) { " and on the public build (CL-$($af.referenceCl))" }). FIXED: every failing pattern resolves uniquely to the function the suggester located. PARTIAL: the same for the applied ones, and the rest were skipped. Only FIXED and PARTIAL fixes of the owner's forks are pushed.")
             $md.Add('')
             $md.Add('| Plugin | Verdict | Applied | Skipped | Branch | Note |')
             $md.Add('|---|---|---|---|---|---|')
@@ -1368,8 +1368,10 @@ jobs:
               if ($p.verdict -eq 'PATCH') { $where = "patch only: ``$($p.patch)`` in the run's artifact" }
               elseif ($p.verdict -in 'FIXED', 'PARTIAL' -and $p.repo -match '^msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+$') {
                 $where = 'not pushed (see the auto-apply job)'
-                foreach ($b in "auto/update-$($af.cl)", "auto/update-$($af.cl)-$($env:RUN_ID)") {
-                  $sha = "$(git ls-remote "https://github.com/$($p.repo)" "refs/heads/$b" 2>$null)".Split("`t")[0]
+                # The fallback name carries the attempt that pushed it, which may be an earlier one.
+                foreach ($line in @(git ls-remote "https://github.com/$($p.repo)" "refs/heads/auto/update-$($af.cl)" "refs/heads/auto/update-$($af.cl)-$($env:RUN_ID)-*" 2>$null)) {
+                  $sha, $b = "$line" -split "`t"
+                  $b = "$b" -replace '^refs/heads/', ''
                   if ($sha -match '^[0-9a-f]{40}$' -and (gh api "repos/$($p.repo)/git/commits/$sha" --jq .tree.sha 2>$null) -eq $p.tree) { $where = "``$b`` ($($sha.Substring(0, 7)))"; break }
                 }
               }
