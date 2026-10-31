@@ -166,6 +166,36 @@ export function collectUsed(dirs, known = null) {
   return { names, files };
 }
 
+// Every name the sources use as a member: the identifier after `.`, `->` or
+// `::`, and the member named in `offsetof(T, M)` (a read at a fixed offset).
+// By name only, not tied to a class, so it over-approximates. Used by
+// `layout-table.mjs gen --granularity 1` to keep only the rows a project reads.
+export function collectMemberNames(dirs) {
+  const names = new Set();
+  for (const code of sources(dirs)) {
+    for (const m of code.matchAll(/(?:\.|->|::)\s*([A-Za-z_]\w*)/g)) names.add(m[1]);
+    for (const m of code.matchAll(/\boffsetof\s*\(\s*[^,()]+,\s*([A-Za-z_]\w*)/g)) names.add(m[1]);
+  }
+  return names;
+}
+
+// Every type the sources take `sizeof` or `alignof` of (`SDK::` and `const`
+// dropped, `Ns::X` kept as written). Code that allocates, copies or strides
+// over a class by value depends on its size, so `gen --granularity 1` keeps
+// the size of those classes.
+export function collectSizedNames(dirs) {
+  const names = new Set();
+  const re = /\b(?:sizeof|alignof)\s*\(\s*(?:(?:const|class|struct)\s+)*(?:::\s*)?(?:SDK\s*::\s*)?([A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\)/g;
+  for (const code of sources(dirs)) {
+    for (const m of code.matchAll(re)) names.add(m[1].replace(/\s+/g, ''));
+  }
+  return names;
+}
+
+function* sources(dirs) {
+  for (const root of dirs) for (const file of walk(root)) yield stripNonCode(readFileSync(file, 'utf8'));
+}
+
 function main(argv) {
   const dirs = [];
   const knownFiles = [];
