@@ -886,7 +886,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ci-tool
-          sparse-checkout: ci/apply-proposals.mjs
+          sparse-checkout: |
+            ci/apply-proposals.mjs
+            ci/layout-table.mjs
+            ci/layout-diff.mjs
+            ci/used-classes.mjs
+            ci/native-keys.txt
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1036,6 +1041,101 @@ jobs:
             ConvertTo-Json -Depth 12 | Set-Content out\autofix.json -Encoding utf8
           "autofix=$(ConvertTo-Json -InputObject @($push) -Depth 12 -Compress)" >> $env:GITHUB_OUTPUT
 
+      # ---- Layouts from the PDBs: what each component reads, on both builds --
+      - name: Read the used layouts from the PDBs
+        id: layout
+        if: always() && steps.tool.outcome == 'success'
+        # A report only: a failure here costs only the layout report.
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
+          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+        run: |
+          # The keys each component reads: the loader's own layout table, each
+          # built plugin's used Game-SDK classes (ci/layout-table.mjs gen over
+          # its source) and its native members (ci/native-keys.txt). One
+          # sr-aobscan --layout pass per build reads them all from that build's
+          # PDB; pdb-diff then counts, per component, what moved between the
+          # public build and this one. Keys and numbers only: no PDB names.
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $lt = 'ci-tool\ci\layout-table.mjs'
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          function Find-Exe([string]$dir) {
+            if ($dir) { Get-ChildItem -Path $dir -Recurse -File -Filter '*-Win64-Shipping.exe' | Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
+          }
+          function Get-Cl($e) { if ([string]$e.VersionInfo.ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' } }
+          function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
+          function Get-Source([string]$repo, [string]$rev, [string]$dir) {
+            git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
+            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
+          }
+          $exe = Find-Exe $env:INSTALL_DIR
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $refExe = Find-Exe $env:REFERENCE_DIR
+          $cl = Get-Cl $exe
+          $refCl = if ($refExe) { Get-Cl $refExe } else { '' }
+          $work = Join-Path $env:RUNNER_TEMP 'layout'
+          New-Item -ItemType Directory -Force $work | Out-Null
+
+          $native = @{}
+          foreach ($line in Get-Content 'ci-tool\ci\native-keys.txt') {
+            if ($line -match '^\s*(#|$)') { continue }
+            if ($line -notmatch '^(\S+)\s+(\S+::\S+)\s*$') { throw "native-keys.txt: malformed line '$line'" }
+            if (-not $native.ContainsKey($Matches[1])) { $native[$Matches[1]] = [Collections.Generic.List[string]]::new() }
+            $native[$Matches[1]].Add($Matches[2])
+          }
+          $components = [Collections.Generic.List[object]]::new()
+          $metas = @($env:PLAN | ConvertFrom-Json | Where-Object { $_.source -eq 'build' } | ForEach-Object {
+            $m = "plugins\plugin-$($env:BRANCH)-$($_.name)\plugin.json"
+            if (Test-Path $m) { Get-Content $m -Raw | ConvertFrom-Json }
+          })
+          if (-not $metas.Count) { throw 'no built plugin: nothing names the Game-SDK and loader commits to read' }
+          # Every plugin was built against the same loader and Game-SDK commits.
+          $sdk = Join-Path $work 'game-sdk'
+          Get-Source 'AlienXAXS/StarRupture-Game-SDK' $metas[0].gameSdk $sdk
+          $loaderTable = Join-Path $work 'loader-table.h'
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core/core/layout_table.generated.h" -OutFile $loaderTable -TimeoutSec 60
+          node $lt keys $loaderTable --out "$work\keys-ModLoader.txt"; Invoke-Native 'keys (loader)'
+          $components.Add('ModLoader')
+          foreach ($m in $metas) {
+            Get-Source $m.repo $m.sha "$work\src-$($m.name)"
+            node $lt gen "$sdk\Client\Assertions.inl" --cl $(if ($cl) { $cl } else { 1 }) --src "$work\src-$($m.name)" --sdk "$sdk\Client\SDK" --out "$work\table-$($m.name).h"; Invoke-Native "gen ($($m.name))"
+            node $lt keys "$work\table-$($m.name).h" --out "$work\keys-$($m.name).txt"; Invoke-Native "keys ($($m.name))"
+            if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
+            $components.Add($m.name)
+          }
+          $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
+          Set-Content "$work\keys-all.txt" $all -Encoding ascii
+
+          $reports = @{}
+          foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
+            $out = "out\layout-$($b.key).json"
+            $ErrorActionPreference = 'Continue'
+            & $scanner $b.exe.FullName --layout "$work\keys-all.txt" --json > $out
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($code -gt 1) { throw "sr-aobscan --layout on the $($b.key) build failed (exit $code)" }
+            $reports[$b.key] = $out
+            "$($b.key) (CL-$(Get-Cl $b.exe)): $(((Get-Content $out -Raw | ConvertFrom-Json).summary | ConvertTo-Json -Compress))"
+          }
+          $result = [ordered]@{ cl = $cl; referenceCl = $refCl; components = [ordered]@{} }
+          if ($reports.ContainsKey('reference')) {
+            foreach ($c in $components) {
+              node $lt pdb-diff $reports.reference $reports.target --keys "$work\keys-$c.txt" --json "$work\diff-$c.json" | Out-Host
+              if ($LASTEXITCODE -notin 0, 3) { throw "pdb-diff ($c) failed (exit $LASTEXITCODE)" }
+              $result.components[$c] = Get-Content "$work\diff-$c.json" -Raw | ConvertFrom-Json
+              "${c}: $($result.components[$c].counts | ConvertTo-Json -Compress)"
+            }
+          } else { Write-Host '::notice title=Layouts::No public build to compare with: the keys were read from this build only.' }
+          $result | ConvertTo-Json -Depth 8 | Set-Content out\layout.json -Encoding utf8
+
       - name: Write the result
         if: always() && steps.gate.outputs.has_login == 'true'
         shell: pwsh
@@ -1085,6 +1185,7 @@ jobs:
             out/plugin-*.json
             out/plugin-*.txt
             out/autofix-*
+            out/layout*.json
           if-no-files-found: warn
           retention-days: 14
 

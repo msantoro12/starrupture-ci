@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildReport, loadLayout, matchUsed, parseAssertions, parseUsedList } from './layout-diff.mjs';
-import { KIND, buildTable, compareTables, parseHeader, parseSdkHeaders, renderHeader } from './layout-table.mjs';
+import { KIND, buildTable, compareTables, diffLayoutReports, parseHeader, parseLayoutReport, parseSdkHeaders, renderHeader, selectKeys, tableKeys } from './layout-table.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIX = join(here, 'fixtures', 'layout');
@@ -357,6 +357,82 @@ test('CLI: gen with --sdk and --src (the source scan), usage errors exit 2', () 
   assert.equal(run('gen').code, 2);
   assert.equal(run('compare', out).code, 2);
   assert.equal(run('frobnicate').code, 2);
+});
+
+// ---- keys and pdb-diff ---------------------------------------------------------------
+
+const report = (entries) => JSON.stringify({ summary: { keys: entries.length }, keys: entries });
+
+test('keys: each class, then its rows as Class::Member; blueprint classes left out; CRLF headers read', () => {
+  const table = {
+    cl: 9, detail: 1, skipped: { classes: [], members: 0, unmatched: 0 },
+    classes: [
+      { name: 'ABP_Thing_C', sizeOf: 0x10, alignOf: 8, kind: KIND.blueprint, path: '', rows: [{ member: 'X', offset: 8, size: 4, mask: 0 }] },
+      { name: 'UCrWidget', sizeOf: 0x40, alignOf: 8, kind: KIND.class, path: 'Chimera.CrWidget', rows: [{ member: 'A', offset: 0x30, size: 4, mask: 0 }, { member: 'bB', offset: 0x34, size: 1, mask: 1 }] },
+    ],
+  };
+  assert.deepEqual(tableKeys(table), ['UCrWidget', 'UCrWidget::A', 'UCrWidget::bB']);
+  const dir = tmp();
+  const h = join(dir, 't.h');
+  writeFileSync(h, renderHeader(table).replace(/\n/g, '\r\n'));
+  const r = run('keys', h);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, 'UCrWidget\nUCrWidget::A\nUCrWidget::bB\n');
+  assert.equal(run('keys').code, 2);
+});
+
+test('pdb-diff: same, moved, changed, missing, added and unresolved, key by key', () => {
+  const base = parseLayoutReport(report([
+    { key: 'A', result: 'OK', size: 0x40 },
+    { key: 'A::Same', result: 'OK', offset: 0x30, size: 4, boolMask: 0 },
+    { key: 'A::Moved', result: 'OK', offset: 0x34, size: 4, boolMask: 0 },
+    { key: 'A::Bit', result: 'OK', offset: 0x38, size: 1, boolMask: 1 },
+    { key: 'A::Gone', result: 'OK', offset: 0x3C, size: 4, boolMask: 0 },
+    { key: 'A::New', result: 'NOMEMBER' },
+    { key: 'B', result: 'NOTYPE' },
+  ]));
+  const next = parseLayoutReport('﻿' + report([
+    { key: 'A', result: 'OK', size: 0x48 },
+    { key: 'A::Same', result: 'OK', offset: 0x30, size: 4, boolMask: 0 },
+    { key: 'A::Moved', result: 'OK', offset: 0x3C, size: 4, boolMask: 0 },
+    { key: 'A::Bit', result: 'OK', offset: 0x38, size: 1, boolMask: 2 },
+    { key: 'A::Gone', result: 'NOMEMBER' },
+    { key: 'A::New', result: 'OK', offset: 0x40, size: 8, boolMask: 0 },
+    { key: 'B', result: 'NOTYPE' },
+  ]));
+  const r = diffLayoutReports(base, next);
+  assert.deepEqual(r.counts, { same: 1, moved: 1, changed: 2, missing: 1, added: 1, unresolved: 1 });
+  assert.deepEqual(r.moved, [{ key: 'A::Moved', base: { offset: 0x34, size: 4, boolMask: 0 }, next: { offset: 0x3C, size: 4, boolMask: 0 } }]);
+  assert.deepEqual(r.changed.map((e) => e.key), ['A', 'A::Bit'], 'a class size change and a mask change');
+  assert.deepEqual(r.missing, [{ key: 'A::Gone', base: { offset: 0x3C, size: 4, boolMask: 0 }, next: 'NOMEMBER' }]);
+  assert.equal(r.same, undefined, 'unchanged keys are counted, not listed');
+  assert.throws(() => diffLayoutReports(base, next.slice(1)), /same key list/);
+  assert.throws(() => parseLayoutReport('{"keys":[{"key":"A","result":"OK"}]}'), /OK without a size/);
+  assert.throws(() => parseLayoutReport('[]'), /no keys array/);
+  assert.deepEqual(selectKeys(base, ['B', 'A']).map((k) => k.key), ['B', 'A']);
+  assert.throws(() => selectKeys(base, ['C']), /no entry for C/);
+});
+
+test('CLI: pdb-diff exits 3 on a move, 0 when nothing moved, and --keys narrows the comparison', () => {
+  const dir = tmp();
+  const a = join(dir, 'a.json');
+  const b = join(dir, 'b.json');
+  const keys = join(dir, 'keys.txt');
+  writeFileSync(a, report([{ key: 'A', result: 'OK', size: 8 }, { key: 'A::X', result: 'OK', offset: 0, size: 4, boolMask: 0 }]));
+  writeFileSync(b, report([{ key: 'A', result: 'OK', size: 8 }, { key: 'A::X', result: 'OK', offset: 4, size: 4, boolMask: 0 }]));
+  const out = join(dir, 'r.json');
+  const moved = run('pdb-diff', a, b, '--json', out);
+  assert.equal(moved.code, 3, moved.err);
+  assert.match(moved.out, /^2 keys: 1 same, 1 moved/);
+  assert.match(moved.out, /MOVED +A::X: 0x0\/0x4 -> 0x4\/0x4/);
+  assert.equal(JSON.parse(readFileSync(out, 'utf8')).counts.moved, 1);
+  writeFileSync(keys, '# only the class\nA\n');
+  const narrowed = run('pdb-diff', a, b, '--keys', keys);
+  assert.equal(narrowed.code, 0, narrowed.err);
+  assert.match(narrowed.out, /^1 keys: 1 same/);
+  writeFileSync(keys, 'A::Y\n');
+  assert.equal(run('pdb-diff', a, b, '--keys', keys).code, 2, 'a key neither report has');
+  assert.equal(run('pdb-diff', a).code, 2);
 });
 
 // ---- full data -----------------------------------------------------------------------
