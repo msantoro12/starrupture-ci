@@ -187,10 +187,12 @@ the same key list, one per build, key by key: same, moved, changed (size or
 bool mask), missing, added, unresolved. A renamed member counts as missing.
 It exits 3 when anything moved, changed or went missing, 0 otherwise.
 
-`sr-client-check` runs this on every check: one `--layout` pass per build over
-the keys of the loader and of each built plugin, then one `pdb-diff` per
-component, written to `out/layout.json` (counts and the keys that moved). It
-is a report: it does not change the check's verdict.
+`sr-client-check` runs this once the scan tool has built: one `--layout` pass
+per build over the keys of the loader and of each built plugin, then one
+`pdb-diff` per component, written to `out/layout.json` (counts and the keys
+that moved). It is a report: it does not change the check's verdict. If the
+step fails (no plugin built, or the loader's table could not be fetched),
+there is no report for any component.
 
 ## Tests
 

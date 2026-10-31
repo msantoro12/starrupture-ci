@@ -1111,7 +1111,7 @@ jobs:
             if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
             $components.Add($m.name)
           }
-          $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique
+          $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
 
           $reports = @{}
