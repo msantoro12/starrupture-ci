@@ -27,6 +27,8 @@ node ci/version-map.mjs add-function <header> --key <key> --cl <CL> --rva <hex>
      [--follow-rip-disp-at <n>]
 node ci/version-map.mjs add-field <header> --key <key> --cl <CL> --offset <hex> --size <hex>
      [--mask <hex>] [--member <name>]
+node ci/version-map.mjs replace-build <header> --cl <CL> --stamp <hex> --size <hex> --source <text>
+node ci/version-map.mjs remove-key <header> --key <key>
 node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
 node ci/version-map.mjs check <header> [--keys <keys.txt>]
 ```
@@ -44,10 +46,16 @@ node ci/version-map.mjs check <header> [--keys <keys.txt>]
   mean what they mean in a `PluginScanRequest`; `--follow-rip-disp-at` is the
   loader's, for its global keys, and is refused in a plugin map.
 - `add-field` adds the row for one field key on one build. `--member` is the
-  member's new name when it was renamed. Offsets, sizes and masks are hex.
+  member's new name when it was renamed. Offsets, sizes and masks are hex; a
+  mask needs size 1.
 - The same row added again changes nothing (exit 0). A row with other values
   for a key and build already in the map is an error: a run never rewrites what
   an earlier run verified.
+- `replace-build` records a new exe for a CL already in the table (the same CL
+  rebuilt, as a beta's public rebuild may be) and drops every row of that CL,
+  so each is verified again on the new exe and added back.
+- `remove-key` drops a key's rows on every build: the way out of an orphan
+  after the code renames or drops a hookName or field.
 - `prune` keeps the builds listed (each must be in the table) and drops every
   other build together with all of its rows.
 - `check` reads the header. With `--keys` it also applies the coverage rule
@@ -63,12 +71,13 @@ blank lines are skipped):
 
 ```
 function <key>                          a hookName, or a loader registry name
-native <key> [<offset> <size> <mask>]   a native (non-reflected) field; the values as built, hex
+native <key> [<offset> <size> <mask>]   a native (non-reflected) field; the values as built, hex, all three or none
 field <key>                             a reflected field
 ```
 
 and reports:
 
+- a `kBuiltCL` with no row in the build table;
 - every build in the table that lacks a row for a `function` key or a `native`
   key. Keys that did not move need a row too (the same pattern, the new RVA), so
   on a known build the exact row always applies;

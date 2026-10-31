@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MapError, addBuild, addField, addFunction, checkMap, emit, emptyMap, parse, parseKeys, prune } from './version-map.mjs';
+import { MapError, addBuild, addField, addFunction, checkMap, emit, emptyMap, parse, parseKeys, prune, removeKey, replaceBuild } from './version-map.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIX = join(here, 'fixtures', 'version-map');
@@ -101,6 +101,7 @@ test('the model refuses rows it cannot write', () => {
     () => addFunction(map, { key: 'back\\slash', cl: 127004, pattern: '48', rva: 1 }),
     () => addField(map, { key: 'F', cl: 127004, offset: 0x10, size: 0 }),
     () => addField(map, { key: 'F', cl: 127004, offset: 0x10, size: 4, member: 'not a name' }),
+    () => addField(map, { key: 'F', cl: 127004, offset: 0x10, size: 4, mask: 0x11 }),
     () => emptyMap('server', 127004),
   ];
   for (const f of bad) assert.throws(f, MapError, f.toString());
@@ -128,6 +129,23 @@ test('prune keeps the builds listed and drops the rest with their rows', () => {
   assert.equal(emit(parse(emit(map))), emit(map));
 });
 
+test('replace-build records a new exe for a CL and drops that CL\'s rows', () => {
+  const map = parse(fixture('plugin.h'));
+  assert.equal(replaceBuild(map, { cl: 128786, stamp: 0x6a1b2c3e, size: 0x0a412000, source: 'public 26300000' }), 5);
+  assert.deepEqual(map.builds.find((b) => b.cl === 128786), { cl: 128786, stamp: 0x6a1b2c3e, size: 0x0a412000, source: 'public 26300000' });
+  assert.ok([...map.functions, ...map.fields].every((r) => r.cl === 127004));
+  assert.throws(() => replaceBuild(map, { cl: 130001, stamp: 1, size: 2, source: 'public 1' }), MapError);
+  assert.equal(emit(parse(emit(map))), emit(map));
+});
+
+test('remove-key drops a key on every build', () => {
+  const map = parse(fixture('plugin.h'));
+  assert.deepEqual(removeKey(map, 'AActor::ProcessEvent caller'), { functions: 2, fields: 0 });
+  assert.deepEqual(removeKey(map, 'ACrPackageTransportReplicator::Native2C0'), { functions: 0, fields: 2 });
+  assert.throws(() => removeKey(map, 'AActor::ProcessEvent caller'), MapError);
+  assert.deepEqual(checkMap(map, parseKeys(KEYS.replace('function AActor::ProcessEvent caller\n', '').replace(/native [^\n]*\n/, ''))), []);
+});
+
 const KEYS = `# the plugin fixture's keys
 function AActor::ProcessEvent caller
 function UCrBuildingComponent::GetPlacementResourceConditionResult
@@ -138,6 +156,13 @@ field UCrSomething::bFlag
 
 test('check: a complete map passes', () => {
   assert.deepEqual(checkMap(parse(fixture('plugin.h')), parseKeys(KEYS)), []);
+});
+
+test('check: the built CL must have a build row', () => {
+  assert.deepEqual(checkMap(parse(fixture('empty.h')), parseKeys('')), ['the built CL-127004 has no build row']);
+  const map = parse(fixture('plugin.h'));
+  prune(map, [128786]);
+  assert.ok(checkMap(map, parseKeys(KEYS)).includes('the built CL-127004 has no build row'));
 });
 
 test('check: missing coverage, orphan keys and a built-CL mismatch are each reported', () => {
@@ -158,13 +183,14 @@ test('check: missing coverage, orphan keys and a built-CL mismatch are each repo
 });
 
 test('the keys file refuses what it cannot read', () => {
-  for (const text of ['hook K', 'function', 'function K\nfunction K', 'field F 0x1 0x2 0x3', 'native back\\slash']) {
+  for (const text of ['hook K', 'function', 'function K\nfunction K', 'field F 0x1 0x2 0x3', 'native back\\slash',
+    'native A::B 0x10 0x4', 'native A::B 0x10', 'native A::B 0x10 0x4 0x1FF', 'native A::B 0x10 0x4 0x01', 'native A::B 0x10 0x0 0x00']) {
     assert.throws(() => parseKeys(text), MapError, text);
   }
-  const k = parseKeys('function StaticFindObject (ByPath)\nnative A::B\nnative C::D 0x10 0x4 0xFF\n');
+  const k = parseKeys('function StaticFindObject (ByPath)\nnative A::B\nnative C::D 0x10 0x1 0xFF\n');
   assert.ok(k.functions.has('StaticFindObject (ByPath)'));
   assert.equal(k.native.get('A::B'), null);
-  assert.deepEqual(k.native.get('C::D'), { offset: 0x10, size: 4, mask: 0xff });
+  assert.deepEqual(k.native.get('C::D'), { offset: 0x10, size: 1, mask: 0xff });
 });
 
 test('the commands build the plugin fixture and check it', () => {
@@ -205,16 +231,22 @@ test('the commands build the plugin fixture and check it', () => {
   assert.equal(run('add-field', h, '--key', 'K', '--cl', '127004', '--offset', '16', '--size', '0x4').code, 2);
   assert.equal(run('check', h, '--bogus', 'x').code, 2);
   assert.equal(run('prune', h, '--keep', '130001').code, 2);
+  assert.equal(run('remove-key', h, '--key', 'No::Such').code, 2);
+  assert.equal(run('replace-build', h, '--cl', '130001', '--stamp', '0x1', '--size', '0x2', '--source', 'public 1').code, 2);
+  assert.equal(readFileSync(h, 'utf8'), fixture('plugin.h'));
   // A hand edit makes every command refuse the file.
   writeFileSync(h, fixture('plugin.h').replace('0x2D0', '0x2d0'));
   assert.equal(run('check', h).code, 2);
   writeFileSync(h, fixture('plugin.h'));
+  ok('remove-key', h, '--key', 'UCrSomething::bFlag');
+  ok('replace-build', h, '--cl', '127004', '--stamp', '0x68F0A1B3', '--size', '0x0A3F2000', '--source', 'public 25700000');
+  assert.match(ok('check', h).out, /2 builds, 2 function rows, 2 field rows/);
   ok('prune', h, '--keep', '128786');
-  assert.match(ok('check', h).out, /1 builds, 2 function rows, 3 field rows/);
+  assert.match(ok('check', h).out, /1 builds, 2 function rows, 2 field rows/);
 });
 
 // The fixtures as C++: the plugin map against the row types plugin_interface.h
-// declares (repeated here as the design gives them), the loader map on its own.
+// v71 will declare, the loader map on its own.
 const STUB = `#pragma once
 #include <cstdint>
 enum { PLUGIN_SCAN_FLAG_NONE = 0, PLUGIN_SCAN_FLAG_OPTIONAL = 1 << 0, PLUGIN_SCAN_FLAG_FOLLOW_REL32 = 1 << 1 };

@@ -13,6 +13,8 @@
 //        [--follow-rip-disp-at <n>]
 //   node ci/version-map.mjs add-field <header> --key <key> --cl <CL> --offset <hex> --size <hex>
 //        [--mask <hex>] [--member <name>]
+//   node ci/version-map.mjs replace-build <header> --cl <CL> --stamp <hex> --size <hex> --source <text>
+//   node ci/version-map.mjs remove-key <header> --key <key>
 //   node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
 //   node ci/version-map.mjs check <header> [--keys <keys.txt>]
 //
@@ -20,7 +22,10 @@
 // add-build, add-function and add-field add one row. A row that is already there
 // with the same values changes nothing; one with other values is an error, so a
 // run never rewrites what an earlier run verified.
-// prune keeps the builds listed and drops every other build with all its rows.
+// replace-build records a new exe for a CL already in the table (the same CL
+// rebuilt) and drops every row of that CL, so each is verified again on the new
+// exe. remove-key drops a key's rows on every build (a key the code no longer
+// has). prune keeps the builds listed and drops every other build with all its rows.
 // check reads the header (any header off the format fails) and, with --keys,
 // applies the coverage rule: every build has a row for every function key and
 // every native field key, and the map holds no key the component does not use.
@@ -29,6 +34,7 @@
 // The format and the keys file are documented in ci/VERSION-MAP.md.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { isPattern } from './apply-proposals.mjs';
 import { isMain } from './layout-diff.mjs';
 
 export const FORMAT_VERSION = 1;
@@ -47,7 +53,6 @@ const hex2 = (n) => '0x' + n.toString(16).toUpperCase().padStart(2, '0');
 // Text that goes into a C string literal or a // comment as is: printable ASCII
 // without '"' or '\', and no leading or trailing space.
 const RE_TEXT = /^[\x21\x23-\x5B\x5D-\x7E](?:[\x20\x21\x23-\x5B\x5D-\x7E]*[\x21\x23-\x5B\x5D-\x7E])?$/;
-const RE_AOB = /^(?:[0-9A-F]{2}|\?\?)(?: (?:[0-9A-F]{2}|\?\?))*$/;
 const RE_MEMBER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const U32 = 0xffffffff;
 const I32_MIN = -0x80000000;
@@ -104,7 +109,7 @@ export function validate(map) {
   rows(map.functions, 'function');
   rows(map.fields, 'field');
   for (const r of map.functions) {
-    need(r.pattern === null || (typeof r.pattern === 'string' && RE_AOB.test(r.pattern)), `${rowName(r)}: the pattern must be IDA style, upper-case hex bytes and ?? separated by single spaces`);
+    need(r.pattern === null || isPattern(r.pattern), `${rowName(r)}: the pattern must be IDA style, upper-case hex bytes and ?? separated by single spaces`);
     need(isInt(r.resultOffset, I32_MIN, I32_MAX), `${rowName(r)}: result offset ${r.resultOffset} is not a 32-bit integer`);
     need(isInt(r.followRel32At, -1, I32_MAX), `${rowName(r)}: follow-rel32-at must be -1 or an offset into the match`);
     need(isInt(r.followRipDispAt, -1, I32_MAX), `${rowName(r)}: follow-rip-disp-at must be -1 or an offset into the match`);
@@ -118,6 +123,7 @@ export function validate(map) {
     need(isInt(r.offset, 0, I32_MAX), `${rowName(r)}: offset ${r.offset} is not a member offset`);
     need(isInt(r.size, 1, U32), `${rowName(r)}: size ${r.size} is not a member size`);
     need(isInt(r.mask, 0, 0xff), `${rowName(r)}: bool mask ${r.mask} is not one byte`);
+    need(r.mask === 0 || r.size === 1, `${rowName(r)}: a bool mask needs size 1`);
   }
 }
 
@@ -296,6 +302,26 @@ export function addField(map, r) {
   return added;
 }
 
+export function replaceBuild(map, b) {
+  const old = map.builds.find((x) => x.cl === b.cl);
+  need(old, `build CL-${b.cl} is not in the table; add-build adds a new one`);
+  const before = map.functions.length + map.fields.length;
+  Object.assign(old, b);
+  map.functions = map.functions.filter((r) => r.cl !== b.cl);
+  map.fields = map.fields.filter((r) => r.cl !== b.cl);
+  validate(map);
+  return before - map.functions.length - map.fields.length;
+}
+
+export function removeKey(map, key) {
+  const before = { functions: map.functions.length, fields: map.fields.length };
+  map.functions = map.functions.filter((r) => r.key !== key);
+  map.fields = map.fields.filter((r) => r.key !== key);
+  const n = { functions: before.functions - map.functions.length, fields: before.fields - map.fields.length };
+  need(n.functions + n.fields > 0, `${key} has no rows`);
+  return n;
+}
+
 export function prune(map, keep) {
   for (const cl of keep) need(map.builds.some((b) => b.cl === cl), `--keep CL-${cl} is not in the build table`);
   const kept = new Set(keep);
@@ -324,6 +350,11 @@ export function parseKeys(text, where = 'keys') {
     need(m && RE_TEXT.test(m[2]), `${where}:${i + 1}: expected "function <key>", "native <key> [<offset> <size> <mask>]" or "field <key>"`);
     const [, kind, key, off, size, mask] = m;
     need(kind === 'native' || off === undefined, `${where}:${i + 1}: built values are for native keys only`);
+    need(!/ 0x[0-9A-Fa-f]+$/.test(key), `${where}:${i + 1}: built values are an offset, a size and a mask, all three`);
+    if (off !== undefined) {
+      const [o, n, b] = [off, size, mask].map((v) => parseInt(v, 16));
+      need(isInt(o, 0, I32_MAX) && isInt(n, 1, U32) && isInt(b, 0, 0xff) && (b === 0 || n === 1), `${where}:${i + 1}: built values out of range (offset, size not 0, a one-byte mask only with size 1)`);
+    }
     need(!keys.functions.has(key) && !keys.native.has(key) && !keys.fields.has(key), `${where}:${i + 1}: ${key} is listed twice`);
     if (kind === 'function') keys.functions.add(key);
     else if (kind === 'field') keys.fields.add(key);
@@ -336,6 +367,7 @@ export function parseKeys(text, where = 'keys') {
 export function checkMap(map, keys) {
   const out = [];
   const has = (list, key, cl) => list.find((r) => r.key === key && r.cl === cl);
+  if (!map.builds.some((b) => b.cl === map.builtCL)) out.push(`the built CL-${map.builtCL} has no build row`);
   for (const key of new Set(map.functions.map((r) => r.key))) if (!keys.functions.has(key)) out.push(`orphan function key ${key}: the component does not resolve it`);
   for (const key of new Set(map.fields.map((r) => r.key))) if (!keys.native.has(key) && !keys.fields.has(key)) out.push(`orphan field key ${key}: the component does not use it`);
   for (const b of [...map.builds].sort((x, y) => x.cl - y.cl)) {
@@ -388,7 +420,7 @@ function only(opt, allowed, cmd) {
 export function main(argv) {
   const [cmd, ...rest] = argv;
   const { pos, opt } = parseArgs(rest);
-  need(pos.length === 1, 'usage: version-map.mjs init|add-build|add-function|add-field|prune|check <header> [options]; see the comment at the top of ci/version-map.mjs');
+  need(pos.length === 1, 'usage: version-map.mjs init|add-build|add-function|add-field|replace-build|remove-key|prune|check <header> [options]; see the comment at the top of ci/version-map.mjs');
   const file = pos[0];
   const load = () => parse(readFileSync(file, 'utf8'), file);
   const save = (map, what) => {
@@ -418,6 +450,16 @@ export function main(argv) {
     const map = load();
     const r = { key: opt.key, cl: num(opt, 'cl', { required: true }), offset: num(opt, 'offset', { required: true, hexOnly: true }), size: num(opt, 'size', { required: true, hexOnly: true }), mask: num(opt, 'mask', { fallback: 0, hexOnly: true }), member: opt.member ?? null };
     save(map, addField(map, r) ? `added field row ${rowName(r)}` : `field row ${rowName(r)} already there`);
+  } else if (cmd === 'replace-build') {
+    only(opt, ['cl', 'stamp', 'size', 'source'], cmd);
+    const map = load();
+    const b = { cl: num(opt, 'cl', { required: true }), stamp: num(opt, 'stamp', { required: true, hexOnly: true }), size: num(opt, 'size', { required: true, hexOnly: true }), source: opt.source };
+    save(map, `replaced build CL-${b.cl}; dropped its ${replaceBuild(map, b)} rows for re-verification`);
+  } else if (cmd === 'remove-key') {
+    only(opt, ['key'], cmd);
+    const map = load();
+    const n = removeKey(map, opt.key);
+    save(map, `removed ${opt.key}: ${n.functions} function rows, ${n.fields} field rows`);
   } else if (cmd === 'prune') {
     only(opt, ['keep'], cmd);
     need(typeof opt.keep === 'string' && /^\d+(?:,\d+)*$/.test(opt.keep), '--keep takes a comma-separated list of CLs');
@@ -432,7 +474,7 @@ export function main(argv) {
     process.stdout.write(`${file}: ${map.builds.length} builds, ${map.functions.length} function rows, ${map.fields.length} field rows; ${opt.keys ? `${problems.length} coverage problems` : 'format only'}\n`);
     return problems.length ? EXIT_VIOLATION : EXIT_OK;
   } else {
-    throw new MapError('usage: version-map.mjs init|add-build|add-function|add-field|prune|check <header> [options]');
+    throw new MapError('usage: version-map.mjs init|add-build|add-function|add-field|replace-build|remove-key|prune|check <header> [options]');
   }
   return EXIT_OK;
 }
