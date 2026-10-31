@@ -385,7 +385,7 @@ jobs:
     # A plugin that does not build fails only itself, not the client check.
     if: ${{ !cancelled() && needs.build.result == 'success' && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     environment: steam-client
     permissions:
       contents: read
@@ -555,6 +555,36 @@ jobs:
                 Write-Host "::warning::Steam installed build $($dl.buildid), the watcher saw $($env:EXPECTED_BUILDID); the branch moved again. The check covers $($dl.buildid)."
               }
               "install_dir=$install" >> $env:GITHUB_OUTPUT
+
+              # The build players run today, for the pattern proposals
+              # (sr-aobscan --suggest --reference): it finds the function a
+              # failing pattern lands on now, and lets one pattern serve both
+              # builds. The login cache is gone once this step ends, so it is
+              # fetched here; a failure costs only the both-builds proposals.
+              if ($env:BRANCH -ne 'public') {
+                $refDir = Join-Path $vol.Root 'sr-ref'
+                New-Item -ItemType Directory -Force $refDir | Out-Null
+                $refCmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
+                            '+force_install_dir', $refDir, '+login', $user, '+app_update', $env:APP_ID, '+quit')
+                $refManifest = Join-Path $refDir "steamapps\appmanifest_$($env:APP_ID).acf"
+                $refWatch = [Diagnostics.Stopwatch]::StartNew()
+                Write-Host '::group::steamcmd: the public build, for the pattern proposals'
+                & $steamcmd @refCmd 2>&1 | ForEach-Object {
+                  $line = "$_" -replace '\[U:1:\d+\]', '[U:1:***]' -replace '7656119\d{10}', '***' -replace $userRx, '***'
+                  if ($line -notmatch 'progress:') { Write-Host $line }
+                }
+                $refCode = $LASTEXITCODE
+                Write-Host '::endgroup::'
+                $refOk = ($refCode -eq 0) -and (Test-Path $refManifest) -and ((Get-Content $refManifest -Raw) -match '"StateFlags"\s+"4"')
+                $dl.reference = [ordered]@{ installed = $refOk; buildid = ''; seconds = [int]$refWatch.Elapsed.TotalSeconds }
+                if ($refOk) {
+                  if ((Get-Content $refManifest -Raw) -match '"buildid"\s+"(\d+)"') { $dl.reference.buildid = $Matches[1] }
+                  Write-Host "Installed the public build $($dl.reference.buildid) in $($dl.reference.seconds) s"
+                  "reference_dir=$refDir" >> $env:GITHUB_OUTPUT
+                } else {
+                  Write-Host "::warning title=Pattern proposals::The public build did not download (steamcmd exit $refCode); proposals cover this build only."
+                }
+              }
             }
           } catch {
             $failed = $true
@@ -591,6 +621,7 @@ jobs:
         shell: pwsh
         env:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
           REQUIRED_CL: ${{ needs.build.outputs.required_cl }}
           SDK_OFFSETS: ${{ needs.build.outputs.sdk_offsets }}
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
@@ -608,16 +639,32 @@ jobs:
           "ProductVersion=$pv required=$($env:REQUIRED_CL) match=$clOk"
           "SHA-256=$sha"
 
+          # Proposals for failing patterns use the public build (when this is
+          # another branch) and the PDB shipped next to each exe.
+          $suggest = @('--suggest')
+          $refExe = if ($env:REFERENCE_DIR) {
+            Get-ChildItem -Path $env:REFERENCE_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+              Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
+          if ($refExe) { $suggest += @('--reference', $refExe.FullName) }
+          foreach ($e in @(@($exe) + @($refExe) | Where-Object { $_ })) {
+            $pdb = [IO.Path]::ChangeExtension($e.FullName, '.pdb')
+            $which = if ($refExe -and $e.FullName -eq $refExe.FullName) { 'public build' } else { 'this build' }
+            "PDB ($which): $(if (Test-Path $pdb) { '{0:N1} GB' -f ((Get-Item $pdb).Length / 1GB) } else { 'absent' })"
+          }
+
           $scanner = 'scanner\sr-aobscan-client.exe'
           $scannerSha = (Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($scannerSha -ne $env:SCANNER_SHA256) { throw "sr-aobscan-client.exe hash $scannerSha is not the one build-scanner made ($($env:SCANNER_SHA256))" }
-          & $scanner $exe.FullName --verbose *> out\scanner.txt
-          & $scanner $exe.FullName --json > out\scanner.json
+          & $scanner $exe.FullName --verbose @suggest *> out\scanner.txt
+          & $scanner $exe.FullName --json @suggest > out\scanner.json
           $scanCode = $LASTEXITCODE
           Get-Content out\scanner.txt | Write-Host
           $scan = Get-Content out\scanner.json -Raw | ConvertFrom-Json
           $notOk = @($scan.patterns | Where-Object { $_.result -ne 'OK' } |
-            ForEach-Object { [ordered]@{ name = $_.name; required = $_.required; result = $_.result } })
+            ForEach-Object {
+              $o = [ordered]@{ name = $_.name; required = $_.required; result = $_.result }
+              if ($_.PSObject.Properties['suggest']) { $o.suggest = $_.suggest }
+              $o })
           foreach ($p in $notOk) { if (-not $p.required) { $warnings.Add("optional pattern $($p.name): $($p.result)") } }
 
           # The Game-SDK globals. GObjects and AppendString must equal the
@@ -644,11 +691,12 @@ jobs:
           $fail = (-not $clOk) -or ($scanCode -ne 0)
           [ordered]@{
             exe = [ordered]@{ productVersion = $pv; requiredCl = $env:REQUIRED_CL; clOk = $clOk; sha256 = $sha }
-            scan = [ordered]@{ exitCode = $scanCode; summary = $scan.summary; notOk = $notOk }
+            scan = [ordered]@{ exitCode = $scanCode; summary = $scan.summary; notOk = $notOk
+                     suggest = $(if ($scan.PSObject.Properties['suggest']) { $scan.suggest } else { $null }) }
             sdkGlobals = @($globals)
             warnings = @($warnings)
             fail = $fail
-          } | ConvertTo-Json -Depth 6 | Set-Content out\checks.json -Encoding utf8
+          } | ConvertTo-Json -Depth 12 | Set-Content out\checks.json -Encoding utf8
           foreach ($w in $warnings) { Write-Host "::warning::$w" }
           if (-not $clOk) { Write-Host "::error::ProductVersion '$pv' does not end with the loader's required '$($env:REQUIRED_CL)'" }
           if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code $scanCode ($($scan.summary.requiredFailing) required patterns failing)" }
@@ -667,10 +715,11 @@ jobs:
         id: plugins
         if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && needs.plugin-plan.outputs.any == 'true'
         # A plugin that hangs must not hold up the loader's result.
-        timeout-minutes: 15
+        timeout-minutes: 30
         shell: pwsh
         env:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
           PLAN: ${{ needs.plugin-plan.outputs.matrix }}
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
         run: |
@@ -687,6 +736,11 @@ jobs:
           $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
             Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
           if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $suggest = @('--suggest')
+          $refExe = if ($env:REFERENCE_DIR) {
+            Get-ChildItem -Path $env:REFERENCE_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+              Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
+          if ($refExe) { $suggest += @('--reference', $refExe.FullName) }
           $scanner = 'scanner\sr-aobscan-client.exe'
           if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
           $results = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
@@ -706,7 +760,7 @@ jobs:
               if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the plugin job made" }
               $stem = "out\plugin-$($p.name)"
               $ErrorActionPreference = 'Continue'
-              & $scanner $exe.FullName --plugin $dll --json > "$stem.json" 2> "$stem.txt"
+              & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
               $r.exitCode = $LASTEXITCODE
               $ErrorActionPreference = 'Stop'
               Get-Content "$stem.txt" | Write-Host
@@ -717,8 +771,10 @@ jobs:
               $r.summary = $scan.summary
               foreach ($k in 'note', 'crash', 'gameCalls') { if ($scan.PSObject.Properties[$k]) { $r[$k] = $scan.$k } }
               $r.patterns = @($scan.patterns | ForEach-Object {
-                [ordered]@{ name = $(if ($_.name) { $_.name } else { "(raw) $($_.pattern)" }); call = $_.call; kind = $_.kind
-                            required = $_.required; recorded = $_.recorded; result = $_.result } })
+                $o = [ordered]@{ name = $(if ($_.name) { $_.name } else { "(raw) $($_.pattern)" }); call = $_.call; kind = $_.kind
+                                 required = $_.required; recorded = $_.recorded; result = $_.result }
+                if ($_.PSObject.Properties['suggest']) { $o.suggest = $_.suggest }
+                $o })
               foreach ($row in @($scan.patterns | Where-Object { $_.recorded -and $_.result -ne 'OK' })) {
                 Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.result)$(if ($row.required) { '' } else { ' (declared optional; the loader still refuses the plugin)' })"
               }
@@ -738,7 +794,7 @@ jobs:
           [ordered]@{
             status = $(if (@($results | Where-Object { $_.verdict -notin 'PASS', 'NONE', 'GAME-CALL' }).Count) { 'fail' } else { 'pass' })
             plugins = $results
-          } | ConvertTo-Json -Depth 8 | Set-Content out\plugins.json -Encoding utf8
+          } | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
           foreach ($r in $results) { "$($r.name): $($r.verdict)" }
 
       - name: Write the result
@@ -765,7 +821,7 @@ jobs:
             elseif ($ck.fail) { 'fail' }
             elseif (@($ck.warnings).Count -gt 0) { 'pass-with-warnings' }
             else { 'pass' }
-          $r | ConvertTo-Json -Depth 8 | Set-Content out\result.json -Encoding utf8
+          $r | ConvertTo-Json -Depth 12 | Set-Content out\result.json -Encoding utf8
           "Client check: $($r.status)"
           Remove-Item out\download.json, out\checks.json, out\plugins.json -ErrorAction SilentlyContinue
 
@@ -892,6 +948,37 @@ jobs:
               }
               $md.Add('')
               $md.Add('</details>')
+            }
+          }
+
+          # Proposed replacements for failing patterns (sr-aobscan --suggest).
+          $failing = [Collections.Generic.List[object]]::new()
+          if ($r -and $r.checks) { foreach ($row in @($r.checks.scan.notOk)) { $failing.Add([pscustomobject]@{ owner = 'loader'; row = $row }) } }
+          foreach ($p in @($(if ($r -and $r.PSObject.Properties['plugins'] -and $r.plugins) { $r.plugins.plugins }) | Where-Object { $_.PSObject.Properties['patterns'] })) {
+            foreach ($row in @($p.patterns)) { $failing.Add([pscustomobject]@{ owner = $p.name; row = $row }) }
+          }
+          $failing = @($failing | Where-Object { $_.row.PSObject.Properties['suggest'] -and $_.row.suggest })
+          if ($failing.Count) {
+            $md.Add('')
+            $md.Add('**Proposed patterns** (unverified in game; each resolves to the function shown with the loader''s own check):')
+            $md.Add('')
+            $md.Add('| Owner | Pattern | Result | Found by | RVA | Proposal | Unique on |')
+            $md.Add('|---|---|---|---|---|---|---|')
+            foreach ($f in $failing) {
+              $s = $f.row.suggest
+              $how = "$($s.located)$(if ($s.PSObject.Properties['confidence']) { " ($($s.confidence))" })"
+              $rva = if ($s.PSObject.Properties['rva']) { $s.rva } else { '-' }
+              $props = @($s.proposals)
+              $note = if ($s.PSObject.Properties['note']) { $s.note -replace '\|', '\|' } else { '' }
+              if (-not $props.Count) { $md.Add("| $($f.owner) | ``$($f.row.name)`` | $($f.row.result) | $how | $rva | none: $note | - |"); continue }
+              foreach ($q in $props) {
+                $ref = if ($q.PSObject.Properties['uniqueOnReference']) { [bool]$q.uniqueOnReference } else { $null }
+                $on = if ($q.uniqueOnTarget -and $ref) { 'both builds' }
+                      elseif ($q.uniqueOnTarget) { 'this build' + $(if ($null -eq $ref) { '' } elseif ($s.PSObject.Properties['referenceKeepsCurrent']) { '; public keeps the current pattern' } else { ' only' }) }
+                      elseif ($ref) { 'public build only' } else { 'neither' }
+                $follow = if ($q.PSObject.Properties['followRel32At']) { " (follow rel32 at +$($q.followRel32At))" } else { '' }
+                $md.Add("| $($f.owner) | ``$($f.row.name)`` | $($f.row.result) | $how | $rva | ``$($q.pattern)``$follow | $on |")
+              }
             }
           }
 
