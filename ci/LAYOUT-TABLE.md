@@ -170,6 +170,28 @@ Measured at CL 127004 with the full used list, with `--sdk`:
 The design estimated 300-600 KB; the real figure is two to four times smaller
 (about 3,700 rows for all modules together).
 
+## Reading the used layouts from the PDBs
+
+The game ships a PDB with every build, so the layouts a component reads can be
+checked against the build itself, not only against a Dumper-7 dump:
+
+    node ci/layout-table.mjs keys <table.h> [--out keys.txt]
+    sr-aobscan <game.exe> --layout keys.txt --json > layout.json
+    node ci/layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]
+
+`keys` lists a table as `--layout` keys: each class (its size), then each row
+as `Class::Member`. Blueprint classes are left out (no PDB has them).
+`ci/native-keys.txt` adds, per plugin, the members it reads at a fixed offset
+because the Game-SDK has no name for them. `pdb-diff` compares two reports of
+the same key list, one per build, key by key: same, moved, changed (size or
+bool mask), missing, added, unresolved. A renamed member counts as missing.
+It exits 3 when anything moved, changed or went missing, 0 otherwise.
+
+`sr-client-check` runs this on every check: one `--layout` pass per build over
+the keys of the loader and of each built plugin, then one `pdb-diff` per
+component, written to `out/layout.json` (counts and the keys that moved). It
+is a report: it does not change the check's verdict.
+
 ## Tests
 
 `node --test ci/layout-table.test.mjs` uses the trimmed fixtures in

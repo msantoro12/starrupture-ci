@@ -1,0 +1,15 @@
+# Game members the plugins read at a fixed offset because the Game-SDK has
+# no name for them (Dumper-7 folds them into Pad_* bytes: not reflected).
+# sr-client-check reads each one from the PDB of every build it checks,
+# beside the plugin's used classes. Format: <plugin name> <Class::Member>,
+# the key naming the member the plugin's source comment already names.
+BetterCheats UCrGameInstance::ServerSessionName
+BetterCheats UCrEnviroWaveTimerSubsystem::WaitingDuration
+BetterCheats UCrEnviroWaveTimerSubsystem::NextWaveTimer
+BetterCheats UCrEnviroWaveTimerSubsystem::bWaitingForNextWave
+BetterCheats UCrEnviroWaveTimerSubsystem::bPause
+BetterCheats UCrEnviroWaveTimerSubsystem::bStopWaves
+BetterCheats ACrTechnologyKeeper::bUnlockAllBuildings
+BetterCheats UCrUW_InventoryContainer::InventoryComponent
+BetterDrone ACrPlayerControllerBase::PlayerControlState
+WAILA ACrPackageTransportReplicator::SendingTime

@@ -7,6 +7,8 @@
 //        [--used used-classes.txt]... [--src <source-dir>]... \
 //        [--sdk <Client/SDK dir>] [--namespace SrLayoutTable] [--out layout_table.generated.h]
 //   node ci/layout-table.mjs compare <old.h> <new.h> [--json report.json]
+//   node ci/layout-table.mjs keys <table.h> [--out keys.txt]
+//   node ci/layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]
 //
 // gen
 //   Selects the classes to embed: the names in each --used list plus whatever
@@ -23,6 +25,22 @@
 //   Reads two generated headers and reports what the new build breaks in the
 //   old table, the same test the runtime check applies against live reflection
 //   data. Exit codes: 0 nothing broken, 3 at least one row or class broken,
+//   2 usage or parse error.
+//
+// keys
+//   Lists a table as the keys `sr-aobscan --layout` reads from a game PDB: each
+//   class (its size), then each of its rows as `Class::Member`. Blueprint
+//   classes are left out: they are assets, not C++ types, so no PDB has them.
+//
+// pdb-diff
+//   Compares two `sr-aobscan --layout --json` reports of the same key list, one
+//   per build, key by key: same, moved (another offset), changed (same offset,
+//   another size or bool mask), missing (resolved on the base build only:
+//   removed, or renamed), added (resolved on the next build only) and
+//   unresolved (on neither). The PDB lookup is by name, so a renamed member
+//   counts as missing. --keys compares only the keys in that list (one per
+//   line, '#' comments), so one report per build can serve several
+//   components. Exit codes: 0 nothing moved, changed or missing; 3 otherwise;
 //   2 usage or parse error.
 //
 // The table format is documented in ci/LAYOUT-TABLE.md.
@@ -226,6 +244,8 @@ export function renderHeader(table, { namespace = DEFAULT_NAMESPACE } = {}) {
 
 // Read a header written by renderHeader back into a table.
 export function parseHeader(text, label = 'input') {
+  // A Windows checkout (core.autocrlf) has CRLF line ends.
+  text = text.replace(/\r\n/g, '\n');
   const num = (s) => Number(s);
   const grab = (re, what) => {
     const m = re.exec(text);
@@ -327,6 +347,78 @@ function formatCompare(r) {
 
 // ---- CLI ----------------------------------------------------------------------
 
+// ---- keys and pdb-diff ----------------------------------------------------------
+
+// The table's classes and rows as `sr-aobscan --layout` keys, one per line.
+export function tableKeys(table) {
+  const keys = [];
+  for (const c of table.classes) {
+    if (c.kind === KIND.blueprint) continue;
+    keys.push(c.name);
+    for (const r of c.rows) keys.push(`${c.name}::${r.member}`);
+  }
+  return keys;
+}
+
+// Read a `sr-aobscan --layout --json` report: [{ key, result, offset?, size?, boolMask? }].
+export function parseLayoutReport(text, label = 'input') {
+  let doc;
+  try {
+    doc = JSON.parse(text.replace(/^\uFEFF/, ''));
+  } catch (e) {
+    throw new ParseError(`${label}: not JSON (${e.message})`);
+  }
+  if (!doc || !Array.isArray(doc.keys)) throw new ParseError(`${label}: no keys array (not an sr-aobscan --layout report?)`);
+  for (const k of doc.keys) {
+    if (typeof k?.key !== 'string' || typeof k.result !== 'string') throw new ParseError(`${label}: malformed key entry`);
+    if (k.result === 'OK' && !Number.isInteger(k.size)) throw new ParseError(`${label}: ${k.key}: OK without a size`);
+  }
+  return doc.keys;
+}
+
+const PDB_CLASSES = ['same', 'moved', 'changed', 'missing', 'added', 'unresolved'];
+
+// The entries of a report for the given keys, in that order; every key must be in the report.
+export function selectKeys(report, keys, label = 'input') {
+  const byKey = new Map(report.map((k) => [k.key, k]));
+  return keys.map((key) => {
+    const k = byKey.get(key);
+    if (!k) throw new ParseError(`${label}: no entry for ${key}`);
+    return k;
+  });
+}
+
+// Key-by-key comparison of two reports of the same key list (see pdb-diff above).
+// Returns { keys, counts: { same, moved, ... }, moved: [...], changed, missing, added, unresolved }.
+export function diffLayoutReports(base, next) {
+  if (base.length !== next.length || base.some((k, i) => k.key !== next[i].key)) throw new ParseError('the two reports are not of the same key list');
+  const out = Object.fromEntries(PDB_CLASSES.map((c) => [c, []]));
+  const fields = (k) => ({ offset: k.offset ?? null, size: k.size, boolMask: k.boolMask ?? null });
+  base.forEach((b, i) => {
+    const n = next[i];
+    const okB = b.result === 'OK';
+    const okN = n.result === 'OK';
+    if (okB && okN) {
+      if ((b.offset ?? null) !== (n.offset ?? null)) out.moved.push({ key: b.key, base: fields(b), next: fields(n) });
+      else if (b.size !== n.size || (b.boolMask ?? null) !== (n.boolMask ?? null)) out.changed.push({ key: b.key, base: fields(b), next: fields(n) });
+      else out.same.push(b.key);
+    } else if (okB) out.missing.push({ key: b.key, base: fields(b), next: n.result });
+    else if (okN) out.added.push({ key: b.key, base: b.result, next: fields(n) });
+    else out.unresolved.push({ key: b.key, base: b.result, next: n.result });
+  });
+  const { same, ...listed } = out;
+  return { keys: base.length, counts: Object.fromEntries(PDB_CLASSES.map((c) => [c, out[c].length])), ...listed };
+}
+
+function formatPdbDiff(r) {
+  const h = (f) => (typeof f === 'string' ? f : `${f.offset === null ? '-' : hex(f.offset)}/${hex(f.size)}${f.boolMask ? `/${hex(f.boolMask)}` : ''}`);
+  const lines = [`${r.keys} keys: ` + PDB_CLASSES.map((c) => `${r.counts[c]} ${c}`).join(', ')];
+  for (const c of PDB_CLASSES.slice(1)) {
+    for (const e of r[c]) lines.push(`${c.toUpperCase().padEnd(10)} ${e.key}: ${h(e.base)} -> ${h(e.next)}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
 function parseArgs(argv, valued, repeated = []) {
   const opt = Object.fromEntries(repeated.map((k) => [k, []]));
   const pos = [];
@@ -375,8 +467,27 @@ function main(argv) {
     process.stdout.write(formatCompare(r));
     if (opt.json) writeFileSync(opt.json, JSON.stringify(r, null, 2) + '\n');
     if (r.broken.length > 0) process.exitCode = EXIT_USED_CHANGED;
+  } else if (cmd === 'keys') {
+    const { opt, pos } = parseArgs(rest, ['out']);
+    if (pos.length !== 1) throw new Error('usage: layout-table.mjs keys <table.h> [--out keys.txt]');
+    const text = tableKeys(parseHeader(readFileSync(pos[0], 'utf8'), pos[0])).join('\n') + '\n';
+    if (opt.out) writeFileSync(opt.out, text);
+    else process.stdout.write(text);
+  } else if (cmd === 'pdb-diff') {
+    const { opt, pos } = parseArgs(rest, ['json', 'keys']);
+    if (pos.length !== 2) throw new Error('usage: layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]');
+    let [a, b] = pos.map((p) => parseLayoutReport(readFileSync(p, 'utf8'), p));
+    if (opt.keys) {
+      const keys = [...parseUsedList(readFileSync(opt.keys, 'utf8'))];
+      if (!keys.length) throw new Error(`${opt.keys}: no keys`);
+      [a, b] = [selectKeys(a, keys, pos[0]), selectKeys(b, keys, pos[1])];
+    }
+    const r = diffLayoutReports(a, b);
+    process.stdout.write(formatPdbDiff(r));
+    if (opt.json) writeFileSync(opt.json, JSON.stringify(r, null, 2) + '\n');
+    if (r.counts.moved + r.counts.changed + r.counts.missing > 0) process.exitCode = EXIT_USED_CHANGED;
   } else {
-    throw new Error('usage: layout-table.mjs gen|compare ...');
+    throw new Error('usage: layout-table.mjs gen|compare|keys|pdb-diff ...');
   }
 }
 
