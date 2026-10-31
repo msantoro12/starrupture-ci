@@ -13,6 +13,8 @@ BetterCheats ACrTechnologyKeeper::bUnlockAllBuildings
 BetterCheats UCrUW_InventoryContainer::InventoryComponent
 BetterDrone ACrPlayerControllerBase::PlayerControlState
 WAILA ACrPackageTransportReplicator::SendingTime
+ProductionViewer FCrGridEntityHandle::EntityHandle
+ProductionViewer FCrGridEntityHandle::Data
 
 # A line may name where the plugin source holds the number, so the check can
 # compare it with the PDB and auto-apply can rewrite it:
