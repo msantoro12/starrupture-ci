@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { selectRows, applyPlan, lexLiterals, commitMessage, isPattern } from './apply-proposals.mjs';
+import { selectRows, applyPlan, lexLiterals, commitMessage, isPattern, verdictOf } from './apply-proposals.mjs';
 
 const OLD_A = '48 89 5C 24 ?? 48 89 6C 24 ?? 56 57 41 56 48 83 EC ?? 48 8B F9 48 8B 89';
 const NEW_A = '48 8B C8 E8 ?? ?? ?? ?? 0F B6 D8 88 9F ?? ?? 00 00';
@@ -174,4 +174,46 @@ test('apply is deterministic and commitMessage states CL, patterns and confidenc
   assert.match(msg, new RegExp(`now ${NEW_A.replace(/[?]/g, '\\?')} \\(call at \\+3\\)`));
   assert.match(msg, /Added as a second pattern .*Confidence high\./);
   assert.doesNotMatch(msg, /Co-Authored-By|Claude/i);
+});
+
+test('verdict: FIXED, PARTIAL, NO-FIX and FAILED', () => {
+  const applied = {
+    hasReference: true,
+    skipped: [],
+    rows: [
+      { name: 'A::GetThing', call: 'Resolve', status: 'applied', category: 'replace', rva: '0x7488CB0', referenceRva: '0x745C7E0',
+        old: { pattern: OLD_A, followRel32At: -1 }, new: { pattern: NEW_A, followRel32At: 3 } },
+      { name: 'B::Check', call: 'Resolve', status: 'applied', category: 'add', rva: '0x74E2050', referenceRva: '0x74B0000',
+        old: { pattern: OLD_B, followRel32At: -1 }, new: { pattern: NEW_B, followRel32At: -1 } },
+    ],
+  };
+  const rec = (name, result, rva, pattern) => ({ call: 'Resolve', name, recorded: true, result, rva, pattern });
+  const target = { verdict: 'PASS', patterns: [rec('A::GetThing', 'OK', '0x7488cb0', NEW_A), rec('B::Check', 'OK', '0x74E2050', NEW_B), rec('C::Other', 'OK', '0x1', OLD_W)] };
+  const reference = { verdict: 'PASS', patterns: [rec('A::GetThing', 'OK', '0x745C7E0', NEW_A), rec('B::Check', 'OK', '0x74B0000', OLD_B), rec('C::Other', 'OK', '0x2', OLD_W)] };
+  assert.equal(verdictOf(applied, { target, reference }).verdict, 'FIXED');
+
+  // The add row's public side must still resolve through the current pattern.
+  const refNew = { ...reference, patterns: reference.patterns.map((p) => (p.name === 'B::Check' ? { ...p, pattern: NEW_B } : p)) };
+  assert.equal(verdictOf(applied, { target, reference: refNew }).verdict, 'FAILED');
+  // A different function on either build fails it.
+  const moved = { ...target, patterns: target.patterns.map((p) => (p.name === 'A::GetThing' ? { ...p, rva: '0x7488CC0' } : p)) };
+  assert.equal(verdictOf(applied, { target: moved, reference }).verdict, 'FAILED');
+  // The public build regressing fails it, and so does a missing public scan.
+  const broken = { verdict: 'FAIL', patterns: reference.patterns.map((p) => (p.name === 'C::Other' ? { ...p, result: 'MISSING' } : p)) };
+  assert.equal(verdictOf(applied, { target, reference: broken }).verdict, 'FAILED');
+  assert.equal(verdictOf(applied, { target }).verdict, 'FAILED');
+
+  // A skipped row that still fails makes it PARTIAL; any other failure does not.
+  const withSkip = { ...applied, skipped: [{ name: 'D::Skipped', status: 'skipped', reason: 'confidence medium is below high' }] };
+  const failingSkip = { verdict: 'FAIL', patterns: [...target.patterns, rec('D::Skipped', 'MISSING', undefined, OLD_W)] };
+  assert.equal(verdictOf(withSkip, { target: failingSkip, reference }).verdict, 'PARTIAL');
+  const failingOther = { verdict: 'FAIL', patterns: target.patterns.map((p) => (p.name === 'C::Other' ? { ...p, result: 'MISSING' } : p)) };
+  assert.equal(verdictOf(withSkip, { target: failingOther, reference }).verdict, 'FAILED');
+  // Partial coverage is never FIXED.
+  assert.equal(verdictOf(applied, { target: { ...target, verdict: 'GAME-CALL' }, reference }).verdict, 'FAILED');
+
+  // A public target has no reference to check.
+  const pub = { hasReference: false, skipped: [], rows: [applied.rows[0]] };
+  assert.equal(verdictOf(pub, { target }).verdict, 'FIXED');
+  assert.equal(verdictOf({ hasReference: false, skipped: [], rows: [{ ...applied.rows[0], status: 'skipped' }] }, { target }).verdict, 'NO-FIX');
 });

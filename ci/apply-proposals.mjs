@@ -5,6 +5,7 @@
 //
 //   node ci/apply-proposals.mjs select --scan plugin-X.json --min-confidence high --target-public false > plan.json
 //   node ci/apply-proposals.mjs apply  --source <checkout> --plan plan.json [--dry-run] > applied.json
+//   node ci/apply-proposals.mjs verdict --applied applied.json --target scan.json [--reference scan.json]
 //   node ci/apply-proposals.mjs message --applied applied.json --cl 128786 [--reference-cl 127004]
 //
 // select picks, per failing recorded row, the proposal that is safe for the
@@ -358,6 +359,60 @@ export function applyPlan(files, plan) {
   return { changed: out, rows: results };
 }
 
+// ---- verdict -----------------------------------------------------------------
+
+function sameRva(a, b) {
+  return /^0x[0-9a-f]+$/i.test(a || '') && /^0x[0-9a-f]+$/i.test(b || '') && BigInt(a) === BigInt(b);
+}
+
+// Whether the rebuilt plugin does what the plan says. target and reference are
+// its sr-aobscan --plugin scans on the checked build and on the public build.
+//   FIXED    every applied row resolves with its new pattern, on the checked
+//            build at the RVA the proposal named and on the public build at
+//            the RVA it resolves today; both scans PASS.
+//   PARTIAL  the same, except that the checked build still fails rows that
+//            were skipped, and only those.
+//   NO-FIX   nothing was applied: there is nothing to build or push.
+//   FAILED   anything else.
+export function verdictOf(applied, { target = null, reference = null } = {}) {
+  const rows = (applied.rows || []).filter((r) => r.status === 'applied');
+  const notApplied = new Set([...(applied.skipped || []), ...(applied.rows || []).filter((r) => r.status !== 'applied')].map((r) => r.name));
+  const out = { verdict: 'FAILED', reasons: [], rows: [], skipped: [...notApplied].sort() };
+  if (!rows.length) return { ...out, verdict: 'NO-FIX', reasons: ['no proposal was applied'] };
+  if (!target) return { ...out, reasons: ['the rebuilt plugin was not scanned on the checked build'] };
+  if (applied.hasReference && !reference) return { ...out, reasons: ['the rebuilt plugin was not scanned on the public build'] };
+  const fail = (why) => out.reasons.push(why);
+  const recorded = (scan) => (scan.patterns || []).filter((p) => p.recorded);
+  const find = (scan, r) => recorded(scan).filter((p) => p.name === r.name && p.call === r.call);
+
+  for (const r of rows) {
+    const v = { name: r.name, category: r.category };
+    const t = find(target, r);
+    v.target = t.length === 1 ? { result: t[0].result, rva: t[0].rva || '' } : { result: `${t.length} rows` };
+    if (t.length !== 1 || t[0].result !== 'OK' || !sameRva(t[0].rva, r.rva) || t[0].pattern !== r.new.pattern) {
+      fail(`${r.name}: on the checked build it is ${v.target.result} ${v.target.rva || ''}`.trim() + `, expected OK at ${r.rva} with the new pattern`);
+    }
+    if (applied.hasReference) {
+      const q = find(reference, r);
+      const want = r.category === 'add' ? r.old.pattern : r.new.pattern;
+      v.reference = q.length === 1 ? { result: q[0].result, rva: q[0].rva || '' } : { result: `${q.length} rows` };
+      if (q.length !== 1 || q[0].result !== 'OK' || !sameRva(q[0].rva, r.referenceRva) || q[0].pattern !== want) {
+        fail(`${r.name}: on the public build it is ${v.reference.result} ${v.reference.rva || ''}`.trim() + `, expected OK at ${r.referenceRva} with the ${r.category === 'add' ? 'current' : 'new'} pattern`);
+      }
+    }
+    out.rows.push(v);
+  }
+  const stillFailing = recorded(target).filter((p) => p.result !== 'OK').map((p) => p.name);
+  for (const n of stillFailing) if (!notApplied.has(n)) fail(`${n} fails on the checked build and was not a skipped row`);
+  if (applied.hasReference) {
+    for (const p of recorded(reference)) if (p.result !== 'OK') fail(`${p.name} fails on the public build (${p.result})`);
+    if (reference.verdict !== 'PASS') fail(`the public build scans ${reference.verdict}`);
+  }
+  if (stillFailing.length ? target.verdict !== 'FAIL' : target.verdict !== 'PASS') fail(`the checked build scans ${target.verdict}`);
+  if (out.reasons.length) return out;
+  return { ...out, verdict: stillFailing.length ? 'PARTIAL' : 'FIXED' };
+}
+
 // ---- commit message ----------------------------------------------------------
 
 export function commitMessage(applied, { cl, referenceCl = '' }) {
@@ -408,11 +463,16 @@ function main(argv) {
     process.stdout.write(JSON.stringify({ ...plan, rows, changed: [...changed.keys()].map((f) => f.split(sep).join('/')).sort() }, null, 2) + '\n');
     return 0;
   }
+  if (cmd === 'verdict') {
+    const v = verdictOf(readJson(o.applied), { target: o.target ? readJson(o.target) : null, reference: o.reference ? readJson(o.reference) : null });
+    process.stdout.write(JSON.stringify(v, null, 2) + '\n');
+    return 0;
+  }
   if (cmd === 'message') {
     process.stdout.write(commitMessage(readJson(o.applied), { cl: o.cl, referenceCl: o['reference-cl'] || '' }));
     return 0;
   }
-  process.stderr.write('usage: apply-proposals.mjs select|apply|message ...\n');
+  process.stderr.write('usage: apply-proposals.mjs select|apply|verdict|message ...\n');
   return 2;
 }
 
