@@ -1,6 +1,6 @@
 name: SR node tests
 
-# Fixture tests for ci/decide.mjs, ci/patch-path-a.mjs and ci/apply-proposals.mjs.
+# Fixture tests for ci/decide.mjs, ci/patch-path-a.mjs, ci/apply-proposals.mjs and ci/version-map.mjs.
 # The live case clones AlienX's loader main read-only to prove the generated patch applies.
 
 on:
@@ -29,4 +29,4 @@ jobs:
         with:
           node-version: lts/*
       - name: Run the tests
-        run: node --test ci/decide.test.mjs ci/patch-path-a.test.mjs ci/apply-proposals.test.mjs
+        run: node --test ci/decide.test.mjs ci/patch-path-a.test.mjs ci/apply-proposals.test.mjs ci/version-map.test.mjs
