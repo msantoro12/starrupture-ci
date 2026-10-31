@@ -914,6 +914,164 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # ---- Layouts from the PDBs: what each component reads, on both builds --
+      - name: Read the used layouts from the PDBs
+        id: layout
+        if: always() && steps.tool.outcome == 'success'
+        # A report only: a failure here costs only the layout report.
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
+          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+        run: |
+          # The keys each component reads: the loader's own layout table, each
+          # built plugin's used Game-SDK classes (ci/layout-table.mjs gen over
+          # its source) and its native members (ci/native-keys.txt). One
+          # sr-aobscan --layout pass per build reads them all from that build's
+          # PDB; pdb-diff then counts, per component, what moved between the
+          # public build and this one. Keys and numbers only: no PDB names.
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $lt = 'ci-tool\ci\layout-table.mjs'
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          function Find-Exe([string]$dir) {
+            if ($dir) { Get-ChildItem -Path $dir -Recurse -File -Filter '*-Win64-Shipping.exe' | Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
+          }
+          function Get-Cl($e) { if ([string]$e.VersionInfo.ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' } }
+          function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
+          function Get-Source([string]$repo, [string]$rev, [string]$dir) {
+            git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
+            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
+          }
+          $exe = Find-Exe $env:INSTALL_DIR
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $refExe = Find-Exe $env:REFERENCE_DIR
+          $cl = Get-Cl $exe
+          $refCl = if ($refExe) { Get-Cl $refExe } else { '' }
+          $work = Join-Path $env:RUNNER_TEMP 'layout'
+          New-Item -ItemType Directory -Force $work | Out-Null
+
+          $native = @{}
+          foreach ($line in Get-Content 'ci-tool\ci\native-keys.txt') {
+            if ($line -match '^\s*(#|$)') { continue }
+            if ($line -notmatch '^(\S+)\s+(\S+::\S+)(\s+\S.*)?$') { throw "native-keys.txt: malformed line '$line'" }
+            if (-not $native.ContainsKey($Matches[1])) { $native[$Matches[1]] = [Collections.Generic.List[string]]::new() }
+            if (-not $native[$Matches[1]].Contains($Matches[2])) { $native[$Matches[1]].Add($Matches[2]) }
+          }
+          $components = [Collections.Generic.List[object]]::new()
+          $metas = @($env:PLAN | ConvertFrom-Json | Where-Object { $_.source -eq 'build' } | ForEach-Object {
+            $m = "plugins\plugin-$($env:BRANCH)-$($_.name)\plugin.json"
+            if (Test-Path $m) { Get-Content $m -Raw | ConvertFrom-Json }
+          })
+          if (-not $metas.Count) { throw 'no built plugin: nothing names the Game-SDK and loader commits to read' }
+          # Every plugin was built against the same loader and Game-SDK commits.
+          $sdk = Join-Path $work 'game-sdk'
+          Get-Source 'AlienXAXS/StarRupture-Game-SDK' $metas[0].gameSdk $sdk
+          $loaderTable = Join-Path $work 'loader-table.h'
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core/core/layout_table.generated.h" -OutFile $loaderTable -TimeoutSec 60
+          node $lt keys $loaderTable --out "$work\keys-ModLoader.txt"; Invoke-Native 'keys (loader)'
+          $components.Add('ModLoader')
+          foreach ($m in $metas) {
+            Get-Source $m.repo $m.sha "$work\src-$($m.name)"
+            node $lt gen "$sdk\Client\Assertions.inl" --cl $(if ($cl) { $cl } else { 1 }) --src "$work\src-$($m.name)" --sdk "$sdk\Client\SDK" --out "$work\table-$($m.name).h"; Invoke-Native "gen ($($m.name))"
+            node $lt keys "$work\table-$($m.name).h" --out "$work\keys-$($m.name).txt"; Invoke-Native "keys ($($m.name))"
+            if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
+            $components.Add($m.name)
+          }
+          $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
+          Set-Content "$work\keys-all.txt" $all -Encoding ascii
+
+          $reports = @{}
+          foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
+            $out = "out\layout-$($b.key).json"
+            $ErrorActionPreference = 'Continue'
+            & $scanner $b.exe.FullName --layout "$work\keys-all.txt" --json > $out
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            if ($code -gt 1) { throw "sr-aobscan --layout on the $($b.key) build failed (exit $code)" }
+            $reports[$b.key] = $out
+            "$($b.key) (CL-$(Get-Cl $b.exe)): $(((Get-Content $out -Raw | ConvertFrom-Json).summary | ConvertTo-Json -Compress))"
+          }
+          $result = [ordered]@{ cl = $cl; referenceCl = $refCl; components = [ordered]@{} }
+          if ($reports.ContainsKey('reference')) {
+            foreach ($c in $components) {
+              node $lt pdb-diff $reports.reference $reports.target --keys "$work\keys-$c.txt" --json "$work\diff-$c.json" | Out-Host
+              if ($LASTEXITCODE -notin 0, 3) { throw "pdb-diff ($c) failed (exit $LASTEXITCODE)" }
+              $result.components[$c] = Get-Content "$work\diff-$c.json" -Raw | ConvertFrom-Json
+              "${c}: $($result.components[$c].counts | ConvertTo-Json -Compress)"
+            }
+          } else { Write-Host '::notice title=Layouts::No public build to compare with: the keys were read from this build only.' }
+          $result | ConvertTo-Json -Depth 8 | Set-Content out\layout.json -Encoding utf8
+
+      # ---- Fixed offsets: what each plugin reads at a raw offset ---------------
+      - name: Check the fixed offsets
+        id: offsets
+        if: always() && steps.plugins.outcome == 'success' && steps.tool.outcome == 'success'
+        # A plugin whose offsets could not be checked fails (OFFSETS-UNCHECKED); it never passes by default.
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          # Per built plugin with anchored lines in ci/native-keys.txt: read its
+          # source at the commit that was built, and compare every fixed offset
+          # it reads with the PDB layout of this build and of the public one
+          # (ci/apply-proposals.mjs offsets). Anything but ok fails the plugin
+          # (verdict OFFSETS); a layout report that is missing fails it too
+          # (OFFSETS-UNCHECKED). The fix step rewrites the ones it can.
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $tool = 'ci-tool\ci\apply-proposals.mjs'
+          $native = 'ci-tool\ci\native-keys.txt'
+          function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
+          $anchored = @(Get-Content $native | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s+\S') { $Matches[1] } } | Sort-Object -Unique)
+          $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
+          $work = Join-Path $env:RUNNER_TEMP 'offsets'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          foreach ($p in @($pj.plugins | Where-Object { $_.source -eq 'build' -and $_.sha -and $_.name -in $anchored })) {
+            $json = "out\offsets-$($p.name).json"
+            try {
+              $src = Join-Path $work $p.name
+              git -c init.defaultBranch=main init -q $src; Invoke-Native "git init $src"
+              git -C $src fetch -q --depth 1 "https://github.com/$($p.repo)" $p.sha; Invoke-Native "fetching $($p.repo) $($p.sha)"
+              git -C $src checkout -q FETCH_HEAD; Invoke-Native "checking out $($p.repo)"
+              $a = @('offsets', '--native', $native, '--plugin', $p.name, '--source', $src, '--target-public', $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }))
+              if (Test-Path out\layout-target.json) { $a += @('--target', 'out\layout-target.json') }
+              if (Test-Path out\layout-reference.json) { $a += @('--reference', 'out\layout-reference.json') }
+              node $tool @a > $json
+              Invoke-Native "offsets ($($p.name))"
+            } catch {
+              [ordered]@{ plugin = $p.name; status = 'unchecked'; reason = $_.Exception.Message; counts = @{}; results = @(); plan = @(); blocked = @() } |
+                ConvertTo-Json -Depth 6 | Set-Content $json -Encoding utf8
+            }
+            $o = Get-Content $json -Raw | ConvertFrom-Json
+            $p | Add-Member -NotePropertyName offsets -NotePropertyValue ([ordered]@{
+              status = $o.status
+              reason = $(if ($o.PSObject.Properties['reason']) { $o.reason } else { '' })
+              counts = $o.counts
+              results = @($o.results | ForEach-Object { $_ | Select-Object key, state, file, line, source, target, reference, reason })
+            }) -Force
+            "$($p.name): offsets $($o.status) $($o.counts | ConvertTo-Json -Compress)"
+            if ($o.status -in 'fail', 'unchecked') {
+              $bad = @($o.results | Where-Object { $_.state -ne 'ok' } | ForEach-Object { "$($_.key.Split('::')[-1]) ($($_.state))" })
+              $why = if ($o.status -eq 'unchecked') { $o.reason } else { "$($bad.Count) of $(@($o.results).Count) fixed offsets do not match this build: $($bad -join ', ')" }
+              Write-Host "::error title=Plugin $($p.name)::$why"
+              $p | Add-Member -NotePropertyName note -NotePropertyValue $(if ($p.PSObject.Properties['note'] -and $p.note) { "$($p.note); $why" } else { $why }) -Force
+              if ($p.verdict -in 'PASS', 'NONE', 'GAME-CALL') {
+                $p | Add-Member -NotePropertyName patternVerdict -NotePropertyValue $p.verdict -Force
+                $p.verdict = $(if ($o.status -eq 'unchecked') { 'OFFSETS-UNCHECKED' } else { 'OFFSETS' })
+              }
+            }
+          }
+          $pj.status = $(if (@($pj.plugins | Where-Object { $_.verdict -notin 'PASS', 'NONE', 'GAME-CALL' }).Count) { 'fail' } else { 'pass' })
+          $pj | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
+          exit 0
+
       - name: Build the proposed fixes
         id: fix
         if: always() && steps.tool.outcome == 'success'
@@ -976,13 +1134,20 @@ jobs:
             $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; sha = ''; verdict = 'NO-FIX'; reasons = @()
                              applied = @(); skipped = @(); tree = ''; patch = '' }
             try {
-              node $tool select --scan $scan --min-confidence $env:APPLY_CONFIDENCE --target-public $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }) > "$d\plan.json"
+              $isPublic = $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' })
+              # The plugin's fixed-offset check (offsets step) rides in the plan.
+              $offs = "out\offsets-$($p.name).json"
+              $sel = @('select', '--scan', $scan, '--min-confidence', $env:APPLY_CONFIDENCE, '--target-public', $isPublic)
+              if (Test-Path $offs) { $sel += @('--offsets', $offs) }
+              node $tool @sel > "$d\plan.json"
               Invoke-Native 'select'
               $plan = Get-Content "$d\plan.json" -Raw | ConvertFrom-Json
+              $planOffsets = if ($plan.PSObject.Properties['offsets']) { @($plan.offsets) } else { @() }
+              $blockedRows = if ($plan.PSObject.Properties['blockedOffsets']) { @($plan.blockedOffsets | ForEach-Object { [pscustomobject]@{ name = $_.key; reason = "$($_.state): $($_.reason)" } }) } else { @() }
               # Nothing failing, nothing to do.
-              if (-not @($plan.rows).Count -and -not @($plan.skipped).Count) { continue }
-              $r.skipped = @($plan.skipped)
-              if (-not @($plan.rows).Count) { $r.reasons = @('no proposal was selected'); $results.Add($r); continue }
+              if (-not @($plan.rows).Count -and -not @($plan.skipped).Count -and -not $planOffsets.Count -and -not $blockedRows.Count) { continue }
+              $r.skipped = @(@($plan.skipped) + $blockedRows)
+              if (-not @($plan.rows).Count -and -not $planOffsets.Count) { $r.reasons = @('no proposal was selected'); $results.Add($r); continue }
               $meta = Get-Content "plugins\plugin-$($env:BRANCH)-$($p.name)\plugin.json" -Raw | ConvertFrom-Json
               if ($p.source -eq 'release') { Get-Source $p.repo "refs/tags/$($meta.ref)" "$d\src" }
               else {
@@ -994,8 +1159,10 @@ jobs:
               node $tool apply --source "$d\src" --plan "$d\plan.json" > "$d\applied.json"
               Invoke-Native 'apply'
               $applied = Get-Content "$d\applied.json" -Raw | ConvertFrom-Json
-              $r.applied = @($applied.rows | Where-Object { $_.status -eq 'applied' })
-              $r.skipped = @(@($plan.skipped) + @($applied.rows | Where-Object { $_.status -ne 'applied' }))
+              $offApplied = @($applied.offsets | Where-Object { $_.status -eq 'applied' } | ForEach-Object { [pscustomobject]@{ name = $_.key; kind = 'offset'; old = $_.old; new = $_.new } })
+              $offSkipped = @($applied.offsets | Where-Object { $_.status -ne 'applied' } | ForEach-Object { [pscustomobject]@{ name = $_.key; reason = $_.reason } })
+              $r.applied = @(@($applied.rows | Where-Object { $_.status -eq 'applied' }) + $offApplied)
+              $r.skipped = @(@($plan.skipped) + @($applied.rows | Where-Object { $_.status -ne 'applied' }) + $offSkipped + $blockedRows)
               if (-not $r.applied.Count) { $r.reasons = @('no proposal could be applied to the source'); $results.Add($r); continue }
               # The tree is taken before the build, which only adds ignored files.
               git -C "$d\src" add -A; Invoke-Native 'git add'
@@ -1036,12 +1203,22 @@ jobs:
                 $scans[$b.key] = "$stem.json"
               }
               $vArgs = @('--applied', "$d\applied.json", '--target', $scans.target)
+              # The patched source read against the same layouts: every rewritten offset must now be ok.
+              if (Test-Path $offs) {
+                $oa = @('offsets', '--native', 'ci-tool\ci\native-keys.txt', '--plugin', $p.name, '--source', "$d\src", '--target-public', $isPublic)
+                if (Test-Path out\layout-target.json) { $oa += @('--target', 'out\layout-target.json') }
+                if (Test-Path out\layout-reference.json) { $oa += @('--reference', 'out\layout-reference.json') }
+                node $tool @oa > "$d\offsets-after.json"
+                Invoke-Native 'offsets (fixed source)'
+                $vArgs += @('--offsets-after', "$d\offsets-after.json")
+              }
               if ($scans.ContainsKey('reference')) { $vArgs += @('--reference', $scans.reference) }
               $v = node $tool verdict @vArgs | Out-String | ConvertFrom-Json
               Invoke-Native 'verdict'
               $r.verdict = $v.verdict
               $r.reasons = @($v.reasons)
               $r.rows = @($v.rows)
+              $r.offsets = @($v.offsets)
               # Only the owner's forks are pushed to, and only a verified fix.
               if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^msantoro12/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$') {
                 $push.Add([ordered]@{ name = $p.name; sha = $r.sha; tree = $r.tree; cl = $cl; referenceCl = $refCl; verdict = $r.verdict; plan = $plan })
@@ -1059,101 +1236,6 @@ jobs:
           [ordered]@{ minConfidence = $env:APPLY_CONFIDENCE; cl = $cl; referenceCl = $refCl; plugins = $results } |
             ConvertTo-Json -Depth 12 | Set-Content out\autofix.json -Encoding utf8
           "autofix=$(ConvertTo-Json -InputObject @($push) -Depth 12 -Compress)" >> $env:GITHUB_OUTPUT
-
-      # ---- Layouts from the PDBs: what each component reads, on both builds --
-      - name: Read the used layouts from the PDBs
-        id: layout
-        if: always() && steps.tool.outcome == 'success'
-        # A report only: a failure here costs only the layout report.
-        continue-on-error: true
-        timeout-minutes: 30
-        shell: pwsh
-        env:
-          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
-          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
-          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
-          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
-        run: |
-          # The keys each component reads: the loader's own layout table, each
-          # built plugin's used Game-SDK classes (ci/layout-table.mjs gen over
-          # its source) and its native members (ci/native-keys.txt). One
-          # sr-aobscan --layout pass per build reads them all from that build's
-          # PDB; pdb-diff then counts, per component, what moved between the
-          # public build and this one. Keys and numbers only: no PDB names.
-          $ErrorActionPreference = 'Stop'
-          Set-StrictMode -Version Latest
-          $lt = 'ci-tool\ci\layout-table.mjs'
-          $scanner = 'scanner\sr-aobscan-client.exe'
-          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
-          function Find-Exe([string]$dir) {
-            if ($dir) { Get-ChildItem -Path $dir -Recurse -File -Filter '*-Win64-Shipping.exe' | Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
-          }
-          function Get-Cl($e) { if ([string]$e.VersionInfo.ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' } }
-          function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
-          function Get-Source([string]$repo, [string]$rev, [string]$dir) {
-            git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
-            git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
-          }
-          $exe = Find-Exe $env:INSTALL_DIR
-          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
-          $refExe = Find-Exe $env:REFERENCE_DIR
-          $cl = Get-Cl $exe
-          $refCl = if ($refExe) { Get-Cl $refExe } else { '' }
-          $work = Join-Path $env:RUNNER_TEMP 'layout'
-          New-Item -ItemType Directory -Force $work | Out-Null
-
-          $native = @{}
-          foreach ($line in Get-Content 'ci-tool\ci\native-keys.txt') {
-            if ($line -match '^\s*(#|$)') { continue }
-            if ($line -notmatch '^(\S+)\s+(\S+::\S+)\s*$') { throw "native-keys.txt: malformed line '$line'" }
-            if (-not $native.ContainsKey($Matches[1])) { $native[$Matches[1]] = [Collections.Generic.List[string]]::new() }
-            $native[$Matches[1]].Add($Matches[2])
-          }
-          $components = [Collections.Generic.List[object]]::new()
-          $metas = @($env:PLAN | ConvertFrom-Json | Where-Object { $_.source -eq 'build' } | ForEach-Object {
-            $m = "plugins\plugin-$($env:BRANCH)-$($_.name)\plugin.json"
-            if (Test-Path $m) { Get-Content $m -Raw | ConvertFrom-Json }
-          })
-          if (-not $metas.Count) { throw 'no built plugin: nothing names the Game-SDK and loader commits to read' }
-          # Every plugin was built against the same loader and Game-SDK commits.
-          $sdk = Join-Path $work 'game-sdk'
-          Get-Source 'AlienXAXS/StarRupture-Game-SDK' $metas[0].gameSdk $sdk
-          $loaderTable = Join-Path $work 'loader-table.h'
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core/core/layout_table.generated.h" -OutFile $loaderTable -TimeoutSec 60
-          node $lt keys $loaderTable --out "$work\keys-ModLoader.txt"; Invoke-Native 'keys (loader)'
-          $components.Add('ModLoader')
-          foreach ($m in $metas) {
-            Get-Source $m.repo $m.sha "$work\src-$($m.name)"
-            node $lt gen "$sdk\Client\Assertions.inl" --cl $(if ($cl) { $cl } else { 1 }) --src "$work\src-$($m.name)" --sdk "$sdk\Client\SDK" --out "$work\table-$($m.name).h"; Invoke-Native "gen ($($m.name))"
-            node $lt keys "$work\table-$($m.name).h" --out "$work\keys-$($m.name).txt"; Invoke-Native "keys ($($m.name))"
-            if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
-            $components.Add($m.name)
-          }
-          $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
-          Set-Content "$work\keys-all.txt" $all -Encoding ascii
-
-          $reports = @{}
-          foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
-            $out = "out\layout-$($b.key).json"
-            $ErrorActionPreference = 'Continue'
-            & $scanner $b.exe.FullName --layout "$work\keys-all.txt" --json > $out
-            $code = $LASTEXITCODE
-            $ErrorActionPreference = 'Stop'
-            if ($code -gt 1) { throw "sr-aobscan --layout on the $($b.key) build failed (exit $code)" }
-            $reports[$b.key] = $out
-            "$($b.key) (CL-$(Get-Cl $b.exe)): $(((Get-Content $out -Raw | ConvertFrom-Json).summary | ConvertTo-Json -Compress))"
-          }
-          $result = [ordered]@{ cl = $cl; referenceCl = $refCl; components = [ordered]@{} }
-          if ($reports.ContainsKey('reference')) {
-            foreach ($c in $components) {
-              node $lt pdb-diff $reports.reference $reports.target --keys "$work\keys-$c.txt" --json "$work\diff-$c.json" | Out-Host
-              if ($LASTEXITCODE -notin 0, 3) { throw "pdb-diff ($c) failed (exit $LASTEXITCODE)" }
-              $result.components[$c] = Get-Content "$work\diff-$c.json" -Raw | ConvertFrom-Json
-              "${c}: $($result.components[$c].counts | ConvertTo-Json -Compress)"
-            }
-          } else { Write-Host '::notice title=Layouts::No public build to compare with: the keys were read from this build only.' }
-          $result | ConvertTo-Json -Depth 8 | Set-Content out\layout.json -Encoding utf8
 
       - name: Write the result
         if: always() && steps.gate.outputs.has_login == 'true'
@@ -1205,6 +1287,7 @@ jobs:
             out/plugin-*.txt
             out/autofix-*
             out/layout*.json
+            out/offsets-*.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -1415,7 +1498,7 @@ jobs:
             $partial = @($r.plugins.plugins | Where-Object { $_.verdict -eq 'GAME-CALL' } | ForEach-Object { $_.name })
             $md.Add("#### Plugins: $($r.plugins.status.ToUpperInvariant())$(if ($partial.Count) { ' (partial: ' + ($partial -join ', ') + ' not fully exercised)' })")
             $md.Add('')
-            $md.Add('The loader refuses a plugin that fails here. A failing plugin does not change the loader verdict above.')
+            $md.Add('The loader refuses a plugin that fails here. A failing plugin does not change the loader verdict above. OFFSETS and OFFSETS-UNCHECKED: a fixed offset the plugin reads does not match this build, or could not be checked (below).')
             $md.Add('')
             $md.Add('| Plugin | Ref | Verdict | OK | MISSING | AMBIGUOUS | Other | Note |')
             $md.Add('|---|---|---|---|---|---|---|---|')
@@ -1439,6 +1522,31 @@ jobs:
               $md.Add('')
               $md.Add('</details>')
             }
+          }
+
+          # The fixed offsets the plugins read, against this build's PDB.
+          $withOffsets = @($(if ($r -and $r.PSObject.Properties['plugins'] -and $r.plugins) { $r.plugins.plugins }) | Where-Object { $_.PSObject.Properties['offsets'] -and $_.offsets -and @($_.offsets.results).Count })
+          if ($withOffsets.Count) {
+            $md.Add('')
+            $md.Add('**Fixed offsets** (members a plugin reads at a raw offset, compared with the PDB; any state but ok fails the plugin as OFFSETS):')
+          }
+          foreach ($p in $withOffsets) {
+            $res = @($p.offsets.results)
+            $bad = @($res | Where-Object { $_.state -ne 'ok' })
+            $md.Add('')
+            $md.Add("<details$(if ($bad.Count) { ' open' })><summary>$($p.name): $($res.Count) fixed offsets, $($bad.Count) failing</summary>")
+            $md.Add('')
+            $md.Add('| State | Member | Source reads | This build | Public build | Note |')
+            $md.Add('|---|---|---|---|---|---|')
+            foreach ($x in $res) {
+              $s = if ($x.PSObject.Properties['source'] -and $null -ne $x.source) { '0x{0:X}' -f [int]$x.source } else { '-' }
+              $t = if ($x.PSObject.Properties['target'] -and $x.target -and $x.target.PSObject.Properties['offset']) { '0x{0:X}' -f [int]$x.target.offset } else { '-' }
+              $f = if ($x.PSObject.Properties['reference'] -and $x.reference -and $x.reference.PSObject.Properties['offset']) { '0x{0:X}' -f [int]$x.reference.offset } else { '-' }
+              $why = if ($x.PSObject.Properties['reason'] -and $x.reason) { $x.reason -replace '\|', '\|' } else { '' }
+              $md.Add("| $($x.state) | ``$($x.key)`` | $s | $t | $f | $why |")
+            }
+            $md.Add('')
+            $md.Add('</details>')
           }
 
           # Proposed replacements for failing patterns (sr-aobscan --suggest).
