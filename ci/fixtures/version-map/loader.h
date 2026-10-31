@@ -6,12 +6,12 @@
 
 namespace VersionMap
 {
-inline constexpr uint32_t kFormatVersion = 1;
+inline constexpr uint32_t kFormatVersion = 2;
 inline constexpr uint32_t kBuiltCL = 127004;
 
 struct Build { uint32_t gameCL, imageStamp, imageSize; const char* source; };
 struct Index { const char* key; uint16_t first, count; };
-struct FunctionRow { uint32_t gameCL, imageStamp, imageSize; const char* pattern; int32_t resultOffset, followRel32At, followRipDispAt; uint32_t rva; };
+struct FunctionRow { uint32_t gameCL, imageStamp, imageSize; int32_t kind; uint32_t fp; bool absent; const char* pattern; int32_t resultOffset, followRel32At, followRipDispAt; uint32_t rva; const char* owners; };
 struct FieldRow { uint32_t gameCL; int32_t offset; uint32_t size; uint8_t boolMask; const char* member; };
 
 inline constexpr std::array<Build, 2> kBuilds = {{
@@ -19,21 +19,47 @@ inline constexpr std::array<Build, 2> kBuilds = {{
 	{ 128786, 0x6A1B2C3D, 0x0A412000, "public_test_branch 26271156" },
 }};
 
-inline constexpr std::array<FunctionRow, 4> kFunctionRows = {{
-	// GObjects
-	{ 127004, 0x68F0A1B2, 0x0A3F2000, "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 04 D1", 0, -1, 0, 0x08E1C2A0 },
-	{ 128786, 0x6A1B2C3D, 0x0A412000, "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 04 D1", 0, -1, 0, 0x08E2D3B0 },
-	// StaticFindObject (ByPath)
-	{ 127004, 0x68F0A1B2, 0x0A3F2000, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 30", 0, -1, -1, 0x01123450 },
-	{ 128786, 0x6A1B2C3D, 0x0A412000, "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC 30", -4, -1, -1, 0x01124560 },
+inline constexpr std::array<FunctionRow, 12> kFunctionRows = {{
+	// BetterCheats/AActor::ProcessEvent caller
+	{ 127004, 0x68F0A1B2, 0x0A3F2000, 2, 0x2D1AC6AE, false, "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ??", 0, -1, -1, 0x00C01230, nullptr },
+	{ 128786, 0x6A1B2C3D, 0x0A412000, 2, 0x2D1AC6AE, false, "48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ??", 0, -1, -1, 0x00C02240, nullptr },
+	{ 127004, 0x68F0A1B2, 0x0A3F2000, 2, 0xB3405899, false, "?? ?? ?? ?? 48 85 C0 74", -4, -1, -1, 0x00C01230, nullptr },
+	{ 128786, 0x6A1B2C3D, 0x0A412000, 2, 0xB3405899, true, nullptr, 0, -1, -1, 0x00000000, nullptr },
+	// GWorld
+	{ 127004, 0x68F0A1B2, 0x0A3F2000, 4, 0x00000000, false, "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01", 0, -1, 0, 0x0E1A2B30, nullptr },
+	{ 128786, 0x6A1B2C3D, 0x0A412000, 4, 0x00000000, false, "48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01", 0, -1, 0, 0x0E2B3C40, nullptr },
+	// ModLoader/GObjects (GUObjectArray.ObjObjects)
+	{ 127004, 0x68F0A1B2, 0x0A3F2000, 6, 0x1C4D2E3F, false, "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 04 D1", 0, -1, 0, 0x08E1C2A0, nullptr },
+	{ 128786, 0x6A1B2C3D, 0x0A412000, 6, 0x1C4D2E3F, false, "48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 04 D1", 0, -1, 0, 0x08E2D3B0, nullptr },
+	// UCrBuildingComponent::GetPlacementResourceConditionResult
+	{ 127004, 0x68F0A1B2, 0x0A3F2000, 1, 0x00000000, false, "48 89 5C 24 ?? 55 56 57 48 8D AC 24", 0, -1, -1, 0x01A2A100, nullptr },
+	{ 128786, 0x6A1B2C3D, 0x0A412000, 1, 0x00000000, false, nullptr, 0, -1, -1, 0x01A2B3C0, nullptr },
+	// UCrSomething::Function
+	{ 127004, 0x68F0A1B2, 0x0A3F2000, 1, 0x00000000, false, "40 53 48 83 EC 20 48 8B D9", 0, -1, -1, 0x01B00010, nullptr },
+	{ 128786, 0x6A1B2C3D, 0x0A412000, 1, 0x00000000, true, nullptr, 0, -1, -1, 0x00000000, "BetterCheats,WAILA" },
 }};
 
-inline constexpr std::array<FieldRow, 0> kFieldRows = {};
-
-inline constexpr std::array<Index, 2> kFunctions = {{
-	{ "GObjects", 0, 2 },
-	{ "StaticFindObject (ByPath)", 2, 2 },
+inline constexpr std::array<FieldRow, 4> kFieldRows = {{
+	// ACrCharacterPlayerBase::ADSMoveSpeed
+	{ 128786, 0x13C8, 0x4, 0x00, "ADSMoveSpeedScale" },
+	// ACrCrafter::CraftComponent
+	{ 127004, 0x6D8, 0x8, 0x00, nullptr },
+	{ 128786, 0x6E0, 0x8, 0x00, nullptr },
+	// UCrSomething::bFlag
+	{ 128786, 0x565, 0x1, 0x10, nullptr },
 }};
 
-inline constexpr std::array<Index, 0> kFields = {};
+inline constexpr std::array<Index, 5> kFunctions = {{
+	{ "BetterCheats/AActor::ProcessEvent caller", 0, 4 },
+	{ "GWorld", 4, 2 },
+	{ "ModLoader/GObjects (GUObjectArray.ObjObjects)", 6, 2 },
+	{ "UCrBuildingComponent::GetPlacementResourceConditionResult", 8, 2 },
+	{ "UCrSomething::Function", 10, 2 },
+}};
+
+inline constexpr std::array<Index, 3> kFields = {{
+	{ "ACrCharacterPlayerBase::ADSMoveSpeed", 0, 1 },
+	{ "ACrCrafter::CraftComponent", 1, 2 },
+	{ "UCrSomething::bFlag", 3, 1 },
+}};
 }
