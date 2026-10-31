@@ -7,7 +7,16 @@ name: SR client check
 #   - sr-aobscan runs every PreflightRegistry pattern (with the four Game-SDK
 #     globals) against the exe and resolves their RVAs
 #   - the resolved SDK globals are compared with the Game SDK's Offsets::
+#   - each plugin's own OnPluginLoadHooks resolves its patterns against the
+#     exe (sr-aobscan --plugin); plugins in `plugins` are built from source,
+#     those in `plugin_manifests` are the released DLL players get
 # The result is a JSON artifact and a comment on the game-update PR.
+#
+# Trust: the scanner and plugin code run in the job that held the Steam
+# login, after the login cache is deleted from disk. Deleting it does not
+# clear it from the runner's memory, so that code only ever comes from the
+# owners the inputs allow (msantoro12 and AlienXAXS; for released DLLs also
+# LetMeInside, MiniMap's author), the same trust as scanner_ref.
 #
 # Login: a separate Steam account that owns the game, never the owner's main
 # account. Its steamcmd login cache (config.vdf) is the secret
@@ -42,6 +51,18 @@ on:
       scanner_ref:
         type: string
         default: 'ci/aobscan'
+      plugins:
+        type: string
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work'
+      plugin_manifests:
+        type: string
+        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+      plugin_sdk_ref:
+        type: string
+        default: 'main'
+      game_sdk_ref:
+        type: string
+        default: 'main'
   workflow_dispatch:
     inputs:
       branch:
@@ -65,6 +86,22 @@ on:
         description: 'Branch of the loader repository holding tools/AobScan'
         type: string
         default: 'ci/aobscan'
+      plugins:
+        description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
+        type: string
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work'
+      plugin_manifests:
+        description: 'Released plugins, checked as players get them: the update-manifest URL from each one''s sidecar .json, space-separated'
+        type: string
+        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+      plugin_sdk_ref:
+        description: 'AlienXAXS/StarRupture-Plugin-SDK ref the plugins build against'
+        type: string
+        default: 'main'
+      game_sdk_ref:
+        description: 'AlienXAXS/StarRupture-Game-SDK ref the plugins build against'
+        type: string
+        default: 'main'
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -176,14 +213,177 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ---- The plugins whose patterns are checked too -------------------------
+  # Each plugin's own OnPluginLoadHooks is run by sr-aobscan --plugin against
+  # the downloaded exe, so the patterns checked are the ones that DLL
+  # registers. A plugin in `plugins` is built from source; one in
+  # `plugin_manifests` is the released DLL its update manifest names, fetched
+  # the way the loader's auto-updater fetches it. A plugin that fails fails
+  # only itself: the loader's verdict stays what the loader's patterns say.
+  plugin-plan:
+    name: plugin-plan
+    if: inputs.branch && inputs.branch != 'expiry-only'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - name: Check the plugin list
+        id: plan
+        shell: pwsh
+        env:
+          PLUGINS: ${{ inputs.plugins }}
+          MANIFESTS: ${{ inputs.plugin_manifests }}
+        run: |
+          # Plugin code runs in the job that downloaded the client (after the
+          # login cache is removed), so it only comes from known owners.
+          $list = [Collections.Generic.List[object]]::new()
+          foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
+            if ($p -notmatch '^(msantoro12|AlienXAXS)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = "$($Matches[1])/$($Matches[2])"; ref = $Matches[3]; manifest = '' })
+          }
+          foreach ($u in ("$env:MANIFESTS" -split '\s+' | Where-Object { $_ })) {
+            if ($u -notmatch '^https://github\.com/(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)/releases/latest/download/[A-Za-z0-9._-]+\.json$') { throw "manifest '$u' is not a latest-release asset of an allowed owner's plugin repository" }
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'release'; repo = "$($Matches[1])/$($Matches[2])"; ref = 'latest release'; manifest = $u })
+          }
+          $twice = @($list | Group-Object { $_.name } | Where-Object Count -gt 1 | ForEach-Object Name)
+          if ($twice.Count) { throw "listed more than once: $($twice -join ', ')" }
+          $json = ConvertTo-Json -InputObject @($list) -Compress
+          "matrix=$json" >> $env:GITHUB_OUTPUT
+          "any=$(if ($list.Count) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+          $json
+
+  plugins:
+    name: plugin ${{ matrix.name }}
+    needs: plugin-plan
+    if: needs.plugin-plan.outputs.any == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plugin-plan.outputs.matrix) }}
+    steps:
+      - name: Fetch the released plugin
+        if: matrix.source == 'release'
+        shell: pwsh
+        env:
+          NAME: ${{ matrix.name }}
+          REPO: ${{ matrix.repo }}
+          MANIFEST: ${{ matrix.manifest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # What a player's loader installs: the plugin's sidecar .json points
+          # at this manifest, and the manifest names the DLL.
+          $m = Invoke-RestMethod -Uri $env:MANIFEST -TimeoutSec 60
+          $url = [string]$m.download_url
+          if ($url -notmatch ('^https://github\.com/' + [regex]::Escape($env:REPO) + '/releases/download/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+\.dll)$')) {
+            throw "download_url '$url' is not a release asset of $($env:REPO)"
+          }
+          $tag = $Matches[1]; $file = $Matches[2]
+          New-Item -ItemType Directory -Force out | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "out\$file" -TimeoutSec 120
+          [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $tag; sha = ''; version = [string]$m.version; dll = $file
+                      sha256 = (Get-FileHash "out\$file" -Algorithm SHA256).Hash.ToLowerInvariant() } |
+            ConvertTo-Json | Set-Content out\plugin.json -Encoding utf8
+          Get-Content out\plugin.json
+
+      - name: Check out the plugin
+        if: matrix.source == 'build'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: plugin
+          persist-credentials: false
+
+      - name: Check out the Plugin SDK
+        if: matrix.source == 'build'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AlienXAXS/StarRupture-Plugin-SDK
+          ref: ${{ inputs.plugin_sdk_ref }}
+          path: plugin-sdk
+          persist-credentials: false
+
+      - name: Check out the Game SDK
+        if: matrix.source == 'build'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AlienXAXS/StarRupture-Game-SDK
+          ref: ${{ inputs.game_sdk_ref }}
+          path: game-sdk
+          persist-credentials: false
+
+      - name: Check out the loader's plugin interface
+        if: matrix.source == 'build'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.loader_ref }}
+          path: loader-interface
+          sparse-checkout: StarRupture-ModLoader-Core/plugins/plugin_interface.h
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Add MSBuild to PATH
+        if: matrix.source == 'build'
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+
+      - name: Build the plugin (Client Release)
+        if: matrix.source == 'build'
+        shell: pwsh
+        working-directory: plugin
+        env:
+          NAME: ${{ matrix.name }}
+          REPO: ${{ matrix.repo }}
+          REF: ${{ matrix.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Built against the interface of the loader being checked, as it is in game.
+          Copy-Item ..\loader-interface\StarRupture-ModLoader-Core\plugins\plugin_interface.h ..\plugin-sdk\include\plugin_interface.h -Force
+          $sln = @(Get-ChildItem -File -Filter *.sln)
+          if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          $tag = if (Test-Path version) { (Get-Content version -Raw).Trim() } else { 'dev' }
+          msbuild $sln[0].Name `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /p:PostBuildEventUseInBuild=false `
+            /p:ModLoaderBuildTag="$tag" `
+            /p:GameSDKRoot="$env:GITHUB_WORKSPACE\game-sdk" `
+            /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem 'build\Client Release\Plugins' -File -Filter *.dll)
+          if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
+          New-Item -ItemType Directory -Force ..\out | Out-Null
+          Copy-Item $dll[0].FullName ..\out\
+          [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $env:REF; sha = (git rev-parse HEAD); dll = $dll[0].Name
+                      sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
+            ConvertTo-Json | Set-Content ..\out\plugin.json -Encoding utf8
+          Get-Content ..\out\plugin.json
+
+      - name: Upload the plugin
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-${{ inputs.branch }}-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
   # ---- Job A: Steam login, download, offline checks ------------------------
   # The only job that can read the login secret: environment steam-client,
   # contents: read, no checkout of any repository. The login cache is deleted
   # from the runner before the scanner runs.
   check:
     name: check
-    needs: build
-    if: inputs.branch && inputs.branch != 'expiry-only'
+    needs: [build, plugin-plan, plugins]
+    # A plugin that does not build fails only itself, not the client check.
+    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
     timeout-minutes: 90
     environment: steam-client
@@ -370,6 +570,7 @@ jobs:
           if ($failed) { exit 1 }
 
       - name: Remove the login cache from the runner
+        id: cleanup
         if: always() && steps.gate.outputs.has_login == 'true'
         shell: pwsh
         run: |
@@ -453,6 +654,93 @@ jobs:
           if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code $scanCode ($($scan.summary.requiredFailing) required patterns failing)" }
           if ($fail) { exit 1 }
 
+      # Plugin code never runs while the login cache could still be on disk.
+      - name: Download the plugins
+        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && needs.plugin-plan.outputs.any == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: plugin-${{ inputs.branch }}-*
+          path: plugins
+
+      - name: Check the plugins' patterns
+        id: plugins
+        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && needs.plugin-plan.outputs.any == 'true'
+        # A plugin that hangs must not hold up the loader's result.
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+        run: |
+          # Per plugin: PASS when the loader would let it load; GAME-CALL (partial
+          # coverage, never a full pass) when every pattern resolved before the
+          # first call into game code, which cannot run offline and was stopped; FAIL when any pattern it resolves
+          # does not (the loader refuses a plugin on any recorded failure);
+          # CRASH; REFUSED (interface version outside the loader's range); NONE
+          # (no OnPluginLoadHooks); BUILD-FAILED or FETCH-FAILED; ERROR. Only the
+          # plugin fails; the loader's status does not change.
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          New-Item -ItemType Directory -Force out | Out-Null
+          $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          $results = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
+            $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; ref = $p.ref; sha = '' }
+            # One plugin's problem never stops the others.
+            try {
+              $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
+              $meta = if (Test-Path "$dir\plugin.json") { Get-Content "$dir\plugin.json" -Raw | ConvertFrom-Json } else { $null }
+              if (-not $meta) {
+                $r.verdict = if ($p.source -eq 'release') { 'FETCH-FAILED' } else { 'BUILD-FAILED' }
+                Write-Host "::error title=Plugin $($p.name)::$(if ($p.source -eq 'release') { 'its released DLL could not be fetched' } else { 'did not build' }), so its patterns were not checked"
+                $r; continue
+              }
+              $r.ref = $meta.ref
+              $r.sha = $meta.sha
+              $dll = Join-Path $dir $meta.dll
+              if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the plugin job made" }
+              $stem = "out\plugin-$($p.name)"
+              $ErrorActionPreference = 'Continue'
+              & $scanner $exe.FullName --plugin $dll --json > "$stem.json" 2> "$stem.txt"
+              $r.exitCode = $LASTEXITCODE
+              $ErrorActionPreference = 'Stop'
+              Get-Content "$stem.txt" | Write-Host
+              $scan = if ($r.exitCode -ne 2 -and (Test-Path "$stem.json") -and (Get-Item "$stem.json").Length) { Get-Content "$stem.json" -Raw | ConvertFrom-Json } else { $null }
+              if (-not $scan) { throw "sr-aobscan could not run it (exit $($r.exitCode)); see out/plugin-$($p.name).txt" }
+              $r.plugin = $scan.plugin
+              $r.verdict = $scan.verdict
+              $r.summary = $scan.summary
+              foreach ($k in 'note', 'crash', 'gameCalls') { if ($scan.PSObject.Properties[$k]) { $r[$k] = $scan.$k } }
+              $r.patterns = @($scan.patterns | ForEach-Object {
+                [ordered]@{ name = $(if ($_.name) { $_.name } else { "(raw) $($_.pattern)" }); call = $_.call; kind = $_.kind
+                            required = $_.required; recorded = $_.recorded; result = $_.result } })
+              foreach ($row in @($scan.patterns | Where-Object { $_.recorded -and $_.result -ne 'OK' })) {
+                Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.result)$(if ($row.required) { '' } else { ' (declared optional; the loader still refuses the plugin)' })"
+              }
+              switch ($r.verdict) {
+                'CRASH'     { Write-Host "::error title=Plugin $($p.name)::OnPluginLoadHooks crashed ($($scan.crash))" }
+                'REFUSED'   { Write-Host "::error title=Plugin $($p.name)::$($scan.note)" }
+                'GAME-CALL' { Write-Host "::notice title=Plugin $($p.name)::$($scan.note) ($($scan.gameCalls.first))" }
+              }
+            } catch {
+              $r.verdict = 'ERROR'
+              $r.error = $_.Exception.Message
+              Write-Host "::error title=Plugin $($p.name)::$($r.error)"
+            }
+            $r
+          }
+          $results = @($results)
+          [ordered]@{
+            status = $(if (@($results | Where-Object { $_.verdict -notin 'PASS', 'NONE', 'GAME-CALL' }).Count) { 'fail' } else { 'pass' })
+            plugins = $results
+          } | ConvertTo-Json -Depth 8 | Set-Content out\plugins.json -Encoding utf8
+          foreach ($r in $results) { "$($r.name): $($r.verdict)" }
+
       - name: Write the result
         if: always() && steps.gate.outputs.has_login == 'true'
         shell: pwsh
@@ -465,6 +753,10 @@ jobs:
           $ck = if (Test-Path out\checks.json) { Get-Content out\checks.json -Raw | ConvertFrom-Json } else { $null }
           $r.download = $dl
           $r.checks = $ck
+          # Reported beside the loader's verdict, never folded into it: status
+          # below covers the loader only. Anything that blocks on plugins reads
+          # plugins.status.
+          $r.plugins = if (Test-Path out\plugins.json) { Get-Content out\plugins.json -Raw | ConvertFrom-Json } else { $null }
           $r.status =
             if (-not $dl) { 'error' }
             elseif ($dl.login -ne 'ok') { 'login-failed' }
@@ -475,7 +767,7 @@ jobs:
             else { 'pass' }
           $r | ConvertTo-Json -Depth 8 | Set-Content out\result.json -Encoding utf8
           "Client check: $($r.status)"
-          Remove-Item out\download.json, out\checks.json -ErrorAction SilentlyContinue
+          Remove-Item out\download.json, out\checks.json, out\plugins.json -ErrorAction SilentlyContinue
 
       - name: Upload the result
         if: always()
@@ -486,6 +778,8 @@ jobs:
             out/result.json
             out/scanner.txt
             out/scanner.json
+            out/plugin-*.json
+            out/plugin-*.txt
           if-no-files-found: warn
           retention-days: 14
 
@@ -569,6 +863,38 @@ jobs:
             $md.Add("The check produced no result (scanner build: $($env:BUILD_RESULT), check: $($env:CHECK_RESULT)). See the run.")
           }
 
+          # The plugins: one row each, then every pattern they resolved.
+          if ($r -and $r.PSObject.Properties['plugins'] -and $r.plugins) {
+            $md.Add('')
+            $partial = @($r.plugins.plugins | Where-Object { $_.verdict -eq 'GAME-CALL' } | ForEach-Object { $_.name })
+            $md.Add("#### Plugins: $($r.plugins.status.ToUpperInvariant())$(if ($partial.Count) { ' (partial: ' + ($partial -join ', ') + ' not fully exercised)' })")
+            $md.Add('')
+            $md.Add('The loader refuses a plugin that fails here. A failing plugin does not change the loader verdict above.')
+            $md.Add('')
+            $md.Add('| Plugin | Ref | Verdict | OK | MISSING | AMBIGUOUS | Other | Note |')
+            $md.Add('|---|---|---|---|---|---|---|---|')
+            foreach ($p in @($r.plugins.plugins)) {
+              $s = if ($p.PSObject.Properties['summary']) { $p.summary } else { $null }
+              # A released plugin shows its tag; a built one its ref and commit.
+              $ref = if ($p.source -eq 'release') { "``$($p.ref)`` (release)" } elseif ($p.sha) { "``$($p.ref)`` ($($p.sha.Substring(0, 7)))" } else { "``$($p.ref)``" }
+              $note = foreach ($k in 'note', 'crash', 'error') { if ($p.PSObject.Properties[$k] -and $p.$k) { $p.$k } }
+              $md.Add("| $($p.name) | $ref | **$($p.verdict)$(if ($p.verdict -eq 'GAME-CALL') { ' (partial)' })** | $(if ($s) { $s.ok }) | $(if ($s) { $s.missing }) | $(if ($s) { $s.ambiguous }) | $(if ($s) { $s.other + $s.reported }) | $((@($note) -join '; ') -replace '\|', '\|') |")
+            }
+            foreach ($p in @($r.plugins.plugins | Where-Object { $_.PSObject.Properties['patterns'] -and @($_.patterns).Count })) {
+              $md.Add('')
+              $md.Add("<details><summary>$($p.name): $(@($p.patterns).Count) patterns</summary>")
+              $md.Add('')
+              $md.Add('| Result | Pattern | Kind | Required |')
+              $md.Add('|---|---|---|---|')
+              foreach ($row in @($p.patterns)) {
+                $req = if (-not $row.recorded) { 'raw scan' } elseif ($row.required) { 'yes' } else { 'no' }
+                $md.Add("| $($row.result) | ``$($row.name -replace '\|', '\|')`` | $($row.kind) | $req |")
+              }
+              $md.Add('')
+              $md.Add('</details>')
+            }
+          }
+
           # Age of the saved login (set by steam-ci-login.ps1).
           $md.Add('')
           if ($env:LOGIN_AT -match '^\d{4}-\d{2}-\d{2}$') {
@@ -581,7 +907,7 @@ jobs:
             $md.Add('Steam CI login age unknown (repo variable `STEAM_CI_LOGIN_AT` is not set).')
           }
           $md.Add('')
-          $md.Add('Offline check of the downloaded build only: the game is never run. Game files stay on the runner.')
+          $md.Add('Offline check of the downloaded build only: the game is never started. Plugin checks run each plugin''s load hook and stop any call it makes into game code. Game files stay on the runner.')
 
           $md -join "`n" | Set-Content report.md -Encoding utf8
           Get-Content report.md -Raw | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8
