@@ -7,7 +7,7 @@
 
 namespace VersionMap
 {
-inline constexpr uint32_t kFormatVersion = 1;
+inline constexpr uint32_t kFormatVersion = 2;
 inline constexpr uint32_t kBuiltCL = 127004;
 
 struct Build { uint32_t gameCL, imageStamp, imageSize; const char* source; };
