@@ -566,7 +566,7 @@ jobs:
                   $refDir = Join-Path $vol.Root 'sr-ref'
                   New-Item -ItemType Directory -Force $refDir | Out-Null
                   $refCmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
-                              '+force_install_dir', $refDir, '+login', $user, '+app_update', $env:APP_ID, '+quit')
+                              '+force_install_dir', $refDir, '+login', $user, '+app_update', $env:APP_ID, '-beta', 'public', '+quit')
                   $refManifest = Join-Path $refDir "steamapps\appmanifest_$($env:APP_ID).acf"
                   $refWatch = [Diagnostics.Stopwatch]::StartNew()
                   Write-Host '::group::steamcmd: the public build, for the pattern proposals'
@@ -578,8 +578,13 @@ jobs:
                   Write-Host '::endgroup::'
                   $refOk = ($refCode -eq 0) -and (Test-Path $refManifest) -and ((Get-Content $refManifest -Raw) -match '"StateFlags"\s+"4"')
                   $dl.reference = [ordered]@{ installed = $refOk; buildid = ''; seconds = [int]$refWatch.Elapsed.TotalSeconds }
-                  if ($refOk) {
-                    if ((Get-Content $refManifest -Raw) -match '"buildid"\s+"(\d+)"') { $dl.reference.buildid = $Matches[1] }
+                  if ($refOk -and (Get-Content $refManifest -Raw) -match '"buildid"\s+"(\d+)"') { $dl.reference.buildid = $Matches[1] }
+                  # steamcmd keeps the branch it last used for the app, so a
+                  # reference that is the checked build itself proves nothing.
+                  if ($refOk -and $dl.reference.buildid -eq $dl.buildid) {
+                    $dl.reference.installed = $false
+                    Write-Host "::warning title=Pattern proposals::Steam served build $($dl.buildid) again for the public branch; proposals cover this build only."
+                  } elseif ($refOk) {
                     Write-Host "Installed the public build $($dl.reference.buildid) in $($dl.reference.seconds) s"
                     "reference_dir=$refDir" >> $env:GITHUB_OUTPUT
                   } else {
