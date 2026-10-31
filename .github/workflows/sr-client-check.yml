@@ -675,8 +675,8 @@ jobs:
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
         run: |
           # Per plugin: PASS when the loader would let it load; GAME-CALL (partial
-          # coverage, never a full pass) when every pattern resolved before and the hook's calls into game code (which
-          # cannot run offline) were stopped; FAIL when any pattern it resolves
+          # coverage, never a full pass) when every pattern resolved before the
+          # first call into game code, which cannot run offline and was stopped; FAIL when any pattern it resolves
           # does not (the loader refuses a plugin on any recorded failure);
           # CRASH; REFUSED (interface version outside the loader's range); NONE
           # (no OnPluginLoadHooks); BUILD-FAILED or FETCH-FAILED; ERROR. Only the
@@ -866,7 +866,8 @@ jobs:
           # The plugins: one row each, then every pattern they resolved.
           if ($r -and $r.PSObject.Properties['plugins'] -and $r.plugins) {
             $md.Add('')
-            $md.Add("#### Plugins: $($r.plugins.status.ToUpperInvariant())")
+            $partial = @($r.plugins.plugins | Where-Object { $_.verdict -eq 'GAME-CALL' } | ForEach-Object { $_.name })
+            $md.Add("#### Plugins: $($r.plugins.status.ToUpperInvariant())$(if ($partial.Count) { ' (partial: ' + ($partial -join ', ') + ' not fully exercised)' })")
             $md.Add('')
             $md.Add('The loader refuses a plugin that fails here. A failing plugin does not change the loader verdict above.')
             $md.Add('')
