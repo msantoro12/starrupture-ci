@@ -166,6 +166,20 @@ export function collectUsed(dirs, known = null) {
   return { names, files };
 }
 
+// Every name the sources use as a member: the identifier after `.`, `->` or
+// `::`. By name only, not tied to a class, so it over-approximates. Used by
+// `layout-table.mjs gen --granularity 1` to keep only the rows a project reads.
+export function collectMemberNames(dirs) {
+  const names = new Set();
+  for (const root of dirs) {
+    for (const file of walk(root)) {
+      const code = stripNonCode(readFileSync(file, 'utf8'));
+      for (const m of code.matchAll(/(?:\.|->|::)\s*([A-Za-z_]\w*)/g)) names.add(m[1]);
+    }
+  }
+  return names;
+}
+
 function main(argv) {
   const dirs = [];
   const knownFiles = [];

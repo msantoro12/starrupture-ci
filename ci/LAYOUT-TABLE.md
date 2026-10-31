@@ -58,7 +58,7 @@ namespace SrLayoutTable {                       // --namespace
 inline constexpr uint32_t kFormatVersion = 1;   // bumped on any change below
 inline constexpr uint32_t kBuiltCL   = 127004;
 inline constexpr uint32_t kDetail    = 1;       // 1: Row::size and Row::boolMask are filled, kind/path are set
-inline constexpr uint32_t kGranularity = 0;     // 0: every member of each listed class has a row
+inline constexpr uint32_t kGranularity = 0;     // 0: every member of each listed class has a row; 1: see below
 inline constexpr uint32_t kNameCount, kClassCount, kRowCount;
 
 struct Class { uint32_t name, sizeOf, alignOf, firstRow, rowCount, kind, path; };
@@ -119,9 +119,13 @@ mismatch, only an unchecked class.
   exist only as Dumper predefines (`FName`, `FField`, `FProperty`, ...) have no
   entry.
 - Bit-fields share one offset; each has its own row with its own `boolMask`.
-- `kGranularity` is 0 now (every member). A later generator that lists only the
-  members a project touches sets it to 1, in the same format. A consumer must
-  never assume a class's rows are complete when it is 1.
+- `kGranularity` 0: every member. `gen --granularity 1` (needs `--src`) keeps,
+  for a UClass or Blueprint class, only the rows whose member name the sources
+  use (`.X`, `->X`, `::X`; by name, so it over-approximates). Script structs and
+  parameter blocks keep every row. Same format. When it is 1, a consumer must
+  never assume a class's rows are complete, and should not compare a UClass's
+  own size or alignment: code reaches a UClass through pointers, so only the
+  members it reads matter.
 - `kDetail` is 1 for anything embedded. A consumer starts with
   `static_assert(SrLayoutTable::kDetail == 1)`.
 
