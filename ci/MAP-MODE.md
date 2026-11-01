@@ -148,3 +148,21 @@ The harness side of this input (plugin scan rows printing `key`, `kind`, `fp` an
 scanner repo's `tools/AobScan`, not here. A plugin row prints no
 `followRipDispAt` (its request has none); the suggester's `followRipDispAt` is the
 offset of the instruction start inside the pattern, as `ScanValidation::Resolve` reads it.
+
+## Step 28: `field-rows.mjs write`
+
+```
+node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>] --keys <keys.txt>... [--report <file>]
+```
+
+`--next` and `--base` are `sr-aobscan --layout --json` reports of the new build and
+the reference build over the same key list. For the new CL it writes a row for
+every `native` key (offset, size, bool mask, found by the key's own text) and for
+every reflected `field` key whose offset, size or mask moved. A reflected key that
+resolves on the reference build only is listed under `partial` (a rename guess is
+low confidence and is not written); the run then reads PARTIAL but exits 0. A
+native key that does not resolve on the new build is refused (exit 3, header
+untouched). `FTransform::Translation` and `::Scale3D` keep the size the key list
+was built with, because the PDB sizes them as the 32-byte SIMD register and
+reflection as an FVector (review N2). The output holds keys and numbers only.
+It runs after `write` (the build must be in the table).

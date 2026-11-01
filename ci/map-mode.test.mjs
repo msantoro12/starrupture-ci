@@ -420,7 +420,7 @@ test('assemble refuses a scan of another plugin, an empty spec and a non-harness
 
 test('assemble runs from the command line', () => {
   const dir = scratch({ 'loader.json': loaderScan, 'spec.json': { cl: 130000, build: BUILD, scans: [{ owner: 'ModLoader', tag: 'v1.22.1', rank: 'current', file: 'loader.json' }] } });
-  const run = spawnSync(process.execPath, [TOOL, 'assemble', join(dir, 'spec.json'), '--out', join(dir, 'in.json')], { encoding: 'utf8' });
+  const run = spawnSync(process.execPath, [TOOL, 'assemble', join(dir, 'spec.json'), '--out', join(dir, 'in.json')], { encoding: 'utf8', windowsHide: true });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(readFileSync(join(dir, 'in.json'), 'utf8')).components[0].releases[0].rows.length, 2);
 });
