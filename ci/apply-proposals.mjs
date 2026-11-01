@@ -64,7 +64,10 @@ export function selectRows(scan, { minConfidence = 'high', targetPublic = false 
     if ((RANK[s.confidence] || 0) < RANK[minConfidence]) { skip(`confidence ${s.confidence || 'none'} is below ${minConfidence}`); continue; }
     if ((row.resultOffset || 0) !== 0) { skip('the request has a resultOffset; not supported'); continue; }
     if (!isPattern(row.pattern)) { skip('the current pattern is not a plain AOB string'); continue; }
-    const props = (s.proposals || []).filter((q) => isPattern(q.pattern) && (q.resultOffset || 0) === 0 && q.uniqueOnTarget);
+    // A plugin source can express a rel32 follow and no other; a proposal that
+    // follows a rip displacement is for the loader's map (ci/map-mode.mjs).
+    const eligible = (s.proposals || []).filter((q) => isPattern(q.pattern) && (q.resultOffset || 0) === 0 && q.uniqueOnTarget);
+    const props = eligible.filter((q) => !(q.followRipDispAt >= 0));
     let pick = null;
     let category = '';
     let why = '';
@@ -76,7 +79,7 @@ export function selectRows(scan, { minConfidence = 'high', targetPublic = false 
       category = 'add'; why = 'unique on the new build; the public build keeps the current pattern';
     }
     if (!pick) {
-      skip(!props.length ? 'no proposal is unique on the checked build'
+      skip(!props.length ? (eligible.length ? 'the proposal follows a rip displacement, which a plugin source cannot express' : 'no proposal is unique on the checked build')
         : !hasReference ? 'no public build to check the proposal against'
         : 'no proposal keeps the public build working');
       continue;
