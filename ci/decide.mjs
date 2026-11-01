@@ -211,10 +211,15 @@ function checkPlugins(loaded, rowKeys = new Set()) {
   const why = (p) => `${p.verdict}${p.note ? ` (${String(p.note).slice(0, 120)})` : ''}`;
   const list = v.plugins.map((p) => {
     const e = { name: p.name, verdict: p.verdict, status: 'updated', degraded: [], reasons: [] };
+    const noRow = Array.isArray(p.failures) ? p.failures.find((f) => isObj(f) && NO_ROW.test(String(f.detail ?? ''))) : undefined;
     if (PLUGIN_DEGRADED.has(p.verdict) && crashedInCheck(p)) {
       e.status = 'held';
       e.heldAlone = true;
-      e.reasons.push(`crashed in the check, stays on its last release: ${why(p)}`);
+      // The probe's planned stop prints the same 0xC0000005 line a passing plugin does.
+      // A plugin the loader refused for a key with no map row did not crash.
+      e.reasons.push(p.refused === true && noRow
+        ? `refused: required key ${noRow.name} has no map row, stays on its last release`
+        : `crashed in the check, stays on its last release: ${why(p)}`);
     } else if (PLUGIN_DEGRADED.has(p.verdict)) {
       for (const r of Array.isArray(p.patterns) ? p.patterns : []) {
         if (isObj(r) && r.recorded && r.result !== 'OK') e.degraded.push({ key: String(r.name), severity: r.required === false ? 'low' : 'high', why: `pattern ${r.result}` });

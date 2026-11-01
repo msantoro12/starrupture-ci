@@ -513,6 +513,16 @@ test('M: a plugin that crashes in the check is held alone; the rest proceed', ()
   assert.match(r.notes.join(' '), /WaveOptimiser held/);
 });
 
+test('M: a plugin refused for a key with no map row is held as refused, not as a crash', () => {
+  const note = 'PluginInit took the Game-SDK globals; the probe ended PluginInit there, as planned, when it reached for a hook the probe does not provide (0xC0000005)';
+  const plugins = ok({ status: 'fail', plugins: [
+    { name: 'BetterCheats', verdict: 'FAIL', refused: true, note, failures: [{ name: 'UCrGameInstance::ServerSessionName', detail: 'refused: no row for CL-128786, and a native member has no other source' }] }] });
+  const r = decide(base({ plugins }));
+  assert.equal(r.plugins[0].status, 'held');
+  assert.equal(r.plugins[0].reasons[0], 'refused: required key UCrGameInstance::ServerSessionName has no map row, stays on its last release');
+  assert.doesNotMatch(r.notes.join(' '), /crashed/);
+});
+
 test('M: the scanner stopping on its own one-entry hooks table is the harness, not a plugin crash', () => {
   const plugins = ok({ status: 'fail', plugins: [{ name: 'WaveOptimiser', verdict: 'FAIL',
     note: 'PluginInit took the Game-SDK globals (it stopped at exception 0xC0000005, outside the one table it was given)' }] });
