@@ -67,6 +67,9 @@ on:
       plugin_manifests:
         type: string
         default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+      plugin_sdk_repo:
+        type: string
+        default: 'AlienXAXS/StarRupture-Plugin-SDK'
       plugin_sdk_ref:
         type: string
         default: 'main'
@@ -112,8 +115,12 @@ on:
         description: 'Released plugins, checked as players get them: the update-manifest URL from each one''s sidecar .json, space-separated'
         type: string
         default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+      plugin_sdk_repo:
+        description: 'Plugin SDK repository the plugins build against (msantoro12 or AlienXAXS)'
+        type: string
+        default: 'AlienXAXS/StarRupture-Plugin-SDK'
       plugin_sdk_ref:
-        description: 'AlienXAXS/StarRupture-Plugin-SDK ref the plugins build against'
+        description: 'Plugin SDK ref the plugins build against'
         type: string
         default: 'main'
       game_sdk_ref:
@@ -265,9 +272,12 @@ jobs:
         env:
           PLUGINS: ${{ inputs.plugins }}
           MANIFESTS: ${{ inputs.plugin_manifests }}
+          PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
         run: |
           # Plugin code runs in the job that downloaded the client (after the
-          # login cache is removed), so it only comes from known owners.
+          # login cache is removed), so it only comes from known owners. The
+          # Plugin SDK is compiled into every plugin, so it does too.
+          if ($env:PLUGIN_SDK_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Plugin-SDK$') { throw "plugin_sdk_repo '$($env:PLUGIN_SDK_REPO)' is not allowed" }
           $list = [Collections.Generic.List[object]]::new()
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^(msantoro12|AlienXAXS)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
@@ -348,7 +358,7 @@ jobs:
         if: matrix.source == 'build'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: AlienXAXS/StarRupture-Plugin-SDK
+          repository: ${{ inputs.plugin_sdk_repo }}
           ref: ${{ inputs.plugin_sdk_ref }}
           path: plugin-sdk
           persist-credentials: false
@@ -386,6 +396,7 @@ jobs:
           REPO: ${{ matrix.repo }}
           REF: ${{ matrix.ref }}
           LOADER_REPO: ${{ inputs.loader_repo }}
+          PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
         run: |
           $ErrorActionPreference = 'Stop'
           # Built against the interface of the loader being checked, as it is in game.
@@ -409,7 +420,7 @@ jobs:
           # What it was built from, so the check job can rebuild it with a fix
           # applied from exactly the same sources.
           [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $env:REF; sha = (git rev-parse HEAD); dll = $dll[0].Name; tag = $tag
-                      pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdk = (git -C ..\game-sdk rev-parse HEAD)
+                      pluginSdkRepo = $env:PLUGIN_SDK_REPO; pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdk = (git -C ..\game-sdk rev-parse HEAD)
                       loaderRepo = $env:LOADER_REPO; loaderInterface = (git -C ..\loader-interface rev-parse HEAD)
                       sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
             ConvertTo-Json | Set-Content ..\out\plugin.json -Encoding utf8
@@ -1196,7 +1207,8 @@ jobs:
 
               # Rebuilt exactly as the plugins job built the scanned DLL.
               if ($meta.loaderRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$' -or $meta.loaderInterface -notmatch '^[0-9a-f]{40}$') { throw 'plugin.json does not name the loader interface it was built against' }
-              Get-Source 'AlienXAXS/StarRupture-Plugin-SDK' $meta.pluginSdk "$d\plugin-sdk"
+              if ($meta.pluginSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Plugin-SDK$') { throw 'plugin.json does not name an allowed Plugin SDK repository' }
+              Get-Source $meta.pluginSdkRepo $meta.pluginSdk "$d\plugin-sdk"
               Get-Source 'AlienXAXS/StarRupture-Game-SDK' $meta.gameSdk "$d\game-sdk"
               Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($meta.loaderRepo)/$($meta.loaderInterface)/StarRupture-ModLoader-Core/plugins/plugin_interface.h" `
                 -OutFile "$d\plugin-sdk\include\plugin_interface.h" -TimeoutSec 60
@@ -1324,7 +1336,8 @@ jobs:
   # in ci/MAP-MODE.md). Until then the header is an artifact only.
   # TODO: the scans of the previous release of each tracked component
   # (rank previous) are not run yet, so a changed fp adds its set only once a
-  # release carrying it is the current one.
+  # release carrying it is the current one. With current scans only, map-mode
+  # prunes nothing: the sets the previous release still reads are kept.
   map-mode:
     name: map mode
     needs: [check]
