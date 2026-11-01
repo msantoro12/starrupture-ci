@@ -171,6 +171,10 @@ function checkSdkGlobals(rows) {
 //   PASS, NONE, GAME-CALL  updated
 //   FAIL                   updated, degraded: a pattern it resolves is missing,
 //                          the loader turns that request off
+//   FAIL + exception code held, this plugin only (owner's rule): a plugin that crashes in the
+//                          check (0xC0000005 or any exception code) stays on its last release.
+//                          Not when the scanner says the stop was its own one-entry hooks table
+//                          (HARNESS_LIMIT): that is the harness, and the plugin degrades as FAIL does
 //   REFUSED                held, this plugin only: it cannot load on the new CL
 //                          (interface version, or no built CL), whatever the map
 //                          says; it goes to the rebuild path
@@ -181,7 +185,14 @@ function checkSdkGlobals(rows) {
 const PLUGIN_OK = new Set(['PASS', 'NONE', 'GAME-CALL']);
 const PLUGIN_DEGRADED = new Set(['FAIL']);
 const PLUGIN_HELD = new Set(['REFUSED']);
-function checkPlugins(loaded) {
+const EXCEPTION_CODE = /0x[cC][0-9a-fA-F]{7}\b|\bexception\s+0x[0-9a-fA-F]+/;
+const NO_ROW = /refused: no row for CL-\d+/;
+const HARNESS_LIMIT = /outside the one table it was given/;
+function crashedInCheck(p) {
+  const text = [p.note, p.crash, p.summary, p.error].filter((x) => typeof x === 'string').join(' ');
+  return EXCEPTION_CODE.test(text) && !HARNESS_LIMIT.test(text);
+}
+function checkPlugins(loaded, rowKeys = new Set()) {
   const bad = checkEnvelope('plugins', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
@@ -194,13 +205,29 @@ function checkPlugins(loaded) {
   const why = (p) => `${p.verdict}${p.note ? ` (${String(p.note).slice(0, 120)})` : ''}`;
   const list = v.plugins.map((p) => {
     const e = { name: p.name, verdict: p.verdict, status: 'updated', degraded: [], reasons: [] };
-    if (PLUGIN_DEGRADED.has(p.verdict)) {
+    if (PLUGIN_DEGRADED.has(p.verdict) && crashedInCheck(p)) {
+      e.status = 'held';
+      e.heldAlone = true;
+      e.reasons.push(`crashed in the check, stays on its last release: ${why(p)}`);
+    } else if (PLUGIN_DEGRADED.has(p.verdict)) {
       for (const r of Array.isArray(p.patterns) ? p.patterns : []) {
         if (isObj(r) && r.recorded && r.result !== 'OK') e.degraded.push({ key: String(r.name), severity: r.required === false ? 'low' : 'high', why: `pattern ${r.result}` });
       }
-      if (!e.degraded.length) e.degraded.push({ key: '(a pattern)', severity: 'high', why: why(p) });
+      // A request the check refused for lack of a row on this CL is settled when
+      // map mode wrote that row (the players get the compiled map plus these rows).
+      for (const f of Array.isArray(p.failures) ? p.failures : []) {
+        if (!isObj(f)) continue;
+        const key = String(f.name);
+        if (NO_ROW.test(String(f.detail ?? '')) && rowKeys.has(key)) continue;
+        e.degraded.push({ key, severity: f.required === false ? 'low' : 'high', why: String(f.detail ?? 'refused').slice(0, 160) });
+      }
+      // Nothing left to name: the verdict was only the probe's planned stop, or
+      // the refusals map mode settled. With no failures listed, say so.
+      const settledAll = Array.isArray(p.failures) && p.failures.length > 0;
+      if (!e.degraded.length && !settledAll) e.degraded.push({ key: '(a pattern)', severity: 'high', why: HARNESS_LIMIT.test(String(p.note ?? '')) ? 'FAIL with no failure listed' : why(p) });
     } else if (PLUGIN_HELD.has(p.verdict)) {
       e.status = 'held';
+      e.heldAlone = true;
       e.reasons.push(`cannot load on the new CL: ${why(p)}; rebuild path`);
     } else if (!PLUGIN_OK.has(p.verdict)) {
       e.status = 'held';
@@ -314,7 +341,7 @@ export function decide(inputs) {
     const r = {
       decision, path, cl: cl ?? null, repo: inputs.repo ?? null, ship: decision === 'M' || decision === 'B',
       reasons, notes, plugins: perPlugin,
-      pluginsOk: perPlugin.length > 0 && perPlugin.every((p) => p.status === 'updated' || p.verdict === 'REFUSED'),
+      pluginsOk: perPlugin.length > 0 && perPlugin.every((p) => p.status === 'updated' || p.heldAlone === true),
     };
     if (inputs.testAutopilot) {
       r.test = true;
@@ -341,7 +368,7 @@ export function decide(inputs) {
   const g3 = checkG3(inputs.g3);
   const g4 = checkG4(inputs.g4);
   const g5 = checkG5(inputs.g5);
-  const plugins = checkPlugins(inputs.plugins);
+  const plugins = checkPlugins(inputs.plugins, new Set(Array.isArray(inputs.fields?.value?.rows) ? inputs.fields.value.rows : []));
   for (const g of [g1, g2, g3, g4, g5, plugins]) if (g.error) fail(g.error);
 
   // Without a usable gate picture there is no path to name.
@@ -358,7 +385,7 @@ export function decide(inputs) {
   }
   if (plugins.wholeHold.length) fail(`${plugins.wholeHold.length} plugin(s) not verified on CL-${g3.cl}, which the loader cannot turn off: ${plugins.wholeHold.slice(0, 5).join('; ')}`);
   for (const p of perPlugin) {
-    if (p.status === 'held' && p.verdict === 'REFUSED') notes.push(`${p.name} held: ${p.reasons.join('; ')}`);
+    if (p.heldAlone) notes.push(`${p.name} held: ${p.reasons.join('; ')}`);
     else if (p.degraded.length) {
       const high = p.degraded.filter((d) => d.severity === 'high');
       notes.push(`${p.name} updated, degraded: ${p.degraded.map((d) => `${d.key} off`).join(', ')}${high.length ? ` (HIGH: ${high.length} required request(s) missing)` : ''}`);

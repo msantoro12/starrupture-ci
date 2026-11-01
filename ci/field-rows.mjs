@@ -241,7 +241,7 @@ export function fieldRows(headerText, { cl, keys, next, base, uses = null }) {
       try { addAbsentField(out, { key: a.key, cl }); } catch (e) { if (!(e instanceof MapError)) throw e; problems.push(e.message); }
     }
   }
-  return { text: problems.length ? null : emit(out), added, problems, absent: plan.absent, covered: plan.covered, notes: plan.notes, degraded: plan.degraded };
+  return { text: problems.length ? null : emit(out), added, rows: plan.rows.map((r) => r.key), problems, absent: plan.absent, covered: plan.covered, notes: plan.notes, degraded: plan.degraded };
 }
 
 // The key list as the client check has it: ci/native-keys.txt (each plugin's
@@ -303,7 +303,7 @@ export function main(argv) {
     const next = parseLayoutReport(readFileSync(o.next, 'utf8'), o.next);
     const base = o.base ? parseLayoutReport(readFileSync(o.base, 'utf8'), o.base) : null;
     const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses });
-    const report = { written: !!out.text, cl: Number(o.cl), added: out.added, absent: out.absent, degraded: out.degraded, covered: out.covered, notes: out.notes, problems: out.problems };
+    const report = { written: !!out.text, cl: Number(o.cl), added: out.added, rows: out.rows, absent: out.absent, degraded: out.degraded, covered: out.covered, notes: out.notes, problems: out.problems };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.text) {
       for (const p of out.problems) process.stderr.write(`refused: ${p}\n`);

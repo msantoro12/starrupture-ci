@@ -487,6 +487,40 @@ test('M: one plugin that cannot load on the new CL is held alone; the rest are u
   assert.match(r.notes.join(' '), /WAILA held/);
 });
 
+test('M: a plugin that crashes in the check is held alone; the rest proceed', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' },
+    { name: 'WaveOptimiser', verdict: 'FAIL', note: 'PluginInit crashed (exception 0xC0000005)' },
+    { name: 'Compass', verdict: 'FAIL', note: 'DoThing stopped at 0xC0000094' },
+    { name: 'WAILA', verdict: 'FAIL', patterns: [{ name: 'GetCargo', recorded: true, required: true, result: 'MISSING' }] }] });
+  const r = decide(base({ plugins }));
+  assert.equal(r.decision, 'M');
+  assert.equal(r.pluginsOk, true);
+  assert.deepEqual(r.plugins.map((p) => [p.name, p.status]), [['BetterCheats', 'updated'], ['WaveOptimiser', 'held'], ['Compass', 'held'], ['WAILA', 'updated']]);
+  assert.match(r.plugins[1].reasons[0], /crashed in the check, stays on its last release/);
+  assert.match(r.notes.join(' '), /WaveOptimiser held/);
+});
+
+test('M: the scanner stopping on its own one-entry hooks table is the harness, not a plugin crash', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'WaveOptimiser', verdict: 'FAIL',
+    note: 'PluginInit took the Game-SDK globals (it stopped at exception 0xC0000005, outside the one table it was given)' }] });
+  const r = decide(base({ plugins }));
+  assert.equal(r.plugins[0].status, 'updated');
+  assert.equal(r.plugins[0].degraded.length, 1);
+});
+
+test('M: refusals for a missing row are settled by the rows map mode wrote; others name the key', () => {
+  const note = 'PluginInit took the Game-SDK globals (it stopped at exception 0xC0000005, outside the one table it was given)';
+  const noRow = 'refused: no row for CL-128786, and a native member has no other source';
+  const plugins = ok({ status: 'fail', plugins: [
+    { name: 'WaveOptimiser', verdict: 'FAIL', note, failures: [{ name: 'UMassEntitySubsystem::EntityManager', detail: noRow }] },
+    { name: 'Compass', verdict: 'FAIL', note, failures: [{ name: 'UFoo::Bar', detail: noRow }] }] });
+  const fields = ok({ written: true, cl: 127999, added: 1, rows: ['UMassEntitySubsystem::EntityManager'], absent: [], covered: [], notes: [], problems: [], degraded: {} });
+  const r = decide(base({ plugins, fields }));
+  assert.equal(r.pluginsOk, true);
+  assert.deepEqual(r.plugins.map((p) => [p.name, p.status, p.degraded.map((d) => d.key)]),
+    [['WaveOptimiser', 'updated', []], ['Compass', 'updated', ['UFoo::Bar']]]);
+});
+
 test('M: a plugin missing a required field or pattern is updated and degraded, not held', () => {
   const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' },
     { name: 'WAILA', verdict: 'FAIL', patterns: [{ name: 'GetCargo', recorded: true, required: true, result: 'MISSING' }, { name: 'Extra', recorded: true, required: false, result: 'AMBIGUOUS' }, { name: 'Fine', recorded: true, required: true, result: 'OK' }] }] });

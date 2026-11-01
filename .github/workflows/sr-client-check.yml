@@ -951,6 +951,13 @@ jobs:
                                  required = $_.required; recorded = $_.recorded; result = $_.result }
                 if ($_.PSObject.Properties['suggest']) { $o.suggest = $_.suggest }
                 $o })
+              # The refused requests (the scanner's "[Map] <plugin>: <key>: refused: <why>" lines),
+              # unless the scanner lists them itself. decide names them instead of the probe note.
+              $r.failures = if ($scan.PSObject.Properties['failures']) { @($scan.failures) } else {
+                @(Get-Content "$stem.txt" | ForEach-Object {
+                  if ($_ -match ('^\[Map\] ' + [regex]::Escape($p.name) + ': (.+?): (refused: .+)$')) { [ordered]@{ name = $Matches[1]; detail = $Matches[2]; required = $true } }
+                })
+              }
               foreach ($row in @($scan.patterns | Where-Object { $_.recorded -and $_.result -ne 'OK' })) {
                 Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.result)$(if ($row.required) { '' } else { ' (declared optional; the loader still refuses the plugin)' })"
               }
@@ -1632,7 +1639,7 @@ jobs:
             // This run scanned this exe: the loader registry (checks) and every
             // plugin. That is the re-scan promote asks for; it fails when either did.
             // Per plugin: a held or degraded plugin does not fail the re-scan;
-            // decide's pluginsOk is false only for a verdict nothing can turn off.
+            // pluginsOk (decide) is false only for a verdict nothing can turn off.
             const d = JSON.parse(readFileSync("decision.json", "utf8"));
             writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && d.pluginsOk === true, exe: process.env.BRANCH, buildid }));
           '
@@ -1647,8 +1654,8 @@ jobs:
           node -e '
             const p = JSON.parse(require("fs").readFileSync("promote-plan.json", "utf8"));
             for (const l of p.lines ?? []) console.log("promote: " + l);
-            // Publishable: a promotion, or public's own build on a new CL with
-            // nothing staged (normal flow; this run's decide M is the map).
+            // Publishable: a promotion, or the build of public on a new CL with
+            // nothing staged (normal flow; decide M of this run is the map).
             // A test run is never publishable.
             const ok = process.env.TEST_AUTOPILOT !== "true" && !p.test && (p.action === "promote" || (p.action === "normal-flow" && p.kind === "different-cl" && process.env.BRANCH === "public"));
             require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\npublishable=" + ok + "\n");
