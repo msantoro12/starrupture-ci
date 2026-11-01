@@ -4,7 +4,6 @@
 # beside the plugin's used classes. Format: <plugin name> <Class::Member>,
 # the key naming the member the plugin's source comment already names.
 BetterCheats UCrGameInstance::ServerSessionName
-BetterCheats UCrEnviroWaveTimerSubsystem::WaitingDuration
 BetterCheats UCrEnviroWaveTimerSubsystem::NextWaveTimer
 BetterCheats UCrEnviroWaveTimerSubsystem::bWaitingForNextWave
 BetterCheats UCrEnviroWaveTimerSubsystem::bPause
