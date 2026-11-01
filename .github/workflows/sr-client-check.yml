@@ -84,6 +84,10 @@ on:
         description: 'Write the update into the loader version map (ci/map-mode.mjs) and upload the header'
         type: boolean
         default: false
+      publish:
+        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       branch:
@@ -91,6 +95,10 @@ on:
         type: choice
         options: [public, public_test_branch, expiry-only]
         default: public
+      buildid:
+        description: 'Build id the watcher saw (blank: what Steam installs); map mode names the build row with it'
+        type: string
+        default: ''
       pr:
         description: 'Pull request number to post the result on (blank: no comment)'
         type: string
@@ -134,6 +142,10 @@ on:
         default: high
       map_mode:
         description: 'Write the update into the loader version map (ci/map-mode.mjs) and upload the header'
+        type: boolean
+        default: false
+      publish:
+        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
         type: boolean
         default: false
   schedule:
@@ -1005,6 +1017,7 @@ jobs:
           }
           $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
+          Copy-Item "$work\keys-all.txt" out\layout-keys.txt
 
           $reports = @{}
           foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
@@ -1322,41 +1335,59 @@ jobs:
             out/plugin-*.txt
             out/autofix-*
             out/layout*.json
+            out/layout-keys.txt
             out/offsets-*.json
           if-no-files-found: warn
           retention-days: 14
 
   # ---- Map mode: the update as rows in the loader's version map -----------
-  # Runs the assembler and the writer of ci/map-mode.mjs on the scans the check
-  # job uploaded and on the loader's header, and uploads the rewritten header
-  # and the report. Reads only artifacts and the header: no Steam login, no
-  # plugin code, no game files.
+  # The unattended path M chain, on the scans the check job uploaded and the
+  # loader's header: map-mode assemble and write, field rows from the PDB
+  # layouts, decide (ci/decide.mjs, every gate and rate limit), and on path M
+  # export the feed, sign it with the TEST key (k1, VMAP_SIGN_KEY_TEST) and
+  # verify it, stage a beta build, and plan the promotion (ci/promote.mjs, a
+  # dry run). The client check alone decides: no dedicated-server scan is read.
+  # Reads only artifacts, the header and the vmap-feed release: no Steam login,
+  # no plugin code, no game files. The release key signs only in the publish
+  # job below, and only when the publish input says so.
   # TODO(step 26, needs the owner): pushing the header to the loader fork's
   # auto/update-<CL> needs the fork deploy key and the auto/** ruleset (checklist
-  # in ci/MAP-MODE.md). Until then the header is an artifact only.
+  # in ci/MAP-MODE.md). Until then the header is an artifact only, and the
+  # staging record carries no loader commit (zeros).
   # TODO: the scans of the previous release of each tracked component
   # (rank previous) are not run yet, so a changed fp adds its set only once a
   # release carrying it is the current one. With current scans only, map-mode
   # prunes nothing: the sets the previous release still reads are kept.
   map-mode:
     name: map mode
-    needs: [check]
+    needs: [build, plugins, check]
     if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      decision: ${{ steps.chain.outputs.decision }}
+      action: ${{ steps.chain.outputs.action }}
+      seq: ${{ steps.chain.outputs.seq }}
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
       PLUGINS: ${{ inputs.plugins }}
       LOADER_REF: ${{ inputs.loader_ref }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      PLUGINS_RESULT: ${{ needs.plugins.result }}
+      RUN_ID: ${{ github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Check out the map tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: tool
-          sparse-checkout: ci
+          sparse-checkout: |
+            ci
+            state
           persist-credentials: false
 
       - name: Check out the loader's header
@@ -1376,29 +1407,158 @@ jobs:
           path: res
 
       - name: Write the update into the header
+        id: write
         run: |
           set -euo pipefail
+          # The build Steam installed names the build row; the watcher's id is
+          # only the fallback.
+          buildid="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).download?.buildid || ''")"
+          [ -n "$buildid" ] || buildid="$BUILDID"
+          [ -n "$buildid" ] || { echo "::error::no build id: neither the download nor the buildid input names one"; exit 2; }
           # The loader's registry scan, then each plugin scan. A plugin is
           # tracked when it is one of the built `plugins`; otherwise (MiniMap)
           # its failing rows go to the pattern path.
-          scans="$(jq -n --arg tag "$LOADER_REF" '[{owner: "ModLoader", tracked: true, tag: $tag, rank: "current", file: "res/scanner.json"}]')"
-          for f in res/plugin-*.json; do
-            name="$(jq -r '.plugin.name // empty' "$f")"
-            [ -n "$name" ] || continue
-            tracked=false
-            case " $PLUGINS " in *"StarRupture-Plugin-$name@"*) tracked=true;; esac
-            scans="$(jq --arg n "$name" --argjson t "$tracked" --arg f "$f" '. + [{owner: $n, tracked: $t, tag: "current", rank: "current", file: $f}]' <<<"$scans")"
-          done
-          jq -n --arg src "$BRANCH $BUILDID" --argjson scans "$scans" '{source: $src, scans: $scans}' > scans.json
+          node -e '
+            const fs = require("fs");
+            const scans = [{ owner: "ModLoader", tracked: true, tag: process.env.LOADER_REF, rank: "current", file: "res/scanner.json" }];
+            // PLUGINS is "owner/repo@ref ..."; the repo names the built plugins.
+            const built = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop());
+            for (const f of fs.readdirSync("res").filter((n) => /^plugin-.*\.json$/.test(n)).sort()) {
+              const name = JSON.parse(fs.readFileSync("res/" + f, "utf8")).plugin?.name;
+              if (!name) continue;
+              const tracked = built.includes("StarRupture-Plugin-" + name);
+              scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
+            }
+            fs.writeFileSync("scans.json", JSON.stringify({ source: process.env.BRANCH + " " + process.argv[1], scans }));
+          ' "$buildid"
           node tool/ci/map-mode.mjs assemble scans.json --out observations.json
           header=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
+          # G3 compares the new CL with the one the header was built for.
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parse } from "./tool/ci/version-map.mjs";
+            process.stdout.write("previous_cl=" + parse(readFileSync(process.argv[1], "utf8"), "the header").builtCL + "\n");
+          ' "$header" >> "$GITHUB_OUTPUT"
           status=0
           node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json || status=$?
           cp "$header" version_map.generated.h
           if [ "$status" -ne 0 ]; then echo "::error::map mode refused the update (exit $status); see the log and map-mode-report.json"; fi
           exit "$status"
 
-      - name: Upload the header
+      - name: Decide, export, sign, stage and plan the promotion
+        id: chain
+        env:
+          PREVIOUS_CL: ${{ steps.write.outputs.previous_cl }}
+          VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+        run: |
+          set -euo pipefail
+          header=version_map.generated.h
+          cl="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks.exe.cl")"
+          # Field rows: the native members on the new CL, the reflected ones
+          # that moved, absent rows for what is gone. A refusal is not fatal
+          # here: decide reads the report and holds.
+          fr=0
+          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json --base res/layout-reference.json \
+            --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --report field-rows.json || fr=$?
+          echo "field-rows: exit $fr"
+          # The gate inputs, from what this run checked.
+          node -e '
+            const fs = require("fs");
+            const read = (f) => JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, ""));
+            const put = (f, v) => fs.writeFileSync(f, JSON.stringify(v, null, 2) + "\n");
+            const [cl, previousCl] = process.argv.slice(1);
+            const r = read("res/result.json");
+            const ok = (x) => x === "success" || x === "skipped";
+            put("g1.json", { ok: process.env.BUILD_RESULT === "success" && ok(process.env.PLUGINS_RESULT) });
+            put("g2.json", { ok: r.checks?.fail === false });
+            put("g3.json", { ok: true, cl, previousCl });
+            // G4: the client scan, with the SDK value of each global the check compared.
+            const scan = read("res/scanner.json");
+            const sdk = new Map((r.checks?.sdkGlobals ?? []).map((g) => [g.name.toLowerCase(), g.sdk]));
+            for (const p of scan.patterns ?? []) {
+              const v = sdk.get(String(p.name).replace(/ \(.*\)$/, "").replace(/^.*::/, "").toLowerCase());
+              if (v) p.sdkRva = v;
+            }
+            put("g4.json", scan);
+            // G5: every class of the layout keys that moved, changed or is gone.
+            let g5;
+            try {
+              const l = read("res/layout.json");
+              const classes = new Set();
+              for (const c of Object.values(l.components ?? {})) for (const m of [...(c.moved ?? []), ...(c.changed ?? []), ...(c.missing ?? [])]) classes.add(m.key.split("::")[0]);
+              const used = [...classes].sort();
+              g5 = { changedUsedClasses: used.length, changedUsed: used.map((c) => ({ class: c })) };
+            } catch (e) { g5 = { error: "no layout report: " + e.message }; }
+            put("g5.json", g5);
+          ' "$cl" "$PREVIOUS_CL"
+          # Rate limits and seq: the history and the feed on the vmap-feed
+          # release. No release yet is an empty history and seq 0; any other
+          # failure to read it stops the chain.
+          if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > release.json 2> release.err; then
+            gh release download vmap-feed --pattern vmap-history.json --dir published || true
+            gh release download vmap-feed --pattern version-map-client.v1.txt --dir published || true
+          elif grep -q 'HTTP 404' release.err; then
+            echo "no vmap-feed release yet"
+          else
+            cat release.err; echo "::error::cannot read the vmap-feed release"; exit 2
+          fi
+          if [ -f published/vmap-history.json ]; then cp published/vmap-history.json history.json; else echo '{"releases":[],"attempts":{}}' > history.json; fi
+          last_seq=0
+          if [ -f published/version-map-client.v1.txt ]; then
+            last_seq="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
+          fi
+          echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
+          d=0
+          node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
+            --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --fields field-rows.json \
+            --history history.json --out decision.json || d=$?
+          decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          if [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
+
+          # Path M: the feed, signed with the TEST key and verified.
+          node tool/ci/version-map.mjs export-feed "$header" --out feed.txt
+          [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
+          node tool/ci/vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq"
+          node tool/ci/vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq"
+
+          # Stage a beta build; plan the promotion. For a beta build the plan is
+          # for the day public flips to this exact build; for public, it is the
+          # real plan.
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            import { parse } from "./tool/ci/version-map.mjs";
+            const r = JSON.parse(readFileSync("res/result.json", "utf8").replace(/^﻿/, ""));
+            const cl = Number(r.checks.exe.cl);
+            const row = parse(readFileSync("version_map.generated.h", "utf8"), "the header").builds.find((b) => b.cl === cl);
+            const hex = (n) => "0x" + n.toString(16).toUpperCase().padStart(8, "0");
+            const buildid = String(r.download?.buildid || process.env.BUILDID);
+            const scans = [{ exe: process.env.BRANCH, buildid, ok: true }];
+            if (r.reference?.status === "used") scans.push({ exe: "public", buildid: String(r.reference.buildid), ok: true });
+            const build = { cl, branch: process.env.BRANCH, buildid, productVersion: r.checks.exe.productVersion, exeSha256: r.checks.exe.sha256,
+              imageStamp: hex(row.stamp), size: row.size, run: Number(process.env.RUN_ID), scans,
+              repo: { sha: "0".repeat(40), tree: "0".repeat(40), verdict: "FIXED" } };
+            writeFileSync("build.json", JSON.stringify(build, null, 1));
+            writeFileSync("public.json", JSON.stringify({ buildid: Number(buildid), exeSha256: build.exeSha256, cl }));
+            writeFileSync("verify.json", JSON.stringify({ ok: true }));
+          '
+          if [ -f tool/state/staged.json ]; then cp tool/state/staged.json staged.json; else echo '{}' > staged.json; fi
+          if [ "$BRANCH" != public ]; then
+            node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json
+            node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("stage-plan.json","utf8")); if (p.index) fs.writeFileSync("staged.json", JSON.stringify(p.index, null, 1));'
+          fi
+          p=0
+          node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
+            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json || p=$?
+          node -e '
+            const p = JSON.parse(require("fs").readFileSync("promote-plan.json", "utf8"));
+            for (const l of p.lines ?? []) console.log("promote: " + l);
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\nseq=" + (p.seq ?? "") + "\n");
+          '
+          echo "promote: exit $p (a plan only; the publish job signs with the release key)"
+
+      - name: Upload the header and the chain
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -1407,8 +1567,72 @@ jobs:
             version_map.generated.h
             map-mode-report.json
             observations.json
+            field-rows.json
+            g?.json
+            history.json
+            decision.json
+            feed.txt
+            feed.test-signed.txt
+            build.json
+            stage-plan.json
+            staged.json
+            promote-plan.json
           if-no-files-found: warn
           retention-days: 14
+
+  # ---- Publish: the feed signed with the release key ---------------------
+  # Only with the publish input (default off; the owner turns it on), only for
+  # public, and only when decide chose M and promote planned a promotion. The
+  # only job that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
+  # environment, main only). Signs the exported feed with the seq the plan
+  # gave, verifies it with no TEST key allowed, and uploads it with the
+  # updated history to the vmap-feed release.
+  publish:
+    name: publish the feed
+    needs: [check, map-mode]
+    if: ${{ !cancelled() && inputs.publish == true && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.action == 'promote' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: vmap-sign
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SEQ: ${{ needs.map-mode.outputs.seq }}
+    steps:
+      - name: Check out the sign tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the chain
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: map-mode-${{ inputs.branch }}
+          path: chain
+
+      - name: Sign with the release key, verify, publish
+        env:
+          VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$VMAP_SIGN_KEY" ] || { echo "::error::the VMAP_SIGN_KEY secret is not set"; exit 2; }
+          [[ "$SEQ" =~ ^[1-9][0-9]*$ ]] || { echo "::error::the promotion plan gave no seq"; exit 2; }
+          # The plan's seq is past the published one; signing at it keeps the order.
+          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$((SEQ - 1))"
+          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$((SEQ - 1))"
+          node -e '
+            const fs = require("fs");
+            const h = JSON.parse(fs.readFileSync("chain/history.json", "utf8"));
+            const d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8"));
+            h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString() });
+            fs.writeFileSync("vmap-history.json", JSON.stringify(h, null, 1) + "\n");
+          '
+          gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
+          gh release upload vmap-feed version-map-client.v1.txt vmap-history.json --clobber
 
   # ---- Auto-apply, part 2: push the verified fixes to the owner's forks ----
   # The only job that can read the fork deploy keys (environment fork-push),

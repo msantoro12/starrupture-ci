@@ -138,8 +138,10 @@ jobs:
       max-parallel: 1    # one Steam login on the CI account at a time
       matrix:
         include: ${{ fromJSON(needs.poll.outputs.client_matrix) }}
-    # No secrets are passed: only sr-client-check's own check job reads the
-    # Steam login, from the steam-client environment.
+    # The Steam login is read only by sr-client-check's own check job, from the
+    # steam-client environment. The repo secrets are inherited for the map-mode
+    # chain, which signs its dry-run feed with the TEST key (VMAP_SIGN_KEY_TEST).
+    # publish is not passed, so it stays off: no feed is published from here.
     permissions:
       contents: read
       pull-requests: write
@@ -148,3 +150,5 @@ jobs:
       branch: ${{ matrix.branch }}
       buildid: ${{ matrix.buildid }}
       pr: ${{ needs.poll.outputs.pr }}
+      map_mode: true
+    secrets: inherit
