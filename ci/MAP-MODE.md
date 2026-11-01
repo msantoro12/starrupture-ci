@@ -160,17 +160,24 @@ offset of the instruction start inside the pattern, as `ScanValidation::Resolve`
 ## Step 28: `field-rows.mjs write`
 
 ```
-node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>] --keys <keys.txt>... [--report <file>]
+node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>]
+    (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list>) [--report <file>]
 ```
+
+The client check has no per-component key lists; it gives `ci/native-keys.txt` and the
+plain key list the layout reports were read with (`layout-keys.txt`, an artifact of
+the check job). A key on that list that is not native is a reflected field.
 
 `--next` and `--base` are `sr-aobscan --layout --json` reports of the new build and
 the reference build over the same key list. For the new CL it writes a row for
 every `native` key (offset, size, bool mask, found by the key's own text) and for
-every reflected `field` key whose offset, size or mask moved. A reflected key that
-resolves on the reference build only is listed under `partial` (a rename guess is
-low confidence and is not written); the run then reads PARTIAL but exits 0. A
-native key that does not resolve on the new build is refused (exit 3, header
-untouched). `FTransform::Translation` and `::Scale3D` keep the size the key list
+every reflected `field` key whose offset, size or mask moved. A key the new build
+does not have (NOMEMBER or NOTYPE) gets an absent row: no row on that CL, the loader
+refuses that one request and the plugin takes its fallback. A key marked `required`
+in the key list is refused instead (exit 3, header untouched), and so is a native
+key the report has no entry for or does not resolve for another reason. A reflected
+key that resolves on the reference build only is listed under `partial` (a rename
+guess is low confidence and is not written); the run then reads PARTIAL but exits 0. `FTransform::Translation` and `::Scale3D` keep the size the key list
 was built with, because the PDB sizes them as the 32-byte SIMD register and
 reflection as an FVector (review N2). The output holds keys and numbers only.
 It runs after `write` (the build must be in the table).
@@ -211,6 +218,13 @@ holds. The Game-SDK globals (GObjects, GNames, AppendString, GWorld) must still
 resolve. A value that differs from the SDK's baked `sdkRva` is a note, not a hold,
 because under path M the map row carries the new value.
 
+A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
+same CL) covers it with a row, an absent row or a class-size move; an uncovered one
+holds on path C. A field-rows report that was given and not written cleanly (refused,
+or for another CL) holds whatever moved, on every path: the native members get their
+rows from the same run. `state/autopilot.json` ships with `enabled: false`: until it
+is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
+
 ## The signed feed
 
 `version-map.mjs export-feed <header> --out <file>` writes the loader's map as the
@@ -233,13 +247,17 @@ higher `seq`. `verify` exits 3 when it refuses a file.
 
 The loader reads the feed with the public key in its slot `k1` or `k2`
 (`version_feed.cpp`), and `PUBLIC_KEYS` in `vmap-sign.mjs` must hold the same key.
-**Slot `k1` holds a test key in both places, flagged as such.** The pair for real
-use, the `vmap-sign` environment secret and its `main`-only deployment policy are
-not set up, so nothing here signs a feed for release yet.
+**Slot `k1` is the TEST key**, flagged as such in both places. Its private half is the
+repo secret `VMAP_SIGN_KEY_TEST` (and Bitwarden `vmap-sign-test-k1`); the loader
+trusts it only when built with `VMAP_TRUST_TEST_KEY`, and `verify` refuses a feed
+signed with it without `--allow-test-key`. **Slot `k2` is the release key**, trusted
+by every loader build. Its private half is the secret `VMAP_SIGN_KEY` (and Bitwarden
+`vmap-sign-k2`), read only by the `publish` job, which runs in the `vmap-sign`
+environment. The public halves in `PUBLIC_KEYS` were checked against the Bitwarden
+pairs on 2026-11-01 and equal the loader's `kK1Hex` and `kK2Hex`.
 
-`vmap-sign.yml` is a manual run on `main` in the `vmap-sign` environment that signs
-the export of a test header and verifies it with the public key. It fails at the
-signing step until the secret exists.
+`vmap-sign.yml` is a manual run that signs the export of a test header with the TEST
+key and verifies it with the public key.
 
 ### Publishing and the watchdog
 
@@ -262,8 +280,9 @@ itself monthly, with the other scheduled workflows.
 ## Staging and promotion (dry run)
 
 A beta build that passed the chain is staged, and promoted when public flips to the
-same build. Both are plan printers today: no workflow calls them, and nothing is
-signed, published or released from them.
+same build. Both are plan printers: the `map-mode` job of `sr-client-check.yml` runs
+them (below), and nothing is signed with the release key, published or released
+from them.
 
 ```
 node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
@@ -298,3 +317,38 @@ node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilo
 does for the server app, so a second beta is tracked the day it appears; a
 password-protected branch is ignored. `SR_STEAMCMD_API` and `SR_NEWS_API` replace the
 two service addresses, for the tests.
+
+## The workflow chain
+
+The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
+`sr-watch.yml`) is the unattended path M on one build. It reads only the check
+job's artifacts, the loader's header and the `vmap-feed` release: no Steam login,
+no plugin code, no game file.
+
+1. `map-mode.mjs assemble` and `write` put the observations in the header. The build
+   row is named `<branch> <buildid>`. The build id is the one Steam installed
+   (`result.json` `download.buildid`), else the `buildid` input (a manual dispatch
+   can give it; the poller always does), else the job stops. A plugin is tracked
+   when its repo is in the built `plugins` list.
+2. `field-rows.mjs write` from the PDB layouts of the check (`layout-target.json`,
+   `layout-reference.json`, `layout-keys.txt`, `ci/native-keys.txt`). A refusal does not
+   fail the job; decide reads the report and holds.
+3. `decide.mjs` with the gates built from the check: G1 the builds, G2 the check, G3
+   the CL against the one the header was built for, G4 the client registry scan (the
+   client check alone decides; no dedicated-server scan is read), G5 the classes
+   the layout diff moved, changed or lost, then the field rows, and the history on
+   the `vmap-feed` release for the rate limits.
+4. On path M only: `export-feed`, sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and
+   verify it, `staging.mjs stage` for a beta build, and `promote.mjs plan`. All dry runs.
+5. The `publish` job (input `publish`, default off; `public` branch only; decide `M` and
+   promote action `promote`) signs the exported feed with the release key k2 at the
+   planned seq, verifies it without the TEST key, and uploads it with the history to
+   the `vmap-feed` release. `sr-watch.yml` does not pass `publish`.
+
+Until the loader fork's deploy key exists (step 26), the staging record carries no
+loader commit (zeros) and the header is an artifact only.
+
+Offline replay (2026-11-01, run 41272795133, CL-128786, a throwaway key): the loader's
+header pruned to CL-127004 gives 102 rows written, 557 field rows with 5 absent,
+decide M (autopilot copy enabled), a signed and verified feed, a staged
+`auto/update-128786` and a promote plan with a seq.
