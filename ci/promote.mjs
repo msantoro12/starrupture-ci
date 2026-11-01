@@ -3,12 +3,16 @@
 // step 46, design R5 and section 7).
 //
 //   node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json>
-//        --history <history.json> --last-seq <N> --now <ISO time> [--out <plan.json>]
+//        --history <history.json> --last-seq <N> --now <ISO time> [--verify <verify.json>]
+//        [--roll-forward] [--out <plan.json>]
 //
 // <public.json>: { buildid, exeSha256, cl }, the public build that just flipped
-// and its exe's CL. It is matched against state/staged.json:
+// and its exe's CL. <verify.json>: { ok }, the result of the re-scan or re-verify
+// on the public exe; without it, or with ok not true, nothing is published. It
+// is matched against state/staged.json:
 //
-//   same build id and exe sha256  -> re-scan on the public exe, then promote
+//   same build id and exe sha256  -> re-scan on the public exe, then promote;
+//                                    on failure the normal flow, no promotion
 //   same CL, different exe        -> re-verify every key (rva check off, the stamp
 //                                    differs); on failure the normal flow with the
 //                                    staged exe as a second reference
@@ -20,6 +24,11 @@
 // under state/autopilot.json path "M" (fails closed; the daily cap counts
 // publishes of the loader repo). A superseded staged CL is listed and skipped,
 // never published. A staged CL that is not the public build stays staged.
+//
+// seq is max(now, last + 1) in UTC seconds, as the signer writes it. A publish
+// counts against the daily cap and the gap; only an owner-dispatched
+// roll-forward (--roll-forward: a newer seq replacing a bad publish of the same
+// CL) is exempt from the one-publish-per-CL limit.
 //
 // This is a plan printer. plan() reads files and returns lines; promote() calls
 // no effect in dry run and refuses a live run, so nothing is signed, published
@@ -48,16 +57,16 @@ export function classify(entry, pub) {
 
 // Reasons the autopilot file or the history forbid a publish now; [] when it may go.
 // The checks are decide.mjs's, so a publish and a release obey one set of limits.
-export function gate({ autopilot, history, cl, now }) {
+export function gate({ autopilot, history, cl, now, rollForward = false }) {
   const ap = checkAutopilot({ ok: true, value: autopilot });
   if (ap.error) return [ap.error];
   if (!ap.enabled) return ['autopilot is disabled (enabled is not true)'];
   if (!ap.paths.includes('M')) return ['path M (map-only update) is not enabled in autopilot.paths'];
-  return checkRateLimits({ historyLoaded: { ok: true, value: history }, repo: LOADER_REPO, cl: String(cl), path: 'M', nowMs: now, maxPerDay: ap.maxPerDay });
+  return checkRateLimits({ historyLoaded: { ok: true, value: history }, repo: LOADER_REPO, cl: String(cl), path: 'M', nowMs: now, maxPerDay: ap.maxPerDay, rollForward });
 }
 
 // Returns { action, cl, seq, lines, hold }.
-export function plan({ index, pub, autopilot, history, lastSeq, now }) {
+export function plan({ index, pub, autopilot, history, lastSeq, now, verify = null, rollForward = false }) {
   need(isObj(index), 'staged index is not an object');
   need(isObj(pub) && Number.isInteger(pub.cl) && /^\d+$/.test(String(pub.buildid)) && /^[0-9a-f]{64}$/.test(String(pub.exeSha256 ?? '')), 'public build needs cl, buildid and exeSha256');
   need(Number.isInteger(lastSeq) && lastSeq >= 0, 'last seq is not a non-negative integer');
@@ -86,10 +95,19 @@ export function plan({ index, pub, autopilot, history, lastSeq, now }) {
     lines.push('re-verify every key on the public exe; the rva check is off, the image stamp differs');
     lines.push(`if anything fails: the normal check/suggest/apply flow for CL-${pub.cl} with the staged exe (${short(entry.exeSha256)}) as a second reference; no promotion`);
   }
+  const check = kind === 'same' ? 're-scan' : 're-verify';
+  if (isObj(verify) && verify.ok === false) {
+    lines.push(`the ${check} on the public exe failed: run the normal check/suggest/apply flow for CL-${pub.cl} with the staged exe (${short(entry.exeSha256)}) as a second reference`);
+    lines.push('nothing to promote');
+    return { action: 'normal-flow', cl: pub.cl, seq: null, lines, hold: [] };
+  }
   lines.push(`rebase ${repo.ref} (${short(repo.sha)}) onto the ${LOADER_REPO} fork's current tip; regenerate the data commit if it conflicts`);
   lines.push(`open a PR from the fork into ${LOADER_REPO} main for CL-${pub.cl}; merge once CI passes`);
-  const hold = gate({ autopilot, history, cl: pub.cl, now });
-  const seq = lastSeq + 1;
+  if (rollForward) lines.push(`roll-forward: an owner-dispatched re-publish of CL-${pub.cl}; the one-publish-per-CL limit does not apply`);
+  const hold = gate({ autopilot, history, cl: pub.cl, now, rollForward });
+  if (!isObj(verify) || verify.ok !== true) hold.push(`no passing ${check} result on the public exe`);
+  // The signer's rule: the UTC second of signing, and never back.
+  const seq = Math.max(Math.floor(now / 1000), lastSeq + 1);
   if (hold.length) {
     for (const h of hold) lines.push(`HOLD: ${h}`);
     lines.push(`would NOT sign and publish seq ${seq}`);
@@ -114,12 +132,13 @@ function readJson(path) {
 export function main(argv) {
   const [cmd, ...rest] = argv;
   const o = {};
-  for (let i = 0; i < rest.length; i += rest[i] === '--live' ? 1 : 2) {
-    if (!rest[i]?.startsWith('--') || (rest[i] !== '--live' && rest[i + 1] === undefined)) { process.stderr.write(`promote: bad argument ${rest[i]}\n`); return 2; }
-    o[rest[i].slice(2)] = rest[i] === '--live' ? true : rest[i + 1];
+  const FLAGS = ['--live', '--roll-forward'];
+  for (let i = 0; i < rest.length; i += FLAGS.includes(rest[i]) ? 1 : 2) {
+    if (!rest[i]?.startsWith('--') || (!FLAGS.includes(rest[i]) && rest[i + 1] === undefined)) { process.stderr.write(`promote: bad argument ${rest[i]}\n`); return 2; }
+    o[rest[i].slice(2)] = FLAGS.includes(rest[i]) ? true : rest[i + 1];
   }
   if (cmd !== 'plan' || !o.index || !o.public || !o.autopilot || !o.history || o['last-seq'] === undefined || !o.now) {
-    process.stderr.write('usage: promote.mjs plan --index <f> --public <f> --autopilot <f> --history <f> --last-seq <N> --now <ISO> [--out <f>]\n');
+    process.stderr.write('usage: promote.mjs plan --index <f> --public <f> --autopilot <f> --history <f> --last-seq <N> --now <ISO> [--verify <f>] [--roll-forward] [--out <f>]\n');
     return 2;
   }
   try {
@@ -128,6 +147,7 @@ export function main(argv) {
     const result = promote({
       index: readJson(o.index), pub: readJson(o.public), autopilot: loadOr(o.autopilot), history: loadOr(o.history),
       lastSeq: /^\d+$/.test(o['last-seq']) ? Number(o['last-seq']) : NaN, now,
+      verify: o.verify ? loadOr(o.verify) : null, rollForward: o['roll-forward'] === true,
     }, { dryRun: !o.live });
     process.stdout.write(`dry run: nothing is signed, published or released\n${result.lines.join('\n')}\n`);
     if (o.out) writeFileSync(o.out, JSON.stringify(result, null, 2) + '\n');
