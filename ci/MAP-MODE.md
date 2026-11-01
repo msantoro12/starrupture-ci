@@ -166,3 +166,20 @@ untouched). `FTransform::Translation` and `::Scale3D` keep the size the key list
 was built with, because the PDB sizes them as the 32-byte SIMD register and
 reflection as an FVector (review N2). The output holds keys and numbers only.
 It runs after `write` (the build must be in the table).
+
+## Step 29: `tail-check.mjs`
+
+```
+node ci/tail-check.mjs migrated --used <keys.txt> --keys <keys.txt>... [--checks <list>] [--engine <list>] --source <file>...
+node ci/tail-check.mjs build-cl --build-cl <build_cl.txt> --basic <Basic.hpp> --map <header>
+```
+
+`migrated` fails (exit 3, naming the members) when a plugin that sets
+`PLUGIN_MAP_MIGRATED` in code reads a game member that is not one of its `native` or
+`field` keys, a check or size row, or an engine member (`Class` covers its members).
+`--used` is `layout-table.mjs keys` on the plugin's sources. `build-cl` fails when
+`build_cl.txt` is not a CL in the loader map's build table, or the dump's
+`Offsets::GObjects` or `Offsets::AppendString` (Basic.hpp) differs from the map's
+rows for those keys on that CL. `GNames` and `GWorld` are compared and reported
+only: the SDK's values for them differ from the engine's by design (the existing
+client check treats them the same way).
