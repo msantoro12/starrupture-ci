@@ -19,6 +19,7 @@
 //   a used class moved (G5 usedChanged non-empty)        -> HOLD, path C (held until shadow mode is proven)
 //   a required pattern missed (G4 requiredFailing > 0)   -> B, if autopilot.paths has B
 //   everything clean                                     -> M, if autopilot.paths has M
+//   an SDK global moved (rva != sdkRva) on a path but M  -> HOLD (on M it is a note)
 //   chosen path not in autopilot.paths                   -> HOLD
 //   rate limit hit (section 8 of the design)             -> HOLD
 //
@@ -29,7 +30,8 @@
 //           row each for GObjects, GNames, AppendString and GWorld (an optional "X::" prefix
 //           on the name is fine). A matched row carries its resolved "rva" and may carry "sdkRva",
 //           the offset the SDK (Basic.hpp Offsets::) bakes in today. They differ after a game
-//           update, and the map row carries the new value, so a difference is a note.
+//           update; only path M ships the new value (as a map row), so a difference is
+//           a note on M and a HOLD on any other path.
 //   G5:     the `layout-diff.mjs diff --used ...` report: { "changedUsedClasses": n, "changedUsed": [{ "class": "UFoo" }, ...] }
 // History (rate limits):
 //   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>" }],
@@ -121,7 +123,8 @@ function checkG4(loaded) {
 // values and hands them to the plugins, so an update needs all four re-resolved
 // from the new exe: one required pattern row each in the G4 scan, matched (OK)
 // with a non-zero resolved "rva". Absent, optional, duplicated or unmatched is a
-// HOLD. A resolved value that differs from the SDK's baked "sdkRva" is a note.
+// HOLD. A resolved value that differs from the SDK's baked "sdkRva" is listed as
+// moved: a note on path M, a HOLD on any other (see decide()).
 const hexValue = (v) => (typeof v === 'string' && /^0x[0-9a-f]+$/i.test(v) ? BigInt(v) : null);
 
 function checkSdkGlobals(rows) {
@@ -170,7 +173,7 @@ export function checkAutopilot(loaded) {
   const v = loaded.value;
   if (typeof v.enabled !== 'boolean') return { error: 'autopilot: enabled is not a boolean' };
   if (!Array.isArray(v.paths) || v.paths.some((p) => !VALID_PATHS.includes(p))) {
-    return { error: 'autopilot: paths must be a list drawn from A, B, C' };
+    return { error: 'autopilot: paths must be a list drawn from M, B, C' };
   }
   if (!Number.isInteger(v.max_releases_per_day) || v.max_releases_per_day < 0) {
     return { error: 'autopilot: max_releases_per_day is not a non-negative integer' };
@@ -179,7 +182,9 @@ export function checkAutopilot(loaded) {
 }
 
 // Returns a list of reasons the rate limits forbid a release now.
-export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay }) {
+// rollForward: an owner-dispatched re-publish of a CL's feed (a newer seq that
+// replaces a bad one); the one-per-CL limit does not apply, the others do.
+export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay, rollForward = false }) {
   const bad = checkEnvelope('history', historyLoaded);
   if (bad) return [bad];
   const h = historyLoaded.value;
@@ -194,7 +199,7 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
   }
   const reasons = [];
   const sameCl = mine.filter((r) => r.cl === cl).length;
-  if (sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${repo} already released for CL-${cl}`);
+  if (!rollForward && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${repo} already released for CL-${cl}`);
   // A release dated in the future counts as recent, never as old.
   const lastDay = mine.filter((r) => nowMs - r.at < DAY_MS).length;
   if (lastDay >= maxPerDay) reasons.push(`rate limit: ${lastDay} ${repo} releases in the last 24 h (limit ${maxPerDay})`);
@@ -242,8 +247,6 @@ export function decide(inputs) {
     fail(g4.globalsError);
     return out('HOLD', null, g3.cl);
   }
-  if (g4.globalsMoved.length > 0) notes.push(`SDK global offsets moved (the map carries the new values): ${g4.globalsMoved.join(', ')}`);
-
   let path = 'M';
   if (g5.usedChanged.length > 0) {
     path = 'C';
@@ -253,6 +256,13 @@ export function decide(inputs) {
     notes.push(`required pattern(s) missed: ${g4.missed.join(', ')}`);
   }
   if (g4.softMissed.length > 0) notes.push(`non-required pattern(s) not OK: ${g4.softMissed.join(', ')}`);
+
+  // Only path M ships new global values (as map rows); any other path would
+  // ship the SDK's stale ones.
+  if (g4.globalsMoved.length > 0) {
+    if (path === 'M') notes.push(`SDK global offsets moved (the map carries the new values): ${g4.globalsMoved.join(', ')}`);
+    else fail(`SDK global offsets moved, which only path M carries: ${g4.globalsMoved.join(', ')}`);
+  }
 
   if (path === 'C') return out('HOLD', 'C', g3.cl);
   if (!ap.error && !ap.paths.includes(path)) fail(`path ${path} is not enabled in autopilot.paths`);

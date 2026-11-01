@@ -169,6 +169,11 @@ for (const key of SDK_GLOBALS) {
     const rm = run(moved);
     assert.equal(rm.decision, 'M');
     assert.ok(rm.notes.join().includes(`${key} 0x1A2B3C0 -> 0x1A2B3D0`), rm.notes.join());
+    // ...on path M only: a would-be B ships no map rows, so it holds
+    const rb = decide(base({ g4: ok(aob([...others, moved, aobRow('SpawnActor', 'MISSING')], { noGlobals: true })) }));
+    holds(rb, new RegExp(`SDK global offsets moved, which only path M carries: ${key} 0x1A2B3C0 -> 0x1A2B3D0`));
+    assert.equal(rb.path, 'B');
+    assert.ok(!rb.notes.join().includes('SDK global offsets moved'));
     // equal values written differently are equal, and give no note
     const same = aobRow(key); same.rva = '0x01a2b3c0'; same.sdkRva = '0X1A2B3C0';
     const rs = run(same);
