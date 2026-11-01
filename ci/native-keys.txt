@@ -46,7 +46,6 @@ CameraControls AAuPlayerCameraManager::FOV
 CameraControls AAuPlayerCameraManager::AdditionalFOVOffset
 CameraControls ULocalPlayer::Origin
 CameraControls ULocalPlayer::Size
-CameraControls APlayerController::bPlayerIsWaiting
 ProductionViewer UCrGameInstance::ServerSessionName
 ProductionViewer UMassEntitySubsystem::EntityManager Production Viewer/production_mass.cpp:\(subsystem\)~\+~@\)
 ProductionViewer FTransform::Translation Production Viewer/production_mass.cpp:fragment~\+~@,
