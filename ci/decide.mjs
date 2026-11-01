@@ -280,6 +280,10 @@ export function decide(inputs) {
     path = 'B';
     notes.push(`required pattern(s) missed: ${g4.missed.join(', ')}`);
   }
+  // The native members get their rows from the same run: a report that was given
+  // and not written cleanly holds whatever moved.
+  const fieldsRun = inputs.fields === undefined ? null : checkFields(inputs.fields, g3.cl, []);
+  if (fieldsRun?.why) fail(`field rows: ${fieldsRun.why}`);
   if (fields && fields.uncovered.length === 0) {
     notes.push(`${g5.usedChanged.length} used class(es) changed layout, every one settled by the field rows${fields.absent ? ` (${fields.absent} absent, the plugins fall back)` : ''}: ${g5.usedChanged.slice(0, 5).join(', ')}`);
   }

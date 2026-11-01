@@ -158,6 +158,10 @@ test('C: a moved used class the field rows do not settle holds, naming it', () =
   holds(decide(base({ g5: ok(layout('UFoo')), fields: ok(fieldsReport({ cl: 127004 })) })), /for CL-127004, not CL-127999/);
   holds(decide(base({ g5, fields: { ok: false, error: 'cannot read f: ENOENT' } })), /ENOENT/);
   assert.equal(decide(base({ g5 })).path, 'C');
+  // With nothing moved, a refused field-rows run still holds: the native rows are missing.
+  const refused = decide(base({ fields: ok(fieldsReport({ cl: 127999, written: false, problems: ['native UFoo::X: not found'] })) }));
+  holds(refused, /field rows: the field rows were not written: native UFoo::X/);
+  assert.equal(refused.path, 'M');
 });
 
 test('SDK globals: a scan without them (today registry) is HOLD, never M', () => {
