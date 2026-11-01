@@ -1,0 +1,43 @@
+name: vmap sign
+
+# Signs a feed with the key in the `vmap-sign` environment secret and checks the
+# result against the public key in ci/vmap-sign.mjs. This is the fixture run of
+# step 24: it signs the export of the test loader header, not a real feed.
+#
+# TODO(release gate, R10 decisions 1 and 2): the owner generates the real pair,
+# stores the private half as the `VMAP_SIGN_KEY` secret of the `vmap-sign`
+# environment (from stdin, never echoed), limits that environment to deployments
+# from `main`, and puts the public half into slot k1 of ci/vmap-sign.mjs and of
+# the loader. Until then nothing here has a key to read, and the run fails at the
+# signing step. The publishing job (promotion) is step 46, still a dry run.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sign-fixture:
+    name: sign the fixture export
+    # The environment's deployment branch policy (main only) is what keeps the
+    # secret from other branches; this condition makes the intent visible too.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: vmap-sign
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: lts/*
+      - name: Export the fixture feed
+        run: node ci/version-map.mjs export-feed ci/fixtures/version-map/loader.h --out "$RUNNER_TEMP/feed.txt"
+      - name: Sign it
+        env:
+          VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
+        run: node ci/vmap-sign.mjs sign "$RUNNER_TEMP/feed.txt" --out "$RUNNER_TEMP/feed.signed.txt" --key-id k1
+      - name: Verify it with the public key
+        run: node ci/vmap-sign.mjs verify "$RUNNER_TEMP/feed.signed.txt"
