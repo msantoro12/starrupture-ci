@@ -10,13 +10,15 @@
 //   node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2
 //        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>]
 //   node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>]
-//        [--pub <keyId>=<64 hex>]...
+//        [--pub <keyId>=<64 hex>]... [--allow-test-key]
 //
 // The private key comes from an environment variable (default VMAP_SIGN_KEY,
 // a PEM) or a file, and is never printed. `seq` is the UTC second of signing,
 // raised to last + 1 when the clock has not passed the last published `seq`.
 // A `seq` more than a day ahead of the clock is refused, at the signer and at
-// the verifier: a far-future `seq` would pin every cache.
+// the verifier: a far-future `seq` would pin every cache. verify refuses a
+// feed signed with a key marked TEST unless --allow-test-key is given, so no
+// gate passes a test-signed feed by reading past a word in the output.
 //
 // Exit codes: 0 ok; 3 verify refused the file; 2 usage or input error.
 
@@ -94,12 +96,14 @@ export function verifyFeed(signed, { keys = PUBLIC_KEYS, lastSeq = null, now = M
   return { keyId: m[1], seq, test: !!key.test };
 }
 
-function options(argv, flags, repeated = []) {
+// switches: options that take no value.
+function options(argv, flags, repeated = [], switches = []) {
   const opt = {};
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     if (!argv[i].startsWith('--')) { rest.push(argv[i]); continue; }
     const name = argv[i].slice(2);
+    if (switches.includes(name)) { opt[name] = true; continue; }
     need(flags.includes(name), `unknown option --${name}`);
     need(i + 1 < argv.length, `--${name} needs a value`);
     if (repeated.includes(name)) (opt[name] ??= []).push(argv[++i]);
@@ -129,7 +133,7 @@ export function main(argv) {
     return EXIT_OK;
   }
   if (cmd === 'verify') {
-    const { opt, rest } = options(args, ['last-seq', 'now', 'pub'], ['pub']);
+    const { opt, rest } = options(args, ['last-seq', 'now', 'pub'], ['pub'], ['allow-test-key']);
     need(rest.length === 1, USAGE);
     let keys = PUBLIC_KEYS;
     if (opt.pub) {
@@ -146,6 +150,7 @@ export function main(argv) {
         lastSeq: opt['last-seq'] === undefined ? null : int(opt['last-seq'], '--last-seq'),
         now: opt.now === undefined ? undefined : int(opt.now, '--now'),
       });
+      need(!r.test || opt['allow-test-key'], `the feed is signed with the TEST key ${r.keyId}; pass --allow-test-key to accept it`);
       process.stdout.write(`ok seq=${r.seq} key=${r.keyId}${r.test ? ' TEST-KEY' : ''}\n`);
       return EXIT_OK;
     } catch (e) {

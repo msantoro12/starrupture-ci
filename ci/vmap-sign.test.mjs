@@ -55,6 +55,18 @@ test("accepts the loader's own fixture signed by the TEST key, and flags it", ()
   assert.equal(PUBLIC_KEYS.k1.test, true);
 });
 
+test('the command line refuses a TEST-key feed unless --allow-test-key is given', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'vmap-sign-')), 'feed.txt');
+  writeFileSync(file, fixture('vmap-sign', 'test-feed-k1.txt'));
+  const run = (...extra) => spawnSync(process.execPath, [TOOL, 'verify', file, '--now', '1761900000', ...extra], { encoding: 'utf8', windowsHide: true });
+  const no = run();
+  assert.equal(no.status, 3);
+  assert.match(no.stderr, /signed with the TEST key k1; pass --allow-test-key/);
+  const yes = run('--allow-test-key');
+  assert.equal(yes.status, 0, yes.stderr);
+  assert.equal(yes.stdout, 'ok seq=1761900000 key=k1 TEST-KEY\n');
+});
+
 test('seq is max(now, last + 1)', () => {
   const k = pair();
   assert.equal(signFeed(unsigned(), k.pem, { keyId: 'k1', now: NOW, lastSeq: NOW - 5 }).seq, NOW);
