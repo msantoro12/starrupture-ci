@@ -179,6 +179,18 @@ test('FTransform::Translation keeps the built size, not the register size', () =
   assert.ok(out.notes.some((n) => n.startsWith('FTransform::Translation: kept the built size 0x18')));
 });
 
+test('a native key missing from the report: absent when only optional plugins ask, refused otherwise', () => {
+  const n = next().filter((e) => e.key !== 'UCrGameInstance::ServerSessionName');
+  const req = fieldRows(header(), { cl: 130000, keys: keys(), next: n, base: base() });
+  assert.equal(req.text, null);
+  assert.ok(req.problems.some((p) => p.includes('has no entry')));
+  const opt = unionKeys([parseKeys(KEYS.replace('0x290 0x10 0x00', '0x290 0x10 0x00 optional'))]);
+  const out = fieldRows(header(), { cl: 130000, keys: opt, next: n, base: base() });
+  assert.deepEqual(out.problems, []);
+  assert.ok(out.absent.some((a) => a.key === 'UCrGameInstance::ServerSessionName' && a.severity === 'low'));
+  assert.ok(row(out.text, 'UCrEnviroWaveTimerSubsystem::bPause'), 'the other rows are still written');
+});
+
 test('a native key the new build does not resolve is refused, and the header is not written', () => {
   const n = next().map((e) => (e.key === 'UCrGameInstance::ServerSessionName' ? gone(e.key) : e));
   const out = fieldRows(header(), { cl: 130000, keys: keys(), next: n, base: base() });

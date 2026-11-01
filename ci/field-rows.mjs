@@ -161,7 +161,13 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
   const nextBy = new Map(next.map((k) => [k.key, k]));
   for (const key of natives) {
     const n = nextBy.get(key);
-    if (!n) { problems.push(`native ${key}: the new build's report has no entry`); continue; }
+    if (!n) {
+      // Only optional requesters: the feature goes off, the rest still get rows.
+      const d = demand(key);
+      if (!d.loader && !d.required.length) { gone(key, 'native', "not in the new build's report"); continue; }
+      problems.push(`native ${key}: the new build's report has no entry`);
+      continue;
+    }
     if (GONE.has(n.result)) { gone(key, 'native', `not on the new build (${n.result})`); continue; }
     if (n.result !== 'OK') { problems.push(`native ${key}: not found on the new build (${n.result}); an unverified row never ships`); continue; }
     let size = n.size;

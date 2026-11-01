@@ -66,7 +66,7 @@ on:
         default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@vmap-develop'
       plugin_manifests:
         type: string
-        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+        default: ''
       plugin_sdk_repo:
         type: string
         default: 'AlienXAXS/StarRupture-Plugin-SDK'
@@ -135,7 +135,7 @@ on:
       plugin_manifests:
         description: 'Released plugins, checked as players get them: the update-manifest URL from each one''s sidecar .json, space-separated'
         type: string
-        default: 'https://github.com/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest/download/MiniMap-client-manifest.json'
+        default: ''
       plugin_sdk_repo:
         description: 'Plugin SDK repository the plugins build against (msantoro12 or AlienXAXS)'
         type: string
@@ -350,8 +350,8 @@ jobs:
             if ("$hit" -notmatch '^[0-9a-f]{40}$') { throw "$($e.repo) has no branch or tag '$($e.ref)'" }
             $e.sha = "$hit"
           }
-          # An empty plugin_manifests falls back to its default list, so a plugin
-          # is left out by name instead.
+          # plugin_manifests is empty by default (a plugin named in both lists is
+          # an error); a plugin is left out of a run by name.
           $exclude = @("$env:EXCLUDE" -split '\s+' | Where-Object { $_ })
           foreach ($x in $exclude) {
             if ($x -notmatch '^[A-Za-z0-9_-]+$') { throw "plugin_exclude '$x' is not a plugin name" }
