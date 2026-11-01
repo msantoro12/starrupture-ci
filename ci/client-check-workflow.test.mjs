@@ -40,6 +40,21 @@ test('plugin_exclude: a name leaves that plugin out, and a name that is in neith
   assert.ok(plan.indexOf('-notin $exclude') < plan.indexOf('Group-Object'), 'excluded before the duplicate check and the matrix');
 });
 
+test('rule 3: the plugin build skips the check, its own step reports per plugin, and only a migrated plugin is held, alone', () => {
+  const plugins = job('plugins');
+  const step = plugins.slice(plugins.indexOf('- name: Check rule 3'), plugins.indexOf('- name: Upload the plugin'));
+  assert.match(step, /continue-on-error: true/);
+  assert.match(step, /rule3-check\.mjs/);
+  assert.ok(step.includes('--plugin $env:NAME --sdk game-sdk\\Client\\SDK --source plugin --mode auto --json out\\rule3.json'), 'scans the plugin checkout against the Client SDK, writing out\\rule3.json');
+  const build = plugins.indexOf('/p:Rule3Check=false');
+  assert.ok(build > 0 && build < plugins.indexOf('- name: Check rule 3') && plugins.indexOf('- name: Check rule 3') < plugins.indexOf('- name: Upload the plugin'), 'build without the check, then the check, then the upload');
+  const check = job('check');
+  assert.ok(check.includes("$r3.status -eq 'fail' -and $r.verdict -in 'PASS', 'NONE', 'GAME-CALL', 'FAIL'"), 'only a failing (migrated) plugin gets the verdict');
+  assert.ok(check.includes("$r.verdict = 'RULE3'"));
+  assert.ok(check.includes("$r3.status -eq 'findings'"), 'a plugin that is not migrated is only reported');
+  assert.match(readFileSync(join(here, 'decide.mjs'), 'utf8'), /const PLUGIN_HELD = new Set\(\['REFUSED', 'RULE3'\]\);/);
+});
+
 test('test_autopilot: dispatch only, refused with publish on, never publishable, and the publish job skips it', () => {
   assert.match(dispatch, /test_autopilot:\n\s+description: .*never publishes.*\n\s+type: boolean\n\s+default: false/);
   assert.ok(!call.includes('test_autopilot'), 'sr-watch calls the workflow and cannot pass it');

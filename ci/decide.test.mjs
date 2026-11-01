@@ -487,6 +487,19 @@ test('M: one plugin that cannot load on the new CL is held alone; the rest are u
   assert.match(r.notes.join(' '), /WAILA held/);
 });
 
+test('M: a migrated plugin that reads game members directly is held alone (rule 3); the rest are updated', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' },
+    { name: 'WAILA', verdict: 'RULE3', note: '91 direct reads of game members, first WAILA/crafter_detector.cpp(116)' },
+    { name: 'Compass', verdict: 'PASS' }] });
+  const r = decide(base({ plugins }));
+  assert.equal(r.decision, 'M');
+  assert.equal(r.pluginsOk, true);
+  assert.deepEqual(r.plugins.map((p) => [p.name, p.status]), [['BetterCheats', 'updated'], ['WAILA', 'held'], ['Compass', 'updated']]);
+  assert.equal(r.plugins[1].heldAlone, true);
+  assert.match(r.plugins[1].reasons[0], /declares PLUGIN_MAP_MIGRATED but reads game members directly, stays on its last release: RULE3 \(91 direct reads/);
+  assert.match(r.notes.join(' '), /WAILA held/);
+});
+
 test('M: a plugin that crashes in the check is held alone; the rest proceed', () => {
   const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' },
     { name: 'WaveOptimiser', verdict: 'FAIL', note: 'PluginInit crashed (exception 0xC0000005)' },

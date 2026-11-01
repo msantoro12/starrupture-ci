@@ -467,6 +467,7 @@ jobs:
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
             /p:PostBuildEventUseInBuild=false `
+            /p:Rule3Check=false `
             /p:ModLoaderBuildTag="$tag" `
             /p:GameSDKRoot="$env:GITHUB_WORKSPACE\game-sdk" `
             /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
@@ -484,6 +485,24 @@ jobs:
                       sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
             ConvertTo-Json | Set-Content ..\out\plugin.json -Encoding utf8
           Get-Content ..\out\plugin.json
+
+      # Rule 3, this plugin only: no direct reads of game-class members. The build ran with
+      # Rule3Check=false so a finding cannot fail it; the result is out/rule3.json, and the check
+      # job holds this plugin alone when it declares PLUGIN_MAP_MIGRATED and still reads
+      # members directly. continue-on-error: it never fails the job, and the jobs of the other
+      # plugins are separate matrix legs.
+      - name: Check rule 3 (direct reads of game members)
+        if: matrix.source == 'build'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          $tool = 'plugin-sdk\tools\rule3-check.mjs'
+          if (-not (Test-Path $tool)) { Write-Host "::notice title=Plugin $($env:NAME)::the Plugin SDK at this ref has no rule 3 check"; exit 0 }
+          New-Item -ItemType Directory -Force out | Out-Null
+          node $tool --plugin $env:NAME --sdk game-sdk\Client\SDK --source plugin --mode auto --json out\rule3.json
+          exit $LASTEXITCODE
 
       - name: Upload the plugin
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -904,7 +923,8 @@ jobs:
           # first call into game code, which cannot run offline and was stopped; FAIL when any pattern it resolves
           # does not (the loader refuses a plugin on any recorded failure);
           # CRASH; REFUSED (interface version outside the loader's range); NONE
-          # (no OnPluginLoadHooks); BUILD-FAILED or FETCH-FAILED; ERROR. Only the
+          # (no OnPluginLoadHooks); RULE3 (it declares PLUGIN_MAP_MIGRATED and still reads game
+          # members directly: held alone, like REFUSED); BUILD-FAILED or FETCH-FAILED; ERROR. Only the
           # plugin fails; the loader's status does not change.
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
@@ -960,6 +980,22 @@ jobs:
               }
               foreach ($row in @($scan.patterns | Where-Object { $_.recorded -and $_.result -ne 'OK' })) {
                 Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.result)$(if ($row.required) { '' } else { ' (declared optional; the loader still refuses the plugin)' })"
+              }
+              # Rule 3 (rule3.json, from the plugin's build job). Only a plugin that declares
+              # PLUGIN_MAP_MIGRATED fails; the others are reported.
+              if (Test-Path "$dir\rule3.json") {
+                $r3 = Get-Content "$dir\rule3.json" -Raw | ConvertFrom-Json
+                $n3 = @($r3.findings).Count
+                $r.rule3 = [ordered]@{ status = $r3.status; findings = $n3; migrated = $r3.migrated }
+                if ($r3.status -eq 'fail' -and $r.verdict -in 'PASS', 'NONE', 'GAME-CALL', 'FAIL') {
+                  $first = @($r3.findings)[0]
+                  $r.scanVerdict = $r.verdict
+                  $r.verdict = 'RULE3'
+                  $r.note = "$n3 direct reads of game members, first $($first.file)($($first.line))"
+                  Write-Host "::error title=Plugin $($p.name)::$($r.note)"
+                } elseif ($r3.status -eq 'findings') {
+                  Write-Host "::warning title=Plugin $($p.name)::$n3 direct reads of game members (rule 3; reported until the plugin sets PLUGIN_MAP_MIGRATED)"
+                }
               }
               switch ($r.verdict) {
                 'CRASH'     { Write-Host "::error title=Plugin $($p.name)::OnPluginLoadHooks crashed ($($scan.crash))" }

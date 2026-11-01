@@ -178,13 +178,16 @@ function checkSdkGlobals(rows) {
 //   REFUSED                held, this plugin only: it cannot load on the new CL
 //                          (interface version, or no built CL), whatever the map
 //                          says; it goes to the rebuild path
+//   RULE3                  held, this plugin only: it declares PLUGIN_MAP_MIGRATED but reads
+//                          game-class members directly (tools/rule3-check.mjs in the Plugin SDK).
+//                          Never a whole hold: the other plugins and the loader are unaffected
 //   anything else          holds the whole update (CRASH, ERROR, BUILD-FAILED,
 //                          FETCH-FAILED, OFFSETS, OFFSETS-UNCHECKED): not
 //                          verified, or a misread the loader cannot turn off, and
 //                          the feed has no switch that refuses one plugin
 const PLUGIN_OK = new Set(['PASS', 'NONE', 'GAME-CALL']);
 const PLUGIN_DEGRADED = new Set(['FAIL']);
-const PLUGIN_HELD = new Set(['REFUSED']);
+const PLUGIN_HELD = new Set(['REFUSED', 'RULE3']);
 const EXCEPTION_CODE = /0x[cC][0-9a-fA-F]{7}\b|\bexception\s+0x[0-9a-fA-F]+/;
 const NO_ROW = /refused: no row for CL-\d+/;
 const HARNESS_LIMIT = /outside the one table it was given/;
@@ -228,7 +231,9 @@ function checkPlugins(loaded, rowKeys = new Set()) {
     } else if (PLUGIN_HELD.has(p.verdict)) {
       e.status = 'held';
       e.heldAlone = true;
-      e.reasons.push(`cannot load on the new CL: ${why(p)}; rebuild path`);
+      e.reasons.push(p.verdict === 'RULE3'
+        ? `declares PLUGIN_MAP_MIGRATED but reads game members directly, stays on its last release: ${why(p)}`
+        : `cannot load on the new CL: ${why(p)}; rebuild path`);
     } else if (!PLUGIN_OK.has(p.verdict)) {
       e.status = 'held';
       e.reasons.push(why(p));
