@@ -1,5 +1,8 @@
 # Map mode
 
+The whole flow, from a new Steam build to a player's loader, is in the loader repository's
+[VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#how-a-build-reaches-players-ci). This file is the reference for the tools.
+
 Map mode puts what a game update changes into the loader's version map
 (`version_map.generated.h`, format in `VERSION-MAP.md`), instead of into each
 plugin's source. A plugin repo gets no commit for a game update; the loader
@@ -245,16 +248,13 @@ the clock has not passed it. The private key is read from the environment variab
 1 MiB, checks the signature before anything else and, with `--last-seq`, requires a
 higher `seq`. `verify` exits 3 when it refuses a file.
 
-The loader reads the feed with the public key in its slot `k1` or `k2`
-(`version_feed.cpp`), and `PUBLIC_KEYS` in `vmap-sign.mjs` must hold the same key.
-**Slot `k1` is the TEST key**, flagged as such in both places. Its private half is the
-repo secret `VMAP_SIGN_KEY_TEST` (and Bitwarden `vmap-sign-test-k1`); the loader
-trusts it only when built with `VMAP_TRUST_TEST_KEY`, and `verify` refuses a feed
-signed with it without `--allow-test-key`. **Slot `k2` is the release key**, trusted
-by every loader build. Its private half is the secret `VMAP_SIGN_KEY` (and Bitwarden
-`vmap-sign-k2`), read only by the `publish` job, which runs in the `vmap-sign`
-environment. The public halves in `PUBLIC_KEYS` were checked against the Bitwarden
-pairs on 2026-11-01 and equal the loader's `kK1Hex` and `kK2Hex`.
+The feed format, the key slots (`k1` is the TEST key, `k2` the release key) and what the
+loader checks are in the loader repository's [VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#the-feed).
+`PUBLIC_KEYS` in `vmap-sign.mjs` must hold the same public keys as `kK1Hex` and `kK2Hex` in the
+loader's `version_feed.cpp`. The private halves are the repo secrets `VMAP_SIGN_KEY_TEST` (also
+Bitwarden `vmap-sign-test-k1`) and `VMAP_SIGN_KEY` (also `vmap-sign-k2`); `verify` refuses a TEST-key
+feed without `--allow-test-key`, and only the `publish` job, in the `vmap-sign` environment, reads
+`VMAP_SIGN_KEY`.
 
 `vmap-sign.yml` is a manual run that signs the export of a test header with the TEST
 key and verifies it with the public key.
@@ -262,20 +262,16 @@ key and verifies it with the public key.
 ### Publishing and the watchdog
 
 The signed feed's home is this repository's `vmap-feed` release, as the asset
-`version-map-client.v1.txt`. This repository holds the signing key and no write access to
-the loader. The loader repository's `vmap-publish.yml` pulls the file every
-15 minutes, checks it against the public keys in its own `version_feed.cpp`, and
-uploads it to its Latest release only when it is valid and its `seq` is higher than
-the one already there. That is where the client's `VMAP_FEED_URL`
-(`releases/latest/download/version-map-client.v1.txt`) points.
+`version-map-client.v1.txt`. How the loader repository's `vmap-publish.yml` carries it to the
+loader's Latest release, and how players fetch it, is in
+[VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#how-a-build-reaches-players-ci).
 
-`vmap-watchdog.yml` runs hourly and opens one issue when the feed on the loader's
-Latest release lags the last signed `seq` by more than two hours, or when Latest holds
-no feed. It opens no second issue while one is open. It reads only `seq` and does not
-verify (`ci/vmap-watchdog.mjs check --signed <file> --published <file|-> [--max-lag <seconds>]`):
-GitHub switches off scheduled workflows in a public repository after 60 days of no
-activity, and this is the alarm for that. `sr-keepalive.yml` re-enables the watchdog
-itself monthly, with the other scheduled workflows.
+`vmap-watchdog.yml` runs hourly and opens one issue when the feed on the loader's Latest release
+lags the last signed `seq` by more than two hours, or when Latest holds no feed. It opens no
+second issue while one is open. It reads only `seq` and does not verify
+(`ci/vmap-watchdog.mjs check --signed <file> --published <file|-> [--max-lag <seconds>]`).
+`sr-keepalive.yml` re-enables it monthly with the other scheduled workflows, because GitHub
+switches off scheduled workflows in a public repository after 60 days of no activity.
 
 ## Staging and promotion (dry run)
 
