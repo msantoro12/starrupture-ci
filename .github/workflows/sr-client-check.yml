@@ -88,6 +88,13 @@ on:
         description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
         type: boolean
         default: false
+    # A caller passes only this one; the Steam login, the fork deploy keys and
+    # the release key are environment secrets (steam-client, fork-push,
+    # vmap-sign), read by the one job in that environment.
+    secrets:
+      VMAP_SIGN_KEY_TEST:
+        description: 'TEST signing key (k1) for the map-mode dry run'
+        required: false
   workflow_dispatch:
     inputs:
       branch:
@@ -1352,8 +1359,9 @@ jobs:
   # job below, and only when the publish input says so.
   # TODO(step 26, needs the owner): pushing the header to the loader fork's
   # auto/update-<CL> needs the fork deploy key and the auto/** ruleset (checklist
-  # in ci/MAP-MODE.md). Until then the header is an artifact only, and the
-  # staging record carries no loader commit (zeros).
+  # in ci/MAP-MODE.md). Until then the header is an artifact only, the staging
+  # record names the loader commit the header was read from, and the staged
+  # index is not kept between runs (a plan only).
   # TODO: the scans of the previous release of each tracked component
   # (rank previous) are not run yet, so a changed fp adds its set only once a
   # release carrying it is the current one. With current scans only, map-mode
@@ -1366,10 +1374,14 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    # One chain at a time reads the vmap-feed history.
+    concurrency:
+      group: vmap-map-mode
+      cancel-in-progress: false
     outputs:
       decision: ${{ steps.chain.outputs.decision }}
       action: ${{ steps.chain.outputs.action }}
-      seq: ${{ steps.chain.outputs.seq }}
+      publishable: ${{ steps.chain.outputs.publishable }}
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
@@ -1432,6 +1444,8 @@ jobs:
             fs.writeFileSync("scans.json", JSON.stringify({ source: process.env.BRANCH + " " + process.argv[1], scans }));
           ' "$buildid"
           node tool/ci/map-mode.mjs assemble scans.json --out observations.json
+          echo "loader_sha=$(git -C loader rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "loader_tree=$(git -C loader rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
           header=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
           # G3 compares the new CL with the one the header was built for.
           node --input-type=module -e '
@@ -1449,6 +1463,8 @@ jobs:
         id: chain
         env:
           PREVIOUS_CL: ${{ steps.write.outputs.previous_cl }}
+          LOADER_SHA: ${{ steps.write.outputs.loader_sha }}
+          LOADER_TREE: ${{ steps.write.outputs.loader_tree }}
           VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
         run: |
           set -euo pipefail
@@ -1472,6 +1488,8 @@ jobs:
             put("g1.json", { ok: process.env.BUILD_RESULT === "success" && ok(process.env.PLUGINS_RESULT) });
             put("g2.json", { ok: r.checks?.fail === false });
             put("g3.json", { ok: true, cl, previousCl });
+            // The plugin verdicts: decide holds on any plugin the loader would refuse.
+            put("plugins.json", r.plugins ?? { error: "the client check wrote no plugin verdicts" });
             // G4: the client scan, with the SDK value of each global the check compared.
             const scan = read("res/scanner.json");
             const sdk = new Map((r.checks?.sdkGlobals ?? []).map((g) => [g.name.toLowerCase(), g.sdk]));
@@ -1511,10 +1529,11 @@ jobs:
           echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
           d=0
           node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
-            --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --fields field-rows.json \
+            --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json --fields field-rows.json \
             --history history.json --out decision.json || d=$?
           decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "publishable=false" >> "$GITHUB_OUTPUT"
           if [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
 
           # Path M: the feed, signed with the TEST key and verified.
@@ -1538,10 +1557,12 @@ jobs:
             if (r.reference?.status === "used") scans.push({ exe: "public", buildid: String(r.reference.buildid), ok: true });
             const build = { cl, branch: process.env.BRANCH, buildid, productVersion: r.checks.exe.productVersion, exeSha256: r.checks.exe.sha256,
               imageStamp: hex(row.stamp), size: row.size, run: Number(process.env.RUN_ID), scans,
-              repo: { sha: "0".repeat(40), tree: "0".repeat(40), verdict: "FIXED" } };
+              repo: { sha: process.env.LOADER_SHA, tree: process.env.LOADER_TREE, verdict: "FIXED" } };
             writeFileSync("build.json", JSON.stringify(build, null, 1));
             writeFileSync("public.json", JSON.stringify({ buildid: Number(buildid), exeSha256: build.exeSha256, cl }));
-            writeFileSync("verify.json", JSON.stringify({ ok: true }));
+            // This run scanned this exe: the loader registry (checks) and every
+            // plugin. That is the re-scan promote asks for; it fails when either did.
+            writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && r.plugins?.status === "pass", exe: process.env.BRANCH, buildid }));
           '
           if [ -f tool/state/staged.json ]; then cp tool/state/staged.json staged.json; else echo '{}' > staged.json; fi
           if [ "$BRANCH" != public ]; then
@@ -1554,7 +1575,10 @@ jobs:
           node -e '
             const p = JSON.parse(require("fs").readFileSync("promote-plan.json", "utf8"));
             for (const l of p.lines ?? []) console.log("promote: " + l);
-            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\nseq=" + (p.seq ?? "") + "\n");
+            // Publishable: a promotion, or public's own build on a new CL with
+            // nothing staged (normal flow; this run's decide M is the map).
+            const ok = p.action === "promote" || (p.action === "normal-flow" && p.kind === "different-cl" && process.env.BRANCH === "public");
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\npublishable=" + ok + "\n");
           '
           echo "promote: exit $p (a plan only; the publish job signs with the release key)"
 
@@ -1577,29 +1601,35 @@ jobs:
             stage-plan.json
             staged.json
             promote-plan.json
+            plugins.json
+            verify.json
           if-no-files-found: warn
           retention-days: 14
 
   # ---- Publish: the feed signed with the release key ---------------------
   # Only with the publish input (default off; the owner turns it on), only for
-  # public, and only when decide chose M and promote planned a promotion. The
-  # only job that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
-  # environment, main only). Signs the exported feed with the seq the plan
-  # gave, verifies it with no TEST key allowed, and uploads it with the
-  # updated history to the vmap-feed release.
+  # public, and only when decide chose M and the chain marked it publishable
+  # (a promotion, or public's own new CL with nothing staged). The only job
+  # that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
+  # environment, deployments from main only). Reads the live feed's seq again
+  # right before signing (one publish at a time), signs above it, verifies
+  # with no TEST key allowed, and uploads it with the updated history to the
+  # vmap-feed release.
   publish:
     name: publish the feed
     needs: [check, map-mode]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.action == 'promote' }}
+    if: ${{ !cancelled() && inputs.publish == true && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
+    concurrency:
+      group: vmap-publish
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      SEQ: ${{ needs.map-mode.outputs.seq }}
     steps:
       - name: Check out the sign tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1620,10 +1650,15 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$VMAP_SIGN_KEY" ] || { echo "::error::the VMAP_SIGN_KEY secret is not set"; exit 2; }
-          [[ "$SEQ" =~ ^[1-9][0-9]*$ ]] || { echo "::error::the promotion plan gave no seq"; exit 2; }
-          # The plan's seq is past the published one; signing at it keeps the order.
-          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$((SEQ - 1))"
-          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$((SEQ - 1))"
+          # The live seq, read again now: another publish may have landed since
+          # the chain ran. No release yet is seq 0; a feed that does not verify stops.
+          last_seq=0
+          if gh release download vmap-feed --pattern version-map-client.v1.txt --dir live 2>/dev/null; then
+            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
+          fi
+          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq"
+          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq"
           node -e '
             const fs = require("fs");
             const h = JSON.parse(fs.readFileSync("chain/history.json", "utf8"));

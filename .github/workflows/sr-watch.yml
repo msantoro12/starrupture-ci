@@ -138,12 +138,17 @@ jobs:
       max-parallel: 1    # one Steam login on the CI account at a time
       matrix:
         include: ${{ fromJSON(needs.poll.outputs.client_matrix) }}
-    # The Steam login is read only by sr-client-check's own check job, from the
-    # steam-client environment. The repo secrets are inherited for the map-mode
-    # chain, which signs its dry-run feed with the TEST key (VMAP_SIGN_KEY_TEST).
-    # publish is not passed, so it stays off: no feed is published from here.
+    # The Steam login, the fork deploy keys and the release key are environment
+    # secrets, read only by the one called job in that environment. The only
+    # secret passed is the TEST key the map-mode chain signs its dry-run feed
+    # with. publish is not passed, so it stays off: no feed is published from
+    # here.
+    # These permissions are a ceiling, not a grant: GitHub checks every called
+    # job against them when it parses the call, before any if. Each called job
+    # sets its own, and only publish (vmap-sign environment, main only, publish
+    # input on) asks for contents: write.
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     uses: ./.github/workflows/sr-client-check.yml
     with:
@@ -151,4 +156,5 @@ jobs:
       buildid: ${{ matrix.buildid }}
       pr: ${{ needs.poll.outputs.pr }}
       map_mode: true
-    secrets: inherit
+    secrets:
+      VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
