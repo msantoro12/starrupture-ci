@@ -174,19 +174,38 @@ the check job). A key on that list that is not native is a reflected field.
 `--next` and `--base` are `sr-aobscan --layout --json` reports of the new build and
 the reference build over the same key list. For the new CL it writes a row for
 every `native` key (offset, size, bool mask, found by the key's own text) and for
-every reflected `field` key whose offset, size or mask moved. A key the new build
-does not have (NOMEMBER or NOTYPE) is refused (exit 3, header untouched): the loader
-refuses a plugin whose field request does not resolve, so shipping the map would ship
-that plugin refused. Only a key the key list marks `optional` (the plugin has a
-fallback) gets an absent row instead: no row on that CL, the loader refuses that one
-request and the plugin takes its fallback. A native key the report has no entry for or
-does not resolve for another reason is refused too, and so is a class whose size changed
-(a plugin that checks the size is refused, one that walks an array of it by its compiled
-stride misreads it). The report lists every problem. A rename is not guessed. The
-client check's reflected keys are never optional, and a member a plugin looks up by
-name on first use (PluginLazyField) is not a key. `FTransform::Translation` and `::Scale3D` keep the size the key list
+every reflected `field` key whose offset, size or mask moved.
+
+The gate is per plugin, over what that plugin requests. `--uses` is the client check's
+`layout-uses.txt`: per component, its keys (`key`), the members its code requests
+(`request`: `SR_FIELD`, its two-argument wrappers, a hand-written `"Class::Member"`), the
+members it looks up by name on first use (`lazy`, a `PluginLazyField`) and the classes it
+depends on the whole size of (`size <Class> check|compiled`). The plugin tables are built
+with `layout-table.mjs gen --granularity 2 --uses-out`, so a struct lists only the members
+a plugin uses or requests, as a UClass already did.
+
+- A key the new build does not have (NOMEMBER, NOTYPE, or a reflected key only the
+  reference build resolves) never holds a plugin. It gets an absent row (no row on that
+  CL), the loader turns that request off, and the report's `degraded` lists the plugin
+  with the key: severity `high` for a required request, `low` for an optional one (a key
+  list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
+- A key the loader itself reads (component `ModLoader`) holds the update: every plugin
+  depends on it.
+- A class whose size changed is a note when nothing depends on its whole size, and
+  degrades the plugin with `SR_SIZE_CHECK` on it (the loader refuses that request). Code
+  that uses the compiled size with no check (`sizeof`, a `TArray` of it by value, a copy)
+  holds the update: the loader cannot see the change, so that code misreads it, and
+  nothing in the feed turns one plugin off. The fix is `SR_SIZE_CHECK` in that plugin.
+  Without `--uses`, every class is taken to be used by its compiled size.
+- A class that is gone degrades every plugin with a key in it.
+- A row that is not verified never ships: a native key the report has no entry for, or
+  that does not resolve for another reason, is refused (exit 3, header untouched).
+
+A rename is not guessed. `FTransform::Translation` and `::Scale3D` keep the size the key list
 was built with, because the PDB sizes them as the 32-byte SIMD register and
 reflection as an FVector (review N2). The output holds keys and numbers only.
+Classes and objects found by name at run time (Blueprint classes, assets) are not in the
+PDB, so their existence is not checked here.
 It runs after `write` (the build must be in the table).
 
 ## Step 29: `tail-check.mjs`
@@ -226,14 +245,29 @@ resolve. A value that differs from the SDK's baked `sdkRva` is a note, not a hol
 because under path M the map row carries the new value.
 
 decide also reads the plugin verdicts of the client check (`--plugins`, `result.json`
-`plugins`). Every plugin must be PASS, NONE or GAME-CALL (a note); any other verdict
-means the loader would refuse that plugin on the new build, and it holds.
+`plugins`) and gates per plugin: one plugin never holds the others. `decision.json`
+`plugins` lists each one as `updated` (PASS, NONE, GAME-CALL), `updated` with `degraded`
+entries (FAIL: the patterns that did not resolve turn off; and every `degraded` entry of
+the field-rows report), or `held` (REFUSED: it cannot load on the new CL at all, interface
+version or no built CL; it alone goes to the rebuild path, and the loader refuses it
+there). The run summary shows the same table. A verdict that leaves the plugin
+unverified, or a misread the loader cannot turn off (CRASH, ERROR, BUILD-FAILED,
+FETCH-FAILED, OFFSETS, OFFSETS-UNCHECKED), still holds the whole update, as do the
+loader's own gates (G1 to G4, the SDK globals, a loader key). `pluginsOk` is false only
+then, and the promote re-scan (`verify.json`) reads it.
 
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
 same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,
 or for another CL) holds whatever moved, on every path: the native members get their
 rows from the same run. `state/autopilot.json` ships with `enabled: false`: until it
 is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
+
+`--test-autopilot` (the client check's dispatch-only `test_autopilot` input, refused
+with `publish` on, absent from sr-watch's calls) keeps that `HOLD` and adds `wouldBe`,
+the decision with autopilot on. When it is `M` the chain runs on: export, TEST-key
+signing and verify, staging and `promote.mjs plan --test-autopilot`, which plans past
+the switch with every other gate kept and marks the plan `test`. Nothing in a test run
+is publishable.
 
 ## The signed feed
 
