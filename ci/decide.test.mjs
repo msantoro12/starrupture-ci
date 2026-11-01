@@ -23,7 +23,7 @@ const globalRows = () => SDK_GLOBALS.map((n) => aobRow(n));
 function aob(rows, { noGlobals = false } = {}) {
   if (!noGlobals) rows = [...rows, ...globalRows()];
   const failing = rows.filter((r) => r.required && r.result !== 'OK').length;
-  return { target: 'server', imageSize: 1000, summary: { total: rows.length, ok: rows.filter((r) => r.result === 'OK').length, missing: 0, ambiguous: 0, other: 0, requiredFailing: failing }, patterns: rows };
+  return { target: 'client', imageSize: 1000, summary: { total: rows.length, ok: rows.filter((r) => r.result === 'OK').length, missing: 0, ambiguous: 0, other: 0, requiredFailing: failing }, patterns: rows };
 }
 
 // A fully clean set of inputs; each test changes one thing.
@@ -131,6 +131,35 @@ test('SDK globals: all four re-resolved and verified is the precondition for M',
   assert.equal(decide(base({ g4: ok(aob(prefixed, { noGlobals: true })) })).decision, 'M');
 });
 
+test('SDK globals: the client scan names them with a prefix and a note, as sr-aobscan does', () => {
+  const named = ['GObjects (GUObjectArray.ObjObjects)', 'GNames (NamePoolData)', 'FName::AppendString', 'GWorld'].map((n) => aobRow(n, 'OK', false));
+  named[0].sdkRva = '0xE359240';
+  const r = decide(base({ g4: ok(aob(named, { noGlobals: true })) }));
+  assert.equal(r.decision, 'M');
+  assert.match(r.notes.join(), /GObjects 0xE359240 -> 0x1A2B3C0/);
+});
+
+// ------------------------------------------------------------ moved layouts and the field rows
+
+const fieldsReport = (over = {}) => ({ written: true, cl: 127999, added: 3, absent: [{ key: 'UFoo::Gone' }], covered: ['UBar', 'UFoo'], notes: [], problems: [], ...over });
+
+test('M: used classes that moved ship when the field rows settle every one', () => {
+  const r = decide(base({ g5: ok(layout('UFoo', 'UBar')), fields: ok(fieldsReport()) }));
+  assert.equal(r.decision, 'M');
+  assert.deepEqual(r.reasons, []);
+  assert.match(r.notes.join(), /2 used class\(es\) changed layout, every one settled by the field rows \(1 absent/);
+});
+
+test('C: a moved used class the field rows do not settle holds, naming it', () => {
+  const g5 = ok(layout('UFoo', 'UBaz'));
+  holds(decide(base({ g5, fields: ok(fieldsReport()) })), /1 used class\(es\) changed layout and no field row settles them \(UBaz\)/);
+  holds(decide(base({ g5 })), /no field-rows report was given/);
+  holds(decide(base({ g5, fields: ok(fieldsReport({ written: false, problems: ['native UFoo::X: required'] })) })), /not written: native UFoo::X: required/);
+  holds(decide(base({ g5: ok(layout('UFoo')), fields: ok(fieldsReport({ cl: 127004 })) })), /for CL-127004, not CL-127999/);
+  holds(decide(base({ g5, fields: { ok: false, error: 'cannot read f: ENOENT' } })), /ENOENT/);
+  assert.equal(decide(base({ g5 })).path, 'C');
+});
+
 test('SDK globals: a scan without them (today registry) is HOLD, never M', () => {
   const r = decide(base({ g4: ok(aob([aobRow('GetWorld'), aobRow('SpawnActor')], { noGlobals: true })) }));
   holds(r, /SDK global offsets not resolved/);
@@ -139,11 +168,11 @@ test('SDK globals: a scan without them (today registry) is HOLD, never M', () =>
 });
 
 for (const key of SDK_GLOBALS) {
-  test(`SDK globals: ${key} absent, optional, duplicated, lookalike or without an RVA is HOLD`, () => {
+  test(`SDK globals: ${key} absent, duplicated, lookalike or without an RVA is HOLD; optional is fine`, () => {
     const others = SDK_GLOBALS.filter((n) => n !== key).map((n) => aobRow(n));
     const run = (extra) => decide(base({ g4: ok(aob([...others, ...extra], { noGlobals: true })) }));
     holds(run([]), new RegExp(`${key}: no pattern`));
-    holds(run([aobRow(key, 'OK', false)]), /not required/);
+    assert.equal(run([aobRow(key, 'OK', false)]).decision, 'M', 'the client scan marks the globals optional');
     holds(run([aobRow(key), aobRow(key)]), /2 pattern rows/);
     holds(run([aobRow(`${key}Cache`), aobRow(`My${key}`)]), new RegExp(`${key}: no pattern`));
     for (const rva of [undefined, '', '0x', 'zz', null]) {
@@ -250,10 +279,10 @@ test('fail closed: G3 CL', () => {
   holds(decide(base({ g3: ok({ ok: true, cl: '127999', previousCl: 'x' }) })), /previousCl/);
 });
 
-test('fail closed: G4 must be a consistent server scan', () => {
+test('fail closed: G4 must be a consistent client scan; a server scan is never the gate', () => {
   const good = aob([aobRow('GetWorld')]);
-  holds(decide(base({ g4: ok({ ...good, target: 'client' }) })), /expected "server"/);
-  holds(decide(base({ g4: ok({ ...good, target: undefined }) })), /expected "server"/);
+  holds(decide(base({ g4: ok({ ...good, target: 'server' }) })), /expected "client"/);
+  holds(decide(base({ g4: ok({ ...good, target: undefined }) })), /expected "client"/);
   holds(decide(base({ g4: ok({ ...good, patterns: [], summary: { total: 0, requiredFailing: 0 } }) })), /no patterns/);
   holds(decide(base({ g4: ok({ ...good, summary: undefined }) })), /summary/);
   holds(decide(base({ g4: ok({ ...good, summary: { ...good.summary, requiredFailing: 1 } }) })), /disagrees/);

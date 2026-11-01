@@ -3,7 +3,7 @@
 //
 //   node ci/decide.mjs --repo ModLoader --autopilot state/autopilot.json \
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json \
-//       --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
+//       [--fields field-rows.json] --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
 //
 // Prints the decision as JSON on stdout. Exit codes: 0 = path M (map-only update: the
 // rows go into the loader's map and ship as a signed feed), 10 = path B (auto-fix of
@@ -16,7 +16,8 @@
 //   G1 compile or G2 interface not ok                    -> HOLD
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
 //   GObjects, GNames, AppendString or GWorld not resolved (G4 scan) -> HOLD, no path
-//   a used class moved (G5 usedChanged non-empty)        -> HOLD, path C (held until shadow mode is proven)
+//   a used class moved (G5 usedChanged non-empty) and the field rows do not
+//     settle every one of them (--fields)                -> HOLD, path C (held until shadow mode is proven)
 //   a required pattern missed (G4 requiredFailing > 0)   -> B, if autopilot.paths has B
 //   everything clean                                     -> M, if autopilot.paths has M
 //   an SDK global moved (rva != sdkRva) on a path but M  -> HOLD (on M it is a note)
@@ -26,13 +27,20 @@
 // Gate result shapes:
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
-//   G4:     the raw `sr-aobscan --json` output of the SERVER exe. It must hold one required
-//           row each for GObjects, GNames, AppendString and GWorld (an optional "X::" prefix
-//           on the name is fine). A matched row carries its resolved "rva" and may carry "sdkRva",
+//   G4:     the raw `sr-aobscan --json` output of the CLIENT exe (target "client"). The
+//           client check alone decides: a dedicated server build, when one exists for the
+//           CL, is scanned for information only and is never a gate. G4 must hold one
+//           row each for GObjects, GNames, AppendString and GWorld (an optional "X::"
+//           prefix and " (...)" suffix on the name are fine; the client scan marks them
+//           optional, so "required" is not read). A matched row carries its resolved "rva" and may carry "sdkRva",
 //           the offset the SDK (Basic.hpp Offsets::) bakes in today. They differ after a game
 //           update; only path M ships the new value (as a map row), so a difference is
 //           a note on M and a HOLD on any other path.
 //   G5:     the `layout-diff.mjs diff --used ...` report: { "changedUsedClasses": n, "changedUsed": [{ "class": "UFoo" }, ...] }
+//   fields: the `field-rows.mjs write --report` report for the same CL: { "written": true,
+//           "cl": 128786, "covered": ["UFoo", ...], "problems": [] }. When it was written
+//           with no problems and covers every class G5 lists, the moved layouts ship as
+//           map rows (or absent rows the plugins fall back on) and the path stays M.
 // History (rate limits):
 //   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>" }],
 //     "attempts": { "<cl>": <Claude attempts so far> } }
@@ -100,7 +108,7 @@ function checkG4(loaded) {
   const bad = checkEnvelope('G4', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
-  if (v.target !== 'server') return { error: `G4: scan target is ${JSON.stringify(v.target)}, expected "server"` };
+  if (v.target !== 'client') return { error: `G4: scan target is ${JSON.stringify(v.target)}, expected "client" (the client check decides; a server scan is never a gate)` };
   if (!Array.isArray(v.patterns) || v.patterns.length === 0) return { error: 'G4: no patterns were scanned' };
   if (!isObj(v.summary)) return { error: 'G4: summary missing' };
   const missed = [];
@@ -121,9 +129,8 @@ function checkG4(loaded) {
 // The SDK dumps hard-code the exe offsets of GObjects, GNames, AppendString and
 // GWorld, and they move on every game patch. The loader's map carries the new
 // values and hands them to the plugins, so an update needs all four re-resolved
-// from the new exe: one required pattern row each in the G4 scan, matched (OK)
-// with a non-zero resolved "rva". Absent, optional, duplicated or unmatched is a
-// HOLD. A resolved value that differs from the SDK's baked "sdkRva" is listed as
+// from the new exe: one pattern row each in the G4 scan, matched (OK) with a
+// non-zero resolved "rva". Absent, duplicated or unmatched is a HOLD. A resolved value that differs from the SDK's baked "sdkRva" is listed as
 // moved: a note on path M, a HOLD on any other (see decide()).
 const hexValue = (v) => (typeof v === 'string' && /^0x[0-9a-f]+$/i.test(v) ? BigInt(v) : null);
 
@@ -131,12 +138,11 @@ function checkSdkGlobals(rows) {
   const problems = [];
   const moved = [];
   for (const key of SDK_GLOBALS) {
-    const hits = rows.filter((p) => p.name.replace(/^.*::/, '').toLowerCase() === key.toLowerCase());
+    const hits = rows.filter((p) => p.name.replace(/ \(.*\)$/, '').replace(/^.*::/, '').toLowerCase() === key.toLowerCase());
     if (hits.length === 0) { problems.push(`${key}: no pattern in the scan, so the offset is not re-resolved`); continue; }
     if (hits.length > 1) { problems.push(`${key}: ${hits.length} pattern rows, expected one`); continue; }
     const row = hits[0];
-    if (!row.required) problems.push(`${key}: pattern is not required`);
-    else if (row.result !== 'OK') problems.push(`${key}: did not resolve (${row.result})`);
+    if (row.result !== 'OK') problems.push(`${key}: did not resolve (${row.result})`);
     else {
       const rva = hexValue(row.rva);
       const baked = hexValue(row.sdkRva);
@@ -164,6 +170,24 @@ function checkG5(loaded) {
   }
   if (v.changedUsedClasses !== v.changedUsed.length) return { error: 'G5: changedUsedClasses disagrees with changedUsed' };
   return { usedChanged: v.changedUsed.map((c) => c.class) };
+}
+
+// The field rows settle a moved used class when the report is for this CL, was
+// written with no problems, and lists the class as covered. Returns the classes
+// it does not settle (all of them when the report is unusable) and why.
+function checkFields(loaded, cl, classes) {
+  if (loaded === undefined) return { uncovered: classes, why: 'no field-rows report was given' };
+  const bad = checkEnvelope('fields', loaded);
+  if (bad) return { uncovered: classes, why: bad };
+  const v = loaded.value;
+  if (v.written !== true || !Array.isArray(v.problems) || v.problems.length > 0 || !Array.isArray(v.covered)) {
+    const first = Array.isArray(v.problems) && v.problems.length ? `: ${String(v.problems[0]).slice(0, 200)}` : '';
+    return { uncovered: classes, why: `the field rows were not written${first}` };
+  }
+  if (String(v.cl) !== cl) return { uncovered: classes, why: `the field-rows report is for CL-${v.cl}, not CL-${cl}` };
+  const covered = new Set(v.covered);
+  const uncovered = classes.filter((c) => !covered.has(c));
+  return { uncovered, why: uncovered.length ? 'no field row settles them' : null, absent: Array.isArray(v.absent) ? v.absent.length : 0 };
 }
 
 // Fail closed: only an exactly well-formed file with enabled === true passes.
@@ -215,7 +239,7 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
   return reasons;
 }
 
-// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, history }, each gate a loadJson() result.
+// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, fields?, history }, each a loadJson() result.
 export function decide(inputs) {
   const reasons = [];
   const notes = [];
@@ -248,12 +272,16 @@ export function decide(inputs) {
     return out('HOLD', null, g3.cl);
   }
   let path = 'M';
-  if (g5.usedChanged.length > 0) {
+  const fields = g5.usedChanged.length > 0 ? checkFields(inputs.fields, g3.cl, g5.usedChanged) : null;
+  if (fields && fields.uncovered.length > 0) {
     path = 'C';
-    fail(`path C held until shadow mode is proven: ${g5.usedChanged.length} used class(es) changed layout (${g5.usedChanged.slice(0, 5).join(', ')})`);
+    fail(`path C held until shadow mode is proven: ${fields.uncovered.length} used class(es) changed layout and ${fields.why} (${fields.uncovered.slice(0, 5).join(', ')})`);
   } else if (g4.missed.length > 0) {
     path = 'B';
     notes.push(`required pattern(s) missed: ${g4.missed.join(', ')}`);
+  }
+  if (fields && fields.uncovered.length === 0) {
+    notes.push(`${g5.usedChanged.length} used class(es) changed layout, every one settled by the field rows${fields.absent ? ` (${fields.absent} absent, the plugins fall back)` : ''}: ${g5.usedChanged.slice(0, 5).join(', ')}`);
   }
   if (g4.softMissed.length > 0) notes.push(`non-required pattern(s) not OK: ${g4.softMissed.join(', ')}`);
 
@@ -291,7 +319,7 @@ function main() {
   try {
     args = parseArgs(process.argv.slice(2));
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --history f [--now iso] [--out f]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f [--fields f] --history f [--now iso] [--out f]`);
     process.exit(2);
   }
   let result;
@@ -302,6 +330,7 @@ function main() {
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
       g4: loadJson(args.g4), g5: loadJson(args.g5), history: loadJson(args.history),
+      ...(args.fields === undefined ? {} : { fields: loadJson(args.fields) }),
     });
   } catch (e) {
     result = { decision: 'HOLD', path: null, cl: null, repo: args.repo ?? null, ship: false, reasons: [`internal error: ${e.message}`], notes: [] };
