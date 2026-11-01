@@ -449,3 +449,36 @@ test('assemble takes the CL and the build from the registry scan exe block', () 
   assert.equal(input.cl, 130000);
   assert.deepEqual(input.build, BUILD);
 });
+
+// The CL-128786 MainMenuWidget case: the map already holds a verified row and
+// the scan reports another pattern text at the same address.
+test('an unchanged verified row is kept when key, kind, fp, CL, address and exe all match', () => {
+  const first = mapMode(header(), base());
+  const before = find(first.text, SF, 0);
+  const input = base();
+  input.components[1].releases[0].rows[1] = ok(SF, 'function', 0x1b10000, { pattern: '48 8D 6C 24 ?? 48 81 EC' });
+  const out = mapMode(first.text, input);
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.text, first.text, 'the header is byte-identical');
+  assert.deepEqual(find(out.text, SF, 0), before);
+  assert.ok(out.notes.some((n) => n.startsWith(`${SF}: kept the verified CL-130000 row`)));
+});
+
+test('a verified row with another pattern is still refused when the address, kind or exe differs', () => {
+  const first = mapMode(header(), base());
+  const other = { pattern: '48 8D 6C 24 ?? 48 81 EC' };
+  const moved = base();
+  moved.components[1].releases[0].rows[1] = ok(SF, 'function', 0x1b10040, other);
+  assert.match(mapMode(first.text, moved).problems.join(' | '), /UCrSomething::Function @ CL-130000: the map already has a different function row/);
+  const kind = base();
+  kind.components[1].releases[0].rows[1] = ok(SF, 'code', 0x1b10000, { ...other, fp: 0 });
+  assert.equal(mapMode(first.text, kind).text, null);
+  const noBuild = base();
+  delete noBuild.build;
+  noBuild.components[1].releases[0].rows[1] = ok(SF, 'function', 0x1b10000, other);
+  assert.match(mapMode(first.text, noBuild).problems.join(' | '), /the map already has a different function row/);
+  const exe = base();
+  exe.build = { ...BUILD, stamp: '0x6B000002' };
+  exe.components[1].releases[0].rows[1] = ok(SF, 'function', 0x1b10000, other);
+  assert.match(mapMode(first.text, exe).problems.join(' | '), /already in the build table with another exe/);
+});

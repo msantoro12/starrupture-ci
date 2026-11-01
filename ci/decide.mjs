@@ -2,7 +2,7 @@
 // decide.mjs: turn the gate results for one game build into a release path.
 //
 //   node ci/decide.mjs --repo ModLoader --autopilot state/autopilot.json \
-//       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json \
+//       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json \
 //       [--fields field-rows.json] --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
 //
 // Prints the decision as JSON on stdout. Exit codes: 0 = path M (map-only update: the
@@ -14,10 +14,13 @@
 //   autopilot unreadable, malformed or enabled != true  -> HOLD
 //   a gate result missing, unreadable, malformed, or reporting an error -> HOLD
 //   G1 compile or G2 interface not ok                    -> HOLD
+//   a plugin the loader would refuse on the new build    -> HOLD
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
 //   GObjects, GNames, AppendString or GWorld not resolved (G4 scan) -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty) and the field rows do not
 //     settle every one of them (--fields)                -> HOLD, path C (held until shadow mode is proven)
+//   a field-rows report given and not written cleanly    -> HOLD (a gone key not marked
+//     optional, a class size change, a native key not found)
 //   a required pattern missed (G4 requiredFailing > 0)   -> B, if autopilot.paths has B
 //   everything clean                                     -> M, if autopilot.paths has M
 //   an SDK global moved (rva != sdkRva) on a path but M  -> HOLD (on M it is a note)
@@ -37,10 +40,17 @@
 //           update; only path M ships the new value (as a map row), so a difference is
 //           a note on M and a HOLD on any other path.
 //   G5:     the `layout-diff.mjs diff --used ...` report: { "changedUsedClasses": n, "changedUsed": [{ "class": "UFoo" }, ...] }
+//   plugins: the client check's plugin verdicts (result.json `plugins`): { "status": "pass",
+//           "plugins": [{ "name": "WAILA", "verdict": "PASS" }, ...] }. Every plugin must be
+//           PASS, NONE (no load hooks) or GAME-CALL (partial coverage: a note). Any other
+//           verdict (FAIL, CRASH, REFUSED, OFFSETS, BUILD-FAILED, ...) means the loader would
+//           refuse that plugin on the new build, so nothing ships. The status must agree
+//           with the rows.
 //   fields: the `field-rows.mjs write --report` report for the same CL: { "written": true,
-//           "cl": 128786, "covered": ["UFoo", ...], "problems": [] }. When it was written
-//           with no problems and covers every class G5 lists, the moved layouts ship as
-//           map rows (or absent rows the plugins fall back on) and the path stays M.
+//           "cl": 128786, "covered": ["UFoo", ...], "absent": [{ "key": "UFoo::Gone", "owners": [...] }],
+//           "problems": [] }. When it was written with no problems and covers every class G5
+//           lists, the moved layouts ship as map rows (or absent rows for keys marked
+//           optional, which the plugins fall back on) and the path stays M.
 // History (rate limits):
 //   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>" }],
 //     "attempts": { "<cl>": <Claude attempts so far> } }
@@ -156,6 +166,24 @@ function checkSdkGlobals(rows) {
   };
 }
 
+// The plugin verdicts of the client check. Returns { error } or { refused, partial }.
+const PLUGIN_OK = new Set(['PASS', 'NONE', 'GAME-CALL']);
+function checkPlugins(loaded) {
+  const bad = checkEnvelope('plugins', loaded);
+  if (bad) return { error: bad };
+  const v = loaded.value;
+  if (!Array.isArray(v.plugins)) return { error: 'plugins: no plugins list (the client check wrote no verdicts)' };
+  if (v.plugins.some((p) => !isObj(p) || typeof p.name !== 'string' || p.name === '' || typeof p.verdict !== 'string' || p.verdict === '')) {
+    return { error: 'plugins: a row needs a name and a verdict' };
+  }
+  const refused = v.plugins.filter((p) => !PLUGIN_OK.has(p.verdict));
+  if ((v.status === 'pass') !== (refused.length === 0)) return { error: `plugins: status ${JSON.stringify(v.status)} disagrees with the verdicts` };
+  return {
+    refused: refused.map((p) => `${p.name} ${p.verdict}${p.note ? ` (${String(p.note).slice(0, 120)})` : ''}`),
+    partial: v.plugins.filter((p) => p.verdict === 'GAME-CALL').map((p) => p.name),
+  };
+}
+
 function checkG5(loaded) {
   const bad = checkEnvelope('G5', loaded);
   if (bad) return { error: bad };
@@ -181,13 +209,16 @@ function checkFields(loaded, cl, classes) {
   if (bad) return { uncovered: classes, why: bad };
   const v = loaded.value;
   if (v.written !== true || !Array.isArray(v.problems) || v.problems.length > 0 || !Array.isArray(v.covered)) {
-    const first = Array.isArray(v.problems) && v.problems.length ? `: ${String(v.problems[0]).slice(0, 200)}` : '';
+    const n = Array.isArray(v.problems) ? v.problems.length : 0;
+    const first = n ? `: ${String(v.problems[0]).slice(0, 200)}${n > 1 ? ` (and ${n - 1} more)` : ''}` : '';
     return { uncovered: classes, why: `the field rows were not written${first}` };
   }
   if (String(v.cl) !== cl) return { uncovered: classes, why: `the field-rows report is for CL-${v.cl}, not CL-${cl}` };
   const covered = new Set(v.covered);
   const uncovered = classes.filter((c) => !covered.has(c));
-  return { uncovered, why: uncovered.length ? 'no field row settles them' : null, absent: Array.isArray(v.absent) ? v.absent.length : 0 };
+  const absent = (Array.isArray(v.absent) ? v.absent : []).filter(isObj)
+    .map((a) => `${a.key}${Array.isArray(a.owners) && a.owners.length ? ` (${a.owners.join(', ')})` : ''}`);
+  return { uncovered, why: uncovered.length ? 'no field row settles them' : null, absent };
 }
 
 // Fail closed: only an exactly well-formed file with enabled === true passes.
@@ -239,7 +270,7 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
   return reasons;
 }
 
-// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, fields?, history }, each a loadJson() result.
+// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, plugins, fields?, history }, each a loadJson() result.
 export function decide(inputs) {
   const reasons = [];
   const notes = [];
@@ -261,10 +292,15 @@ export function decide(inputs) {
   const g3 = checkG3(inputs.g3);
   const g4 = checkG4(inputs.g4);
   const g5 = checkG5(inputs.g5);
-  for (const g of [g1, g2, g3, g4, g5]) if (g.error) fail(g.error);
+  const plugins = checkPlugins(inputs.plugins);
+  for (const g of [g1, g2, g3, g4, g5, plugins]) if (g.error) fail(g.error);
 
   // Without a usable gate picture there is no path to name.
-  if (g3.error || g4.error || g5.error || g1.error || g2.error) return out('HOLD', null, g3.cl);
+  if (g3.error || g4.error || g5.error || g1.error || g2.error || plugins.error) return out('HOLD', null, g3.cl);
+
+  // Shipping the map while the loader would refuse a plugin ships that plugin refused.
+  if (plugins.refused.length) fail(`${plugins.refused.length} plugin(s) the loader would refuse on CL-${g3.cl}: ${plugins.refused.slice(0, 5).join('; ')}`);
+  if (plugins.partial.length) notes.push(`plugin(s) only partly exercised offline (GAME-CALL): ${plugins.partial.join(', ')}`);
 
   // The four globals must be re-resolved from the new exe: the map rows carry them.
   if (g4.globalsError) {
@@ -285,7 +321,10 @@ export function decide(inputs) {
   const fieldsRun = inputs.fields === undefined ? null : checkFields(inputs.fields, g3.cl, []);
   if (fieldsRun?.why) fail(`field rows: ${fieldsRun.why}`);
   if (fields && fields.uncovered.length === 0) {
-    notes.push(`${g5.usedChanged.length} used class(es) changed layout, every one settled by the field rows${fields.absent ? ` (${fields.absent} absent, the plugins fall back)` : ''}: ${g5.usedChanged.slice(0, 5).join(', ')}`);
+    notes.push(`${g5.usedChanged.length} used class(es) changed layout, every one settled by the field rows: ${g5.usedChanged.slice(0, 5).join(', ')}`);
+  }
+  if (fieldsRun && !fieldsRun.why && fieldsRun.absent.length) {
+    notes.push(`${fieldsRun.absent.length} member(s) gone on CL-${g3.cl}, each marked optional, so the plugin named turns that feature off: ${fieldsRun.absent.slice(0, 5).join(', ')}`);
   }
   if (g4.softMissed.length > 0) notes.push(`non-required pattern(s) not OK: ${g4.softMissed.join(', ')}`);
 
@@ -323,7 +362,7 @@ function main() {
   try {
     args = parseArgs(process.argv.slice(2));
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f [--fields f] --history f [--now iso] [--out f]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f]`);
     process.exit(2);
   }
   let result;
@@ -333,7 +372,7 @@ function main() {
       repo: args.repo, now,
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
-      g4: loadJson(args.g4), g5: loadJson(args.g5), history: loadJson(args.history),
+      g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),
       ...(args.fields === undefined ? {} : { fields: loadJson(args.fields) }),
     });
   } catch (e) {

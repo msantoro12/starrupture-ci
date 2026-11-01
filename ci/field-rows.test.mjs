@@ -30,7 +30,7 @@ native UCrEnviroWaveTimerSubsystem::bPause 0x83 0x1 0xFF
 native FTransform::Translation 0x20 0x18 0x00
 field ACrCrafter::CraftComponent
 field UCrSomething::bFlag
-field UCrOld::Removed
+field UCrOld::Removed optional
 `;
 const keys = () => unionKeys([parseKeys(KEYS)]);
 
@@ -69,7 +69,7 @@ test('every native key gets a row, and a reflected key that moved gets one too',
   assert.equal(out.added, 4);
 });
 
-test('a reflected key that only the reference build resolves gets an absent row, not a guess', () => {
+test('an optional reflected key that only the reference build resolves gets an absent row, not a guess', () => {
   const out = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: base() });
   assert.deepEqual(out.absent.map((p) => p.key), ['UCrOld::Removed']);
   assert.equal(row(out.text, 'UCrOld::Removed'), undefined);
@@ -78,28 +78,50 @@ test('a reflected key that only the reference build resolves gets an absent row,
   assert.ok(!out.covered.includes('UCrSomething'), 'nothing of it moved');
 });
 
-test('a native key the new build does not have gets an absent row; a required one is refused', () => {
+test('a gone key that is not marked optional is refused: the plugin requesting it would be refused', () => {
+  const req = unionKeys([parseKeys(KEYS.replace('field UCrOld::Removed optional', 'field UCrOld::Removed'))]);
+  const held = fieldRows(header(), { cl: 130000, keys: req, next: next(), base: base() });
+  assert.equal(held.text, null);
+  assert.deepEqual(held.absent, []);
+  assert.ok(held.problems.some((p) => p.startsWith('field UCrOld::Removed') && p.includes('refused there') && p.includes('optional')));
+});
+
+test('a native key the new build does not have is refused unless it is optional', () => {
   const n = next().map((e) => (e.key === 'UCrGameInstance::ServerSessionName' ? { key: e.key, result: 'NOMEMBER' } : e));
-  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: n, base: base() });
+  const held = fieldRows(header(), { cl: 130000, keys: keys(), next: n, base: base() });
+  assert.equal(held.text, null);
+  assert.ok(held.problems.some((p) => p.startsWith('native UCrGameInstance::ServerSessionName: not on the new build (NOMEMBER)')));
+  const opt = unionKeys([parseKeys(KEYS.replace('0x290 0x10 0x00', '0x290 0x10 0x00 optional'))]);
+  const out = fieldRows(header(), { cl: 130000, keys: opt, next: n, base: base() });
   assert.deepEqual(out.problems, []);
   assert.deepEqual(out.absent.map((p) => p.key), ['UCrGameInstance::ServerSessionName', 'UCrOld::Removed']);
   assert.equal(row(out.text, 'UCrGameInstance::ServerSessionName'), undefined);
-  const req = unionKeys([parseKeys(KEYS.replace('0x290 0x10 0x00', '0x290 0x10 0x00 required').replace('field UCrOld::Removed', 'field UCrOld::Removed required'))]);
-  const held = fieldRows(header(), { cl: 130000, keys: req, next: n, base: base() });
-  assert.equal(held.text, null);
-  assert.ok(held.problems.some((p) => p.startsWith('native UCrGameInstance::ServerSessionName') && p.includes('required')));
-  assert.ok(held.problems.some((p) => p.startsWith('field UCrOld::Removed') && p.includes('required')));
 });
 
-test('the client check key list: native-keys.txt lines with built values and required, plus the plain layout keys', () => {
+test('a class whose size changed is refused, even when a member of it has a row', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field ACrCrafter\n')]);
+  const b = [...base(), ent('ACrCrafter', null, 0x70)];
+  const n = [...next(), ent('ACrCrafter', null, 0x78)];
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b });
+  assert.equal(out.text, null);
+  assert.ok(out.problems.some((p) => p === 'class ACrCrafter: its size changed (0x70 -> 0x78); a plugin that checks it or walks it by its compiled size is refused or misreads it'));
+  const same = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ent('ACrCrafter', null, 0x70)], base: b });
+  assert.deepEqual(same.problems, []);
+});
+
+test('the client check key list: native-keys.txt lines with built values and optional, plus the plain layout keys', () => {
   const k = keysFromCheck(
-    'P UCrGameInstance::ServerSessionName\nQ UCrGameInstance::ServerSessionName required\nP FTransform::Translation 0x20 0x18 0x00 a.cpp:x~@,\n',
-    'FTransform::Translation\nUCrGameInstance::ServerSessionName\nACrCrafter::CraftComponent\nACrCrafter\n');
-  assert.deepEqual([...k.native.keys()].sort(), ['FTransform::Translation', 'UCrGameInstance::ServerSessionName']);
+    'P UCrGameInstance::ServerSessionName optional\nQ UCrGameInstance::ServerSessionName\nP UCrX::Y optional\nP FTransform::Translation 0x20 0x18 0x00 a.cpp:x~@,\n',
+    'FTransform::Translation\nUCrGameInstance::ServerSessionName\nACrCrafter::CraftComponent\nACrCrafter\nUCrX::Y\n');
+  assert.deepEqual([...k.native.keys()].sort(), ['FTransform::Translation', 'UCrGameInstance::ServerSessionName', 'UCrX::Y']);
   assert.equal(k.native.get('FTransform::Translation').size, 0x18);
-  assert.ok(k.requiredFields.has('UCrGameInstance::ServerSessionName'));
+  assert.ok(!k.optionalFields.has('UCrGameInstance::ServerSessionName'), 'Q has no fallback');
+  assert.ok(k.optionalFields.has('UCrX::Y'));
+  assert.deepEqual(k.owners.get('UCrGameInstance::ServerSessionName'), ['P', 'Q']);
   assert.deepEqual([...k.fields].sort(), ['ACrCrafter', 'ACrCrafter::CraftComponent']);
   assert.throws(() => keysFromCheck('P FTransform::Translation 0x20 0x18 0x00\nQ FTransform::Translation 0x20 0x20 0x00\n', ''), /two different built values/);
+  const gone = fieldRows(header(), { cl: 130000, keys: keysFromCheck('P UCrGameInstance::ServerSessionName\n', ''), next: [{ key: 'UCrGameInstance::ServerSessionName', result: 'NOMEMBER' }], base: null });
+  assert.ok(gone.problems.some((p) => p.includes('the plugin that requests it (P) is refused there')));
 });
 
 test('FTransform::Translation keeps the built size, not the register size', () => {

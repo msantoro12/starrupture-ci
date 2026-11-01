@@ -551,12 +551,14 @@ export function parseFeed(text, where = 'feed') {
 //   required <key>                         a function key the loader cannot run without
 //   native <key> [<offset> <size> <mask>]  a native field; the values as built, in hex
 //   field <key>                            a reflected field (rows only where it moved)
-// A native or field line may end in " required": the plugin cannot run without
-// that member, so its absence on a build is an error, not a fallback.
+// A native or field member the build does not have refuses the plugin that
+// requests it, so its absence on a build is an error by default. A native or
+// field line may end in " optional": the plugin has a fallback without that
+// member, so its absence is an absent row instead.
 
-const RE_KEYLINE = /^(function|required|native|field) (.+?)(?: (0x[0-9A-Fa-f]+) (0x[0-9A-Fa-f]+) (0x[0-9A-Fa-f]+))?( required)?$/;
+const RE_KEYLINE = /^(function|required|native|field) (.+?)(?: (0x[0-9A-Fa-f]+) (0x[0-9A-Fa-f]+) (0x[0-9A-Fa-f]+))?( optional)?$/;
 
-const emptyKeys = () => ({ functions: new Set(), required: new Set(), native: new Map(), fields: new Set(), requiredFields: new Set(), at: new Map() });
+const emptyKeys = () => ({ functions: new Set(), required: new Set(), native: new Map(), fields: new Set(), optionalFields: new Set(), at: new Map() });
 
 export function parseKeys(text, where = 'keys') {
   const keys = emptyKeys();
@@ -565,10 +567,10 @@ export function parseKeys(text, where = 'keys') {
     if (!line || line.startsWith('#')) return;
     const m = RE_KEYLINE.exec(line);
     need(m && isText(m[2]), `${where}:${i + 1}: expected "function <key>", "required <key>", "native <key> [<offset> <size> <mask>]" or "field <key>"`);
-    const [, kind, key, off, size, mask, req] = m;
+    const [, kind, key, off, size, mask, opt] = m;
     need(kind === 'native' || off === undefined, `${where}:${i + 1}: built values are for native keys only`);
-    need(!req || kind === 'native' || kind === 'field', `${where}:${i + 1}: a trailing "required" marks a native or field key; a required function key is "required <key>"`);
-    if (req) keys.requiredFields.add(key);
+    need(!opt || kind === 'native' || kind === 'field', `${where}:${i + 1}: a trailing "optional" marks a native or field key`);
+    if (opt) keys.optionalFields.add(key);
     need(!/ 0x[0-9A-Fa-f]+$/.test(key), `${where}:${i + 1}: built values are an offset, a size and a mask, all three`);
     if (off !== undefined) {
       const [o, n, b] = [off, size, mask].map((v) => parseInt(v, 16));
@@ -587,7 +589,8 @@ export function parseKeys(text, where = 'keys') {
 // The union of several components' key lists. A key may be in more than one (a
 // global symbol two plugins use), but as one kind in all: a function key
 // (required if any list says so), a native key with the same built values, or
-// a field key.
+// a field key. A field or native key is optional only when every list that has
+// it says so: one plugin's fallback does not cover another's request.
 export function unionKeys(lists) {
   const out = emptyKeys();
   const values = (v) => `${hex(v.offset)}/${hex(v.size)}/${hex2(v.mask)}`;
@@ -600,11 +603,15 @@ export function unionKeys(lists) {
     for (const key of keys.functions) out.functions.add(key);
     for (const key of keys.required) out.required.add(key);
     for (const key of keys.fields) out.fields.add(key);
-    for (const key of keys.requiredFields) out.requiredFields.add(key);
     for (const [key, b] of keys.native) {
       const a = out.native.get(key);
       need(!a || !b || values(a) === values(b), `native ${key} is built as ${b && values(b)} at ${keys.at.get(key).where}, and as ${a && values(a)} in an earlier list`);
       if (!a) out.native.set(key, b);
+    }
+  }
+  for (const key of out.at.keys()) {
+    if (lists.every((keys) => !keys.at.has(key) || keys.optionalFields.has(key))) {
+      if (lists.some((keys) => keys.optionalFields.has(key))) out.optionalFields.add(key);
     }
   }
   return out;
@@ -636,7 +643,7 @@ export function checkMap(map, keys) {
   }
   for (const r of [...(map.absentFields ?? [])].sort(byKeyThenCL)) {
     if (!keys.native.has(r.key) && !keys.fields.has(r.key)) out.push(`orphan absent field key ${r.key}: no key list has it`);
-    else if (keys.requiredFields.has(r.key)) out.push(`required field ${r.key} is absent on CL-${r.cl}: the plugin cannot run without it`);
+    else if (!keys.optionalFields.has(r.key)) out.push(`field ${r.key} is absent on CL-${r.cl} and no key list marks it optional: the plugin that requests it is refused there`);
   }
   for (const [key, built] of [...keys.native].sort((x, y) => cmp(x[0], y[0]))) {
     const row = built && has(map.fields, key, map.builtCL);

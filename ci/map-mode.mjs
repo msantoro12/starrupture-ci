@@ -30,7 +30,9 @@
 //     the rva of the symbol's start, never its name);
 //   - two different request tuples share one fp under one key;
 //   - a required key (the loader's) has no locator under the newest release's fp;
-//   - the map already holds a different verified row for a key, fp and CL;
+//   - the map already holds a different verified row for a key, fp and CL
+//     (a row of the same kind at the same address, on the build row's own exe,
+//     is kept unchanged instead, with a note: the observed pattern is not written);
 //   - a key list is given and the written map breaks its coverage rule.
 // The same input on the written result changes nothing, and the result is
 // byte-identical for any order of the input.
@@ -255,9 +257,21 @@ export function writeRows(map, input) {
   }
   if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes };
 
+  // The exe is known to be the one the build row names only when the input gave
+  // its build and the table already held the same build (checked above).
+  const sameExe = !!input.build && map.builds.some((b) => b.cl === cl);
   let added = 0;
   for (const op of plan.ops) {
     try {
+      // A verified row already there for this key, fp and CL is kept unchanged,
+      // and the observation is not written, only when it is the same kind and
+      // the same address on the same exe. Anything else goes to addFunction,
+      // which refuses a different row.
+      const old = op.type === 'function' && next.functions.find((r) => r.key === op.key && r.fp === op.fp && r.cl === cl);
+      if (old && !old.absent && sameExe && old.kind === op.kind && old.rva === op.rva) {
+        if (old.pattern !== op.pattern) plan.notes.push(`${op.key}${op.fp ? ` (fp ${hex8(op.fp)})` : ''}: kept the verified CL-${cl} row; the scan observed another pattern at the same address (${hex(op.rva)})`);
+        continue;
+      }
       if (op.type === 'function') {
         if (addFunction(next, { key: op.key, kind: op.kind, fp: op.fp, cl, pattern: op.pattern, resultOffset: op.resultOffset, followRel32At: op.followRel32At, followRipDispAt: op.followRipDispAt, rva: op.rva })) added++;
       } else if (addAbsent(next, { key: op.key, kind: op.kind, fp: op.fp, cl, owners: op.owners })) added++;

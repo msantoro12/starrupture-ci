@@ -37,6 +37,7 @@ function base(over = {}) {
     g3: ok({ ok: true, cl: '127999', previousCl: '127004' }),
     g4: ok(aob([aobRow('GetWorld'), aobRow('SpawnActor'), aobRow('Optional', 'OK', false)])),
     g5: ok(layout()),
+    plugins: ok({ status: 'pass', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict: 'GAME-CALL' }] }),
     history: ok({ releases: [], attempts: {} }),
     ...over,
   };
@@ -147,7 +148,8 @@ test('M: used classes that moved ship when the field rows settle every one', () 
   const r = decide(base({ g5: ok(layout('UFoo', 'UBar')), fields: ok(fieldsReport()) }));
   assert.equal(r.decision, 'M');
   assert.deepEqual(r.reasons, []);
-  assert.match(r.notes.join(), /2 used class\(es\) changed layout, every one settled by the field rows \(1 absent/);
+  assert.match(r.notes.join(), /2 used class\(es\) changed layout, every one settled by the field rows/);
+  assert.match(r.notes.join(), /1 member\(s\) gone on CL-127999, each marked optional/);
 });
 
 test('C: a moved used class the field rows do not settle holds, naming it', () => {
@@ -253,7 +255,7 @@ test('fail closed: max_releases_per_day 0 blocks everything', () => {
   holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 0 }) })), /rate limit/);
 });
 
-for (const gate of ['g1', 'g2', 'g3', 'g4', 'g5', 'history']) {
+for (const gate of ['g1', 'g2', 'g3', 'g4', 'g5', 'plugins', 'history']) {
   test(`fail closed: ${gate} missing, unreadable, not an object, or reporting an error`, () => {
     holds(decide(base({ [gate]: undefined })));
     holds(decide(base({ [gate]: BAD_JSON })), /ENOENT/);
@@ -383,7 +385,7 @@ function runCli(files, extra = []) {
     writeFileSync(names[k], typeof v === 'string' ? v : JSON.stringify(v));
   }
   const args = ['--repo', 'ModLoader', '--now', new Date(NOW).toISOString()];
-  for (const k of ['autopilot', 'g1', 'g2', 'g3', 'g4', 'g5', 'history']) args.push(`--${k}`, names[k] ?? join(dir, `${k}-missing.json`));
+  for (const k of ['autopilot', 'g1', 'g2', 'g3', 'g4', 'g5', 'plugins', 'history']) args.push(`--${k}`, names[k] ?? join(dir, `${k}-missing.json`));
   const r = spawnSync(process.execPath, [cli, ...args, ...extra], { encoding: 'utf8', windowsHide: true });
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* leave null */ }
@@ -392,7 +394,7 @@ function runCli(files, extra = []) {
 const cliFiles = (over = {}) => {
   const b = base();
   const f = {};
-  for (const k of ['autopilot', 'g1', 'g2', 'g3', 'g4', 'g5', 'history']) f[k] = b[k].value;
+  for (const k of ['autopilot', 'g1', 'g2', 'g3', 'g4', 'g5', 'plugins', 'history']) f[k] = b[k].value;
   return { ...f, ...over };
 };
 
@@ -409,7 +411,7 @@ test('cli: exit 1 with HOLD for a disabled autopilot', () => {
 });
 
 test('cli: a missing file for any input is a HOLD', () => {
-  for (const k of ['autopilot', 'g1', 'g2', 'g3', 'g4', 'g5', 'history']) {
+  for (const k of ['autopilot', 'g1', 'g2', 'g3', 'g4', 'g5', 'plugins', 'history']) {
     const r = runCli(cliFiles({ [k]: undefined }));
     assert.equal(r.status, 1, k);
     assert.equal(r.out.decision, 'HOLD', k);
@@ -471,4 +473,41 @@ test('cli: --out writes the same decision', () => {
   const out = join(mkdtempSync(join(tmpdir(), 'decide-out-')), 'decision.json');
   const r = runCli(cliFiles(), ['--out', out]);
   assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), r.out);
+});
+
+// ------------------------------------------------------------ plugin verdicts and gone keys
+
+test('HOLD: a plugin the loader would refuse on the new build holds the map', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict: 'FAIL', note: 'does not declare PLUGIN_MAP_MIGRATED' }] });
+  holds(decide(base({ plugins })), /1 plugin\(s\) the loader would refuse on CL-127999: WAILA FAIL \(does not declare PLUGIN_MAP_MIGRATED\)/);
+});
+
+test('HOLD: plugin verdicts missing, malformed or with a status that disagrees', () => {
+  const b = base();
+  delete b.plugins;
+  holds(decide(b), /plugins: result missing/);
+  holds(decide(base({ plugins: ok({ status: 'pass' }) })), /no plugins list/);
+  holds(decide(base({ plugins: ok({ status: 'pass', plugins: [{ name: 'X', verdict: 'FAIL' }] }) })), /disagrees with the verdicts/);
+  holds(decide(base({ plugins: ok({ status: 'pass', plugins: [{ name: 'X' }] }) })), /a name and a verdict/);
+});
+
+test('M: GAME-CALL is a note, not a hold', () => {
+  const r = decide(base());
+  assert.equal(r.decision, 'M');
+  assert.match(r.notes.join(' '), /partly exercised offline \(GAME-CALL\): WAILA/);
+});
+
+test('HOLD: a gone key not marked optional, or a class size change, never reaches M', () => {
+  const fieldsReport = (problems) => ok({ written: false, cl: 127999, added: 0, absent: [], covered: [], notes: [], problems });
+  holds(decide(base({ fields: fieldsReport(['field ACrAPHelper::SnappedActors: resolves on the reference build only (removed or renamed); the plugin that requests it is refused there, and no key list marks it optional']) })),
+    /field rows: the field rows were not written: field ACrAPHelper::SnappedActors/);
+  holds(decide(base({ g5: ok(layout('FCrPackageTransportConnectionData')), fields: fieldsReport(['class FCrPackageTransportConnectionData: its size changed (0x70 -> 0x78)', 'class FCrCraftingFragment: its size changed (0x80 -> 0xA0)']) })),
+    /its size changed \(0x70 -> 0x78\).*\(and 1 more\)/);
+});
+
+test('M: an optional key gone on the new build is a note naming the plugin', () => {
+  const fields = ok({ written: true, cl: 127999, added: 0, absent: [{ key: 'UFoo::Gone', owners: ['BetterCheats'] }], covered: ['UFoo'], notes: [], problems: [] });
+  const r = decide(base({ g5: ok(layout('UFoo')), fields }));
+  assert.equal(r.decision, 'M');
+  assert.match(r.notes.join(' '), /1 member\(s\) gone on CL-127999, each marked optional.*UFoo::Gone \(BetterCheats\)/);
 });

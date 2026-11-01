@@ -18,15 +18,25 @@
 //     between the reference and the new build. Reflection gives the live offset on
 //     any build, so a row only records the move.
 // A key the new build does not have (the scanner says NOMEMBER or NOTYPE for a
-// native key, or a reflected key resolves on the reference build only) gets an
-// absent row: no row on that CL, so the loader refuses that one request and the
-// plugin takes its fallback. A rename is not guessed. A key the key list marks
-// `required` is refused instead (exit 3), and so is a native key the report has
-// no entry for or does not resolve for any other reason.
+// native key, or a reflected key resolves on the reference build only) is
+// refused (exit 3): the loader refuses a plugin whose field request does not
+// resolve, so shipping the map would ship that plugin refused. Only a key the
+// key list marks `optional` (the plugin has a fallback) gets an absent row
+// instead: no row on that CL, so the loader refuses that one request and the
+// plugin takes its fallback. A rename is not guessed. A native key the report
+// has no entry for, or that does not resolve for any other reason, is refused.
+// A member a plugin looks up by name on first use (PluginLazyField) is not a
+// request and so not a key: the client check's reflected keys are never
+// optional.
 //
-// The report's `covered` lists every class with a key that has a row, an absent
-// row, or a move settled otherwise (a class size, a register-sized key):
-// decide.mjs checks the used classes that moved against it.
+// A class whose size changed is refused too: a plugin that checks the size
+// (SR_SIZE_CHECK) is refused on that build, and one that walks an array of the
+// class by its compiled stride misreads every element after the first. Nothing
+// here can tell that a plugin reads the size live instead.
+//
+// The report's `covered` lists every class with a key that has a row or an
+// absent row, or a register-sized key: decide.mjs checks the used classes that
+// moved against it.
 //
 // `FTransform::Translation` and `::Scale3D` keep the size the key list was built
 // with: the PDB sizes them as the 32-byte SIMD register, reflection describes an
@@ -36,7 +46,7 @@
 // neighbours never leave the scanner, and the key text is the component's own.
 //
 // Exit codes: 0 written (read `absent` for the fallbacks), 3 refused (header
-// untouched), 2 usage or malformed input.
+// untouched; the report lists every problem), 2 usage or malformed input.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -65,12 +75,14 @@ export function planFieldRows(keys, next, base, cl) {
   const rows = [];
   const absent = [];
   const covered = new Set();
-  const required = keys.requiredFields ?? new Set();
+  const optional = keys.optionalFields ?? new Set();
   const natives = [...keys.native.keys()].sort(cmp);
   const fields = [...keys.fields].sort(cmp);
+  const ownersOf = (key) => keys.owners?.get(key) ?? [];
   const gone = (key, kind, why) => {
-    if (required.has(key)) { problems.push(`${kind} ${key}: ${why}, and the key list marks it required`); return; }
-    absent.push({ key, why });
+    const owners = ownersOf(key);
+    if (!optional.has(key)) { problems.push(`${kind} ${key}: ${why}; the plugin that requests it${owners.length ? ` (${owners.join(', ')})` : ''} is refused there, and no key list marks it optional`); return; }
+    absent.push({ key, why, ...(owners.length ? { owners } : {}) });
     covered.add(classOf(key));
   };
 
@@ -100,8 +112,8 @@ export function planFieldRows(keys, next, base, cl) {
       if (diff) {
         for (const m of [...diff.moved, ...diff.changed]) {
           if (REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: PDB size is the register's; no row`); covered.add(classOf(m.key)); continue; }
-          // A class key: the plugin reads (or checks) the size live, so no row.
-          if (!m.key.includes('::')) { covered.add(m.key); continue; }
+          // A class key: its size changed (see the header comment).
+          if (!m.key.includes('::')) { problems.push(`class ${m.key}: its size changed (${hex(m.base.size)} -> ${hex(m.next.size)}); a plugin that checks it or walks it by its compiled size is refused or misreads it`); continue; }
           if (!Number.isInteger(m.next.offset)) { problems.push(`${m.key}: the new report gives no offset`); continue; }
           rows.push(rowOf(m.key, cl, m.next));
           covered.add(classOf(m.key));
@@ -137,9 +149,11 @@ export function fieldRows(headerText, { cl, keys, next, base }) {
 }
 
 // The key list as the client check has it: ci/native-keys.txt (each plugin's
-// native members, with built values and `required` where a line gives them) and
+// native members, with built values and `optional` where a line gives them) and
 // the plain list of keys the layout reports were read with. A key in both is
-// native; any other key in the plain list is a reflected field.
+// native; any other key in the plain list is a reflected field. A native key is
+// optional only when every plugin's line for it says so. The result also
+// carries `owners`: the plugins whose lines list each native key.
 export function keysFromCheck(nativeText, layoutText) {
   const natives = new Map();
   for (const e of parseNativeKeys(nativeText)) {
@@ -147,10 +161,14 @@ export function keysFromCheck(nativeText, layoutText) {
     if (prev && prev.built && e.built && (prev.built.offset !== e.built.offset || prev.built.size !== e.built.size || prev.built.mask !== e.built.mask)) {
       throw new MapError(`native-keys.txt: ${e.key} is listed with two different built values`);
     }
-    natives.set(e.key, { built: prev?.built ?? e.built, required: !!(prev?.required || e.required) });
+    natives.set(e.key, {
+      built: prev?.built ?? e.built,
+      optional: (prev ? prev.optional : true) && e.optional === true,
+      owners: [...new Set([...(prev?.owners ?? []), e.plugin])].sort(cmp),
+    });
   }
   const lines = [];
-  for (const [key, e] of natives) lines.push(`native ${key}${e.built ? ` ${hex(e.built.offset)} ${hex(e.built.size)} ${hex(e.built.mask)}` : ''}${e.required ? ' required' : ''}`);
+  for (const [key, e] of natives) lines.push(`native ${key}${e.built ? ` ${hex(e.built.offset)} ${hex(e.built.size)} ${hex(e.built.mask)}` : ''}${e.optional ? ' optional' : ''}`);
   const seen = new Set();
   for (const raw of layoutText.split(/\r?\n/)) {
     const key = raw.trim();
@@ -158,7 +176,9 @@ export function keysFromCheck(nativeText, layoutText) {
     seen.add(key);
     lines.push(`field ${key}`);
   }
-  return parseKeys(lines.join('\n') + '\n', 'native-keys.txt and the layout keys');
+  const keys = parseKeys(lines.join('\n') + '\n', 'native-keys.txt and the layout keys');
+  keys.owners = new Map([...natives].map(([key, e]) => [key, e.owners]));
+  return keys;
 }
 
 export function main(argv) {

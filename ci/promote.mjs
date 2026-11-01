@@ -65,7 +65,8 @@ export function gate({ autopilot, history, cl, now, rollForward = false }) {
   return checkRateLimits({ historyLoaded: { ok: true, value: history }, repo: LOADER_REPO, cl: String(cl), path: 'M', nowMs: now, maxPerDay: ap.maxPerDay, rollForward });
 }
 
-// Returns { action, cl, seq, lines, hold }.
+// Returns { action, kind, cl, seq, lines, hold }; kind is how the public build
+// matched the index: different-cl, same or same-cl.
 export function plan({ index, pub, autopilot, history, lastSeq, now, verify = null, rollForward = false }) {
   need(isObj(index), 'staged index is not an object');
   need(isObj(pub) && Number.isInteger(pub.cl) && /^\d+$/.test(String(pub.buildid)) && /^[0-9a-f]{64}$/.test(String(pub.exeSha256 ?? '')), 'public build needs cl, buildid and exeSha256');
@@ -85,7 +86,7 @@ export function plan({ index, pub, autopilot, history, lastSeq, now, verify = nu
     lines.unshift(`public ${pub.buildid} is CL-${pub.cl}; no staged CL matches`);
     lines.push(`run the normal new-CL flow (check, suggest, apply, rebuild, re-scan) for CL-${pub.cl}${second}`);
     lines.push('nothing to promote');
-    return { action: 'normal-flow', cl: pub.cl, seq: null, lines, hold: [] };
+    return { action: 'normal-flow', kind, cl: pub.cl, seq: null, lines, hold: [] };
   }
   const repo = entry.repos?.[LOADER_REPO];
   need(repo && repo.ref && repo.sha, `staged CL-${pub.cl} has no ${LOADER_REPO} pointer`);
@@ -99,7 +100,7 @@ export function plan({ index, pub, autopilot, history, lastSeq, now, verify = nu
   if (isObj(verify) && verify.ok === false) {
     lines.push(`the ${check} on the public exe failed: run the normal check/suggest/apply flow for CL-${pub.cl} with the staged exe (${short(entry.exeSha256)}) as a second reference`);
     lines.push('nothing to promote');
-    return { action: 'normal-flow', cl: pub.cl, seq: null, lines, hold: [] };
+    return { action: 'normal-flow', kind, cl: pub.cl, seq: null, lines, hold: [] };
   }
   lines.push(`rebase ${repo.ref} (${short(repo.sha)}) onto the ${LOADER_REPO} fork's current tip; regenerate the data commit if it conflicts`);
   lines.push(`open a PR from the fork into ${LOADER_REPO} main for CL-${pub.cl}; merge once CI passes`);
@@ -111,11 +112,11 @@ export function plan({ index, pub, autopilot, history, lastSeq, now, verify = nu
   if (hold.length) {
     for (const h of hold) lines.push(`HOLD: ${h}`);
     lines.push(`would NOT sign and publish seq ${seq}`);
-    return { action: 'hold', cl: pub.cl, seq, lines, hold };
+    return { action: 'hold', kind, cl: pub.cl, seq, lines, hold };
   }
   lines.push(`export the feed (every kept CL, one snapshot)`);
   lines.push(`would sign and publish seq ${seq}`);
-  return { action: 'promote', cl: pub.cl, seq, lines, hold: [] };
+  return { action: 'promote', kind, cl: pub.cl, seq, lines, hold: [] };
 }
 
 // effects: { sign, publish, release }, called only in a live run, which does not exist yet.
