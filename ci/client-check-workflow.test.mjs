@@ -16,7 +16,12 @@ const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-chec
 const section = (start, end) => wf.slice(wf.indexOf(start), wf.indexOf(end, wf.indexOf(start)));
 const call = section('  workflow_call:\n', '  workflow_dispatch:\n');
 const dispatch = section('  workflow_dispatch:\n', '  schedule:\n');
-const job = (name) => section(`\n  ${name}:\n`, '\n  # ----');
+// A job runs to the next job key (two-space indent) or the end of the file.
+const job = (name) => {
+  const rest = wf.slice(wf.indexOf(`\n  ${name}:\n`) + 1);
+  const next = rest.slice(1).search(/\n {2}[a-z][\w-]*:\n/);
+  return next < 0 ? rest : rest.slice(0, next + 1);
+};
 
 test('game_sdk_repo: both triggers default to the upstream repository, and the plan allows the same owners as the Plugin SDK', () => {
   for (const s of [call, dispatch]) assert.match(s, /game_sdk_repo:\n(?:.*\n)*?\s+default: 'AlienXAXS\/StarRupture-Game-SDK'/);
@@ -24,6 +29,7 @@ test('game_sdk_repo: both triggers default to the upstream repository, and the p
   assert.match(wf, /repository: \$\{\{ inputs\.game_sdk_repo \}\}\n\s+ref: \$\{\{ inputs\.game_sdk_ref \}\}/);
   assert.ok(!/Get-Source 'AlienXAXS\/StarRupture-Game-SDK'/.test(wf), 'every later checkout reads the repository plugin.json records');
   assert.match(wf, /gameSdkRepo = \$env:GAME_SDK_REPO/);
+  for (const name of ['plugin-plan', 'plugins']) assert.equal(job(name).match(/^\s+GAME_SDK_REPO: /gm)?.length, 1, `${name}: GAME_SDK_REPO set once`);
 });
 
 test('plugin_exclude: a name leaves that plugin out, and a name that is in neither list is an error', () => {

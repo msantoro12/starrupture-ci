@@ -315,7 +315,6 @@ jobs:
           MANIFESTS: ${{ inputs.plugin_manifests }}
           PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
           GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
-          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
           EXCLUDE: ${{ inputs.plugin_exclude }}
           TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
           PUBLISH: ${{ inputs.publish }}
@@ -456,6 +455,7 @@ jobs:
           REF: ${{ matrix.ref }}
           LOADER_REPO: ${{ inputs.loader_repo }}
           PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
+          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
         run: |
           $ErrorActionPreference = 'Stop'
           # Built against the interface of the loader being checked, as it is in game.
