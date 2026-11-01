@@ -1,0 +1,76 @@
+name: vmap watchdog
+
+# Opens an issue when the feed on the loader's Latest release lags the last
+# signed feed by more than 2 h: the publish workflow in the loader repository
+# has stopped. GitHub switches off scheduled workflows in a public repository
+# after 60 days without activity, and the loader's owner has stepped away.
+#
+# Reads only. The signed feed's home is this repository's `vmap-feed` release;
+# Latest is the loader repository's. Both are public.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      loader_repo:
+        description: 'Loader repository whose Latest release holds the published feed'
+        type: string
+        default: 'AlienXAXS/StarRupture-ModLoader'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LOADER_REPO: ${{ inputs.loader_repo || 'AlienXAXS/StarRupture-ModLoader' }}
+      FEED_ASSET: version-map-feed.txt
+      ISSUE_TITLE: The version-map feed on the loader's Latest release is behind
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: lts/*
+      - name: Fetch both feeds
+        id: fetch
+        run: |
+          mkdir -p "$RUNNER_TEMP/signed" "$RUNNER_TEMP/published"
+          # No signed feed yet: nothing to be behind.
+          if ! gh release download vmap-feed --repo "$GITHUB_REPOSITORY" --pattern "$FEED_ASSET" --dir "$RUNNER_TEMP/signed" 2>/dev/null; then
+            echo "No signed feed has been published yet."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          if gh release download --repo "$LOADER_REPO" --pattern "$FEED_ASSET" --dir "$RUNNER_TEMP/published" 2>/dev/null; then
+            echo "published=$RUNNER_TEMP/published/$FEED_ASSET" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=-" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Compare
+        id: compare
+        if: steps.fetch.outputs.signed == 'true'
+        run: |
+          set +e
+          node ci/vmap-watchdog.mjs check --signed "$RUNNER_TEMP/signed/$FEED_ASSET" --published "${{ steps.fetch.outputs.published }}" | tee "$RUNNER_TEMP/message.txt"
+          code=${PIPESTATUS[0]}
+          if [ "$code" = 3 ]; then echo "lagging=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          exit "$code"
+      - name: Open an issue
+        if: steps.compare.outputs.lagging == 'true'
+        run: |
+          open=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$ISSUE_TITLE in:title" --json number --jq 'length')
+          if [ "$open" != 0 ]; then
+            echo "An issue is already open."
+            exit 0
+          fi
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$(cat "$RUNNER_TEMP/message.txt")
+
+          The publish workflow in $LOADER_REPO (vmap-publish.yml) pulls the signed feed from the \`vmap-feed\` release here every 15 minutes. Check that it still runs (GitHub disables schedules after 60 days without activity) and run it by hand."
