@@ -64,3 +64,7 @@ ProductionViewer UCrGameInstance::ServerSessionName
 ProductionViewer UMassEntitySubsystem::EntityManager Production Viewer/production_mass.cpp:\(subsystem\)~\+~@\)
 ProductionViewer FTransform::Translation 0x20 0x18 0x00 Production Viewer/production_mass.cpp:fragment~\+~@,
 ProductionViewer UMassSignalSubsystem::CachedWorld Production Viewer/production_mass.cpp:\(self\)~\+~@\)
+MiniMap FMassEnemyStateFragment::State optional
+MiniMap FTransform::Translation 0x20 0x18 0x00 optional
+MiniMap UCrPlayerMapMenuDataComponent::FOWData optional
+MiniMap UTexture::SRGB optional
