@@ -175,12 +175,16 @@ the check job). A key on that list that is not native is a reflected field.
 the reference build over the same key list. For the new CL it writes a row for
 every `native` key (offset, size, bool mask, found by the key's own text) and for
 every reflected `field` key whose offset, size or mask moved. A key the new build
-does not have (NOMEMBER or NOTYPE) gets an absent row: no row on that CL, the loader
-refuses that one request and the plugin takes its fallback. A key marked `required`
-in the key list is refused instead (exit 3, header untouched), and so is a native
-key the report has no entry for or does not resolve for another reason. A reflected
-key that resolves on the reference build only is listed under `partial` (a rename
-guess is low confidence and is not written); the run then reads PARTIAL but exits 0. `FTransform::Translation` and `::Scale3D` keep the size the key list
+does not have (NOMEMBER or NOTYPE) is refused (exit 3, header untouched): the loader
+refuses a plugin whose field request does not resolve, so shipping the map would ship
+that plugin refused. Only a key the key list marks `optional` (the plugin has a
+fallback) gets an absent row instead: no row on that CL, the loader refuses that one
+request and the plugin takes its fallback. A native key the report has no entry for or
+does not resolve for another reason is refused too, and so is a class whose size changed
+(a plugin that checks the size is refused, one that walks an array of it by its compiled
+stride misreads it). The report lists every problem. A rename is not guessed. The
+client check's reflected keys are never optional, and a member a plugin looks up by
+name on first use (PluginLazyField) is not a key. `FTransform::Translation` and `::Scale3D` keep the size the key list
 was built with, because the PDB sizes them as the 32-byte SIMD register and
 reflection as an FVector (review N2). The output holds keys and numbers only.
 It runs after `write` (the build must be in the table).
@@ -221,9 +225,12 @@ holds. The Game-SDK globals (GObjects, GNames, AppendString, GWorld) must still
 resolve. A value that differs from the SDK's baked `sdkRva` is a note, not a hold,
 because under path M the map row carries the new value.
 
+decide also reads the plugin verdicts of the client check (`--plugins`, `result.json`
+`plugins`). Every plugin must be PASS, NONE or GAME-CALL (a note); any other verdict
+means the loader would refuse that plugin on the new build, and it holds.
+
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
-same CL) covers it with a row, an absent row or a class-size move; an uncovered one
-holds on path C. A field-rows report that was given and not written cleanly (refused,
+same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,
 or for another CL) holds whatever moved, on every path: the native members get their
 rows from the same run. `state/autopilot.json` ships with `enabled: false`: until it
 is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
@@ -251,10 +258,12 @@ higher `seq`. `verify` exits 3 when it refuses a file.
 The feed format, the key slots (`k1` is the TEST key, `k2` the release key) and what the
 loader checks are in the loader repository's [VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#the-feed).
 `PUBLIC_KEYS` in `vmap-sign.mjs` must hold the same public keys as `kK1Hex` and `kK2Hex` in the
-loader's `version_feed.cpp`. The private halves are the repo secrets `VMAP_SIGN_KEY_TEST` (also
-Bitwarden `vmap-sign-test-k1`) and `VMAP_SIGN_KEY` (also `vmap-sign-k2`); `verify` refuses a TEST-key
-feed without `--allow-test-key`, and only the `publish` job, in the `vmap-sign` environment, reads
-`VMAP_SIGN_KEY`.
+loader's `version_feed.cpp`. The private half of k1 is the repo secret `VMAP_SIGN_KEY_TEST` (also Bitwarden
+`vmap-sign-test-k1`). The private half of k2 is `VMAP_SIGN_KEY` in the `vmap-sign`
+environment (also Bitwarden `vmap-sign-k2`), not a repo secret: the environment only
+accepts deployments from `main`, and it has no required reviewer, so the automated
+pipeline is not blocked. `verify` refuses a TEST-key feed without `--allow-test-key`,
+and only the `publish` job reads `VMAP_SIGN_KEY`.
 
 `vmap-sign.yml` is a manual run that signs the export of a test header with the TEST
 key and verifies it with the public key.
@@ -278,7 +287,7 @@ switches off scheduled workflows in a public repository after 60 days of no acti
 A beta build that passed the chain is staged, and promoted when public flips to the
 same build. Both are plan printers: the `map-mode` job of `sr-client-check.yml` runs
 them (below), and nothing is signed with the release key, published or released
-from them.
+from them. The staged index is not kept between runs, so a plan is all they produce.
 
 ```
 node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
@@ -296,7 +305,9 @@ node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilo
 - **Promotion** matches the public build against the index by build id, exe SHA-256
   and CL. The same build is re-scanned and promoted. The same CL on another exe is
   re-verified key by key. Either needs a passing result (`--verify`, `{ ok: true }`)
-  before it may publish; a failed one runs the normal flow, and a missing one holds.
+  before it may publish. The chain writes that result from this run's own re-scan, and
+  it is `ok` only when the loader registry check passed and the plugin scan passed
+  for every plugin, so it can fail; a failed one runs the normal flow, and a missing one holds.
   A different CL promotes nothing, and the staged build stays
   a second reference. A staged CL older than the public one is listed and skipped.
   A promote needs path `M` in `state/autopilot.json` and passes `decide.mjs`'s
@@ -332,17 +343,26 @@ no plugin code, no game file.
 3. `decide.mjs` with the gates built from the check: G1 the builds, G2 the check, G3
    the CL against the one the header was built for, G4 the client registry scan (the
    client check alone decides; no dedicated-server scan is read), G5 the classes
-   the layout diff moved, changed or lost, then the field rows, and the history on
-   the `vmap-feed` release for the rate limits.
+   the layout diff moved, changed or lost, the plugin verdicts (`plugins.json`), then
+   the field rows, and the history on the `vmap-feed` release for the rate limits.
 4. On path M only: `export-feed`, sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and
    verify it, `staging.mjs stage` for a beta build, and `promote.mjs plan`. All dry runs.
+   The chain writes `verify.json` from this run's re-scan and marks the run publishable
+   for a promotion, or for `public`'s own build on a new CL with nothing staged (the
+   normal flow).
 5. The `publish` job (input `publish`, default off; `public` branch only; decide `M` and
-   promote action `promote`) signs the exported feed with the release key k2 at the
-   planned seq, verifies it without the TEST key, and uploads it with the history to
-   the `vmap-feed` release. `sr-watch.yml` does not pass `publish`.
+   a publishable run) is reachable only when `publish` is explicitly on. It runs in the
+   `vmap-sign` environment (main only), one at a time (`concurrency: vmap-publish`),
+   reads the live feed's seq again right before signing, signs the exported feed with the
+   release key k2 above it, verifies it without the TEST key, and uploads it with the
+   history to the `vmap-feed` release. `sr-watch.yml` does not pass `publish`, and passes
+   only `VMAP_SIGN_KEY_TEST` (no `secrets: inherit`). Its `client-check` job grants
+   `contents: write` as a ceiling: GitHub checks every called job against the caller's
+   permissions when it parses the call, so `publish` could not be called otherwise; each
+   called job still sets its own, and only `publish` asks for write.
 
-Until the loader fork's deploy key exists (step 26), the staging record carries no
-loader commit (zeros) and the header is an artifact only.
+Until the loader fork's deploy key exists (step 26), the header is an artifact only and
+the staging record names the loader commit the header was read from.
 
 Offline replay (2026-11-01, run 41272795133, CL-128786, a throwaway key): the loader's
 header pruned to CL-127004 gives 102 rows written, 557 field rows with 5 absent,

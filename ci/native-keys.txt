@@ -26,10 +26,13 @@ ProductionViewer FCrGridEntityHandle::Data
 #   <offset> <size> <mask>  the built values (hex), for a key whose PDB size is
 #                           not the plugin's: FTransform::Translation is sized
 #                           as the SIMD register there (ci/field-rows.mjs);
-#   required                the plugin cannot run without the member, so a build
-#                           that lacks it holds the map. Without it, a member
-#                           gone on a build gets an absent row and the plugin
-#                           takes its fallback.
+#   optional                the plugin has a fallback without the member, so a
+#                           member gone on a build gets an absent row and the
+#                           plugin takes its fallback. Without it, a member gone
+#                           on a build holds the map: the loader refuses a plugin
+#                           whose field request does not resolve. A key listed
+#                           by several plugins is optional only if every line
+#                           says so.
 #
 # RuptureTimer, WaveOptimiser, CameraControls and ProductionViewer's
 # ServerSessionName read their numbers through the loader's map, which holds the

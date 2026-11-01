@@ -110,13 +110,15 @@ blank lines are skipped):
 ```
 function <key>                          a hookName, or a loader registry name
 required <key>                          a function key the loader needs to start
-native <key> [<offset> <size> <mask>] [required]   a native (non-reflected) field; the values as built, hex, all three or none
-field <key> [required]                  a reflected field
+native <key> [<offset> <size> <mask>] [optional]   a native (non-reflected) field; the values as built, hex, all three or none
+field <key> [optional]                  a reflected field
 ```
 
-A trailing `required` marks a member the plugin cannot run without: a build that
-lacks it holds the map (`field-rows.mjs`, exit 3). Without it, a member gone on a
-build gets an absent row and the plugin takes its fallback.
+A member gone on a build refuses the plugin that requests it, so by default a build
+that lacks it holds the map (`field-rows.mjs`, exit 3). A trailing `optional` marks a
+member the plugin has a fallback for: a member gone on a build gets an absent row and
+the plugin takes its fallback. When several lists have a key, it is optional only if every
+list says so.
 
 Several lists are taken together: a key may be in more than one under the same
 kind (`required` and `function` are both function keys), a key that is a
