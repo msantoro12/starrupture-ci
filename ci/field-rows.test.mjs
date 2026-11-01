@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addBuild, emit, parse, parseKeys, unionKeys } from './version-map.mjs';
-import { fieldRows } from './field-rows.mjs';
+import { fieldRows, keysFromCheck } from './field-rows.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, 'field-rows.mjs');
@@ -69,10 +69,37 @@ test('every native key gets a row, and a reflected key that moved gets one too',
   assert.equal(out.added, 4);
 });
 
-test('a reflected key that only the reference build resolves is PARTIAL, not guessed', () => {
+test('a reflected key that only the reference build resolves gets an absent row, not a guess', () => {
   const out = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: base() });
-  assert.deepEqual(out.partial.map((p) => p.key), ['UCrOld::Removed']);
+  assert.deepEqual(out.absent.map((p) => p.key), ['UCrOld::Removed']);
   assert.equal(row(out.text, 'UCrOld::Removed'), undefined);
+  assert.deepEqual(parse(out.text).absentFields, [{ key: 'UCrOld::Removed', cl: 130000 }]);
+  assert.ok(out.covered.includes('UCrOld') && out.covered.includes('ACrCrafter'));
+  assert.ok(!out.covered.includes('UCrSomething'), 'nothing of it moved');
+});
+
+test('a native key the new build does not have gets an absent row; a required one is refused', () => {
+  const n = next().map((e) => (e.key === 'UCrGameInstance::ServerSessionName' ? { key: e.key, result: 'NOMEMBER' } : e));
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: n, base: base() });
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(out.absent.map((p) => p.key), ['UCrGameInstance::ServerSessionName', 'UCrOld::Removed']);
+  assert.equal(row(out.text, 'UCrGameInstance::ServerSessionName'), undefined);
+  const req = unionKeys([parseKeys(KEYS.replace('0x290 0x10 0x00', '0x290 0x10 0x00 required').replace('field UCrOld::Removed', 'field UCrOld::Removed required'))]);
+  const held = fieldRows(header(), { cl: 130000, keys: req, next: n, base: base() });
+  assert.equal(held.text, null);
+  assert.ok(held.problems.some((p) => p.startsWith('native UCrGameInstance::ServerSessionName') && p.includes('required')));
+  assert.ok(held.problems.some((p) => p.startsWith('field UCrOld::Removed') && p.includes('required')));
+});
+
+test('the client check key list: native-keys.txt lines with built values and required, plus the plain layout keys', () => {
+  const k = keysFromCheck(
+    'P UCrGameInstance::ServerSessionName\nQ UCrGameInstance::ServerSessionName required\nP FTransform::Translation 0x20 0x18 0x00 a.cpp:x~@,\n',
+    'FTransform::Translation\nUCrGameInstance::ServerSessionName\nACrCrafter::CraftComponent\nACrCrafter\n');
+  assert.deepEqual([...k.native.keys()].sort(), ['FTransform::Translation', 'UCrGameInstance::ServerSessionName']);
+  assert.equal(k.native.get('FTransform::Translation').size, 0x18);
+  assert.ok(k.requiredFields.has('UCrGameInstance::ServerSessionName'));
+  assert.deepEqual([...k.fields].sort(), ['ACrCrafter', 'ACrCrafter::CraftComponent']);
+  assert.throws(() => keysFromCheck('P FTransform::Translation 0x20 0x18 0x00\nQ FTransform::Translation 0x20 0x20 0x00\n', ''), /two different built values/);
 });
 
 test('FTransform::Translation keeps the built size, not the register size', () => {
@@ -121,7 +148,7 @@ test('the command line writes the header and the report, and logs no member name
   const run = spawnSync(process.execPath, [TOOL, 'write', h, '--cl', '130000', '--next', w('n.json', { keys: next() }), '--base', w('b.json', { keys: base() }),
     '--keys', w('k.txt', KEYS), '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
   assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /4 rows added, PARTIAL: 1 reflected keys need a person \(UCrOld::Removed\)/);
+  assert.match(run.stdout, /4 rows added, 1 absent \(UCrOld::Removed\)/);
   assert.equal(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).added, 4);
   assert.equal(row(readFileSync(h, 'utf8'), 'ACrCrafter::CraftComponent').offset, 0x6e0);
   const refused = spawnSync(process.execPath, [TOOL, 'write', h, '--cl', '130000', '--next', w('n2.json', { keys: [gone('UCrGameInstance::ServerSessionName')] }), '--keys', w('k2.txt', 'native UCrGameInstance::ServerSessionName\n')], { encoding: 'utf8', windowsHide: true });

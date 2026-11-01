@@ -1049,7 +1049,7 @@ jobs:
             $tool = 'ci-tool\ci\apply-proposals.mjs'
             $native = 'ci-tool\ci\native-keys.txt'
             function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
-            $anchored = @(Get-Content $native | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s+\S') { $Matches[1] } } | Sort-Object -Unique)
+            $anchored = @(Get-Content $native | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s.*:') { $Matches[1] } } | Sort-Object -Unique)
             $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
             $work = Join-Path $env:RUNNER_TEMP 'offsets'
             New-Item -ItemType Directory -Force $work | Out-Null
@@ -1094,7 +1094,7 @@ jobs:
             # The step itself crashed: no plugin passes on offsets nobody checked.
             Write-Host "::error title=Fixed offsets::$($_.Exception.Message)"
             $why = "fixed offsets not checked: $($_.Exception.Message)"
-            $anchored = @(Get-Content 'ci-tool\ci\native-keys.txt' | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s+\S') { $Matches[1] } } | Sort-Object -Unique)
+            $anchored = @(Get-Content 'ci-tool\ci\native-keys.txt' | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s.*:') { $Matches[1] } } | Sort-Object -Unique)
             $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
             foreach ($p in @($pj.plugins | Where-Object { $_.source -eq 'build' -and $_.name -in $anchored -and $_.verdict -in 'PASS', 'NONE', 'GAME-CALL' })) {
               $p | Add-Member -NotePropertyName patternVerdict -NotePropertyValue $p.verdict -Force

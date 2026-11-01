@@ -604,12 +604,17 @@ export function parseNativeKeys(text) {
   text.split(/\r?\n/).forEach((raw, i) => {
     const line = raw.trim();
     if (!line || line.startsWith('#')) return;
-    const m = /^(\S+)\s+(\S+::\S+)(?:\s+(\S.*))?$/.exec(line);
+    const m = /^(\S+)\s+(\S+::\S+)(?:\s+(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+))?(?:\s+(required))?(?:\s+(\S.*))?$/.exec(line);
     if (!m) throw new Error(`native-keys.txt line ${i + 1}: malformed '${raw}'`);
     const e = { plugin: m[1], key: m[2] };
-    if (m[3]) {
-      try { e.compiled = compileAnchor(m[3]); } catch (err) { throw new Error(`native-keys.txt line ${i + 1}: ${err.message}`); }
-      e.anchor = m[3].trim();
+    // The built offset, size and bool mask, for a key whose PDB size is not the
+    // plugin's (field-rows.mjs REFLECTED_SIZE_KEYS).
+    if (m[3]) e.built = { offset: parseInt(m[3], 16), size: parseInt(m[4], 16), mask: parseInt(m[5], 16) };
+    // The plugin cannot run without the member: gone on a build holds the map.
+    if (m[6]) e.required = true;
+    if (m[7]) {
+      try { e.compiled = compileAnchor(m[7]); } catch (err) { throw new Error(`native-keys.txt line ${i + 1}: ${err.message}`); }
+      e.anchor = m[7].trim();
     }
     entries.push(e);
   });
