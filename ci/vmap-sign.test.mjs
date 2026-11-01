@@ -55,6 +55,13 @@ test("accepts the loader's own fixture signed by the TEST key, and flags it", ()
   assert.equal(PUBLIC_KEYS.k1.test, true);
 });
 
+test('k2 is the release key: a k2 feed verifies as not TEST, so the command line needs no --allow-test-key', () => {
+  assert.deepEqual(PUBLIC_KEYS.k2, { hex: '5457aba109e92926917d74e15932e4ff689f28f83510ec1a9679e7b8e7c81a85', test: false });
+  const k = pair();
+  const { text } = signFeed(unsigned(), k.pem, { keyId: 'k2', now: NOW });
+  assert.deepEqual(verifyFeed(text, { keys: { ...PUBLIC_KEYS, k2: { hex: k.hex, test: false } }, now: NOW }), { keyId: 'k2', seq: NOW, test: false });
+});
+
 test('the command line refuses a TEST-key feed unless --allow-test-key is given', () => {
   const file = join(mkdtempSync(join(tmpdir(), 'vmap-sign-')), 'feed.txt');
   writeFileSync(file, fixture('vmap-sign', 'test-feed-k1.txt'));
