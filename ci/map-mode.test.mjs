@@ -363,3 +363,71 @@ test('the pattern path does not write a rip-displacement proposal into a plugin 
   scan.patterns[0].suggest.proposals[0].followRipDispAt = -1;
   assert.equal(selectRows(scan, {}).rows.length, 1);
 });
+
+// ---- assemble: the harness JSON becomes the input -----------------------------
+
+import { assemble } from './map-mode.mjs';
+
+function scratch(files) {
+  const dir = mkdtempSync(join(tmpdir(), 'mapmode-asm-'));
+  for (const [name, doc] of Object.entries(files)) writeFileSync(join(dir, name), JSON.stringify(doc));
+  return dir;
+}
+
+const loaderScan = {
+  patterns: [
+    { name: 'GWorld', key: 'GWorld', kind: 'data', required: true, result: 'OK', rva: '0xE30000', symbolRva: '0xE30000', pattern: '48 8B 05 ?? ?? ?? ??', followRel32At: -1, followRipDispAt: 0, siteArithmetic: 0, fp: '0x00000000' },
+    { name: 'Spare', key: 'ModLoader/Spare', kind: 'any', required: false, result: 'MISSING', pattern: '40 53 ??', fp: '0x0BADF00D', suggest: { confidence: 'high', rva: '0x8E5000', proposals: [{ pattern: '48 8B', uniqueOnTarget: true, followRipDispAt: 0 }] } },
+  ],
+};
+const pluginScan = {
+  plugin: { name: 'BetterCheats' },
+  patterns: [
+    { call: 'Resolve', name: PE, key: PE, kind: 'infunction', required: true, result: 'OK', rva: '0xC03000', pattern: '48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ??', fp: '0x2D1AC6AE', resultOffset: 0 },
+    { call: 'ResolveRequired', name: 'legacy', kind: 'any', required: true, result: 'OK', rva: '0x1000', pattern: '48 89' },
+  ],
+};
+
+test('assemble turns harness rows into the input, keeping only map requests', () => {
+  const dir = scratch({ 'loader.json': loaderScan, 'bc.json': pluginScan });
+  const input = assemble({
+    cl: 130000, build: BUILD,
+    scans: [
+      { owner: 'ModLoader', tag: 'v1.22.1', rank: 'current', file: 'loader.json' },
+      { owner: 'BetterCheats', tag: 'v0.23.0', rank: 'current', file: 'bc.json' },
+    ],
+  }, dir);
+  assert.equal(input.schema, 1);
+  const [loader, bc] = input.components;
+  assert.equal(loader.owner, 'ModLoader');
+  assert.equal(loader.releases[0].rows.length, 2);
+  assert.equal(loader.releases[0].rows[0].required, true);
+  assert.equal(loader.releases[0].rows[0].symbolRva, '0xE30000');
+  assert.equal(bc.releases[0].rows.length, 1, 'the legacy call has no key');
+  assert.equal(bc.releases[0].rows[0].required, false, 'only the loader requires');
+  // And map mode accepts it.
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  assert.ok(find(out.text, PE, FP_A));
+});
+
+test('assemble refuses a scan of another plugin, an empty spec and a non-harness file', () => {
+  const dir = scratch({ 'bc.json': pluginScan, 'junk.json': { hello: 1 } });
+  assert.throws(() => assemble({ cl: 1, scans: [{ owner: 'WAILA', tag: 'v1', rank: 'current', file: 'bc.json' }] }, dir), /not "WAILA"/);
+  assert.throws(() => assemble({ cl: 1, scans: [] }, dir), /no scans/);
+  assert.throws(() => assemble({ cl: 1, scans: [{ owner: 'WAILA', tag: 'v1', rank: 'current', file: 'junk.json' }] }, dir), /no patterns array/);
+});
+
+test('assemble runs from the command line', () => {
+  const dir = scratch({ 'loader.json': loaderScan, 'spec.json': { cl: 130000, build: BUILD, scans: [{ owner: 'ModLoader', tag: 'v1.22.1', rank: 'current', file: 'loader.json' }] } });
+  const run = spawnSync(process.execPath, [TOOL, 'assemble', join(dir, 'spec.json'), '--out', join(dir, 'in.json')], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'in.json'), 'utf8')).components[0].releases[0].rows.length, 2);
+});
+
+test('assemble takes the CL and the build from the registry scan exe block', () => {
+  const dir = scratch({ 'loader.json': { ...loaderScan, exe: { cl: 130000, imageStamp: '0x6B000001', imageSize: '0x0A430000' } } });
+  const input = assemble({ source: BUILD.source, scans: [{ owner: 'ModLoader', tag: 'v1.22.1', rank: 'current', file: 'loader.json' }] }, dir);
+  assert.equal(input.cl, 130000);
+  assert.deepEqual(input.build, BUILD);
+});

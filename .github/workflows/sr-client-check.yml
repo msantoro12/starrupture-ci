@@ -77,6 +77,10 @@ on:
         description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
         type: string
         default: 'high'
+      map_mode:
+        description: 'Write the update into the loader version map (ci/map-mode.mjs) and upload the header'
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       branch:
@@ -121,6 +125,10 @@ on:
         type: choice
         options: [high, medium]
         default: high
+      map_mode:
+        description: 'Write the update into the loader version map (ci/map-mode.mjs) and upload the header'
+        type: boolean
+        default: false
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -1303,6 +1311,89 @@ jobs:
             out/autofix-*
             out/layout*.json
             out/offsets-*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---- Map mode: the update as rows in the loader's version map -----------
+  # Runs the assembler and the writer of ci/map-mode.mjs on the scans the check
+  # job uploaded and on the loader's header, and uploads the rewritten header
+  # and the report. Reads only artifacts and the header: no Steam login, no
+  # plugin code, no game files.
+  # TODO(step 26, needs the owner): pushing the header to the loader fork's
+  # auto/update-<CL> needs the fork deploy key and the auto/** ruleset (checklist
+  # in ci/MAP-MODE.md). Until then the header is an artifact only.
+  # TODO: the scans of the previous release of each tracked component
+  # (rank previous) are not run yet, so a changed fp adds its set only once a
+  # release carrying it is the current one.
+  map-mode:
+    name: map mode
+    needs: [check]
+    if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BRANCH: ${{ inputs.branch }}
+      BUILDID: ${{ inputs.buildid }}
+      PLUGINS: ${{ inputs.plugins }}
+      LOADER_REF: ${{ inputs.loader_ref }}
+    steps:
+      - name: Check out the map tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Check out the loader's header
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.loader_ref }}
+          path: loader
+          sparse-checkout: StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download the scans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: client-check-${{ inputs.branch }}
+          path: res
+
+      - name: Write the update into the header
+        run: |
+          set -euo pipefail
+          # The loader's registry scan, then each plugin scan. A plugin is
+          # tracked when it is one of the built `plugins`; otherwise (MiniMap)
+          # its failing rows go to the pattern path.
+          scans="$(jq -n --arg tag "$LOADER_REF" '[{owner: "ModLoader", tracked: true, tag: $tag, rank: "current", file: "res/scanner.json"}]')"
+          for f in res/plugin-*.json; do
+            name="$(jq -r '.plugin.name // empty' "$f")"
+            [ -n "$name" ] || continue
+            tracked=false
+            case " $PLUGINS " in *"StarRupture-Plugin-$name@"*) tracked=true;; esac
+            scans="$(jq --arg n "$name" --argjson t "$tracked" --arg f "$f" '. + [{owner: $n, tracked: $t, tag: "current", rank: "current", file: $f}]' <<<"$scans")"
+          done
+          jq -n --arg src "$BRANCH $BUILDID" --argjson scans "$scans" '{source: $src, scans: $scans}' > scans.json
+          node tool/ci/map-mode.mjs assemble scans.json --out observations.json
+          header=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
+          status=0
+          node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json || status=$?
+          cp "$header" version_map.generated.h
+          if [ "$status" -ne 0 ]; then echo "::error::map mode refused the update (exit $status); see the log and map-mode-report.json"; fi
+          exit "$status"
+
+      - name: Upload the header
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: map-mode-${{ inputs.branch }}
+          path: |
+            version_map.generated.h
+            map-mode-report.json
+            observations.json
           if-no-files-found: warn
           retention-days: 14
 

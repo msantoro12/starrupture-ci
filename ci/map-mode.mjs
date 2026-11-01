@@ -40,6 +40,7 @@
 // done by this tool; the checklist is in ci/MAP-MODE.md.
 
 import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, addAbsent, addBuild, addFunction, checkMap, emit, isGlobalKind, parse, parseKeys, unionKeys,
@@ -275,6 +276,49 @@ export function mapMode(headerText, input, { keys = [] } = {}) {
   return { ...out, text: out.map ? emit(out.map) : null };
 }
 
+// ---- Assembling the input from the harness -----------------------------------
+
+// One harness row (`sr-aobscan --json`, registry or --plugin) as an input row, or
+// null when it is not a map request (a raw scan or a legacy hookName+pattern
+// call prints no key). Only the loader's own rows are required: a plugin whose
+// required pattern fails is the plugin check's verdict, not a reason to refuse
+// the map.
+function harnessRow(r, owner) {
+  if (typeof r.key !== 'string' || !r.key) return null;
+  const row = { key: r.key, kind: r.kind, result: r.result, required: owner === 'ModLoader' && r.required === true };
+  for (const f of ['fp', 'rva', 'symbolRva', 'pattern', 'resultOffset', 'followRel32At', 'followRipDispAt', 'siteArithmetic', 'suggest']) {
+    if (r[f] !== undefined) row[f] = r[f];
+  }
+  return row;
+}
+
+// spec: { cl, build, source, scans: [{ owner, tracked, tag, rank, fpAware, file }] },
+// file being a harness JSON, read relative to `dir`. The CL and the build's stamp
+// and size are the registry scan's `exe` block when the spec does not give them;
+// `source` is the build's origin text (`public_test_branch 26271156`). Returns the
+// schema 1 input.
+export function assemble(spec, dir) {
+  if (!spec || !Array.isArray(spec.scans) || !spec.scans.length) throw new MapError('the spec has no scans');
+  const components = new Map();
+  let exe = null;
+  for (const s of spec.scans) {
+    if (typeof s.owner !== 'string' || typeof s.file !== 'string') throw new MapError('a scan needs an owner and a file');
+    const scan = JSON.parse(readFileSync(resolve(dir, s.file), 'utf8').replace(/^﻿/, ''));
+    const name = scan.plugin?.name;
+    if (s.owner !== 'ModLoader' && name !== undefined && name !== s.owner) throw new MapError(`${s.file} is the scan of plugin ${JSON.stringify(name)}, not ${JSON.stringify(s.owner)}`);
+    if (scan.exe && s.owner === 'ModLoader') exe = scan.exe;
+    if (!Array.isArray(scan.patterns)) throw new MapError(`${s.file} has no patterns array (not an sr-aobscan --json output?)`);
+    if (!components.has(s.owner)) components.set(s.owner, { owner: s.owner, tracked: s.tracked !== false, releases: [] });
+    const c = components.get(s.owner);
+    if (c.tracked !== (s.tracked !== false)) throw new MapError(`${s.owner} is both tracked and not`);
+    c.releases.push({ tag: s.tag, rank: s.rank, fpAware: s.fpAware !== false, rows: scan.patterns.map((r) => harnessRow(r, s.owner)).filter(Boolean) });
+  }
+  const input = { schema: 1, cl: spec.cl ?? exe?.cl, components: [...components.values()] };
+  if (spec.build) input.build = spec.build;
+  else if (exe && spec.source) input.build = { stamp: exe.imageStamp, size: exe.imageSize, source: spec.source };
+  return input;
+}
+
 // ---- Command line -------------------------------------------------------------
 
 export function main(argv) {
@@ -286,8 +330,20 @@ export function main(argv) {
     if (k === '--keys') o.keys.push(rest[i + 1]);
     else o[k.slice(2)] = rest[i + 1];
   }
+  if (cmd === 'assemble' && header && o.out) {
+    try {
+      const input = assemble(JSON.parse(readFileSync(header, 'utf8').replace(/^﻿/, '')), dirname(resolve(header)));
+      writeFileSync(o.out, JSON.stringify(input, null, 2) + '\n');
+      return EXIT_OK;
+    } catch (e) {
+      if (!(e instanceof MapError) && !(e instanceof SyntaxError) && e.code !== 'ENOENT') throw e;
+      process.stderr.write(`map-mode: ${e.message}\n`);
+      return EXIT_ERROR;
+    }
+  }
   if (cmd !== 'write' || !header || !o.input) {
-    process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>]\n');
+    process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>]\n'
+      + '       map-mode.mjs assemble <scans.json> --out <observations.json>\n');
     return EXIT_ERROR;
   }
   try {
