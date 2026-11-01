@@ -61,9 +61,9 @@ CameraControls AAuPlayerCameraManager::AdditionalFOVOffset
 CameraControls ULocalPlayer::Origin
 CameraControls ULocalPlayer::Size
 ProductionViewer UCrGameInstance::ServerSessionName
-ProductionViewer UMassEntitySubsystem::EntityManager Production Viewer/production_mass.cpp:\(subsystem\)~\+~@\)
-ProductionViewer FTransform::Translation 0x20 0x18 0x00 Production Viewer/production_mass.cpp:fragment~\+~@,
-ProductionViewer UMassSignalSubsystem::CachedWorld Production Viewer/production_mass.cpp:\(self\)~\+~@\)
+ProductionViewer UMassEntitySubsystem::EntityManager
+ProductionViewer FTransform::Translation 0x20 0x18 0x00 Production Viewer/production_fields.h:PLUGIN_FIELD_NATIVE,~sizeof\(SDK::FVector\),~@
+ProductionViewer UMassSignalSubsystem::CachedWorld
 MiniMap FMassEnemyStateFragment::State optional
 MiniMap FTransform::Translation 0x20 0x18 0x00 optional
 MiniMap UCrPlayerMapMenuDataComponent::FOWData optional
