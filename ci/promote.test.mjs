@@ -163,3 +163,15 @@ test('the command line prints the plan, writes the report, and refuses --live', 
   assert.equal(noAp.status, 0);
   assert.match(noAp.stdout, /HOLD: autopilot: /);
 });
+
+test('test autopilot: a disabled switch plans past it, every other gate stays, and the plan is never live', () => {
+  const off = { ...autopilot, enabled: false };
+  const r = plan(inputs({ autopilot: off, test: true }));
+  assert.equal(r.action, 'promote');
+  assert.equal(r.test, true);
+  assert.match(r.lines.join('\n'), /test run: .* never published/);
+  assert.equal(plan(inputs({ autopilot: off })).action, 'hold', 'without the test flag the switch still holds');
+  assert.notEqual(plan(inputs({ autopilot: off, test: true, verify: { ok: false } })).action, 'promote', 'the re-verify still gates');
+  assert.equal(plan(inputs({ autopilot: { ...off, paths: [] }, test: true })).action, 'hold', 'path M must still be enabled');
+  assert.throws(() => promote(inputs({ autopilot: off, test: true }), { dryRun: false }), /never live/);
+});

@@ -57,17 +57,26 @@ export function classify(entry, pub) {
 
 // Reasons the autopilot file or the history forbid a publish now; [] when it may go.
 // The checks are decide.mjs's, so a publish and a release obey one set of limits.
-export function gate({ autopilot, history, cl, now, rollForward = false }) {
+// test: a dispatched test run plans past a disabled autopilot (every other check
+// stays); its plan is marked a test and is never published.
+export function gate({ autopilot, history, cl, now, rollForward = false, test = false }) {
   const ap = checkAutopilot({ ok: true, value: autopilot });
   if (ap.error) return [ap.error];
-  if (!ap.enabled) return ['autopilot is disabled (enabled is not true)'];
+  if (!ap.enabled && !test) return ['autopilot is disabled (enabled is not true)'];
   if (!ap.paths.includes('M')) return ['path M (map-only update) is not enabled in autopilot.paths'];
   return checkRateLimits({ historyLoaded: { ok: true, value: history }, repo: LOADER_REPO, cl: String(cl), path: 'M', nowMs: now, maxPerDay: ap.maxPerDay, rollForward });
 }
 
 // Returns { action, kind, cl, seq, lines, hold }; kind is how the public build
 // matched the index: different-cl, same or same-cl.
-export function plan({ index, pub, autopilot, history, lastSeq, now, verify = null, rollForward = false }) {
+export function plan({ index, pub, autopilot, history, lastSeq, now, verify = null, rollForward = false, test = false }) {
+  const r = planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollForward, test });
+  if (!test) return r;
+  r.lines.push('test run: the autopilot switch was not read as on; this plan is never published');
+  return { ...r, test: true };
+}
+
+function planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollForward, test }) {
   need(isObj(index), 'staged index is not an object');
   need(isObj(pub) && Number.isInteger(pub.cl) && /^\d+$/.test(String(pub.buildid)) && /^[0-9a-f]{64}$/.test(String(pub.exeSha256 ?? '')), 'public build needs cl, buildid and exeSha256');
   need(Number.isInteger(lastSeq) && lastSeq >= 0, 'last seq is not a non-negative integer');
@@ -105,7 +114,7 @@ export function plan({ index, pub, autopilot, history, lastSeq, now, verify = nu
   lines.push(`rebase ${repo.ref} (${short(repo.sha)}) onto the ${LOADER_REPO} fork's current tip; regenerate the data commit if it conflicts`);
   lines.push(`open a PR from the fork into ${LOADER_REPO} main for CL-${pub.cl}; merge once CI passes`);
   if (rollForward) lines.push(`roll-forward: an owner-dispatched re-publish of CL-${pub.cl}; the one-publish-per-CL limit does not apply`);
-  const hold = gate({ autopilot, history, cl: pub.cl, now, rollForward });
+  const hold = gate({ autopilot, history, cl: pub.cl, now, rollForward, test });
   if (!isObj(verify) || verify.ok !== true) hold.push(`no passing ${check} result on the public exe`);
   // The signer's rule: the UTC second of signing, and never back.
   const seq = Math.max(Math.floor(now / 1000), lastSeq + 1);
@@ -121,6 +130,7 @@ export function plan({ index, pub, autopilot, history, lastSeq, now, verify = nu
 
 // effects: { sign, publish, release }, called only in a live run, which does not exist yet.
 export function promote(inputs, { dryRun = true, effects } = {}) {
+  need(!(inputs.test && !dryRun), 'a test-autopilot plan is never live');
   need(dryRun === true, 'live promotion is not built (needs the signing key, the publish workflow and the fork deploy key; see the TODO in this file)');
   void effects;
   return plan(inputs);
@@ -133,13 +143,13 @@ function readJson(path) {
 export function main(argv) {
   const [cmd, ...rest] = argv;
   const o = {};
-  const FLAGS = ['--live', '--roll-forward'];
+  const FLAGS = ['--live', '--roll-forward', '--test-autopilot'];
   for (let i = 0; i < rest.length; i += FLAGS.includes(rest[i]) ? 1 : 2) {
     if (!rest[i]?.startsWith('--') || (!FLAGS.includes(rest[i]) && rest[i + 1] === undefined)) { process.stderr.write(`promote: bad argument ${rest[i]}\n`); return 2; }
     o[rest[i].slice(2)] = FLAGS.includes(rest[i]) ? true : rest[i + 1];
   }
   if (cmd !== 'plan' || !o.index || !o.public || !o.autopilot || !o.history || o['last-seq'] === undefined || !o.now) {
-    process.stderr.write('usage: promote.mjs plan --index <f> --public <f> --autopilot <f> --history <f> --last-seq <N> --now <ISO> [--verify <f>] [--roll-forward] [--out <f>]\n');
+    process.stderr.write('usage: promote.mjs plan --index <f> --public <f> --autopilot <f> --history <f> --last-seq <N> --now <ISO> [--verify <f>] [--roll-forward] [--test-autopilot] [--out <f>]\n');
     return 2;
   }
   try {
@@ -148,7 +158,7 @@ export function main(argv) {
     const result = promote({
       index: readJson(o.index), pub: readJson(o.public), autopilot: loadOr(o.autopilot), history: loadOr(o.history),
       lastSeq: /^\d+$/.test(o['last-seq']) ? Number(o['last-seq']) : NaN, now,
-      verify: o.verify ? loadOr(o.verify) : null, rollForward: o['roll-forward'] === true,
+      verify: o.verify ? loadOr(o.verify) : null, rollForward: o['roll-forward'] === true, test: o['test-autopilot'] === true,
     }, { dryRun: !o.live });
     process.stdout.write(`dry run: nothing is signed, published or released\n${result.lines.join('\n')}\n`);
     if (o.out) writeFileSync(o.out, JSON.stringify(result, null, 2) + '\n');

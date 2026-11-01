@@ -149,7 +149,7 @@ test('M: used classes that moved ship when the field rows settle every one', () 
   assert.equal(r.decision, 'M');
   assert.deepEqual(r.reasons, []);
   assert.match(r.notes.join(), /2 used class\(es\) changed layout, every one settled by the field rows/);
-  assert.match(r.notes.join(), /1 member\(s\) gone on CL-127999, each marked optional/);
+  assert.match(r.notes.join(), /1 member\(s\) gone on CL-127999, each an absent row/);
 });
 
 test('C: a moved used class the field rows do not settle holds, naming it', () => {
@@ -477,9 +477,53 @@ test('cli: --out writes the same decision', () => {
 
 // ------------------------------------------------------------ plugin verdicts and gone keys
 
-test('HOLD: a plugin the loader would refuse on the new build holds the map', () => {
-  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict: 'FAIL', note: 'does not declare PLUGIN_MAP_MIGRATED' }] });
-  holds(decide(base({ plugins })), /1 plugin\(s\) the loader would refuse on CL-127999: WAILA FAIL \(does not declare PLUGIN_MAP_MIGRATED\)/);
+test('M: one plugin that cannot load on the new CL is held alone; the rest are updated', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict: 'REFUSED', note: 'does not declare PLUGIN_MAP_MIGRATED' }] });
+  const r = decide(base({ plugins }));
+  assert.equal(r.decision, 'M');
+  assert.equal(r.pluginsOk, true);
+  assert.deepEqual(r.plugins.map((p) => [p.name, p.status]), [['BetterCheats', 'updated'], ['WAILA', 'held']]);
+  assert.match(r.plugins[1].reasons[0], /cannot load on the new CL: REFUSED \(does not declare PLUGIN_MAP_MIGRATED\); rebuild path/);
+  assert.match(r.notes.join(' '), /WAILA held/);
+});
+
+test('M: a plugin missing a required field or pattern is updated and degraded, not held', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' },
+    { name: 'WAILA', verdict: 'FAIL', patterns: [{ name: 'GetCargo', recorded: true, required: true, result: 'MISSING' }, { name: 'Extra', recorded: true, required: false, result: 'AMBIGUOUS' }, { name: 'Fine', recorded: true, required: true, result: 'OK' }] }] });
+  const fields = ok({ written: true, cl: 127999, added: 0, absent: [{ key: 'UFoo::Gone', owners: ['BetterCheats'], severity: 'high' }], covered: ['UFoo'], notes: [], problems: [],
+    degraded: { BetterCheats: [{ key: 'UFoo::Gone', severity: 'high', why: 'resolves on the reference build only' }] } });
+  const r = decide(base({ g5: ok(layout('UFoo')), plugins, fields }));
+  assert.equal(r.decision, 'M');
+  assert.equal(r.pluginsOk, true);
+  assert.deepEqual(r.plugins.map((p) => [p.name, p.status, p.degraded.map((d) => `${d.key}:${d.severity}`)]),
+    [['BetterCheats', 'updated', ['UFoo::Gone:high']], ['WAILA', 'updated', ['GetCargo:high', 'Extra:low']]]);
+  assert.match(r.notes.join(' '), /BetterCheats updated, degraded: UFoo::Gone off \(HIGH: 1 required request\(s\) missing\)/);
+});
+
+test('HOLD: a plugin that crashed or was not verified holds the whole update; so does a loader request', () => {
+  for (const verdict of ['CRASH', 'ERROR', 'BUILD-FAILED', 'OFFSETS-UNCHECKED']) {
+    const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict }] });
+    const r = decide(base({ plugins }));
+    holds(r, new RegExp(`1 plugin\\(s\\) not verified on CL-127999, which the loader cannot turn off: WAILA ${verdict}`));
+    assert.equal(r.pluginsOk, false);
+  }
+  const fields = ok({ written: false, cl: 127999, added: 0, absent: [], covered: [], notes: [], problems: ['field UFoo::Core: resolves on the reference build only; the loader itself reads it, so every plugin depends on it'] });
+  holds(decide(base({ g5: ok(layout('UFoo')), fields })), /the loader itself reads it/);
+  holds(decide(base({ g4: ok(aob([aobRow('GetWorld')], { noGlobals: true })) })), /SDK global offsets not resolved/);
+});
+
+test('test autopilot: a disabled autopilot still holds, and wouldBe names the path it would take', () => {
+  const autopilot = ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 });
+  const r = decide(base({ autopilot, testAutopilot: true }));
+  holds(r, /autopilot is disabled/);
+  assert.equal(r.wouldBe, 'M');
+  assert.equal(r.test, true);
+  assert.equal(r.reasons.length, 1);
+  const real = decide(base({ autopilot }));
+  holds(real, /autopilot is disabled/);
+  assert.equal(real.wouldBe, undefined, 'only a test run says what it would be');
+  const bad = decide(base({ autopilot, testAutopilot: true, g2: ok({ ok: false }) }));
+  assert.equal(bad.wouldBe, 'HOLD');
 });
 
 test('HOLD: plugin verdicts missing, malformed or with a status that disagrees', () => {
@@ -505,9 +549,9 @@ test('HOLD: a gone key not marked optional, or a class size change, never reache
     /its size changed \(0x70 -> 0x78\).*\(and 1 more\)/);
 });
 
-test('M: an optional key gone on the new build is a note naming the plugin', () => {
+test('M: a key gone on the new build is a note naming the plugin', () => {
   const fields = ok({ written: true, cl: 127999, added: 0, absent: [{ key: 'UFoo::Gone', owners: ['BetterCheats'] }], covered: ['UFoo'], notes: [], problems: [] });
   const r = decide(base({ g5: ok(layout('UFoo')), fields }));
   assert.equal(r.decision, 'M');
-  assert.match(r.notes.join(' '), /1 member\(s\) gone on CL-127999, each marked optional.*UFoo::Gone \(BetterCheats\)/);
+  assert.match(r.notes.join(' '), /1 member\(s\) gone on CL-127999, each an absent row.*UFoo::Gone \(BetterCheats\)/);
 });

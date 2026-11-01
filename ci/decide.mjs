@@ -166,8 +166,21 @@ function checkSdkGlobals(rows) {
   };
 }
 
-// The plugin verdicts of the client check. Returns { error } or { refused, partial }.
+// The plugin verdicts of the client check, per plugin. Returns { error } or
+// { list, wholeHold, partial }:
+//   PASS, NONE, GAME-CALL  updated
+//   FAIL                   updated, degraded: a pattern it resolves is missing,
+//                          the loader turns that request off
+//   REFUSED                held, this plugin only: it cannot load on the new CL
+//                          (interface version, or no built CL), whatever the map
+//                          says; it goes to the rebuild path
+//   anything else          holds the whole update (CRASH, ERROR, BUILD-FAILED,
+//                          FETCH-FAILED, OFFSETS, OFFSETS-UNCHECKED): not
+//                          verified, or a misread the loader cannot turn off, and
+//                          the feed has no switch that refuses one plugin
 const PLUGIN_OK = new Set(['PASS', 'NONE', 'GAME-CALL']);
+const PLUGIN_DEGRADED = new Set(['FAIL']);
+const PLUGIN_HELD = new Set(['REFUSED']);
 function checkPlugins(loaded) {
   const bad = checkEnvelope('plugins', loaded);
   if (bad) return { error: bad };
@@ -176,10 +189,28 @@ function checkPlugins(loaded) {
   if (v.plugins.some((p) => !isObj(p) || typeof p.name !== 'string' || p.name === '' || typeof p.verdict !== 'string' || p.verdict === '')) {
     return { error: 'plugins: a row needs a name and a verdict' };
   }
-  const refused = v.plugins.filter((p) => !PLUGIN_OK.has(p.verdict));
-  if ((v.status === 'pass') !== (refused.length === 0)) return { error: `plugins: status ${JSON.stringify(v.status)} disagrees with the verdicts` };
+  const failing = v.plugins.filter((p) => !PLUGIN_OK.has(p.verdict));
+  if ((v.status === 'pass') !== (failing.length === 0)) return { error: `plugins: status ${JSON.stringify(v.status)} disagrees with the verdicts` };
+  const why = (p) => `${p.verdict}${p.note ? ` (${String(p.note).slice(0, 120)})` : ''}`;
+  const list = v.plugins.map((p) => {
+    const e = { name: p.name, verdict: p.verdict, status: 'updated', degraded: [], reasons: [] };
+    if (PLUGIN_DEGRADED.has(p.verdict)) {
+      for (const r of Array.isArray(p.patterns) ? p.patterns : []) {
+        if (isObj(r) && r.recorded && r.result !== 'OK') e.degraded.push({ key: String(r.name), severity: r.required === false ? 'low' : 'high', why: `pattern ${r.result}` });
+      }
+      if (!e.degraded.length) e.degraded.push({ key: '(a pattern)', severity: 'high', why: why(p) });
+    } else if (PLUGIN_HELD.has(p.verdict)) {
+      e.status = 'held';
+      e.reasons.push(`cannot load on the new CL: ${why(p)}; rebuild path`);
+    } else if (!PLUGIN_OK.has(p.verdict)) {
+      e.status = 'held';
+      e.reasons.push(why(p));
+    }
+    return e;
+  });
   return {
-    refused: refused.map((p) => `${p.name} ${p.verdict}${p.note ? ` (${String(p.note).slice(0, 120)})` : ''}`),
+    list,
+    wholeHold: v.plugins.filter((p) => !PLUGIN_OK.has(p.verdict) && !PLUGIN_DEGRADED.has(p.verdict) && !PLUGIN_HELD.has(p.verdict)).map((p) => `${p.name} ${why(p)}`),
     partial: v.plugins.filter((p) => p.verdict === 'GAME-CALL').map((p) => p.name),
   };
 }
@@ -270,21 +301,39 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
   return reasons;
 }
 
-// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, plugins, fields?, history }, each a loadJson() result.
+// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, plugins, fields?, history }, each a loadJson()
+// result, and testAutopilot (a dispatched test run: the decision is still HOLD while autopilot is disabled,
+// and `wouldBe` says what it would be with autopilot on).
 export function decide(inputs) {
   const reasons = [];
   const notes = [];
+  let disabled = false;
+  let perPlugin = [];
   const fail = (msg) => reasons.push(msg);
-  const out = (decision, path, cl) => ({
-    decision, path, cl: cl ?? null, repo: inputs.repo ?? null, ship: decision === 'M' || decision === 'B',
-    reasons, notes,
-  });
+  const out = (decision, path, cl) => {
+    const r = {
+      decision, path, cl: cl ?? null, repo: inputs.repo ?? null, ship: decision === 'M' || decision === 'B',
+      reasons, notes, plugins: perPlugin,
+      pluginsOk: perPlugin.length > 0 && perPlugin.every((p) => p.status === 'updated' || p.verdict === 'REFUSED'),
+    };
+    if (inputs.testAutopilot) {
+      r.test = true;
+      r.wouldBe = decision;
+      if (disabled) {
+        r.decision = 'HOLD';
+        r.ship = false;
+        r.reasons = ['autopilot is disabled (enabled is not true)', ...reasons];
+      }
+    }
+    return r;
+  };
 
   if (typeof inputs.repo !== 'string' || inputs.repo === '') fail('repo name missing');
   if (!Number.isFinite(inputs.now)) fail('clock value invalid');
 
   const ap = checkAutopilot(inputs.autopilot);
   if (ap.error) fail(ap.error);
+  else if (!ap.enabled && inputs.testAutopilot) disabled = true;
   else if (!ap.enabled) fail('autopilot is disabled (enabled is not true)');
 
   const g1 = checkSimpleGate('G1 compile', inputs.g1);
@@ -298,8 +347,23 @@ export function decide(inputs) {
   // Without a usable gate picture there is no path to name.
   if (g3.error || g4.error || g5.error || g1.error || g2.error || plugins.error) return out('HOLD', null, g3.cl);
 
-  // Shipping the map while the loader would refuse a plugin ships that plugin refused.
-  if (plugins.refused.length) fail(`${plugins.refused.length} plugin(s) the loader would refuse on CL-${g3.cl}: ${plugins.refused.slice(0, 5).join('; ')}`);
+  // Per plugin: one plugin that is held or degraded never holds the others.
+  perPlugin = plugins.list;
+  const fieldsDegraded = isObj(inputs.fields?.value?.degraded) ? inputs.fields.value.degraded : {};
+  for (const [owner, list] of Object.entries(fieldsDegraded)) {
+    const e = perPlugin.find((p) => p.name === owner);
+    const items = (Array.isArray(list) ? list : []).filter(isObj).map((d) => ({ key: String(d.key), severity: d.severity === 'low' ? 'low' : 'high', why: String(d.why ?? '') }));
+    if (e) e.degraded.push(...items);
+    else notes.push(`field rows degrade ${owner}, which has no verdict: ${items.map((d) => d.key).join(', ')}`);
+  }
+  if (plugins.wholeHold.length) fail(`${plugins.wholeHold.length} plugin(s) not verified on CL-${g3.cl}, which the loader cannot turn off: ${plugins.wholeHold.slice(0, 5).join('; ')}`);
+  for (const p of perPlugin) {
+    if (p.status === 'held' && p.verdict === 'REFUSED') notes.push(`${p.name} held: ${p.reasons.join('; ')}`);
+    else if (p.degraded.length) {
+      const high = p.degraded.filter((d) => d.severity === 'high');
+      notes.push(`${p.name} updated, degraded: ${p.degraded.map((d) => `${d.key} off`).join(', ')}${high.length ? ` (HIGH: ${high.length} required request(s) missing)` : ''}`);
+    }
+  }
   if (plugins.partial.length) notes.push(`plugin(s) only partly exercised offline (GAME-CALL): ${plugins.partial.join(', ')}`);
 
   // The four globals must be re-resolved from the new exe: the map rows carry them.
@@ -324,7 +388,7 @@ export function decide(inputs) {
     notes.push(`${g5.usedChanged.length} used class(es) changed layout, every one settled by the field rows: ${g5.usedChanged.slice(0, 5).join(', ')}`);
   }
   if (fieldsRun && !fieldsRun.why && fieldsRun.absent.length) {
-    notes.push(`${fieldsRun.absent.length} member(s) gone on CL-${g3.cl}, each marked optional, so the plugin named turns that feature off: ${fieldsRun.absent.slice(0, 5).join(', ')}`);
+    notes.push(`${fieldsRun.absent.length} member(s) gone on CL-${g3.cl}, each an absent row, so the plugin named turns that feature off: ${fieldsRun.absent.slice(0, 5).join(', ')}`);
   }
   if (g4.softMissed.length > 0) notes.push(`non-required pattern(s) not OK: ${g4.softMissed.join(', ')}`);
 
@@ -360,16 +424,18 @@ function parseArgs(argv) {
 function main() {
   let args;
   try {
-    args = parseArgs(process.argv.slice(2));
+    const argv = process.argv.slice(2);
+    args = parseArgs(argv.filter((a) => a !== '--test-autopilot'));
+    args.testAutopilot = argv.includes('--test-autopilot');
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--test-autopilot]`);
     process.exit(2);
   }
   let result;
   try {
     const now = args.now === undefined ? Date.now() : Date.parse(args.now);
     result = decide({
-      repo: args.repo, now,
+      repo: args.repo, now, testAutopilot: args.testAutopilot,
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
       g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),
