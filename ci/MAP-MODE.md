@@ -124,24 +124,27 @@ output adds nothing.
 
 ## Assembling the input from the harness
 
-\
- is ,
-each  a  output (the registry scan for , a
- scan for a plugin), read relative to the spec. The CL and the build's
-stamp and size come from the registry scan's  block when the spec does not
-give them;  is the build's origin text. A row without a  (a raw scan,
-a legacy hookName call) is not a map request and is left out; only the loader's
-rows are . A scan whose  is not the  is refused.
+```
+node ci/map-mode.mjs assemble <scans.json> --out <observations.json>
+```
 
- runs both commands in its  job when the input
- is true: it takes the check job's scans and the loader's header at
-, and uploads the rewritten header and the report as the artifact
-. Not yet wired: the scans of each tracked component's
-previous release (), the key lists (), and the push of the
+`<scans.json>` is `{ cl?, build?, source?, scans: [{ owner, tracked, tag, rank, fpAware, file }] }`,
+each `file` a `sr-aobscan --json` output (the registry scan for `ModLoader`, a
+`--plugin` scan for a plugin), read relative to the spec. The CL and the build's
+stamp and size come from the registry scan's `exe` block when the spec does not
+give them; `source` is the build's origin text. A row without a `key` (a raw scan,
+a legacy hookName call) is not a map request and is left out; only the loader's
+rows are `required`. A scan whose `plugin.name` is not the `owner` is refused.
+
+`sr-client-check.yml` runs both commands in its `map-mode` job when the input
+`map_mode` is true: it takes the check job's scans and the loader's header at
+`loader_ref`, and uploads the rewritten header and the report as the artifact
+`map-mode-<branch>`. Not yet wired: the scans of each tracked component's
+previous release (`rank: previous`), the key lists (`--keys`), and the push of the
 header to the loader fork (step 26).
 
-The harness side of this input (plugin scan rows printing , ,  and
-, the suggester's  and kinds  and ) is in the
-scanner repo's , not here. A plugin row prints no
- (its request has none); the suggester's  is the
-offset of the instruction start inside the pattern, as  reads it.
+The harness side of this input (plugin scan rows printing `key`, `kind`, `fp` and
+`symbolRva`, the suggester's `followRipDispAt` and kinds `data` and `any`) is in the
+scanner repo's `tools/AobScan`, not here. A plugin row prints no
+`followRipDispAt` (its request has none); the suggester's `followRipDispAt` is the
+offset of the instruction start inside the pattern, as `ScanValidation::Resolve` reads it.
