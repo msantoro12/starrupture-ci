@@ -26,21 +26,19 @@
 // or released from here.
 //
 // TODO(steps 24-26 and 47, need the owner): the live run needs the real signing
-// key, the publish workflow, the fork deploy key and the "M" path accepted by
-// decide.mjs (step 42 replaces path "A" there). Until then --live refuses.
+// key, the publish workflow and the fork deploy key. Until then --live refuses.
 //
 // Exit codes: 0 plan printed (a HOLD is a plan too), 3 refused, 2 usage or malformed input.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { LIMITS } from './decide.mjs';
+import { checkAutopilot, checkRateLimits } from './decide.mjs';
 import { LOADER_REPO } from './staging.mjs';
 
 export class PromoteError extends Error {}
 
 const need = (cond, msg) => { if (!cond) throw new PromoteError(msg); };
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const DAY_MS = 24 * 60 * 60 * 1000;
 const short = (s) => String(s).slice(0, 8);
 
 export function classify(entry, pub) {
@@ -49,26 +47,13 @@ export function classify(entry, pub) {
 }
 
 // Reasons the autopilot file or the history forbid a publish now; [] when it may go.
+// The checks are decide.mjs's, so a publish and a release obey one set of limits.
 export function gate({ autopilot, history, cl, now }) {
-  if (!isObj(autopilot) || typeof autopilot.enabled !== 'boolean' || !Array.isArray(autopilot.paths) || !Number.isInteger(autopilot.max_releases_per_day) || autopilot.max_releases_per_day < 0) {
-    return ['autopilot: unreadable or malformed (fails closed)'];
-  }
-  if (autopilot.enabled !== true) return ['autopilot: not enabled'];
-  if (!autopilot.paths.includes('M')) return ['autopilot: path M (map-only update) is not allowed'];
-  if (!isObj(history) || !Array.isArray(history.releases)) return ['history: malformed (need releases[])'];
-  const mine = [];
-  for (const r of history.releases) {
-    const at = isObj(r) && typeof r.at === 'string' ? Date.parse(r.at) : NaN;
-    if (!isObj(r) || typeof r.repo !== 'string' || Number.isNaN(at)) return ['history: malformed release entry'];
-    if (r.repo === LOADER_REPO) mine.push({ cl: String(r.cl), at });
-  }
-  const cap = Math.min(autopilot.max_releases_per_day, LIMITS.maxReleasesPerDay);
-  const reasons = [];
-  if (mine.filter((r) => r.cl === String(cl)).length >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${LOADER_REPO} already published CL-${cl}`);
-  const lastDay = mine.filter((r) => now - r.at < DAY_MS).length;
-  if (lastDay >= cap) reasons.push(`rate limit: ${lastDay} ${LOADER_REPO} publishes in the last 24 h (limit ${cap})`);
-  if (mine.length && now - Math.max(...mine.map((r) => r.at)) < LIMITS.minGapMinutes * 60 * 1000) reasons.push(`rate limit: last ${LOADER_REPO} publish is less than ${LIMITS.minGapMinutes} minutes old`);
-  return reasons;
+  const ap = checkAutopilot({ ok: true, value: autopilot });
+  if (ap.error) return [ap.error];
+  if (!ap.enabled) return ['autopilot is disabled (enabled is not true)'];
+  if (!ap.paths.includes('M')) return ['path M (map-only update) is not enabled in autopilot.paths'];
+  return checkRateLimits({ historyLoaded: { ok: true, value: history }, repo: LOADER_REPO, cl: String(cl), path: 'M', nowMs: now, maxPerDay: ap.maxPerDay });
 }
 
 // Returns { action, cl, seq, lines, hold }.

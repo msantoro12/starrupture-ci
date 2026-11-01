@@ -72,13 +72,13 @@ test('a superseded staged CL is listed and skipped, a newer PTR CL stays staged'
 
 test('the autopilot fails closed: missing, disabled, no path M, or over the cap prints a HOLD, never "would sign"', () => {
   for (const [name, over, re] of [
-    ['missing file', { autopilot: null }, /unreadable or malformed/],
-    ['disabled', { autopilot: { ...autopilot, enabled: false } }, /not enabled/],
-    ['path A only', { autopilot: { ...autopilot, paths: ['A'] } }, /path M .* not allowed/],
-    ['malformed cap', { autopilot: { ...autopilot, max_releases_per_day: -1 } }, /malformed/],
-    ['two this day', { history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T01:00:00Z' }, { repo: LOADER_REPO, cl: '2', at: '2026-11-05T05:00:00Z' }] } }, /2 StarRupture-ModLoader publishes in the last 24 h/],
+    ['missing file', { autopilot: null }, /autopilot/],
+    ['disabled', { autopilot: { ...autopilot, enabled: false } }, /autopilot is disabled/],
+    ['no path M', { autopilot: { ...autopilot, paths: ['B'] } }, /path M .* not enabled/],
+    ['malformed cap', { autopilot: { ...autopilot, max_releases_per_day: -1 } }, /max_releases_per_day/],
+    ['two this day', { history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T01:00:00Z' }, { repo: LOADER_REPO, cl: '2', at: '2026-11-05T05:00:00Z' }] } }, /2 StarRupture-ModLoader releases in the last 24 h/],
     ['too soon', { history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T11:50:00Z' }] } }, /less than 30 minutes/],
-    ['already published', { history: { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-10-01T00:00:00Z' }] } }, /already published CL-128786/],
+    ['already published', { history: { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-10-01T00:00:00Z' }] } }, /already released for CL-128786/],
   ]) {
     const r = plan(inputs(over));
     assert.equal(r.action, 'hold', name);
@@ -120,5 +120,5 @@ test('the command line prints the plan, writes the report, and refuses --live', 
   assert.match(live.stderr, /live promotion is not built/);
   const noAp = spawnSync(process.execPath, [TOOL, ...args.map((a) => (a.endsWith('a.json') ? join(dir, 'missing.json') : a))], { encoding: 'utf8', windowsHide: true });
   assert.equal(noAp.status, 0);
-  assert.match(noAp.stdout, /HOLD: autopilot: unreadable/);
+  assert.match(noAp.stdout, /HOLD: autopilot: /);
 });

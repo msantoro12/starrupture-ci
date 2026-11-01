@@ -31,7 +31,7 @@ function base(over = {}) {
   return {
     repo: 'ModLoader',
     now: NOW,
-    autopilot: ok({ schema: 1, enabled: true, paths: ['A', 'B'], max_releases_per_day: 2 }),
+    autopilot: ok({ schema: 1, enabled: true, paths: ['M', 'B'], max_releases_per_day: 2 }),
     g1: ok({ ok: true }),
     g2: ok({ ok: true }),
     g3: ok({ ok: true, cl: '127999', previousCl: '127004' }),
@@ -52,22 +52,22 @@ const holds = (r, re) => {
 test('shipped state/autopilot.json is the safe default', () => {
   const ap = JSON.parse(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'));
   assert.equal(ap.enabled, false);
-  assert.deepEqual(ap.paths, ['A']);
+  assert.deepEqual(ap.paths, ['M']);
   assert.equal(ap.max_releases_per_day, 2);
 });
 
-test('A: CL-only change ships', () => {
+test('M: map-only change ships', () => {
   const r = decide(base());
-  assert.equal(r.decision, 'A');
-  assert.equal(r.path, 'A');
+  assert.equal(r.decision, 'M');
+  assert.equal(r.path, 'M');
   assert.equal(r.ship, true);
   assert.equal(r.cl, '127999');
   assert.deepEqual(r.reasons, []);
 });
 
-test('A: a non-required pattern miss still ships, with a note', () => {
+test('M: a non-required pattern miss still ships, with a note', () => {
   const r = decide(base({ g4: ok(aob([aobRow('GetWorld'), aobRow('Optional', 'MISSING', false)])) }));
-  assert.equal(r.decision, 'A');
+  assert.equal(r.decision, 'M');
   assert.match(r.notes.join(' '), /Optional/);
 });
 
@@ -85,7 +85,7 @@ test('B: an ambiguous required pattern counts as a miss', () => {
 
 test('C: a used class moved is HOLD with path C, even with every path enabled', () => {
   const r = decide(base({
-    autopilot: ok({ enabled: true, paths: ['A', 'B', 'C'], max_releases_per_day: 2 }),
+    autopilot: ok({ enabled: true, paths: ['M', 'B', 'C'], max_releases_per_day: 2 }),
     g5: ok(layout('UInventoryComponent')),
   }));
   holds(r, /path C held until shadow mode is proven/);
@@ -102,19 +102,19 @@ test('C wins over B when both a pattern missed and a class moved', () => {
 });
 
 test('HOLD: autopilot disabled', () => {
-  const r = decide(base({ autopilot: ok({ enabled: false, paths: ['A'], max_releases_per_day: 2 }) }));
+  const r = decide(base({ autopilot: ok({ enabled: false, paths: ['M'], max_releases_per_day: 2 }) }));
   holds(r, /disabled/);
-  assert.equal(r.path, 'A', 'the would-be path is still reported');
+  assert.equal(r.path, 'M', 'the would-be path is still reported');
 });
 
 test('HOLD: path not enabled in autopilot.paths', () => {
   const rB = decide(base({
-    autopilot: ok({ enabled: true, paths: ['A'], max_releases_per_day: 2 }),
+    autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 2 }),
     g4: ok(aob([aobRow('SpawnActor', 'MISSING')])),
   }));
   holds(rB, /path B is not enabled/);
-  const rA = decide(base({ autopilot: ok({ enabled: true, paths: [], max_releases_per_day: 2 }) }));
-  holds(rA, /path A is not enabled/);
+  const rM = decide(base({ autopilot: ok({ enabled: true, paths: [], max_releases_per_day: 2 }) }));
+  holds(rM, /path M is not enabled/);
 });
 
 test('HOLD: G1 or G2 not ok', () => {
@@ -124,16 +124,16 @@ test('HOLD: G1 or G2 not ok', () => {
 
 // ------------------------------------------------------------ SDK globals
 
-test('SDK globals: all four re-resolved and verified is the precondition for A', () => {
+test('SDK globals: all four re-resolved and verified is the precondition for M', () => {
   assert.deepEqual([...SDK_GLOBALS], ['GObjects', 'GNames', 'AppendString', 'GWorld']);
-  assert.equal(decide(base()).decision, 'A');
+  assert.equal(decide(base()).decision, 'M');
   const prefixed = SDK_GLOBALS.map((n) => aobRow(`Offsets::${n.toLowerCase()}`));
-  assert.equal(decide(base({ g4: ok(aob(prefixed, { noGlobals: true })) })).decision, 'A');
+  assert.equal(decide(base({ g4: ok(aob(prefixed, { noGlobals: true })) })).decision, 'M');
 });
 
-test('SDK globals: a scan without them (today registry) is HOLD, never A', () => {
+test('SDK globals: a scan without them (today registry) is HOLD, never M', () => {
   const r = decide(base({ g4: ok(aob([aobRow('GetWorld'), aobRow('SpawnActor')], { noGlobals: true })) }));
-  holds(r, /SDK global offsets not verified/);
+  holds(r, /SDK global offsets not resolved/);
   assert.equal(r.path, null);
   for (const k of SDK_GLOBALS) assert.match(r.reasons.join(), new RegExp(`${k}: no pattern`));
 });
@@ -153,28 +153,32 @@ for (const key of SDK_GLOBALS) {
     }
   });
 
-  test(`SDK globals: ${key} not matching, or resolved to a different offset than the SDK bakes in, is HOLD`, () => {
+  test(`SDK globals: ${key} not matching is HOLD, and a moved offset is a note`, () => {
     const others = SDK_GLOBALS.filter((n) => n !== key).map((n) => aobRow(n));
     const run = (row, ap) => decide(base({ ...(ap ? { autopilot: ap } : {}), g4: ok(aob([...others, row], { noGlobals: true })) }));
     for (const result of ['MISSING', 'AMBIGUOUS']) {
       const r = run(aobRow(key, result));
       holds(r, /SDK global/);
       assert.ok(r.reasons.join().includes(`${key}: did not resolve (${result})`));
-      assert.equal(r.path, null, 'never routed to B or A');
+      assert.equal(r.path, null, 'never routed to B or M');
     }
     // even with every path enabled
-    holds(run(aobRow(key, 'MISSING'), ok({ enabled: true, paths: ['A', 'B', 'C'], max_releases_per_day: 2 })), /SDK global/);
-    // moved offset: resolved differs from the baked one
+    holds(run(aobRow(key, 'MISSING'), ok({ enabled: true, paths: ['M', 'B', 'C'], max_releases_per_day: 2 })), /SDK global/);
+    // a moved offset is a note: the map row carries the new value
     const moved = aobRow(key); moved.rva = '0x1A2B3D0';
-    holds(run(moved), /bakes in 0x1A2B3C0/);
-    // equal values written differently are equal
+    const rm = run(moved);
+    assert.equal(rm.decision, 'M');
+    assert.ok(rm.notes.join().includes(`${key} 0x1A2B3C0 -> 0x1A2B3D0`), rm.notes.join());
+    // equal values written differently are equal, and give no note
     const same = aobRow(key); same.rva = '0x01a2b3c0'; same.sdkRva = '0X1A2B3C0';
-    assert.equal(run(same).decision, 'A');
-    // baked offset missing, zero, or not hex
+    const rs = run(same);
+    assert.equal(rs.decision, 'M');
+    assert.ok(!rs.notes.join().includes('SDK global offsets moved'));
+    // no baked offset to compare with is fine
     for (const bad of [undefined, null, '', '0x', 'zz', 5, '1A2B3C0']) {
       const row = aobRow(key);
       if (bad === undefined) delete row.sdkRva; else row.sdkRva = bad;
-      holds(run(row), /baked offset is unknown/);
+      assert.equal(run(row).decision, 'M');
     }
     const zero = aobRow(key); zero.rva = '0x0'; zero.sdkRva = '0x0';
     holds(run(zero), /no resolved RVA/);
@@ -195,20 +199,20 @@ test('fail closed: autopilot unreadable or malformed', () => {
   holds(decide(base({ autopilot: BAD_JSON })), /autopilot/);
   holds(decide(base({ autopilot: ok(null) })), /autopilot/);
   holds(decide(base({ autopilot: ok([]) })), /autopilot/);
-  holds(decide(base({ autopilot: ok({ paths: ['A'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
-  holds(decide(base({ autopilot: ok({ enabled: 'true', paths: ['A'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
-  holds(decide(base({ autopilot: ok({ enabled: 1, paths: ['A'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: 'A', max_releases_per_day: 2 }) })), /paths/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['A', 'Z'], max_releases_per_day: 2 }) })), /paths/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['A'] }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['A'], max_releases_per_day: '2' }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['A'], max_releases_per_day: -1 }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['A'], max_releases_per_day: 1.5 }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['A'], max_releases_per_day: 2, error: 'stale' }) })), /error/);
+  holds(decide(base({ autopilot: ok({ paths: ['M'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
+  holds(decide(base({ autopilot: ok({ enabled: 'true', paths: ['M'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
+  holds(decide(base({ autopilot: ok({ enabled: 1, paths: ['M'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: 'M', max_releases_per_day: 2 }) })), /paths/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M', 'Z'], max_releases_per_day: 2 }) })), /paths/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'] }) })), /max_releases_per_day/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: '2' }) })), /max_releases_per_day/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: -1 }) })), /max_releases_per_day/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 1.5 }) })), /max_releases_per_day/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 2, error: 'stale' }) })), /error/);
 });
 
 test('fail closed: max_releases_per_day 0 blocks everything', () => {
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['A'], max_releases_per_day: 0 }) })), /rate limit/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 0 }) })), /rate limit/);
 });
 
 for (const gate of ['g1', 'g2', 'g3', 'g4', 'g5', 'history']) {
@@ -249,7 +253,7 @@ test('fail closed: G4 must be a consistent server scan', () => {
   holds(decide(base({ g4: ok({ ...good, summary: undefined }) })), /summary/);
   holds(decide(base({ g4: ok({ ...good, summary: { ...good.summary, requiredFailing: 1 } }) })), /disagrees/);
   holds(decide(base({ g4: ok({ ...good, summary: { ...good.summary, total: 9 } }) })), /disagrees/);
-  // A summary that hides a missed required pattern must not turn a B into an A.
+  // A summary that hides a missed required pattern must not turn a B into an M.
   const liar = aob([aobRow('GetWorld'), aobRow('SpawnActor', 'MISSING')]);
   liar.summary.requiredFailing = 0;
   holds(decide(base({ g4: ok(liar) })), /disagrees/);
@@ -265,7 +269,7 @@ test('fail closed: G5 must be a consistent layout-diff report', () => {
   holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 1, changedUsed: [{}] }) })), /need a class name/);
   holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 1, changedUsed: [{ class: '' }] }) })), /need a class name/);
   holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 1, changedUsed: ['UFoo'] }) })), /need a class name/);
-  // a count that hides a changed class must not turn a C into an A
+  // a count that hides a changed class must not turn a C into an M
   holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 0, changedUsed: [{ class: 'UFoo' }] }) })), /disagrees/);
   holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 2, changedUsed: [{ class: 'UFoo' }] }) })), /disagrees/);
 });
@@ -282,26 +286,26 @@ const rel = (min, repo = 'ModLoader', cl = '127004') => ({ repo, cl, at: ago(min
 test('rate limit: one release per CL per repo', () => {
   holds(decide(base({ history: ok({ releases: [rel(60 * 30, 'ModLoader', '127999')], attempts: {} }) })), /already released for CL-127999/);
   // the same CL in another repo does not count
-  assert.equal(decide(base({ history: ok({ releases: [rel(60 * 30, 'Waila', '127999')], attempts: {} }) })).decision, 'A');
+  assert.equal(decide(base({ history: ok({ releases: [rel(60 * 30, 'Waila', '127999')], attempts: {} }) })).decision, 'M');
 });
 
 test('rate limit: at most 2 releases per repo in 24 h', () => {
   holds(decide(base({ history: ok({ releases: [rel(60), rel(120)], attempts: {} }) })), /2 ModLoader releases in the last 24 h/);
-  assert.equal(decide(base({ history: ok({ releases: [rel(60), rel(60 * 25)], attempts: {} }) })).decision, 'A');
-  assert.equal(decide(base({ history: ok({ releases: [rel(60), rel(120, 'Waila')], attempts: {} }) })).decision, 'A');
+  assert.equal(decide(base({ history: ok({ releases: [rel(60), rel(60 * 25)], attempts: {} }) })).decision, 'M');
+  assert.equal(decide(base({ history: ok({ releases: [rel(60), rel(120, 'Waila')], attempts: {} }) })).decision, 'M');
 });
 
 test('rate limit: the autopilot cap can lower but never raise the design cap', () => {
-  const one = ok({ enabled: true, paths: ['A'], max_releases_per_day: 1 });
+  const one = ok({ enabled: true, paths: ['M'], max_releases_per_day: 1 });
   holds(decide(base({ autopilot: one, history: ok({ releases: [rel(60)], attempts: {} }) })), /limit 1/);
-  const five = ok({ enabled: true, paths: ['A'], max_releases_per_day: 5 });
+  const five = ok({ enabled: true, paths: ['M'], max_releases_per_day: 5 });
   holds(decide(base({ autopilot: five, history: ok({ releases: [rel(60), rel(120)], attempts: {} }) })), /limit 2/);
   assert.equal(LIMITS.maxReleasesPerDay, 2);
 });
 
 test('rate limit: releases at least 30 minutes apart', () => {
   holds(decide(base({ history: ok({ releases: [rel(29)], attempts: {} }) })), /30 minutes/);
-  assert.equal(decide(base({ history: ok({ releases: [rel(31)], attempts: {} }) })).decision, 'A');
+  assert.equal(decide(base({ history: ok({ releases: [rel(31)], attempts: {} }) })).decision, 'M');
 });
 
 test('rate limit: a future-dated release counts as recent', () => {
@@ -316,8 +320,8 @@ test('rate limit: at most 2 Claude attempts per CL, B only', () => {
   holds(decide(base({ g4: missB, history: ok({ releases: [], attempts: { 127999: 'two' } }) })), /attempts entry is malformed/);
   // attempts for another CL do not count
   assert.equal(decide(base({ g4: missB, history: ok({ releases: [], attempts: { 120000: 9 } }) })).decision, 'B');
-  // path A does not use the attempts counter
-  assert.equal(decide(base({ history: ok({ releases: [], attempts: { 127999: 9 } }) })).decision, 'A');
+  // path M does not use the attempts counter
+  assert.equal(decide(base({ history: ok({ releases: [], attempts: { 127999: 9 } }) })).decision, 'M');
 });
 
 test('fail closed: malformed history', () => {
@@ -354,14 +358,14 @@ const cliFiles = (over = {}) => {
   return { ...f, ...over };
 };
 
-test('cli: exit 0 and a decision file for A', () => {
+test('cli: exit 0 and a decision file for M', () => {
   const r = runCli(cliFiles(), []);
   assert.equal(r.status, 0);
-  assert.equal(r.out.decision, 'A');
+  assert.equal(r.out.decision, 'M');
 });
 
 test('cli: exit 1 with HOLD for a disabled autopilot', () => {
-  const r = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['A'], max_releases_per_day: 2 } }));
+  const r = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 } }));
   assert.equal(r.status, 1);
   assert.equal(r.out.decision, 'HOLD');
 });
@@ -387,7 +391,7 @@ test('cli: unparseable or empty JSON is a HOLD', () => {
 
 test('cli: a BOM in a JSON file is tolerated', () => {
   const r = runCli(cliFiles({ g1: String.fromCharCode(0xfeff) + '{"ok":true}' }));
-  assert.equal(r.out.decision, 'A');
+  assert.equal(r.out.decision, 'M');
   assert.equal(r.status, 0);
 });
 
@@ -398,7 +402,7 @@ test('cli: exit 10 for B, so a caller that only checks "zero" cannot ship an aut
 });
 
 test('cli: exit 1 for a path C hold and for an unverified SDK global', () => {
-  const c = runCli(cliFiles({ autopilot: { schema: 1, enabled: true, paths: ['A', 'B', 'C'], max_releases_per_day: 2 }, g5: layout('UFoo') }));
+  const c = runCli(cliFiles({ autopilot: { schema: 1, enabled: true, paths: ['M', 'B', 'C'], max_releases_per_day: 2 }, g5: layout('UFoo') }));
   assert.equal(c.status, 1);
   assert.equal(c.out.path, 'C');
   const g = runCli(cliFiles({ g4: aob([aobRow('GetWorld')], { noGlobals: true }) }));

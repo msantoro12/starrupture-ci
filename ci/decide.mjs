@@ -5,20 +5,20 @@
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json \
 //       --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
 //
-// Prints the decision as JSON on stdout. Exit codes: 0 = path A (build the Path A
-// patch), 10 = path B (auto-fix; the Path A patch must NOT be built), 1 = HOLD,
-// 2 = usage error. Anything else, including a crash, means do not ship.
+// Prints the decision as JSON on stdout. Exit codes: 0 = path M (map-only update: the
+// rows go into the loader's map and ship as a signed feed), 10 = path B (auto-fix of
+// a plugin's patterns), 1 = HOLD, 2 = usage error. Anything else, including a crash,
+// means do not ship.
 //
 // Decision table (the first row that applies wins):
 //   autopilot unreadable, malformed or enabled != true  -> HOLD
 //   a gate result missing, unreadable, malformed, or reporting an error -> HOLD
 //   G1 compile or G2 interface not ok                    -> HOLD
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
-//   GObjects, GNames, AppendString or GWorld not resolved, or resolved to a value that differs
-//   from the SDK's baked offset (G4 scan)                -> HOLD, no path
+//   GObjects, GNames, AppendString or GWorld not resolved (G4 scan) -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty)        -> HOLD, path C (held until shadow mode is proven)
 //   a required pattern missed (G4 requiredFailing > 0)   -> B, if autopilot.paths has B
-//   everything clean                                     -> A, if autopilot.paths has A
+//   everything clean                                     -> M, if autopilot.paths has M
 //   chosen path not in autopilot.paths                   -> HOLD
 //   rate limit hit (section 8 of the design)             -> HOLD
 //
@@ -27,9 +27,9 @@
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
 //   G4:     the raw `sr-aobscan --json` output of the SERVER exe. It must hold one required
 //           row each for GObjects, GNames, AppendString and GWorld (an optional "X::" prefix
-//           on the name is fine). A matched row carries its resolved "rva" and "sdkRva", the offset the SDK
-//           (Basic.hpp Offsets::) bakes in today; they must be equal, because a CL-only or pattern
-//           patch cannot change the SDK's baked offsets.
+//           on the name is fine). A matched row carries its resolved "rva" and may carry "sdkRva",
+//           the offset the SDK (Basic.hpp Offsets::) bakes in today. They differ after a game
+//           update, and the map row carries the new value, so a difference is a note.
 //   G5:     the `layout-diff.mjs diff --used ...` report: { "changedUsedClasses": n, "changedUsed": [{ "class": "UFoo" }, ...] }
 // History (rate limits):
 //   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>" }],
@@ -45,7 +45,7 @@ export const LIMITS = Object.freeze({
   maxAttemptsPerCl: 2,
   maxReleasesPerClPerRepo: 1,
 });
-const VALID_PATHS = ['A', 'B', 'C'];
+const VALID_PATHS = ['M', 'B', 'C'];
 export const SDK_GLOBALS = Object.freeze(['GObjects', 'GNames', 'AppendString', 'GWorld']);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -113,19 +113,20 @@ function checkG4(loaded) {
   if (s.total !== v.patterns.length || s.requiredFailing !== missed.length) {
     return { error: 'G4: summary disagrees with the pattern rows' };
   }
-  return { missed, softMissed, globalsError: checkSdkGlobals(v.patterns) };
+  return { missed, softMissed, ...checkSdkGlobals(v.patterns) };
 }
 
 // The SDK dumps hard-code the exe offsets of GObjects, GNames, AppendString and
-// GWorld, and they move on every game patch. A CL-only (or pattern-fix) patch
-// cannot change them, so a release needs all four re-resolved from the new exe
-// and found equal to what the SDK bakes in. One required pattern row each in the
-// G4 scan: matched (OK), with the resolved "rva" and the SDK's baked "sdkRva"
-// equal and non-zero. Absent, optional, duplicated, unmatched or unequal is a HOLD.
+// GWorld, and they move on every game patch. The loader's map carries the new
+// values and hands them to the plugins, so an update needs all four re-resolved
+// from the new exe: one required pattern row each in the G4 scan, matched (OK)
+// with a non-zero resolved "rva". Absent, optional, duplicated or unmatched is a
+// HOLD. A resolved value that differs from the SDK's baked "sdkRva" is a note.
 const hexValue = (v) => (typeof v === 'string' && /^0x[0-9a-f]+$/i.test(v) ? BigInt(v) : null);
 
 function checkSdkGlobals(rows) {
   const problems = [];
+  const moved = [];
   for (const key of SDK_GLOBALS) {
     const hits = rows.filter((p) => p.name.replace(/^.*::/, '').toLowerCase() === key.toLowerCase());
     if (hits.length === 0) { problems.push(`${key}: no pattern in the scan, so the offset is not re-resolved`); continue; }
@@ -137,11 +138,13 @@ function checkSdkGlobals(rows) {
       const rva = hexValue(row.rva);
       const baked = hexValue(row.sdkRva);
       if (rva === null || rva === 0n) problems.push(`${key}: matched but no resolved RVA`);
-      else if (baked === null) problems.push(`${key}: the SDK's baked offset is unknown`);
-      else if (rva !== baked) problems.push(`${key}: resolved ${row.rva} but the SDK bakes in ${row.sdkRva}`);
+      else if (baked !== null && rva !== baked) moved.push(`${key} ${row.sdkRva} -> ${row.rva}`);
     }
   }
-  return problems.length ? `SDK global offsets not verified: ${problems.join('; ')}` : null;
+  return {
+    globalsError: problems.length ? `SDK global offsets not resolved: ${problems.join('; ')}` : null,
+    globalsMoved: moved,
+  };
 }
 
 function checkG5(loaded) {
@@ -161,7 +164,7 @@ function checkG5(loaded) {
 }
 
 // Fail closed: only an exactly well-formed file with enabled === true passes.
-function checkAutopilot(loaded) {
+export function checkAutopilot(loaded) {
   const bad = checkEnvelope('autopilot', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
@@ -176,7 +179,7 @@ function checkAutopilot(loaded) {
 }
 
 // Returns a list of reasons the rate limits forbid a release now.
-function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay }) {
+export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay }) {
   const bad = checkEnvelope('history', historyLoaded);
   if (bad) return [bad];
   const h = historyLoaded.value;
@@ -213,7 +216,7 @@ export function decide(inputs) {
   const notes = [];
   const fail = (msg) => reasons.push(msg);
   const out = (decision, path, cl) => ({
-    decision, path, cl: cl ?? null, repo: inputs.repo ?? null, ship: decision === 'A' || decision === 'B',
+    decision, path, cl: cl ?? null, repo: inputs.repo ?? null, ship: decision === 'M' || decision === 'B',
     reasons, notes,
   });
 
@@ -234,14 +237,14 @@ export function decide(inputs) {
   // Without a usable gate picture there is no path to name.
   if (g3.error || g4.error || g5.error || g1.error || g2.error) return out('HOLD', null, g3.cl);
 
-  // A CL-only or pattern-fix release is unsafe while the SDK's hard-coded
-  // global offsets are stale, so unverified globals block every path.
+  // The four globals must be re-resolved from the new exe: the map rows carry them.
   if (g4.globalsError) {
     fail(g4.globalsError);
     return out('HOLD', null, g3.cl);
   }
+  if (g4.globalsMoved.length > 0) notes.push(`SDK global offsets moved (the map carries the new values): ${g4.globalsMoved.join(', ')}`);
 
-  let path = 'A';
+  let path = 'M';
   if (g5.usedChanged.length > 0) {
     path = 'C';
     fail(`path C held until shadow mode is proven: ${g5.usedChanged.length} used class(es) changed layout (${g5.usedChanged.slice(0, 5).join(', ')})`);
@@ -296,7 +299,7 @@ function main() {
   const text = JSON.stringify(result, null, 2) + '\n';
   if (args.out) writeFileSync(args.out, text);
   process.stdout.write(text);
-  process.exit(result.decision === 'A' ? 0 : result.decision === 'B' ? 10 : 1);
+  process.exit(result.decision === 'M' ? 0 : result.decision === 'B' ? 10 : 1);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
