@@ -1306,8 +1306,8 @@ jobs:
               node $tool @sel > "$d\plan.json"
               Invoke-Native 'select'
               $plan = Get-Content "$d\plan.json" -Raw | ConvertFrom-Json
-              $planOffsets = if ($plan.PSObject.Properties['offsets']) { @($plan.offsets) } else { @() }
-              $blockedRows = if ($plan.PSObject.Properties['blockedOffsets']) { @($plan.blockedOffsets | ForEach-Object { [pscustomobject]@{ name = $_.key; reason = "$($_.state): $($_.reason)" } }) } else { @() }
+              $planOffsets = @(if ($plan.PSObject.Properties['offsets']) { $plan.offsets })
+              $blockedRows = @(if ($plan.PSObject.Properties['blockedOffsets']) { $plan.blockedOffsets | ForEach-Object { [pscustomobject]@{ name = $_.key; reason = "$($_.state): $($_.reason)" } } })
               # Nothing failing, nothing to do.
               if (-not @($plan.rows).Count -and -not @($plan.skipped).Count -and -not $planOffsets.Count -and -not $blockedRows.Count) { continue }
               $r.skipped = @(@($plan.skipped) + $blockedRows)
