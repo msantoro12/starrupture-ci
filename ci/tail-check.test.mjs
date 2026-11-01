@@ -79,7 +79,7 @@ test('a build_cl.txt that names the CL its dump belongs to passes', () => {
   assert.deepEqual(r.problems, []);
   assert.equal(r.cl, 128786);
   // GWorld and GNames differ from the engine's by design: reported, not enforced.
-  assert.equal(r.notes.length, 1, r.notes.join('\n'));
+  assert.equal(r.notes.length, 2, r.notes.join('\n'));
   assert.ok(r.notes.some((n) => n.includes('GWorld')));
 });
 
