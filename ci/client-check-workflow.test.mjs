@@ -52,7 +52,30 @@ test('rule 3: the plugin build skips the check, its own step reports per plugin,
   assert.ok(check.includes("$r3.status -eq 'fail' -and $r.verdict -in 'PASS', 'NONE', 'GAME-CALL', 'FAIL'"), 'only a failing (migrated) plugin gets the verdict');
   assert.ok(check.includes("$r.verdict = 'RULE3'"));
   assert.ok(check.includes("$r3.status -eq 'findings'"), 'a plugin that is not migrated is only reported');
-  assert.match(readFileSync(join(here, 'decide.mjs'), 'utf8'), /const PLUGIN_HELD = new Set\(\['REFUSED', 'RULE3'\]\);/);
+  assert.match(readFileSync(join(here, 'decide.mjs'), 'utf8'), /const PLUGIN_HELD = new Set\(\['REFUSED', 'RULE3', /);
+});
+
+test('B5: one plugin that fails to fetch, check out or build never fails the plugins job or holds the others', () => {
+  const plugins = job('plugins');
+  const step = (name) => {
+    const at = plugins.indexOf(`- name: ${name}\n`);
+    assert.ok(at > 0, name);
+    const next = plugins.indexOf('\n      - name:', at + 1);
+    return plugins.slice(at, next < 0 ? undefined : next);
+  };
+  for (const name of ['Fetch the released plugin', 'Check out the plugin', 'Check out the Plugin SDK', 'Check out the Game SDK',
+    "Check out the loader's plugin interface", 'Build the plugin (Client Release)']) {
+    assert.match(step(name), /\n        continue-on-error: true\n/, `${name} cannot fail the job`);
+  }
+  assert.match(step('Upload the plugin'), /if: hashFiles\('out\/plugin\.json'\) != ''/, 'no plugin.json, no artifact, and no failing upload');
+  assert.match(step('Upload the plugin'), /if-no-files-found: error/);
+  assert.match(step('Note a plugin that did not build'), /if: hashFiles\('out\/plugin\.json'\) == ''/);
+  assert.match(plugins, /fail-fast: false/);
+  // The missing artifact is graded per plugin in the check job, and the G1 gate is the loader build alone.
+  assert.ok(job('check').includes("$r.verdict = if ($p.source -eq 'release') { 'FETCH-FAILED' } else { 'BUILD-FAILED' }"));
+  const mm = job('map-mode');
+  assert.ok(!/PLUGINS_RESULT/.test(mm), 'the plugins job result is not a gate');
+  assert.match(mm, /put\("g1\.json", \{ ok: process\.env\.BUILD_RESULT === "success" \}\);/);
 });
 
 test('test_autopilot: dispatch only, refused with publish on, never publishable, and the publish job skips it', () => {

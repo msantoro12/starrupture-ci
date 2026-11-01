@@ -14,7 +14,7 @@
 //   autopilot unreadable, malformed or enabled != true  -> HOLD
 //   a gate result missing, unreadable, malformed, or reporting an error -> HOLD
 //   G1 compile or G2 interface not ok                    -> HOLD
-//   a plugin the loader would refuse on the new build    -> HOLD
+//   a plugin that is unverified or the loader would refuse -> that plugin is held alone, the rest proceed
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
 //   GObjects, GNames, AppendString or GWorld not resolved (G4 scan) -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty) and the field rows do not
@@ -42,9 +42,10 @@
 //   G5:     the `layout-diff.mjs diff --used ...` report: { "changedUsedClasses": n, "changedUsed": [{ "class": "UFoo" }, ...] }
 //   plugins: the client check's plugin verdicts (result.json `plugins`): { "status": "pass",
 //           "plugins": [{ "name": "WAILA", "verdict": "PASS" }, ...] }. Every plugin must be
-//           PASS, NONE (no load hooks) or GAME-CALL (partial coverage: a note). Any other
-//           verdict (FAIL, CRASH, REFUSED, OFFSETS, BUILD-FAILED, ...) means the loader would
-//           refuse that plugin on the new build, so nothing ships. The status must agree
+//           PASS, NONE (no load hooks) or GAME-CALL (partial coverage: a note) are updated;
+//           FAIL is updated and degraded. Any other verdict (CRASH, ERROR, BUILD-FAILED,
+//           FETCH-FAILED, REFUSED, RULE3, OFFSETS, OFFSETS-UNCHECKED) holds that plugin alone
+//           on its last release; the others proceed (checkPlugins). The status must agree
 //           with the rows.
 //   fields: the `field-rows.mjs write --report` report for the same CL: { "written": true,
 //           "cl": 128786, "covered": ["UFoo", ...], "absent": [{ "key": "UFoo::Gone", "owners": [...] }],
@@ -181,13 +182,15 @@ function checkSdkGlobals(rows) {
 //   RULE3                  held, this plugin only: it declares PLUGIN_MAP_MIGRATED but reads
 //                          game-class members directly (tools/rule3-check.mjs in the Plugin SDK).
 //                          Never a whole hold: the other plugins and the loader are unaffected
-//   anything else          holds the whole update (CRASH, ERROR, BUILD-FAILED,
-//                          FETCH-FAILED, OFFSETS, OFFSETS-UNCHECKED): not
-//                          verified, or a misread the loader cannot turn off, and
-//                          the feed has no switch that refuses one plugin
+//   CRASH, ERROR,          held, this plugin only (vmap review B5): it crashed, did not build or
+//   BUILD-FAILED,          could not be fetched, or was not verified (a fixed offset that differs
+//   FETCH-FAILED,          from the PDB, or could not be checked). It stays on its last release,
+//   OFFSETS,               which the loader refuses on the new CL like REFUSED, and every other
+//   OFFSETS-UNCHECKED      plugin proceeds
+//   anything else          (a verdict this file does not know) holds the whole update
 const PLUGIN_OK = new Set(['PASS', 'NONE', 'GAME-CALL']);
 const PLUGIN_DEGRADED = new Set(['FAIL']);
-const PLUGIN_HELD = new Set(['REFUSED', 'RULE3']);
+const PLUGIN_HELD = new Set(['REFUSED', 'RULE3', 'CRASH', 'ERROR', 'BUILD-FAILED', 'FETCH-FAILED', 'OFFSETS', 'OFFSETS-UNCHECKED']);
 const EXCEPTION_CODE = /0x[cC][0-9a-fA-F]{7}\b|\bexception\s+0x[0-9a-fA-F]+/;
 const NO_ROW = /refused: no row for CL-\d+/;
 const HARNESS_LIMIT = /outside the one table it was given/;
@@ -233,7 +236,9 @@ function checkPlugins(loaded, rowKeys = new Set()) {
       e.heldAlone = true;
       e.reasons.push(p.verdict === 'RULE3'
         ? `declares PLUGIN_MAP_MIGRATED but reads game members directly, stays on its last release: ${why(p)}`
-        : `cannot load on the new CL: ${why(p)}; rebuild path`);
+        : p.verdict === 'REFUSED'
+          ? `cannot load on the new CL: ${why(p)}; rebuild path`
+          : `not verified on the new CL, stays on its last release: ${why(p)}`);
     } else if (!PLUGIN_OK.has(p.verdict)) {
       e.status = 'held';
       e.reasons.push(why(p));

@@ -250,10 +250,13 @@ decide also reads the plugin verdicts of the client check (`--plugins`, `result.
 entries (FAIL: the patterns that did not resolve turn off; and every `degraded` entry of
 the field-rows report), or `held` (REFUSED: it cannot load on the new CL at all, interface
 version or no built CL; it alone goes to the rebuild path, and the loader refuses it
-there). The run summary shows the same table. A verdict that leaves the plugin
-unverified, or a misread the loader cannot turn off (CRASH, ERROR, BUILD-FAILED,
-FETCH-FAILED, OFFSETS, OFFSETS-UNCHECKED), still holds the whole update, as do the
-loader's own gates (G1 to G4, the SDK globals, a loader key). `pluginsOk` is false only
+there; RULE3: it declares `PLUGIN_MAP_MIGRATED` and still reads game members directly; and
+CRASH, ERROR, BUILD-FAILED, FETCH-FAILED, OFFSETS, OFFSETS-UNCHECKED: it crashed, did not
+build, could not be fetched or was not verified). A held plugin stays on its last release
+and every other plugin goes on; one plugin's build failure does not fail the `plugins` job,
+and with every plugin held the loader alone still ships. The run summary shows the same
+table. Only a verdict decide does not know, and the loader's own gates (G1 to G4, the SDK
+globals, a loader key), hold the whole update. `pluginsOk` is false only
 then, and the promote re-scan (`verify.json`) reads it.
 
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the

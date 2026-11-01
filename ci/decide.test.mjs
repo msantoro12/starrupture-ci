@@ -547,13 +547,36 @@ test('M: a plugin missing a required field or pattern is updated and degraded, n
   assert.match(r.notes.join(' '), /BetterCheats updated, degraded: UFoo::Gone off \(HIGH: 1 required request\(s\) missing\)/);
 });
 
-test('HOLD: a plugin that crashed or was not verified holds the whole update; so does a loader request', () => {
-  for (const verdict of ['CRASH', 'ERROR', 'BUILD-FAILED', 'OFFSETS-UNCHECKED']) {
-    const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict }] });
+test('M: a plugin that crashed, did not build or was not verified is held alone; the rest proceed (B5)', () => {
+  for (const verdict of ['CRASH', 'ERROR', 'BUILD-FAILED', 'FETCH-FAILED', 'OFFSETS', 'OFFSETS-UNCHECKED']) {
+    const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict, note: 'it broke' },
+      { name: 'Compass', verdict: 'PASS' }] });
     const r = decide(base({ plugins }));
-    holds(r, new RegExp(`1 plugin\\(s\\) not verified on CL-127999, which the loader cannot turn off: WAILA ${verdict}`));
-    assert.equal(r.pluginsOk, false);
+    assert.equal(r.decision, 'M', verdict);
+    assert.deepEqual(r.reasons, [], verdict);
+    assert.equal(r.pluginsOk, true, verdict);
+    assert.deepEqual(r.plugins.map((p) => [p.name, p.status, p.heldAlone === true]), [['BetterCheats', 'updated', false], ['WAILA', 'held', true], ['Compass', 'updated', false]], verdict);
+    assert.match(r.plugins[1].reasons[0], new RegExp(`not verified on the new CL, stays on its last release: ${verdict} \\(it broke\\)`));
+    assert.match(r.notes.join(' '), /WAILA held/);
   }
+});
+
+test('M: several plugins held for different reasons, one build failed; the loader alone still ships', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'BUILD-FAILED' }, { name: 'WAILA', verdict: 'CRASH' },
+    { name: 'Compass', verdict: 'RULE3', note: '3 direct reads' }, { name: 'Codex', verdict: 'REFUSED' }, { name: 'RuptureTimer', verdict: 'PASS' }] });
+  const r = decide(base({ plugins }));
+  assert.equal(r.decision, 'M');
+  assert.equal(r.pluginsOk, true);
+  assert.deepEqual(r.plugins.map((p) => p.status), ['held', 'held', 'held', 'held', 'updated']);
+  const every = decide(base({ plugins: ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'BUILD-FAILED' }, { name: 'WAILA', verdict: 'BUILD-FAILED' }] }) }));
+  assert.equal(every.decision, 'M', 'with every plugin held alone, the loader still ships');
+});
+
+test('HOLD: a verdict this file does not know, a loader request or a missing global still holds the whole update', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' }, { name: 'WAILA', verdict: 'MYSTERY' }] });
+  const r = decide(base({ plugins }));
+  holds(r, /1 plugin\(s\) not verified on CL-127999, which the loader cannot turn off: WAILA MYSTERY/);
+  assert.equal(r.pluginsOk, false);
   const fields = ok({ written: false, cl: 127999, added: 0, absent: [], covered: [], notes: [], problems: ['field UFoo::Core: resolves on the reference build only; the loader itself reads it, so every plugin depends on it'] });
   holds(decide(base({ g5: ok(layout('UFoo')), fields })), /the loader itself reads it/);
   holds(decide(base({ g4: ok(aob([aobRow('GetWorld')], { noGlobals: true })) })), /SDK global offsets not resolved/);

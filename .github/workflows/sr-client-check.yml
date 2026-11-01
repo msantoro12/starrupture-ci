@@ -378,9 +378,14 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.plugin-plan.outputs.matrix) }}
+    # One plugin's failure (a checkout, the build, a fetch) never fails this job: the
+    # failing steps below are continue-on-error, so the other legs and the jobs that
+    # need this one go on. A plugin with no plugin.json gets no artifact, and the
+    # check job grades it BUILD-FAILED or FETCH-FAILED, which holds that plugin alone.
     steps:
       - name: Fetch the released plugin
         if: matrix.source == 'release'
+        continue-on-error: true
         shell: pwsh
         env:
           NAME: ${{ matrix.name }}
@@ -405,6 +410,7 @@ jobs:
 
       - name: Check out the plugin
         if: matrix.source == 'build'
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ matrix.repo }}
@@ -414,6 +420,7 @@ jobs:
 
       - name: Check out the Plugin SDK
         if: matrix.source == 'build'
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.plugin_sdk_repo }}
@@ -423,6 +430,7 @@ jobs:
 
       - name: Check out the Game SDK
         if: matrix.source == 'build'
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.game_sdk_repo }}
@@ -432,6 +440,7 @@ jobs:
 
       - name: Check out the loader's plugin interface
         if: matrix.source == 'build'
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.loader_repo }}
@@ -447,6 +456,7 @@ jobs:
 
       - name: Build the plugin (Client Release)
         if: matrix.source == 'build'
+        continue-on-error: true
         shell: pwsh
         working-directory: plugin
         env:
@@ -492,7 +502,7 @@ jobs:
       # members directly. continue-on-error: it never fails the job, and the jobs of the other
       # plugins are separate matrix legs.
       - name: Check rule 3 (direct reads of game members)
-        if: matrix.source == 'build'
+        if: matrix.source == 'build' && hashFiles('out/plugin.json') != ''
         continue-on-error: true
         shell: pwsh
         env:
@@ -504,7 +514,16 @@ jobs:
           node $tool --plugin $env:NAME --sdk game-sdk\Client\SDK --source plugin --mode auto --json out\rule3.json
           exit $LASTEXITCODE
 
+      - name: Note a plugin that did not build
+        if: hashFiles('out/plugin.json') == ''
+        shell: pwsh
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          Write-Host "::error title=Plugin $($env:NAME)::it did not build or its release could not be fetched; the check job holds it alone on its last release and the other plugins go on"
+
       - name: Upload the plugin
+        if: hashFiles('out/plugin.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plugin-${{ inputs.branch }}-${{ matrix.name }}
@@ -1481,7 +1500,6 @@ jobs:
       PLUGINS: ${{ inputs.plugins }}
       LOADER_REF: ${{ inputs.loader_ref }}
       BUILD_RESULT: ${{ needs.build.result }}
-      PLUGINS_RESULT: ${{ needs.plugins.result }}
       RUN_ID: ${{ github.run_id }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -1579,8 +1597,7 @@ jobs:
             const put = (f, v) => fs.writeFileSync(f, JSON.stringify(v, null, 2) + "\n");
             const [cl, previousCl] = process.argv.slice(1);
             const r = read("res/result.json");
-            const ok = (x) => x === "success" || x === "skipped";
-            put("g1.json", { ok: process.env.BUILD_RESULT === "success" && ok(process.env.PLUGINS_RESULT) });
+            put("g1.json", { ok: process.env.BUILD_RESULT === "success" });
             put("g2.json", { ok: r.checks?.fail === false });
             put("g3.json", { ok: true, cl, previousCl });
             // The plugin verdicts: decide holds on any plugin the loader would refuse.

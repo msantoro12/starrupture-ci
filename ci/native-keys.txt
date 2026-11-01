@@ -10,8 +10,11 @@ BetterCheats UCrEnviroWaveTimerSubsystem::bPause
 BetterCheats UCrEnviroWaveTimerSubsystem::bStopWaves
 BetterCheats ACrTechnologyKeeper::bUnlockAllBuildings
 BetterCheats UCrUW_InventoryContainer::InventoryComponent
+BetterCheats UMassEntitySubsystem::EntityManager
+BetterCheats FMassEnemyHealthFragment::HP
 BetterDrone ACrPlayerControllerBase::PlayerControlState
 WAILA ACrPackageTransportReplicator::SendingTime
+WAILA UMassEntitySubsystem::EntityManager
 ProductionViewer FCrGridEntityHandle::EntityHandle
 ProductionViewer FCrGridEntityHandle::Data
 
