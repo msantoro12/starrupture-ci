@@ -168,6 +168,13 @@ test('a global key that lands off the start of its symbol is refused', () => {
   assert.match(out.problems[0], /UCrSomething::Function: lands at 0x1B10010, off the start of its symbol \(0x1B10000\)/i);
 });
 
+test('a function key with no symbol is written with a note that its symbol checks did not run', () => {
+  const out = mapMode(header(), base());
+  assert.deepEqual(out.problems, []);
+  assert.ok(out.notes.some((n) => n.startsWith(`${SF}: no symbol for 0x1B10000`)));
+  assert.ok(!out.notes.some((n) => n.startsWith('GWorld:')));
+});
+
 test('one key resolving to two addresses is refused', () => {
   const input = base();
   input.components.push({ owner: 'WAILA', releases: [release('v0.20.0', 'current', [ok(SF, 'function', 0x1b10100)])] });
@@ -238,6 +245,17 @@ test('row sets whose fp neither the current nor the previous release carries are
   assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_B).length, 0);
   assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_A).length, 3);
   assert.equal(out.pruned, 2);
+});
+
+test('without the previous release scanned, no row set of that owner is pruned', () => {
+  const input = base();
+  input.components[1].releases.pop(); // BetterCheats: current only, as the client check feeds it today
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.pruned, 0);
+  // The previous release may still read FP_B on every CL it ran on.
+  assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_B).length, 2);
+  assert.ok(find(out.text, PE, FP_A));
 });
 
 test('rows of a component that is not tracked are left for the pattern path, not written', () => {

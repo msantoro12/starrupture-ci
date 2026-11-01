@@ -20,7 +20,9 @@
 //     under `patches`, for the pattern path (select / apply) to turn into a
 //     source patch, as before.
 // It prunes the row sets of fps that neither the current nor the previous
-// release of the owner still carries.
+// release of the owner still carries, and only for an owner whose input holds
+// both: without the previous release's scan the fps that release still needs
+// are not known, so every set of that owner's keys is kept.
 //
 // It refuses, writing nothing and exiting 3, when
 //   - two keys name one symbol, or one key lands on two addresses, or a global
@@ -104,12 +106,15 @@ export function readObservations(input) {
   const rows = [];
   const patches = [];
   const owners = new Set();
+  const ranks = new Map(); // owner -> Set of the ranks its input holds
   for (const c of input.components || []) {
     if (typeof c.owner !== 'string' || !c.owner || /[,/\s]/.test(c.owner)) throw new MapError(`owner ${JSON.stringify(c.owner)} is not a plugin name`);
     if (owners.has(c.owner)) throw new MapError(`owner ${c.owner} is given twice`);
     owners.add(c.owner);
+    ranks.set(c.owner, new Set());
     for (const rel of c.releases || []) {
       if (!['current', 'previous'].includes(rel.rank)) throw new MapError(`${c.owner} ${rel.tag}: rank must be current or previous`);
+      ranks.get(c.owner).add(rel.rank);
       for (const r of rel.rows || []) {
         const where = `${c.owner} ${rel.tag} ${JSON.stringify(r.key)}`;
         if (typeof r.key !== 'string' || !r.key) throw new MapError(`${where}: a row has no key`);
@@ -132,19 +137,20 @@ export function readObservations(input) {
   const order = (a, b) => cmp(a.key, b.key) || a.fp - b.fp || (a.owner === 'ModLoader' ? 0 : 1) - (b.owner === 'ModLoader' ? 0 : 1) || cmp(a.owner, b.owner) || (a.rank === 'current' ? 0 : 1) - (b.rank === 'current' ? 0 : 1);
   rows.sort(order);
   patches.sort((a, b) => cmp(a.owner, b.owner) || cmp(a.key, b.key));
-  return { cl, rows, patches };
+  return { cl, rows, patches, ranks };
 }
 
 // ---- The plan -----------------------------------------------------------------
 
 // Decides, per (key, fp), the row to write, and every reason to refuse. No map
-// is touched. Returns { problems, ops, live, notes }.
+// is touched. Returns { problems, ops, live, liveOwners, notes }.
 export function planRows(rows, { cl }) {
   const problems = [];
   const notes = [];
   const kinds = new Map();
   const groups = new Map(); // key \n fp -> rows
   const live = new Map(); // scoped key -> Set of fps carried by a current or previous release
+  const liveOwners = new Map(); // scoped key -> Set of the owners whose rows name it
   const tuples = new Map(); // key \n fp -> Map<tuple, first row>
 
   for (const r of rows) {
@@ -162,6 +168,8 @@ export function planRows(rows, { cl }) {
     if (scoped) {
       if (!live.has(r.key)) live.set(r.key, new Set());
       live.get(r.key).add(r.fp);
+      if (!liveOwners.has(r.key)) liveOwners.set(r.key, new Set());
+      liveOwners.get(r.key).add(r.owner);
       if (!tuples.has(id)) tuples.set(id, new Map());
       const t = tupleOf(r);
       if (!tuples.get(id).has(t)) tuples.get(id).set(t, r);
@@ -211,6 +219,7 @@ export function planRows(rows, { cl }) {
   const globals = ops.filter((o) => o.type === 'function' && isGlobalKind(o.kind));
   for (const o of globals) {
     if (o.symbolRva !== null && o.symbolRva !== o.rva) problems.push(`${o.key}: lands at ${hex(o.rva)}, off the start of its symbol (${hex(o.symbolRva)})`);
+    if (o.symbolRva === null && o.key.includes('::')) notes.push(`${o.key}: no symbol for ${hex(o.rva)}; the symbol-start and one-key-per-symbol checks did not run for it`);
   }
   const bySymbol = new Map();
   for (const o of globals.filter((x) => x.symbolRva !== null)) {
@@ -220,14 +229,14 @@ export function planRows(rows, { cl }) {
   for (const [sym, keys] of [...bySymbol].sort((a, b) => a[0] - b[0])) {
     if (keys.length > 1) problems.push(`keys ${keys.slice().sort(cmp).join(' and ')} name one symbol (${hex(sym)}); a symbol has one key`);
   }
-  return { problems, ops, live, notes };
+  return { problems, ops, live, liveOwners, notes };
 }
 
 // ---- Writing ------------------------------------------------------------------
 
 // Applies the plan to a clone of the map. Returns { map, added, pruned, problems }.
 export function writeRows(map, input) {
-  const { cl, rows, patches } = readObservations(input);
+  const { cl, rows, patches, ranks } = readObservations(input);
   const plan = planRows(rows, { cl });
   const problems = [...plan.problems];
   if (map.flavour !== 'loader') throw new MapError('map mode writes the loader map; this header is a plugin map');
@@ -257,9 +266,13 @@ export function writeRows(map, input) {
       problems.push(e.message);
     }
   }
-  // A set whose fp neither the current nor the previous release carries is dropped.
+  // A set whose fp neither the current nor the previous release carries is
+  // dropped, but only for a key whose every owner had both releases scanned: a
+  // set that an unscanned previous release still needs stays.
+  const scannedBoth = (o) => ranks.get(o).has('current') && ranks.get(o).has('previous');
+  const prunable = (key) => plan.live.has(key) && [...plan.liveOwners.get(key)].every(scannedBoth);
   const before = next.functions.length;
-  next.functions = next.functions.filter((r) => !plan.live.has(r.key) || r.fp === 0 || plan.live.get(r.key).has(r.fp));
+  next.functions = next.functions.filter((r) => r.fp === 0 || !prunable(r.key) || plan.live.get(r.key).has(r.fp));
   const pruned = before - next.functions.length;
   if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes };
   return { map: next, added, pruned, problems, patches, notes: plan.notes };
@@ -357,6 +370,7 @@ export function main(argv) {
       return EXIT_VIOLATION;
     }
     writeFileSync(header, out.text);
+    for (const n of report.notes) process.stdout.write(`note: ${n}\n`);
     process.stdout.write(`map-mode: ${report.added} rows added, ${report.pruned} pruned, ${report.patches.length} untracked rows left for the pattern path\n`);
     return EXIT_OK;
   } catch (e) {
