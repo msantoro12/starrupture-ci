@@ -104,6 +104,8 @@ export function extractFromSource(src) {
   }
   const usingDecl = /\busing\s+SDK\s*::\s*([A-Za-z_]\w*)\s*;/g;
   while ((m = usingDecl.exec(code))) found.push({ name: m[1], how: 'using-decl' });
+  // A field request names its class as a macro argument, with no SDK:: in front.
+  for (const r of fieldRequests(src)) found.push({ name: r.className, how: 'request' });
 
   const regions = sdkNamespaceBlocks(code).map((t) => ({ text: t, how: 'namespace-block' }));
   if (/\busing\s+namespace\s+SDK\b/.test(code)) regions.push({ text: code, how: 'using-namespace' });
@@ -167,16 +169,112 @@ export function collectUsed(dirs, known = null) {
 }
 
 // Every name the sources use as a member: the identifier after `.`, `->` or
-// `::`, and the member named in `offsetof(T, M)` (a read at a fixed offset).
-// By name only, not tied to a class, so it over-approximates. Used by
-// `layout-table.mjs gen --granularity 1` to keep only the rows a project reads.
+// `::`, the member named in `offsetof(T, M)` (a read at a fixed offset), every
+// member a field request names (fieldRequests) and every member a
+// PluginLazyField looks up by name (lazyMembers). By name only, not tied to a
+// class, so it over-approximates. Used by `layout-table.mjs gen --granularity
+// 1` and `2` to keep only the rows a project reads or requests.
 export function collectMemberNames(dirs) {
   const names = new Set();
-  for (const code of sources(dirs)) {
+  for (const raw of rawSources(dirs)) {
+    const code = stripNonCode(raw);
     for (const m of code.matchAll(/(?:\.|->|::)\s*([A-Za-z_]\w*)/g)) names.add(m[1]);
     for (const m of code.matchAll(/\boffsetof\s*\(\s*[^,()]+,\s*([A-Za-z_]\w*)/g)) names.add(m[1]);
+    for (const r of fieldRequests(raw)) if (r.member) names.add(r.member);
+    for (const n of lazyMembers(raw)) names.add(n);
   }
   return names;
+}
+
+// The field requests in one file, as the Plugin SDK's plugin_map.h writes them:
+//   SR_FIELD(T, Class, Member, flags)    a member
+//   SR_BITFIELD(Class, Member)           a bool bitfield
+//   SR_SIZE_CHECK(Class)                 the size of Class (member null)
+//   <NAME>_FIELD(Class, Member)          a plugin's own two-argument wrapper of SR_FIELD
+//   "Class::Member" as a string          a request written out by hand (its key)
+// Returns [{ className, member (null for a size), how: 'field' | 'size' }].
+const SDK_ID = String.raw`(?:SDK\s*::\s*)?([A-Za-z_]\w*)`;
+const RE_SR_FIELD = new RegExp(String.raw`\bSR_FIELD\s*\((?:[^()]|\([^()]*\))*?,\s*${SDK_ID}\s*,\s*([A-Za-z_]\w*)\s*,`, 'g');
+const RE_WRAPPED_FIELD = new RegExp(String.raw`\b(?!SR_FIELD\b)[A-Z][A-Z0-9_]*FIELD\s*\(\s*${SDK_ID}\s*,\s*([A-Za-z_]\w*)\s*\)`, 'g');
+const RE_SIZE_CHECK = new RegExp(String.raw`\bSR_SIZE_CHECK\s*\(\s*${SDK_ID}\s*\)`, 'g');
+export function fieldRequests(src) {
+  const code = stripNonCode(src);
+  const out = [];
+  for (const m of code.matchAll(RE_SR_FIELD)) out.push({ className: m[1], member: m[2], how: 'field' });
+  for (const m of code.matchAll(RE_WRAPPED_FIELD)) out.push({ className: m[1], member: m[2], how: 'field' });
+  for (const m of code.matchAll(RE_SIZE_CHECK)) out.push({ className: m[1], member: null, how: 'size' });
+  for (const m of src.matchAll(/"([A-Za-z_]\w*)::([A-Za-z_]\w*)"/g)) out.push({ className: m[1], member: m[2], how: 'field' });
+  return out;
+}
+
+// The members a PluginLazyField looks up by name on first use
+// (`PluginLazyField<T> x{ "Member" }`): optional by design, the feature using
+// one turns off when it is missing.
+export function lazyMembers(src) {
+  const names = [];
+  for (const m of src.matchAll(/\bPluginLazyField\s*<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>\s*\w+\s*\{\s*"([A-Za-z_]\w*)"\s*\}/g)) names.push(m[1]);
+  return names;
+}
+
+// Every member the sources request, as `Class::Member` (see fieldRequests).
+export function collectRequests(dirs) {
+  const keys = new Set();
+  for (const raw of rawSources(dirs)) for (const r of fieldRequests(raw)) if (r.member) keys.add(`${r.className}::${r.member}`);
+  return keys;
+}
+
+// Every lazy member name in the sources (see lazyMembers).
+export function collectLazyMembers(dirs) {
+  const names = new Set();
+  for (const raw of rawSources(dirs)) for (const n of lazyMembers(raw)) names.add(n);
+  return names;
+}
+
+// The classes whose whole size the sources depend on, and how:
+//   check     SR_SIZE_CHECK(X): the plugin asks the loader to check the size,
+//             so on a build where it changed the loader turns that request off
+//   compiled  sizeof(X) or alignof(X); X held by value in a TArray, TSet, TMap,
+//             TSparseArray or TStaticArray (the compiled stride); or a
+//             variable, member, parameter or return value of type X (a copy
+//             of the compiled size): nothing at run time sees the size change
+// A class with both is `check`: the check guards every use of it. Returns
+// Map<name, 'check' | 'compiled'> (`SDK::` and `const` dropped).
+export function collectSizeUses(dirs) {
+  const uses = new Map();
+  const put = (name, how) => {
+    const n = name.replace(/\s+/g, '');
+    if (uses.get(n) !== 'check') uses.set(n, how);
+  };
+  const sized = /\b(?:sizeof|alignof)\s*\(\s*(?:(?:const|class|struct)\s+)*(?:::\s*)?(?:SDK\s*::\s*)?([A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\)/g;
+  const container = /\bT(?:Array|Set|Map|SparseArray|StaticArray)\s*</g;
+  const byValue = /(?<![\w:<>,*&.])(?:const\s+)?(?:SDK\s*::\s*)?([UAF][A-Z][A-Za-z0-9_]*)\s+(?:const\s+)?[A-Za-z_]\w*\s*(?=[;={[,)])/g;
+  for (const raw of rawSources(dirs)) {
+    const code = stripNonCode(raw);
+    for (const r of fieldRequests(raw)) if (r.how === 'size') put(r.className, 'check');
+    for (const m of code.matchAll(sized)) put(m[1], 'compiled');
+    for (const m of code.matchAll(byValue)) put(m[1], 'compiled');
+    for (const m of code.matchAll(container)) {
+      for (const arg of templateArgs(code, m.index + m[0].length)) {
+        const t = arg.replace(/^\s*(?:const\s+)?(?:SDK\s*::\s*)?/, '').trim();
+        if (/^[A-Za-z_]\w*$/.test(t)) put(t, 'compiled');
+      }
+    }
+  }
+  return uses;
+}
+
+// The top-level arguments of the template list that opens just before `at`.
+function templateArgs(code, at) {
+  const args = [];
+  let depth = 1;
+  let cur = '';
+  for (let i = at; i < code.length && depth > 0; i++) {
+    const c = code[i];
+    if (c === '<' || c === '(') depth++;
+    else if (c === '>' || c === ')') depth--;
+    if (depth === 0 || (depth === 1 && c === ',')) { args.push(cur); cur = ''; } else cur += c;
+  }
+  return args;
 }
 
 // Every type the sources take `sizeof` or `alignof` of (`SDK::` and `const`
@@ -192,8 +290,12 @@ export function collectSizedNames(dirs) {
   return names;
 }
 
+function* rawSources(dirs) {
+  for (const root of dirs) for (const file of walk(root)) yield readFileSync(file, 'utf8');
+}
+
 function* sources(dirs) {
-  for (const root of dirs) for (const file of walk(root)) yield stripNonCode(readFileSync(file, 'utf8'));
+  for (const raw of rawSources(dirs)) yield stripNonCode(raw);
 }
 
 function main(argv) {

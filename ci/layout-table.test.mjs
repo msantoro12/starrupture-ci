@@ -233,7 +233,50 @@ test('CLI: gen --granularity 1 keeps the members the sources read (., ->, ::; no
   assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--granularity', '1', '--out', out).code, 0);
   assert.equal(parseHeader(readFileSync(out, 'utf8')).classes.find((c) => c.name === 'UCrWidget').sizeOf, 0x70, 'sizeof(SDK::X) keeps the size');
   assert.equal(run('gen', asserts, '--cl', '9', '--used', join(FIX, 'used-all.txt'), '--granularity', '1').code, 2, 'granularity 1 needs --src');
-  assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--granularity', '2').code, 2);
+  assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--granularity', '3').code, 2);
+});
+
+test('CLI: gen --granularity 2 narrows structs to the requested members and keeps a size only where the code depends on it', () => {
+  const dir = tmp();
+  const sdk = writeSdk();
+  const asserts = join(dir, 'Assertions.inl');
+  writeFileSync(asserts, inl(WIDGET));
+  const src = join(dir, 'src');
+  mkdirSync(src);
+  writeFileSync(join(src, 'a.cpp'), [
+    'static PluginField<int32_t> Count = MY_FIELD(UCrWidget, Count);',
+    'static PluginLazyField<int32_t> LazyLow{ "bLow" };',
+    'SR_SIZE_CHECK(FCrThing);',
+    'int f(SDK::FCrThing* t) { return t->A; }',
+    '',
+  ].join('\n'));
+  const out = join(dir, 'out.h');
+  const uses = join(dir, 'uses.txt');
+  const r = run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--granularity', '2', '--out', out, '--uses-out', uses);
+  assert.equal(r.code, 0, r.err);
+  const h = parseHeader(readFileSync(out, 'utf8'));
+  const cls = (n) => h.classes.find((c) => c.name === n);
+  assert.deepEqual(cls('UCrWidget').rows.map((x) => x.member).sort(), ['Count', 'bLow'], 'a requested member and a lazy one stay; the rest go');
+  assert.deepEqual(cls('FCrThing').rows.map((x) => x.member), ['A'], 'a struct is narrowed too');
+  assert.notEqual(cls('FCrThing').sizeOf, 0, 'SR_SIZE_CHECK keeps the size');
+  assert.equal(cls('UCrWidget').sizeOf, 0);
+  assert.deepEqual(readFileSync(uses, 'utf8').trim().split('\n'), ['request UCrWidget::Count', 'size FCrThing check', 'lazy bLow']);
+  assert.match(readFileSync(out, 'utf8'), /kGranularity = 2;/);
+  writeFileSync(join(src, 'a.cpp'), 'void f(SDK::TArray<SDK::FCrThing>& a) { for (auto& t : a) Use(t.A); }\n');
+  assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--granularity', '2', '--out', out, '--uses-out', uses).code, 0);
+  assert.notEqual(parseHeader(readFileSync(out, 'utf8')).classes.find((c) => c.name === 'FCrThing').sizeOf, 0, 'a TArray of the struct by value walks its compiled stride');
+  assert.deepEqual(readFileSync(uses, 'utf8').trim().split('\n'), ['size FCrThing compiled']);
+});
+
+test('CLI: keys --uses-out lists every class a committed table keeps a size for', () => {
+  const dir = tmp();
+  const layout = parseAssertions(inl(WIDGET), 'test');
+  const t = buildTable(layout, layout.keys(), { cl: 9, sdk: parseSdkHeaders(writeSdk()), usedMembers: new Set(['Count']) });
+  const h = join(dir, 't.h');
+  writeFileSync(h, renderHeader(t));
+  const uses = join(dir, 'uses.txt');
+  assert.equal(run('keys', h, '--out', join(dir, 'k.txt'), '--uses-out', uses).code, 0);
+  assert.deepEqual(readFileSync(uses, 'utf8').trim().split('\n'), ['size CrWidget_SetCount compiled', 'size FCrThing compiled']);
 });
 
 test('buildTable: a header offset that disagrees with Assertions.inl is an error', () => {
