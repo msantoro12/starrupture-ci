@@ -469,6 +469,8 @@ export function exportFeed(map) {
   const lines = [`format\t${FEED_FORMAT}`];
   for (const b of [...map.builds].sort(byCL)) lines.push(['build', b.cl, hex8(b.stamp), hex8(b.size), b.source].join('\t'));
   for (const r of [...map.functions].sort(byKeyFpCL)) {
+    // The loader refuses a feed whose address-only row lacks the exe's stamp, size or rva (ParseFeed).
+    need(r.absent || r.pattern !== null || (build.get(r.cl).stamp !== 0 && r.rva !== 0), `${rowName(r)}: an address-only row in a feed needs its build's image stamp and an rva`);
     const head = [r.absent ? 'absent' : 'function', r.key, hex8(r.fp), r.cl, hex8(build.get(r.cl).stamp), hex8(build.get(r.cl).size), r.kind];
     lines.push((r.absent ? [...head, or(r.owners && r.owners.join(','))] : [...head, or(r.pattern), r.resultOffset, r.followRel32At, r.followRipDispAt, hex8(r.rva)]).join('\t'));
   }
