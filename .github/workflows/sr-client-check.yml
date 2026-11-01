@@ -73,9 +73,15 @@ on:
       plugin_sdk_ref:
         type: string
         default: 'main'
+      game_sdk_repo:
+        type: string
+        default: 'AlienXAXS/StarRupture-Game-SDK'
       game_sdk_ref:
         type: string
         default: 'main'
+      plugin_exclude:
+        type: string
+        default: ''
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
         type: string
@@ -138,10 +144,18 @@ on:
         description: 'Plugin SDK ref the plugins build against'
         type: string
         default: 'main'
+      game_sdk_repo:
+        description: 'Game SDK repository the plugins build against (msantoro12 or AlienXAXS)'
+        type: string
+        default: 'AlienXAXS/StarRupture-Game-SDK'
       game_sdk_ref:
-        description: 'AlienXAXS/StarRupture-Game-SDK ref the plugins build against'
+        description: 'Game SDK ref the plugins build against'
         type: string
         default: 'main'
+      plugin_exclude:
+        description: 'Plugin names left out of this run (from plugins or plugin_manifests), space-separated, e.g. MiniMap'
+        type: string
+        default: ''
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied (medium only for a replay)'
         type: choice
@@ -153,6 +167,14 @@ on:
         default: false
       publish:
         description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
+        type: boolean
+        default: false
+      # Dispatch only: sr-watch calls this workflow and cannot pass it. With
+      # state/autopilot.json still disabled, decide reports what it would
+      # choose and, when that is M, the chain runs on (export, TEST-key sign,
+      # promote plan) with nothing publishable. Refused with publish on.
+      test_autopilot:
+        description: 'Test run: carry on past a disabled autopilot as far as the promote plan; never publishes (needs map_mode, publish off)'
         type: boolean
         default: false
   schedule:
@@ -292,11 +314,20 @@ jobs:
           PLUGINS: ${{ inputs.plugins }}
           MANIFESTS: ${{ inputs.plugin_manifests }}
           PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
+          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
+          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
+          EXCLUDE: ${{ inputs.plugin_exclude }}
+          TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+          PUBLISH: ${{ inputs.publish }}
+          MAP_MODE: ${{ inputs.map_mode }}
         run: |
           # Plugin code runs in the job that downloaded the client (after the
           # login cache is removed), so it only comes from known owners. The
-          # Plugin SDK is compiled into every plugin, so it does too.
+          # Plugin SDK and the Game SDK are compiled into every plugin, so they
+          # do too.
           if ($env:PLUGIN_SDK_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Plugin-SDK$') { throw "plugin_sdk_repo '$($env:PLUGIN_SDK_REPO)' is not allowed" }
+          if ($env:GAME_SDK_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Game-SDK$') { throw "game_sdk_repo '$($env:GAME_SDK_REPO)' is not allowed" }
+          if ($env:TEST_AUTOPILOT -eq 'true' -and ($env:PUBLISH -eq 'true' -or $env:MAP_MODE -ne 'true')) { throw 'test_autopilot needs map_mode on and publish off: a test run never publishes' }
           $list = [Collections.Generic.List[object]]::new()
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^(msantoro12|AlienXAXS)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
@@ -320,6 +351,15 @@ jobs:
             if ("$hit" -notmatch '^[0-9a-f]{40}$') { throw "$($e.repo) has no branch or tag '$($e.ref)'" }
             $e.sha = "$hit"
           }
+          # An empty plugin_manifests falls back to its default list, so a plugin
+          # is left out by name instead.
+          $exclude = @("$env:EXCLUDE" -split '\s+' | Where-Object { $_ })
+          foreach ($x in $exclude) {
+            if ($x -notmatch '^[A-Za-z0-9_-]+$') { throw "plugin_exclude '$x' is not a plugin name" }
+            if (-not @($list | Where-Object { $_.name -eq $x }).Count) { throw "plugin_exclude names '$x', which is not in plugins or plugin_manifests" }
+          }
+          $list = [Collections.Generic.List[object]]@($list | Where-Object { $_.name -notin $exclude })
+          if ($exclude.Count) { "left out: $($exclude -join ', ')" }
           $twice = @($list | Group-Object { $_.name } | Where-Object Count -gt 1 | ForEach-Object Name)
           if ($twice.Count) { throw "listed more than once: $($twice -join ', ')" }
           $json = ConvertTo-Json -InputObject @($list) -Compress
@@ -386,7 +426,7 @@ jobs:
         if: matrix.source == 'build'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: AlienXAXS/StarRupture-Game-SDK
+          repository: ${{ inputs.game_sdk_repo }}
           ref: ${{ inputs.game_sdk_ref }}
           path: game-sdk
           persist-credentials: false
@@ -439,7 +479,7 @@ jobs:
           # What it was built from, so the check job can rebuild it with a fix
           # applied from exactly the same sources.
           [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $env:REF; sha = (git rev-parse HEAD); dll = $dll[0].Name; tag = $tag
-                      pluginSdkRepo = $env:PLUGIN_SDK_REPO; pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdk = (git -C ..\game-sdk rev-parse HEAD)
+                      pluginSdkRepo = $env:PLUGIN_SDK_REPO; pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdkRepo = $env:GAME_SDK_REPO; gameSdk = (git -C ..\game-sdk rev-parse HEAD)
                       loaderRepo = $env:LOADER_REPO; loaderInterface = (git -C ..\loader-interface rev-parse HEAD)
                       sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
             ConvertTo-Json | Set-Content ..\out\plugin.json -Encoding utf8
@@ -1010,14 +1050,15 @@ jobs:
           if (-not $metas.Count) { throw 'no built plugin: nothing names the Game-SDK and loader commits to read' }
           # Every plugin was built against the same loader and Game-SDK commits.
           $sdk = Join-Path $work 'game-sdk'
-          Get-Source 'AlienXAXS/StarRupture-Game-SDK' $metas[0].gameSdk $sdk
+          if ($metas[0].gameSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Game-SDK$') { throw 'plugin.json does not name an allowed Game SDK repository' }
+          Get-Source $metas[0].gameSdkRepo $metas[0].gameSdk $sdk
           $loaderTable = Join-Path $work 'loader-table.h'
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core/core/layout_table.generated.h" -OutFile $loaderTable -TimeoutSec 60
-          node $lt keys $loaderTable --out "$work\keys-ModLoader.txt"; Invoke-Native 'keys (loader)'
+          node $lt keys $loaderTable --out "$work\keys-ModLoader.txt" --uses-out "$work\uses-ModLoader.txt"; Invoke-Native 'keys (loader)'
           $components.Add('ModLoader')
           foreach ($m in $metas) {
             Get-Source $m.repo $m.sha "$work\src-$($m.name)"
-            node $lt gen "$sdk\Client\Assertions.inl" --cl $(if ($cl) { $cl } else { 1 }) --src "$work\src-$($m.name)" --sdk "$sdk\Client\SDK" --out "$work\table-$($m.name).h"; Invoke-Native "gen ($($m.name))"
+            node $lt gen "$sdk\Client\Assertions.inl" --cl $(if ($cl) { $cl } else { 1 }) --src "$work\src-$($m.name)" --sdk "$sdk\Client\SDK" --granularity 2 --out "$work\table-$($m.name).h" --uses-out "$work\uses-$($m.name).txt"; Invoke-Native "gen ($($m.name))"
             node $lt keys "$work\table-$($m.name).h" --out "$work\keys-$($m.name).txt"; Invoke-Native "keys ($($m.name))"
             if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
             $components.Add($m.name)
@@ -1025,6 +1066,13 @@ jobs:
           $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
           Copy-Item "$work\keys-all.txt" out\layout-keys.txt
+          # Per component: its keys, requests, lazy lookups and size uses
+          # (field-rows.mjs --uses), so the gate is per plugin.
+          $uses = foreach ($c in $components) {
+            Get-Content "$work\keys-$c.txt" | Where-Object { $_ } | ForEach-Object { "$c key $_" }
+            Get-Content "$work\uses-$c.txt" | Where-Object { $_ } | ForEach-Object { "$c $_" }
+          }
+          Set-Content out\layout-uses.txt $uses -Encoding ascii
 
           $reports = @{}
           foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
@@ -1229,7 +1277,8 @@ jobs:
               if ($meta.loaderRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$' -or $meta.loaderInterface -notmatch '^[0-9a-f]{40}$') { throw 'plugin.json does not name the loader interface it was built against' }
               if ($meta.pluginSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Plugin-SDK$') { throw 'plugin.json does not name an allowed Plugin SDK repository' }
               Get-Source $meta.pluginSdkRepo $meta.pluginSdk "$d\plugin-sdk"
-              Get-Source 'AlienXAXS/StarRupture-Game-SDK' $meta.gameSdk "$d\game-sdk"
+              if ($meta.gameSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Game-SDK$') { throw 'plugin.json does not name an allowed Game SDK repository' }
+              Get-Source $meta.gameSdkRepo $meta.gameSdk "$d\game-sdk"
               Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($meta.loaderRepo)/$($meta.loaderInterface)/StarRupture-ModLoader-Core/plugins/plugin_interface.h" `
                 -OutFile "$d\plugin-sdk\include\plugin_interface.h" -TimeoutSec 60
               $sln = @(Get-ChildItem "$d\src" -File -Filter *.sln)
@@ -1343,6 +1392,7 @@ jobs:
             out/autofix-*
             out/layout*.json
             out/layout-keys.txt
+            out/layout-uses.txt
             out/offsets-*.json
           if-no-files-found: warn
           retention-days: 14
@@ -1392,6 +1442,8 @@ jobs:
       RUN_ID: ${{ github.run_id }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      # A dispatched test run only (never a call from sr-watch): see the input.
+      TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && inputs.publish != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
     steps:
       - name: Check out the map tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1475,7 +1527,7 @@ jobs:
           # here: decide reads the report and holds.
           fr=0
           node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json --base res/layout-reference.json \
-            --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --report field-rows.json || fr=$?
+            --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --report field-rows.json || fr=$?
           echo "field-rows: exit $fr"
           # The gate inputs, from what this run checked.
           node -e '
@@ -1527,14 +1579,31 @@ jobs:
             [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
           fi
           echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
+          test_flag=()
+          [ "$TEST_AUTOPILOT" = true ] && test_flag=(--test-autopilot)
           d=0
           node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
             --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json --fields field-rows.json \
-            --history history.json --out decision.json || d=$?
+            --history history.json --out decision.json "${test_flag[@]}" || d=$?
           decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
+          would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
           echo "publishable=false" >> "$GITHUB_OUTPUT"
-          if [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
+          # Each plugin: updated, updated and degraded (what turns off), or held.
+          node -e '
+            const d = JSON.parse(require("fs").readFileSync("decision.json", "utf8"));
+            const md = [`### Map mode: ${d.decision}${d.test ? ` (test run; would be ${d.wouldBe})` : ""}`, "", "| Plugin | Status | Off on this CL | Why |", "|---|---|---|---|"];
+            for (const p of d.plugins ?? []) {
+              const off = p.degraded.map((x) => `${x.key}${x.severity === "high" ? " **(high)**" : ""}`).join(", ");
+              const status = p.status === "updated" && p.degraded.length ? "updated, degraded" : p.status;
+              md.push(`| ${p.name} | ${status} | ${off} | ${[...p.reasons, ...p.degraded.map((x) => x.why)].join("; ").replace(/[|]/g, "/")} |`);
+            }
+            md.push("", ...d.reasons.map((r) => `- HOLD: ${r}`), ...d.notes.map((n) => `- ${n}`));
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+          '
+          if [ "$TEST_AUTOPILOT" = true ] && [ "$decision" = HOLD ] && [ "$would" = M ]; then
+            echo "decide: HOLD (autopilot disabled); test run: it would be M, so the chain runs on with nothing publishable"
+          elif [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
 
           # Path M: the feed, signed with the TEST key and verified.
           node tool/ci/version-map.mjs export-feed "$header" --out feed.txt
@@ -1562,7 +1631,10 @@ jobs:
             writeFileSync("public.json", JSON.stringify({ buildid: Number(buildid), exeSha256: build.exeSha256, cl }));
             // This run scanned this exe: the loader registry (checks) and every
             // plugin. That is the re-scan promote asks for; it fails when either did.
-            writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && r.plugins?.status === "pass", exe: process.env.BRANCH, buildid }));
+            // Per plugin: a held or degraded plugin does not fail the re-scan;
+            // decide's pluginsOk is false only for a verdict nothing can turn off.
+            const d = JSON.parse(readFileSync("decision.json", "utf8"));
+            writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && d.pluginsOk === true, exe: process.env.BRANCH, buildid }));
           '
           if [ -f tool/state/staged.json ]; then cp tool/state/staged.json staged.json; else echo '{}' > staged.json; fi
           if [ "$BRANCH" != public ]; then
@@ -1571,13 +1643,14 @@ jobs:
           fi
           p=0
           node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
-            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json || p=$?
+            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${test_flag[@]}" || p=$?
           node -e '
             const p = JSON.parse(require("fs").readFileSync("promote-plan.json", "utf8"));
             for (const l of p.lines ?? []) console.log("promote: " + l);
             // Publishable: a promotion, or public's own build on a new CL with
             // nothing staged (normal flow; this run's decide M is the map).
-            const ok = p.action === "promote" || (p.action === "normal-flow" && p.kind === "different-cl" && process.env.BRANCH === "public");
+            // A test run is never publishable.
+            const ok = process.env.TEST_AUTOPILOT !== "true" && !p.test && (p.action === "promote" || (p.action === "normal-flow" && p.kind === "different-cl" && process.env.BRANCH === "public"));
             require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\npublishable=" + ok + "\n");
           '
           echo "promote: exit $p (a plan only; the publish job signs with the release key)"
@@ -1618,7 +1691,7 @@ jobs:
   publish:
     name: publish the feed
     needs: [check, map-mode]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
+    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
