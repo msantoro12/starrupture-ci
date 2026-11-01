@@ -183,3 +183,104 @@ node ci/tail-check.mjs build-cl --build-cl <build_cl.txt> --basic <Basic.hpp> --
 rows for those keys on that CL. `GNames` and `GWorld` are compared and reported
 only: the SDK's values for them differ from the engine's by design (the existing
 client check treats them the same way).
+
+## Path M: the map-only update
+
+`decide.mjs` turns the gate results for one game build into a release path. The
+paths are `M`, `B` and `C`:
+
+- **M** (exit 0): everything is clean. The update is rows in the loader's map, and
+  it ships as a signed feed (below). No plugin repo changes and no CL-only source
+  patch is made.
+- **B** (exit 10): a required pattern missed; the pattern path (`apply-proposals.mjs`)
+  repairs a plugin's patterns.
+- **C**: a used class moved. Held until that path is proven.
+
+`state/autopilot.json` lists the paths that may run unattended (`"paths": ["M"]`),
+the `enabled` switch and `max_releases_per_day`, which can only lower the daily cap
+in `decide.mjs`. A file that names a path other than `M`, `B` or `C` is malformed and
+holds. The Game-SDK globals (GObjects, GNames, AppendString, GWorld) must still
+resolve. A value that differs from the SDK's baked `sdkRva` is a note, not a hold,
+because under path M the map row carries the new value.
+
+## The signed feed
+
+`version-map.mjs export-feed <header> --out <file>` writes the loader's map as the
+unsigned feed. `vmap-sign.mjs` signs and checks it:
+
+```
+node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2 [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>]
+node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>] [--pub <keyId>=<64 hex>]...
+```
+
+Signing inserts a `seq` line after the `format` line and ends the file with
+`sig<TAB><keyId><TAB><base64>`: an Ed25519 signature over every byte before that line.
+`seq` is the UTC second of signing, raised to the last published `seq` plus one when
+the clock has not passed it. The private key is read from the environment variable
+`VMAP_SIGN_KEY` (a PEM) or a file and is never printed. Both commands refuse a
+`seq` more than a day ahead of the clock; the signer also refuses a feed over
+512 KiB or one that already has a `seq` or `sig` line; `verify` takes files up to
+1 MiB, checks the signature before anything else and, with `--last-seq`, requires a
+higher `seq`. `verify` exits 3 when it refuses a file.
+
+The loader reads the feed with the public key in its slot `k1` or `k2`
+(`version_feed.cpp`), and `PUBLIC_KEYS` in `vmap-sign.mjs` must hold the same key.
+**Slot `k1` holds a test key in both places, flagged as such.** The pair for real
+use, the `vmap-sign` environment secret and its `main`-only deployment policy are
+not set up, so nothing here signs a feed for release yet.
+
+`vmap-sign.yml` is a manual run on `main` in the `vmap-sign` environment that signs
+the export of a test header and verifies it with the public key. It fails at the
+signing step until the secret exists.
+
+### Publishing and the watchdog
+
+The signed feed's home is this repository's `vmap-feed` release, as the asset
+`version-map-feed.txt`. This repository holds the signing key and no write access to
+the loader. The loader repository's `vmap-publish.yml` pulls the file every
+15 minutes, checks it against the public keys in its own `version_feed.cpp`, and
+uploads it to its Latest release only when it is valid and its `seq` is higher than
+the one already there. That is where the client's `VMAP_FEED_URL`
+(`releases/latest/download/version-map-feed.txt`) points.
+
+`vmap-watchdog.yml` runs hourly and opens one issue when the feed on the loader's
+Latest release lags the last signed `seq` by more than two hours, or when Latest holds
+no feed. It opens no second issue while one is open. It reads only `seq` and does not
+verify (`ci/vmap-watchdog.mjs check --signed <file> --published <file|-> [--max-lag <seconds>]`):
+GitHub switches off scheduled workflows in a public repository after 60 days of no
+activity, and this is the alarm for that.
+
+## Staging and promotion (dry run)
+
+A beta build that passed the chain is staged, and promoted when public flips to the
+same build. Both are plan printers today: no workflow calls them, and nothing is
+signed, published or released from them.
+
+```
+node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
+node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
+node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json> --history <history.json> --last-seq <N> --now <ISO time> [--out <plan.json>]
+```
+
+- **Staging** puts the build's rows on the loader fork's `auto/update-<CL>` branch (a
+  newer build at the same CL gets `-<run>`, so nothing is force-pushed). The commit
+  message carries the record, and `state/staged.json` is the readable index of those
+  branches. The index holds pointers; the rows live in the header. `stage` is handed
+  only a branch push and an index write, so it cannot reach signing, the feed or a
+  release. The push itself waits for the deploy key above, so the command line records
+  it in the plan and writes only the index.
+- **Promotion** matches the public build against the index by build id, exe SHA-256
+  and CL. The same build is re-scanned and promoted. The same CL on another exe is
+  re-verified key by key. A different CL promotes nothing, and the staged build stays
+  a second reference. A staged CL older than the public one is listed and skipped.
+  A promote needs path `M` in `state/autopilot.json` and passes `decide.mjs`'s
+  `checkAutopilot` and `checkRateLimits`, with the daily cap counted on the loader
+  repository only. It prints the pull request it would open and `would sign and
+  publish seq N`; any reason it may not goes out as a `HOLD`. `--live` is refused.
+
+## The Steam poll
+
+`poll-steam.mjs` lists every branch of the client app that has no password, as it
+does for the server app, so a second beta is tracked the day it appears; a
+password-protected branch is ignored. `SR_STEAMCMD_API` and `SR_NEWS_API` replace the
+two service addresses, for the tests.
