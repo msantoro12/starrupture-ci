@@ -25,7 +25,7 @@ jobs:
     steps:
       - name: Re-enable the scheduled workflows
         run: |
-          for wf in sr-watch.yml sr-build-all.yml sr-client-check.yml sr-keepalive.yml; do
+          for wf in sr-watch.yml sr-build-all.yml sr-client-check.yml vmap-watchdog.yml sr-keepalive.yml; do
             gh api -X PUT "repos/$GH_REPO/actions/workflows/$wf/enable"
             echo "enabled $wf"
           done

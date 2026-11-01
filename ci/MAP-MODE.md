@@ -111,7 +111,14 @@ For the new CL it writes a locator row per global key and per scoped key and fp:
 the request's own pattern when it resolved, otherwise the suggester's proposal
 (high confidence, unique on the build, `resultOffset` 0); otherwise an `absent`
 row (owners for a global key, the `fp` for a scoped one). Row sets of an `fp`
-that neither the current nor the previous release carries are pruned.
+that neither the current nor the previous release carries are pruned, and only for
+a key whose every owner had both releases in the input. Without the previous
+release's scan the `fp`s it still reads are not known, so every set is kept: a
+player on that release (AutoUpdate off, or the update declined) keeps the rows it
+resolves through on every CL.
+
+A function key (`Class::Function`) written without a `symbolRva` gets a note in the
+report: the symbol-start and one-key-per-symbol checks cannot run for it.
 
 It refuses, naming the keys: two keys for one symbol; one key at two addresses; a
 global key off a symbol's start; two request tuples under one `fp` of one key; a
@@ -141,7 +148,8 @@ rows are `required`. A scan whose `plugin.name` is not the `owner` is refused.
 `loader_ref`, and uploads the rewritten header and the report as the artifact
 `map-mode-<branch>`. Not yet wired: the scans of each tracked component's
 previous release (`rank: previous`), the key lists (`--keys`), and the push of the
-header to the loader fork (step 26).
+header to the loader fork (step 26). So today the job feeds the current releases
+only, and prunes nothing.
 
 The harness side of this input (plugin scan rows printing `key`, `kind`, `fp` and
 `symbolRva`, the suggester's `followRipDispAt` and kinds `data` and `any`) is in the
@@ -210,7 +218,7 @@ unsigned feed. `vmap-sign.mjs` signs and checks it:
 
 ```
 node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2 [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>]
-node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>] [--pub <keyId>=<64 hex>]...
+node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>] [--pub <keyId>=<64 hex>]... [--allow-test-key]
 ```
 
 Signing inserts a `seq` line after the `format` line and ends the file with
@@ -236,19 +244,20 @@ signing step until the secret exists.
 ### Publishing and the watchdog
 
 The signed feed's home is this repository's `vmap-feed` release, as the asset
-`version-map-feed.txt`. This repository holds the signing key and no write access to
+`version-map-client.v1.txt`. This repository holds the signing key and no write access to
 the loader. The loader repository's `vmap-publish.yml` pulls the file every
 15 minutes, checks it against the public keys in its own `version_feed.cpp`, and
 uploads it to its Latest release only when it is valid and its `seq` is higher than
 the one already there. That is where the client's `VMAP_FEED_URL`
-(`releases/latest/download/version-map-feed.txt`) points.
+(`releases/latest/download/version-map-client.v1.txt`) points.
 
 `vmap-watchdog.yml` runs hourly and opens one issue when the feed on the loader's
 Latest release lags the last signed `seq` by more than two hours, or when Latest holds
 no feed. It opens no second issue while one is open. It reads only `seq` and does not
 verify (`ci/vmap-watchdog.mjs check --signed <file> --published <file|-> [--max-lag <seconds>]`):
 GitHub switches off scheduled workflows in a public repository after 60 days of no
-activity, and this is the alarm for that.
+activity, and this is the alarm for that. `sr-keepalive.yml` re-enables the watchdog
+itself monthly, with the other scheduled workflows.
 
 ## Staging and promotion (dry run)
 
@@ -259,7 +268,7 @@ signed, published or released from them.
 ```
 node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
 node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
-node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json> --history <history.json> --last-seq <N> --now <ISO time> [--out <plan.json>]
+node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json> --history <history.json> --last-seq <N> --now <ISO time> [--verify <verify.json>] [--roll-forward] [--out <plan.json>]
 ```
 
 - **Staging** puts the build's rows on the loader fork's `auto/update-<CL>` branch (a
@@ -271,12 +280,17 @@ node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilo
   it in the plan and writes only the index.
 - **Promotion** matches the public build against the index by build id, exe SHA-256
   and CL. The same build is re-scanned and promoted. The same CL on another exe is
-  re-verified key by key. A different CL promotes nothing, and the staged build stays
+  re-verified key by key. Either needs a passing result (`--verify`, `{ ok: true }`)
+  before it may publish; a failed one runs the normal flow, and a missing one holds.
+  A different CL promotes nothing, and the staged build stays
   a second reference. A staged CL older than the public one is listed and skipped.
   A promote needs path `M` in `state/autopilot.json` and passes `decide.mjs`'s
   `checkAutopilot` and `checkRateLimits`, with the daily cap counted on the loader
-  repository only. It prints the pull request it would open and `would sign and
-  publish seq N`; any reason it may not goes out as a `HOLD`. `--live` is refused.
+  repository only. `seq` is max(now, last + 1) in UTC seconds, as the signer writes
+  it. One publish per CL; `--roll-forward` marks an owner-dispatched re-publish (a
+  newer `seq` replacing a bad one), which skips only that limit. It prints the pull
+  request it would open and `would sign and publish seq N`; any reason it may not
+  goes out as a `HOLD`. `--live` is refused.
 
 ## The Steam poll
 
