@@ -33,9 +33,10 @@ name: SR client check
 # msantoro12): nothing here publishes, tags, releases or uploads it. The
 # check job fetches or builds it itself, after the login cache is deleted;
 # it never goes through the plugins job's artifact, and the files die with
-# the runner. This workflow has no release, tag or Nexus step, the fork
-# keys exist only for the owner's own forks (the auto-apply job checks the
-# repository), and the result artifact holds reports, never a plugin binary.
+# the runner. This workflow has no release, tag, Nexus or upload-to-the-world
+# step, the fork keys exist only for the owner's own forks (the auto-apply
+# job checks the repository), and the result artifact holds reports, never a
+# plugin binary.
 #
 # Login: a separate Steam account that owns the game, never the owner's main
 # account. Its steamcmd login cache (config.vdf) is the secret
@@ -270,17 +271,20 @@ jobs:
           # releases/latest (never a draft or a pre-release), to its tag and
           # that tag's commit. A release with exactly one DLL asset is checked
           # as that DLL (source 'release'); otherwise the tag's source is
-          # built (source 'build'). thirdParty (not msantoro12's) plugins are
-          # fetched or built by the check job itself and never become an
-          # artifact.
+          # built (source 'build'). A plugin that is not hosted (not
+          # msantoro12's, or a release DLL) is fetched or built by the check
+          # job itself and never becomes an artifact. A latest release that
+          # cannot be resolved costs only that plugin (FETCH-FAILED), never
+          # the plan.
           $list = [Collections.Generic.List[object]]::new()
           $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
             $owner = $Matches[1]; $repo = "$($Matches[1])/$($Matches[2])"; $ref = $Matches[3]
             $e = [ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
-                             release = ''; dll = ''; asset = ''; assetSha256 = ''; thirdParty = ($owner -ne 'msantoro12') }
-            if ($ref -eq 'latest-release') {
+                             release = ''; dll = ''; asset = ''; assetSha256 = ''; error = ''; hosted = ($owner -eq 'msantoro12') }
+            if ($ref -eq 'latest-release') { try {
+              $e.source = 'release'; $e.hosted = $false
               try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers $api -TimeoutSec 60 }
               catch { throw "$repo has no latest release ($($_.Exception.Message))" }
               $tag = [string]$rel.tag_name
@@ -293,14 +297,20 @@ jobs:
               $e.ref = $tag; $e.release = $tag; $e.sha = ($line -split '\s+')[0]
               $dlls = @($rel.assets | Where-Object { $_.name -match '\.dll$' -and $_.state -eq 'uploaded' })
               if ($dlls.Count -eq 1 -and $dlls[0].browser_download_url -match ('^https://github\.com/' + [regex]::Escape($repo) + '/releases/download/' + [regex]::Escape($tag) + '/[A-Za-z0-9._-]+\.dll$')) {
-                $e.source = 'release'; $e.dll = [string]$dlls[0].name; $e.asset = [string]$dlls[0].browser_download_url
+                # The URL pattern above is what later steps rely on for the asset name.
+                $e.dll = [string]$dlls[0].name; $e.asset = [string]$dlls[0].browser_download_url
                 # GitHub records each asset's SHA-256 at upload; the fetch checks the download against it.
                 if ($dlls[0].PSObject.Properties['digest'] -and "$($dlls[0].digest)" -match '^sha256:([0-9a-f]{64})$') { $e.assetSha256 = $Matches[1] }
+                else { Write-Host "::notice title=Plugin $($e.name)::GitHub recorded no SHA-256 for $($e.dll), so the download is not compared with one" }
                 Write-Host "::notice title=Plugin $($e.name)::latest release $tag, checking its DLL $($e.dll)"
               } else {
+                $e.source = 'build'; $e.hosted = ($owner -eq 'msantoro12')
                 Write-Host "::notice title=Plugin $($e.name)::latest release $tag has $($dlls.Count) usable DLL assets (exactly one is needed), so its source at the tag is built"
               }
-            } elseif ($owner -eq 'LetMeInside') { throw "plugin '$p': LetMeInside is allowed only as owner/repo@latest-release" }
+            } catch {
+              $e.error = $_.Exception.Message
+              Write-Host "::warning title=Plugin $($e.name)::$($e.error)"
+            } } elseif ($owner -eq 'LetMeInside') { throw "plugin '$p': LetMeInside is allowed only as owner/repo@latest-release" }
             $list.Add($e)
           }
           # Each ref is resolved to its commit here, before any plugin code
@@ -319,7 +329,7 @@ jobs:
           }
           $twice = @($list | Group-Object { $_.name } | Where-Object Count -gt 1 | ForEach-Object Name)
           if ($twice.Count) { throw "listed more than once: $($twice -join ', ')" }
-          $hosted = @($list | Where-Object { -not $_.thirdParty })
+          $hosted = @($list | Where-Object { $_.hosted })
           $json = ConvertTo-Json -InputObject @($list) -Compress
           "matrix=$json" >> $env:GITHUB_OUTPUT
           "hosted=$(ConvertTo-Json -InputObject @($hosted) -Compress)" >> $env:GITHUB_OUTPUT
@@ -817,14 +827,16 @@ jobs:
           pattern: plugin-${{ inputs.branch }}-*
           path: plugins
 
-      # Another author's plugin (thirdParty in the plan) is never built or
-      # stored by the plugins job: it is fetched or built here, after the
-      # login cache is gone, into the runner's disk only (not an artifact).
+      # A plugin that is not hosted in the plan (another author's, or a release
+      # DLL) is never built or stored by the plugins job: it is fetched or
+      # built here, after the login cache is gone, into the runner's disk only
+      # (not an artifact).
       # The files land where the download above puts the others, so the
       # check below treats them alike.
       - name: Get the other authors' plugins
         if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && needs.plugin-plan.outputs.any == 'true'
         continue-on-error: true
+        timeout-minutes: 30
         shell: pwsh
         env:
           PLAN: ${{ needs.plugin-plan.outputs.matrix }}
@@ -835,6 +847,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          # The token only reads public repositories' commit ids; the build below never sees it.
+          $token = $env:GH_TOKEN
+          Remove-Item Env:GH_TOKEN
           function Invoke-Native([string]$what) {
             if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" }
           }
@@ -847,12 +862,13 @@ jobs:
             (git -C $dir rev-parse HEAD)
           }
           $msbuild = $null
-          foreach ($p in @($env:PLAN | ConvertFrom-Json | Where-Object { $_.thirdParty })) {
+          foreach ($p in @($env:PLAN | ConvertFrom-Json | Where-Object { -not $_.hosted })) {
             # One plugin's problem never stops the others; a plugin left without plugin.json is reported as not fetched or not built.
             try {
               $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
               New-Item -ItemType Directory -Force $dir | Out-Null
               if ($p.source -eq 'release') {
+                if (-not $p.asset) { throw "the latest release was not resolved: $($p.error)" }
                 # The release's DLL asset, as players download it.
                 Invoke-WebRequest -Uri $p.asset -OutFile "$dir\$($p.dll)" -TimeoutSec 120
                 $hash = (Get-FileHash "$dir\$($p.dll)" -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -867,7 +883,7 @@ jobs:
               if ($sha -ne $p.sha) { throw "checked out $sha, not the planned commit $($p.sha)" }
               $psdk = Get-Source 'AlienXAXS/StarRupture-Plugin-SDK' $env:PLUGIN_SDK_REF "$work\plugin-sdk"
               $gsdk = Get-Source 'AlienXAXS/StarRupture-Game-SDK' $env:GAME_SDK_REF "$work\game-sdk"
-              $loader = (Invoke-RestMethod -Uri "https://api.github.com/repos/$($env:LOADER_REPO)/commits/$($env:LOADER_REF)" -TimeoutSec 60 -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }).sha
+              $loader = (Invoke-RestMethod -Uri "https://api.github.com/repos/$($env:LOADER_REPO)/commits/$($env:LOADER_REF)" -TimeoutSec 60 -Headers @{ Authorization = "Bearer $token" }).sha
               if ($loader -notmatch '^[0-9a-f]{40}$') { throw "no commit for $($env:LOADER_REPO)@$($env:LOADER_REF)" }
               Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($env:LOADER_REPO)/$loader/StarRupture-ModLoader-Core/plugins/plugin_interface.h" `
                 -OutFile "$work\plugin-sdk\include\plugin_interface.h" -TimeoutSec 60
@@ -1613,7 +1629,7 @@ jobs:
             foreach ($p in @($r.plugins.plugins)) {
               $s = if ($p.PSObject.Properties['summary']) { $p.summary } else { $null }
               # A latest-release plugin shows its tag; a built one its ref and commit.
-              $ref = if ($p.source -eq 'release') { "``$($p.ref)`` (latest release)" } elseif ($p.release) { "``$($p.ref)`` (latest release, built from source, $($p.sha.Substring(0, 7)))" } elseif ($p.sha) { "``$($p.ref)`` ($($p.sha.Substring(0, 7)))" } else { "``$($p.ref)``" }
+              $ref = if ($p.source -eq 'release') { "``$($p.ref)`` (latest release)" } elseif ($p.release) { "``$($p.ref)`` (latest release, built from source$(if ($p.sha) { ', ' + $p.sha.Substring(0, 7) }))" } elseif ($p.sha) { "``$($p.ref)`` ($($p.sha.Substring(0, 7)))" } else { "``$($p.ref)``" }
               $note = foreach ($k in 'note', 'crash', 'error') { if ($p.PSObject.Properties[$k] -and $p.$k) { $p.$k } }
               $md.Add("| $($p.name) | $ref | **$($p.verdict)$(if ($p.verdict -eq 'GAME-CALL') { ' (partial)' })** | $(if ($s) { $s.ok }) | $(if ($s) { $s.missing }) | $(if ($s) { $s.ambiguous }) | $(if ($s) { $s.other + $s.reported }) | $((@($note) -join '; ') -replace '\|', '\|') |")
             }
