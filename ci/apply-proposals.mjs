@@ -64,7 +64,10 @@ export function selectRows(scan, { minConfidence = 'high', targetPublic = false 
     if ((RANK[s.confidence] || 0) < RANK[minConfidence]) { skip(`confidence ${s.confidence || 'none'} is below ${minConfidence}`); continue; }
     if ((row.resultOffset || 0) !== 0) { skip('the request has a resultOffset; not supported'); continue; }
     if (!isPattern(row.pattern)) { skip('the current pattern is not a plain AOB string'); continue; }
-    const props = (s.proposals || []).filter((q) => isPattern(q.pattern) && (q.resultOffset || 0) === 0 && q.uniqueOnTarget);
+    // A plugin source can express a rel32 follow and no other; a proposal that
+    // follows a rip displacement is for the loader's map (ci/map-mode.mjs).
+    const eligible = (s.proposals || []).filter((q) => isPattern(q.pattern) && (q.resultOffset || 0) === 0 && q.uniqueOnTarget);
+    const props = eligible.filter((q) => !(q.followRipDispAt >= 0));
     let pick = null;
     let category = '';
     let why = '';
@@ -76,7 +79,7 @@ export function selectRows(scan, { minConfidence = 'high', targetPublic = false 
       category = 'add'; why = 'unique on the new build; the public build keeps the current pattern';
     }
     if (!pick) {
-      skip(!props.length ? 'no proposal is unique on the checked build'
+      skip(!props.length ? (eligible.length ? 'the proposal follows a rip displacement, which a plugin source cannot express' : 'no proposal is unique on the checked build')
         : !hasReference ? 'no public build to check the proposal against'
         : 'no proposal keeps the public build working');
       continue;
@@ -601,12 +604,18 @@ export function parseNativeKeys(text) {
   text.split(/\r?\n/).forEach((raw, i) => {
     const line = raw.trim();
     if (!line || line.startsWith('#')) return;
-    const m = /^(\S+)\s+(\S+::\S+)(?:\s+(\S.*))?$/.exec(line);
+    const m = /^(\S+)\s+(\S+::\S+)(?:\s+(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+))?(?:\s+(optional))?(?:\s+(\S.*))?$/.exec(line);
     if (!m) throw new Error(`native-keys.txt line ${i + 1}: malformed '${raw}'`);
     const e = { plugin: m[1], key: m[2] };
-    if (m[3]) {
-      try { e.compiled = compileAnchor(m[3]); } catch (err) { throw new Error(`native-keys.txt line ${i + 1}: ${err.message}`); }
-      e.anchor = m[3].trim();
+    // The built offset, size and bool mask, for a key whose PDB size is not the
+    // plugin's (field-rows.mjs REFLECTED_SIZE_KEYS).
+    if (m[3]) e.built = { offset: parseInt(m[3], 16), size: parseInt(m[4], 16), mask: parseInt(m[5], 16) };
+    // The plugin has a fallback without the member: gone on a build is an
+    // absent row, not a hold.
+    if (m[6]) e.optional = true;
+    if (m[7]) {
+      try { e.compiled = compileAnchor(m[7]); } catch (err) { throw new Error(`native-keys.txt line ${i + 1}: ${err.message}`); }
+      e.anchor = m[7].trim();
     }
     entries.push(e);
   });

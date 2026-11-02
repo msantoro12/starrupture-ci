@@ -24,8 +24,9 @@ import { readFileSync, writeFileSync, mkdirSync, appendFileSync, existsSync } fr
 import { dirname, join } from 'node:path';
 
 const APPS = [
-  // branches: null means "every branch the API lists" (dedicated server).
-  { id: '1631270', name: 'StarRupture', short: 'client', branches: ['public', 'public_test_branch'] },
+  // branches: null means "every branch the API lists without a password": a second
+  // beta is tracked the day it appears, as the dedicated server's branches are.
+  { id: '1631270', name: 'StarRupture', short: 'client', branches: null },
   { id: '3809400', name: 'StarRupture Dedicated Server', short: 'server', branches: null },
 ];
 const NEWS_APP = '1631270';
@@ -71,7 +72,7 @@ async function fetchJson(url, check) {
 // api.steamcmd.net answers 200 with an empty or partial body when its own
 // upstream (Steam) hiccups, so a 200 is not enough: the shape is validated.
 async function fetchBranches(app) {
-  const url = `https://api.steamcmd.net/v1/info/${app.id}`;
+  const url = `${process.env.SR_STEAMCMD_API || 'https://api.steamcmd.net'}/v1/info/${app.id}`;
   return fetchJson(url, (j) => {
     if (j.status !== 'success') throw new Error(`status=${j.status}`);
     const raw = j.data?.[app.id]?.depots?.branches;
@@ -90,7 +91,7 @@ async function fetchBranches(app) {
 }
 
 async function fetchNewestNews() {
-  const url = `https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=${NEWS_APP}&count=5&maxlength=1`;
+  const url = `${process.env.SR_NEWS_API || 'https://api.steampowered.com'}/ISteamNews/GetNewsForApp/v2/?appid=${NEWS_APP}&count=5&maxlength=1`;
   try {
     return await fetchJson(url, (j) => {
       const items = j.appnews?.newsitems;

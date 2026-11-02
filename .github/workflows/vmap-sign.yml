@@ -1,0 +1,34 @@
+name: vmap sign
+
+# Signs a feed with the TEST key (k1, the repo secret `VMAP_SIGN_KEY_TEST`) and
+# checks the result against the public key in ci/vmap-sign.mjs. This is the
+# fixture run of step 24: it signs the export of the test loader header, not a
+# real feed. The release key (k2, the `VMAP_SIGN_KEY` secret of the `vmap-sign`
+# environment) is read only by the publish job of sr-client-check.yml.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sign-fixture:
+    name: sign the fixture export
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: lts/*
+      - name: Export the fixture feed
+        run: node ci/version-map.mjs export-feed ci/fixtures/version-map/loader.h --out "$RUNNER_TEMP/feed.txt"
+      - name: Sign it
+        env:
+          VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+        run: node ci/vmap-sign.mjs sign "$RUNNER_TEMP/feed.txt" --out "$RUNNER_TEMP/feed.signed.txt" --key-id k1
+      - name: Verify it with the public key
+        run: node ci/vmap-sign.mjs verify "$RUNNER_TEMP/feed.signed.txt" --allow-test-key

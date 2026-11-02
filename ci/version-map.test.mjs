@@ -524,3 +524,12 @@ test('the fixtures compile as C++20', { skip: !compiler && 'no g++ or clang++ on
     assert.equal(r.status, 0, `${name}: ${r.stderr}`);
   }
 });
+
+test('a feed refuses an address-only row whose build has no image stamp', () => {
+  const map = parse(fixture('loader.h'));
+  const row = map.functions.find((r) => r.pattern === null && !r.absent);
+  assert.ok(row, 'the fixture has an address-only row');
+  assert.doesNotThrow(() => exportFeed(map));
+  map.builds.find((b) => b.cl === row.cl).stamp = 0;
+  assert.throws(() => exportFeed(map), /address-only row .*image stamp/);
+});

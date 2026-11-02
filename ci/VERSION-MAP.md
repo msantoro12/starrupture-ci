@@ -110,9 +110,17 @@ blank lines are skipped):
 ```
 function <key>                          a hookName, or a loader registry name
 required <key>                          a function key the loader needs to start
-native <key> [<offset> <size> <mask>]   a native (non-reflected) field; the values as built, hex, all three or none
-field <key>                             a reflected field
+native <key> [<offset> <size> <mask>] [optional]   a native (non-reflected) field; the values as built, hex, all three or none
+field <key> [optional]                  a reflected field
 ```
+
+A member gone on a build gets an absent row: the loader turns that one request off and
+the plugin runs without that feature (`field-rows.mjs` reports it as degraded, high
+severity for a required request, low for an `optional` one). Only the loader's own keys,
+or a class whose compiled size code uses with no `SR_SIZE_CHECK`, hold the update.
+Until the loader degrades instead of refusing, a missing required request still refuses
+that plugin at load; the other plugins are not affected. When several lists have a key,
+it is optional only if every list says so.
 
 Several lists are taken together: a key may be in more than one under the same
 kind (`required` and `function` are both function keys), a key that is a
