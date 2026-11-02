@@ -872,9 +872,14 @@ jobs:
                 $o = [ordered]@{ name = $(if ($_.name) { $_.name } else { "(raw) $($_.pattern)" }); call = $_.call; kind = $_.kind
                                  required = $_.required; recorded = $_.recorded; result = $_.result }
                 if ($_.PSObject.Properties['suggest']) { $o.suggest = $_.suggest }
+                if ($_.PSObject.Properties['ownPattern']) { $o.ownPattern = $_.ownPattern }
                 $o })
               foreach ($row in @($scan.patterns | Where-Object { $_.recorded -and $_.result -ne 'OK' })) {
                 Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.result)$(if ($row.required) { '' } else { ' (declared optional; the loader still refuses the plugin)' })"
+              }
+              # A request that resolved (the map may have carried it) whose own pattern is not unique here.
+              foreach ($row in @($scan.patterns | Where-Object { $_.PSObject.Properties['ownPattern'] })) {
+                Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.ownPattern), its own pattern matches $(if ($row.PSObject.Properties['matches']) { $row.matches } else { $row.candidates[0].matches }) times on this build"
               }
               switch ($r.verdict) {
                 'CRASH'     { Write-Host "::error title=Plugin $($p.name)::OnPluginLoadHooks crashed ($($scan.crash))" }
@@ -1532,7 +1537,8 @@ jobs:
               $md.Add('|---|---|---|---|')
               foreach ($row in @($p.patterns)) {
                 $req = if (-not $row.recorded) { 'raw scan' } elseif ($row.required) { 'yes' } else { 'no' }
-                $md.Add("| $($row.result) | ``$($row.name -replace '\|', '\|')`` | $($row.kind) | $req |")
+                $shown = if ($row.PSObject.Properties['ownPattern']) { $row.ownPattern } else { $row.result }
+                $md.Add("| $shown | ``$($row.name -replace '\|', '\|')`` | $($row.kind) | $req |")
               }
               $md.Add('')
               $md.Add('</details>')
