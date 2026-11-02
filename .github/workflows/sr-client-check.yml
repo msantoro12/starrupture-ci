@@ -1011,6 +1011,7 @@ jobs:
                 /p:Configuration="Client Release" `
                 /p:Platform=x64 `
                 /p:PostBuildEventUseInBuild=false `
+                /p:Rule3Check=false `
                 /p:ModLoaderBuildTag="$tag" `
                 /p:GameSDKRoot="$work\game-sdk" `
                 /p:PluginSDKInclude="$work\plugin-sdk\include" `
@@ -1020,7 +1021,7 @@ jobs:
               if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
               Copy-Item $dll[0].FullName $dir
               [ordered]@{ name = $p.name; repo = $p.repo; ref = $p.ref; sha = $sha; dll = $dll[0].Name; tag = $tag
-                          pluginSdk = $psdk; gameSdk = $gsdk; loaderRepo = $env:LOADER_REPO; loaderInterface = $loader
+                          pluginSdkRepo = $env:PLUGIN_SDK_REPO; pluginSdk = $psdk; gameSdkRepo = $env:GAME_SDK_REPO; gameSdk = $gsdk; loaderRepo = $env:LOADER_REPO; loaderInterface = $loader
                           sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
                 ConvertTo-Json | Set-Content "$dir\plugin.json" -Encoding utf8
             } catch {
@@ -1458,6 +1459,7 @@ jobs:
                 /p:Configuration="Client Release" `
                 /p:Platform=x64 `
                 /p:PostBuildEventUseInBuild=false `
+                /p:Rule3Check=false `
                 /p:ModLoaderBuildTag="$($meta.tag)" `
                 /p:GameSDKRoot="$d\game-sdk" `
                 /p:PluginSDKInclude="$d\plugin-sdk\include" `
