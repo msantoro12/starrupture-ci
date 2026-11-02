@@ -28,7 +28,7 @@ on:
       loader_ref:
         description: 'Loader branch or tag'
         type: string
-        default: 'ci/aobscan'
+        default: 'ci/aobscan-engine-test'
       ready_regex:
         description: 'Regex on the engine log or ModLoader.log meaning "the world is up"'
         type: string
