@@ -32,11 +32,11 @@ test('game_sdk_repo: both triggers default to the upstream repository, and the p
   for (const name of ['plugin-plan', 'plugins']) assert.equal(job(name).match(/^\s+GAME_SDK_REPO: /gm)?.length, 1, `${name}: GAME_SDK_REPO set once`);
 });
 
-test('plugin_exclude: a name leaves that plugin out, and a name that is in neither list is an error', () => {
+test('plugin_exclude: a name leaves that plugin out, and a name that is not in plugins is an error', () => {
   for (const s of [call, dispatch]) assert.match(s, /plugin_exclude:\n(?:.*\n)*?\s+default: ''/);
   const plan = job('plugin-plan');
   assert.match(plan, /\$list = \[Collections\.Generic\.List\[object\]\]@\(\$list \| Where-Object \{ \$_\.name -notin \$exclude \}\)/);
-  assert.match(plan, /throw "plugin_exclude names '\$x', which is not in plugins or plugin_manifests"/);
+  assert.match(plan, /throw "plugin_exclude names '\$x', which is not in plugins"/);
   assert.ok(plan.indexOf('-notin $exclude') < plan.indexOf('Group-Object'), 'excluded before the duplicate check and the matrix');
 });
 
@@ -63,7 +63,7 @@ test('B5: one plugin that fails to fetch, check out or build never fails the plu
     const next = plugins.indexOf('\n      - name:', at + 1);
     return plugins.slice(at, next < 0 ? undefined : next);
   };
-  for (const name of ['Fetch the released plugin', 'Check out the plugin', 'Check out the Plugin SDK', 'Check out the Game SDK',
+  for (const name of ['Check out the plugin', 'Check out the Plugin SDK', 'Check out the Game SDK',
     "Check out the loader's plugin interface", 'Build the plugin (Client Release)']) {
     assert.match(step(name), /\n        continue-on-error: true\n/, `${name} cannot fail the job`);
   }
