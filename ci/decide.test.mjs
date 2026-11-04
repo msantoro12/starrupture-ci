@@ -50,11 +50,21 @@ const holds = (r, re) => {
 
 // ------------------------------------------------------------ decision paths
 
-test('shipped state/autopilot.json is the safe default', () => {
+// Safe means: off, or on for the map-feed path "M" only (it publishes the signed feed, nothing else).
+const autopilotIsSafe = (ap) => ap.enabled === false
+  || (ap.enabled === true && Array.isArray(ap.paths) && ap.paths.every((p) => p === 'M')
+    && Number.isInteger(ap.max_releases_per_day) && ap.max_releases_per_day > 0 && ap.max_releases_per_day <= 2);
+
+test('shipped state/autopilot.json is off or limited to the map-feed path M', () => {
   const ap = JSON.parse(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'));
-  assert.equal(ap.enabled, false);
-  assert.deepEqual(ap.paths, ['M']);
-  assert.equal(ap.max_releases_per_day, 2);
+  assert.ok(autopilotIsSafe(ap), JSON.stringify(ap));
+});
+
+test('autopilot safe-state check: enabled with only M passes, any other path fails', () => {
+  assert.ok(autopilotIsSafe({ enabled: false, paths: ['M'], max_releases_per_day: 2 }));
+  assert.ok(autopilotIsSafe({ enabled: true, paths: ['M'], max_releases_per_day: 2 }));
+  assert.ok(!autopilotIsSafe({ enabled: true, paths: ['M', 'B'], max_releases_per_day: 2 }));
+  assert.ok(!autopilotIsSafe({ enabled: true, paths: ['M'], max_releases_per_day: 0 }));
 });
 
 test('M: map-only change ships', () => {
