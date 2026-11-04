@@ -448,6 +448,53 @@ test('CLI: gen with --sdk and --src (the source scan), usage errors exit 2', () 
   assert.equal(run('frobnicate').code, 2);
 });
 
+test('CLI: gen --consumer and --plugin-sdk tag each class with what reads it; bases inherit; the tags round-trip', () => {
+  const dir = tmp();
+  const sdk = writeSdk();
+  const asserts = join(dir, 'Assertions.inl');
+  writeFileSync(asserts, inl(WIDGET));
+  const src = join(dir, 'src');
+  mkdirSync(join(src, 'core'), { recursive: true });
+  mkdirSync(join(src, 'menu', 'sub'), { recursive: true });
+  writeFileSync(join(src, 'core', 'a.cpp'), 'void f(SDK::UCrWidget* w) {}\n');
+  writeFileSync(join(src, 'menu', 'b.cpp'), 'void g(SDK::UCrBlueprintWidget_C* w) {}\n');
+  writeFileSync(join(src, 'menu', 'sub', 'c.cpp'), 'void h(SDK::UCrWidget* w) { w->SetCount(1); SDK::UCrWidget::SetCount; }\n');
+  writeFileSync(join(src, 'loose.cpp'), 'void l(SDK::FCrThing t) {}\n');
+  const allow = join(dir, 'rule3-allow.json');
+  writeFileSync(allow, JSON.stringify({ enginePackages: [{ names: ['Engine', 'CoreUObject'], reason: 'engine' }] }));
+  const out = join(dir, 'out.h');
+  const args = ['gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--out', out,
+    '--consumer', `core=${join(src, 'core')}`, '--consumer', `menu=${join(src, 'menu')}`, '--consumer', `deep=${join(src, 'menu', 'sub', 'c.cpp')}`,
+    '--plugin-sdk', allow];
+  const r = run(...args);
+  assert.equal(r.code, 0, r.err);
+  const text = readFileSync(out, 'utf8');
+  const h = parseHeader(text);
+  const tags = Object.fromEntries(h.classes.map((c) => [c.name, c.consumers]));
+  assert.deepEqual(tags, {
+    CrWidget_SetCount: ['deep', 'plugin-sdk'],  // a parameter block: plugins keep it compiled in
+    FCrThing: [],                                // used only by a file no group holds: unknown
+    UCrBlueprintWidget_C: ['menu'],
+    UCrWidget: ['core', 'deep', 'menu'],         // the longest path wins for c.cpp; the derived class adds menu
+  });
+  assert.match(text, /kConsumers\[kConsumerCount\] = \{\n    "core",\n    "deep",\n    "menu",\n    "plugin-sdk",\n\};/);
+  assert.equal(renderHeader(h), text, 'round trip');
+  // An untagged table has no consumer arrays, and reads as before.
+  assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--out', out).code, 0);
+  const plain = readFileSync(out, 'utf8');
+  assert.doesNotMatch(plain, /kConsumers|kClassConsumers/);
+  assert.equal(parseHeader(plain).classes[0].consumers, undefined);
+  // An engine-package class gets plugin-sdk without any group.
+  const layout = parseAssertions(inl(WIDGET), 'test');
+  const t = buildTable(layout, ['UCrWidget'], { cl: 1, sdk: parseSdkHeaders(sdk), pluginPackages: new Set(['Chimera']) });
+  assert.deepEqual(t.classes[0].consumers, ['plugin-sdk']);
+  // Usage errors.
+  assert.equal(run(...args.slice(0, -2), '--consumer', 'nogroup').code, 2);
+  assert.equal(run(...args.slice(0, -2), '--consumer', `plugin-sdk=${src}`).code, 2);
+  assert.equal(run(...args.slice(0, -2), '--consumer', `x=${join(dir, 'nope')}`).code, 2);
+  assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--plugin-sdk', allow).code, 2, '--plugin-sdk needs --sdk');
+});
+
 // ---- keys and pdb-diff ---------------------------------------------------------------
 
 const report = (entries) => JSON.stringify({ summary: { keys: entries.length }, keys: entries });

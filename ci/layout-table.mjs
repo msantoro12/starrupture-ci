@@ -5,7 +5,8 @@
 //
 //   node ci/layout-table.mjs gen <Client/Assertions.inl> --cl <build> \
 //        [--used used-classes.txt]... [--src <source-dir>]... \
-//        [--sdk <Client/SDK dir>] [--granularity 0|1] [--namespace SrLayoutTable] [--out layout_table.generated.h]
+//        [--sdk <Client/SDK dir>] [--granularity 0|1] [--namespace SrLayoutTable] [--out layout_table.generated.h] \
+//        [--consumer <id>=<path>]... [--plugin-sdk <rule3-allow.json>]
 //   node ci/layout-table.mjs compare <old.h> <new.h> [--json report.json]
 //   node ci/layout-table.mjs keys <table.h> [--out keys.txt]
 //   node ci/layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]
@@ -25,6 +26,15 @@
 //   without it those columns are 0.
 //   The output is deterministic: classes sorted by name, rows by offset then
 //   member name, no timestamps, no paths.
+//   --consumer and --plugin-sdk tag each class with what reads its layout, so
+//   the consumer can turn off only what a changed class breaks. Each
+//   --consumer names a group of --src files (a file, or a directory and all
+//   under it; the longest path that holds a file wins); a class gets the id of
+//   every group with a file that uses it, and a reflected base class gets the
+//   ids of the classes derived from it. --plugin-sdk reads the Plugin SDK's
+//   rule-3 allow list: a parameter block, a class with no path, and a class
+//   in one of its enginePackages get the id `plugin-sdk`, since a plugin keeps
+//   those layouts compiled in. A class no group uses gets no id: unknown.
 //
 // compare
 //   Reads two generated headers and reports what the new build breaks in the
@@ -50,13 +60,17 @@
 //
 // The table format is documented in ci/LAYOUT-TABLE.md.
 
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { ALIGN, EXIT_ERROR, EXIT_USED_CHANGED, SIZE, isMain, loadLayout, matchUsed, parseUsedList, ParseError } from './layout-diff.mjs';
 import { collectLazyMembers, collectMemberNames, collectRequests, collectSizedNames, collectSizeUses, collectUsed, knownFilter } from './used-classes.mjs';
 
 export const FORMAT_VERSION = 1;
 const DEFAULT_NAMESPACE = 'SrLayoutTable';
+// The consumer id --plugin-sdk gives a class whose layout plugins keep compiled in.
+export const PLUGIN_SDK_CONSUMER = 'plugin-sdk';
+const CONSUMER_RE = /^[a-z][a-z0-9-]*$/;
+const MAX_CONSUMERS = 32; // one bit each in kClassConsumers
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const hex = (n) => '0x' + n.toString(16).toUpperCase();
@@ -138,7 +152,8 @@ export function parseSdkHeaders(dir) {
 // sizeUses: optional Map (granularity 2, from collectSizeUses): structs are narrowed to usedMembers too, and a
 // class or struct keeps its sizeOf and alignOf only when its name is in sizeUses; a function's parameter block
 // always keeps them.
-export function buildTable(layout, selected, { cl, sdk = null, usedMembers = null, sizedClasses = new Set(), sizeUses = null } = {}) {
+// consumers, pluginPackages: optional; with either, every class gets `consumers` (see tagConsumers).
+export function buildTable(layout, selected, { cl, sdk = null, usedMembers = null, sizedClasses = new Set(), sizeUses = null, consumers = null, pluginPackages = null } = {}) {
   if (sizeUses && !usedMembers) throw new Error('sizeUses (granularity 2) needs usedMembers');
   if (!Number.isInteger(cl) || cl <= 0) throw new Error('a build number (--cl) is required');
   const classes = [];
@@ -193,7 +208,66 @@ export function buildTable(layout, selected, { cl, sdk = null, usedMembers = nul
   // A wrong --sdk directory, or a Dumper-7 line format this parser no longer reads, must not pass for a table.
   if (classes.length === 0) throw new Error('no classes to write' + (sdk ? ': the --sdk directory has none of the selected classes' : ''));
   if (skipped.classes.length * 4 > wanted.size) throw new Error(`${skipped.classes.length} of ${wanted.size} selected classes have no declaration in the --sdk headers (${skipped.classes.slice(0, 8).join(', ')}...); wrong directory or unreadable format`);
-  return { cl, detail: sdk ? 1 : 0, granularity: sizeUses ? 2 : usedMembers ? 1 : 0, classes, skipped };
+  if (consumers || pluginPackages) tagConsumers(classes, { sdk, consumers, pluginPackages });
+  return { cl, detail: sdk ? 1 : 0, granularity: sizeUses ? 2 : usedMembers ? 1 : 0, classes, skipped, tagged: !!(consumers || pluginPackages) };
+}
+
+// Sets c.consumers (sorted ids) on every class: the ids `consumers` (Map<class, Set<id>>) gives it,
+// those of every listed class derived from it (its rows sit inside theirs), and PLUGIN_SDK_CONSUMER
+// for a parameter block, a class with no path, or one whose package is in pluginPackages.
+function tagConsumers(classes, { sdk, consumers, pluginPackages }) {
+  const ids = new Map(classes.map((c) => [c.name, new Set(consumers?.get(c.name) ?? [])]));
+  for (const c of classes) {
+    for (let b = sdk?.get(c.name)?.base; b; b = sdk.get(b)?.base) {
+      const own = ids.get(b);
+      if (own) for (const id of consumers?.get(c.name) ?? []) own.add(id);
+    }
+  }
+  for (const c of classes) {
+    const set = ids.get(c.name);
+    if (pluginPackages && (c.kind === KIND.function || !c.path || pluginPackages.has(c.path.split('.')[0]))) set.add(PLUGIN_SDK_CONSUMER);
+    c.consumers = [...set].sort(cmp);
+  }
+  const all = new Set(classes.flatMap((c) => c.consumers));
+  for (const id of all) if (!CONSUMER_RE.test(id)) throw new Error(`consumer id '${id}' is not lower-case letters, digits and dashes`);
+  if (all.size > MAX_CONSUMERS) throw new Error(`${all.size} consumer ids; a table holds at most ${MAX_CONSUMERS}`);
+}
+
+// Map<used name, Set<id>> from collectUsed's names and the --consumer groups ([{ id, path }], paths
+// resolved): a file belongs to the group with the longest path that holds it, and to none if no
+// path does. Then Map<class, Set<id>> for the matched classes, by matchUsed's rule.
+export function consumersOf(usedNames, groups, classNames) {
+  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const sorted = groups.map((g) => ({ id: g.id, path: fold(resolve(g.path)) })).sort((a, b) => b.path.length - a.path.length);
+  const groupOf = (file) => {
+    const f = fold(resolve(file));
+    return sorted.find((g) => f === g.path || f.startsWith(g.path.endsWith(sep) ? g.path : g.path + sep))?.id;
+  };
+  const byClass = new Map();
+  const all = [...classNames];
+  for (const [u, e] of usedNames) {
+    const ids = new Set();
+    for (const p of e.paths ?? []) {
+      const id = groupOf(p);
+      if (id) ids.add(id);
+    }
+    if (!ids.size) continue;
+    for (const c of all) {
+      if (!(c === u || c.endsWith('::' + u) || c.startsWith(u + '::'))) continue;
+      let set = byClass.get(c);
+      if (!set) byClass.set(c, (set = new Set()));
+      for (const id of ids) set.add(id);
+    }
+  }
+  return byClass;
+}
+
+// The package names of a Plugin SDK rule-3 allow list's enginePackages.
+export function pluginPackagesOf(allowText, label = 'rule3-allow.json') {
+  const allow = JSON.parse(allowText);
+  const names = (allow.enginePackages ?? []).flatMap((g) => g.names ?? []);
+  if (!names.length) throw new Error(`${label}: no enginePackages`);
+  return new Set(names);
 }
 
 const NAME_RE = /^[A-Za-z0-9_:.]+$/;
@@ -256,6 +330,20 @@ export function renderHeader(table, { namespace = DEFAULT_NAMESPACE } = {}) {
   }
   out.push('};');
   out.push('');
+  if (table.tagged) {
+    // Optional: a reader that does not know these arrays skips them.
+    const ids = [...new Set(table.classes.flatMap((c) => c.consumers ?? []))].sort(cmp);
+    const bit = new Map(ids.map((id, i) => [id, i]));
+    out.push(`inline constexpr uint32_t kConsumerCount = ${ids.length};`);
+    out.push('// What reads each class\'s layout: kClassConsumers[i] has bit b set when kConsumers[b] reads kClasses[i]. 0 = not known.');
+    out.push(`inline constexpr const char* kConsumers[${ids.length ? 'kConsumerCount' : '1'}] = {`);
+    for (const id of ids.length ? ids : ['']) out.push(`    "${id}",`);
+    out.push('};');
+    out.push('inline constexpr uint32_t kClassConsumers[kClassCount] = {');
+    for (const c of table.classes) out.push(`    ${hex((c.consumers ?? []).reduce((m, id) => (m | (1 << bit.get(id))) >>> 0, 0))},`);
+    out.push('};');
+    out.push('');
+  }
   out.push(`}  // namespace ${namespace}`);
   return out.join('\n') + '\n';
 }
@@ -302,7 +390,20 @@ export function parseHeader(text, label = 'input') {
       rows: rows.slice(firstRow, firstRow + rowCount).map(([member, offset, size, mask]) => ({ member: names[member], offset, size, mask })),
     };
   });
-  return { cl, detail, classes };
+  // The consumer arrays are optional (renderHeader writes them only for a tagged table).
+  if (!/\bkConsumers\[/.test(text)) return { cl, detail, classes };
+  const ids = block('kConsumers').map((l) => /^\s*"([^"]*)",$/.exec(l)?.[1] ?? null);
+  if (ids.some((id) => id === null)) throw new ParseError(`${label}: kConsumers malformed`);
+  const masks = block('kClassConsumers').map((l) => {
+    const m = /^\s*(0x[0-9A-Fa-f]+|\d+),$/.exec(l);
+    if (!m) throw new ParseError(`${label}: malformed kClassConsumers line: ${l.slice(0, 80)}`);
+    return num(m[1]);
+  });
+  if (masks.length !== classes.length) throw new ParseError(`${label}: ${masks.length} kClassConsumers entries for ${classes.length} classes`);
+  classes.forEach((c, i) => {
+    c.consumers = ids.filter((id, b) => id && (masks[i] >>> b) & 1);
+  });
+  return { cl, detail, classes, tagged: true };
 }
 
 // ---- compare ------------------------------------------------------------------
@@ -471,7 +572,7 @@ function parseArgs(argv, valued, repeated = []) {
 function main(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'gen') {
-    const { opt, pos } = parseArgs(rest, ['cl', 'sdk', 'namespace', 'out', 'granularity', 'uses-out'], ['used', 'src']);
+    const { opt, pos } = parseArgs(rest, ['cl', 'sdk', 'namespace', 'out', 'granularity', 'uses-out', 'plugin-sdk'], ['used', 'src', 'consumer']);
     if (pos.length !== 1) throw new Error('usage: layout-table.mjs gen <Assertions.inl> --cl <build> [--used f]... [--src dir]... [--sdk dir] [--granularity 0|1|2] [--out f] [--uses-out f]');
     if (opt.used.length + opt.src.length === 0) throw new Error('give at least one --used list or --src directory');
     const granularity = opt.granularity ?? '0';
@@ -482,12 +583,26 @@ function main(argv) {
     const layout = loadLayout(pos[0]);
     const used = new Set();
     for (const f of opt.used) for (const n of parseUsedList(readFileSync(f, 'utf8'))) used.add(n);
-    if (opt.src.length) for (const n of collectUsed(opt.src, knownFilter([layout])).names.keys()) used.add(n);
+    const scanned = opt.src.length ? collectUsed(opt.src, knownFilter([layout])).names : new Map();
+    for (const n of scanned.keys()) used.add(n);
     const { matched, unmatched } = matchUsed(used, layout.keys());
+    let consumers = null;
+    if (opt.consumer.length) {
+      if (!opt.src.length) throw new Error('--consumer groups --src files');
+      const groups = opt.consumer.map((g) => {
+        const m = /^([^=]+)=(.+)$/.exec(g);
+        if (!m || !CONSUMER_RE.test(m[1]) || m[1] === PLUGIN_SDK_CONSUMER) throw new Error(`--consumer ${g}: give <id>=<path>, the id lower-case letters, digits and dashes, not ${PLUGIN_SDK_CONSUMER}`);
+        if (!existsSync(m[2])) throw new Error(`--consumer ${g}: ${m[2]} does not exist`);
+        return { id: m[1], path: m[2] };
+      });
+      consumers = consumersOf(scanned, groups, matched.keys());
+    }
+    const pluginPackages = opt['plugin-sdk'] ? pluginPackagesOf(readFileSync(opt['plugin-sdk'], 'utf8'), opt['plugin-sdk']) : null;
+    if (pluginPackages && !opt.sdk) throw new Error('--plugin-sdk reads each class\'s package from its path, which needs --sdk');
     const usedMembers = granularity !== '0' ? collectMemberNames(opt.src) : null;
     const sizedClasses = granularity === '1' ? collectSizedNames(opt.src) : undefined;
     const sizeUses = granularity === '2' || opt['uses-out'] ? collectSizeUses(opt.src) : null;
-    const table = buildTable(layout, matched.keys(), { cl, sdk: opt.sdk ? parseSdkHeaders(opt.sdk) : null, usedMembers, sizedClasses, sizeUses: granularity === '2' ? sizeUses : null });
+    const table = buildTable(layout, matched.keys(), { cl, sdk: opt.sdk ? parseSdkHeaders(opt.sdk) : null, usedMembers, sizedClasses, sizeUses: granularity === '2' ? sizeUses : null, consumers, pluginPackages });
     const text = renderHeader(table, { namespace: opt.namespace });
     if (opt.out) writeFileSync(opt.out, text);
     if (opt['uses-out']) writeFileSync(opt['uses-out'], usesLines(sizeUses, collectLazyMembers(opt.src), table, collectRequests(opt.src)).join('\n') + '\n');

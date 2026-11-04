@@ -107,6 +107,37 @@ mismatch, only an unchecked class.
 | `size` | total bytes of the member, array dimension included (`ElementSize * ArrayDim`); `0` = unknown, do not compare |
 | `boolMask` | `FBoolProperty::FieldMask`: `0xFF` for a native `bool`, `1 << BitIndex` for a bit-field, `0` for every other type |
 
+### Consumers (optional)
+
+`gen --consumer <id>=<path>` (repeatable) and `--plugin-sdk <rule3-allow.json>`
+add two arrays after `kRows`, so the embedding program can turn off only what a
+changed class breaks instead of everything:
+
+```cpp
+inline constexpr uint32_t    kConsumerCount;
+inline constexpr const char* kConsumers[kConsumerCount];      // ids, sorted
+inline constexpr uint32_t    kClassConsumers[kClassCount];    // per kClasses entry: bit b = kConsumers[b] reads it
+```
+
+- Each `--consumer` names a group of `--src` files: one file, or a directory
+  and everything under it. A file belongs to the group with the longest path
+  that holds it, or to none. A class gets the id of every group with a file
+  that uses it (the `used-classes.mjs` scan), and a reflected base class gets
+  the ids of every listed class derived from it, since their rows sit on top
+  of its own.
+- `--plugin-sdk` reads the Plugin SDK's rule-3 allow list (`tools/rule3-allow.json`
+  in the Plugin SDK) and gives the id `plugin-sdk` to every parameter block,
+  every class without a path, and every class whose package (the first
+  segment of `path`) is one of its `enginePackages`. A plugin keeps those
+  layouts compiled in even once it takes the game's own classes from the
+  version map. It needs `--sdk`.
+- A class with no bit set is one nothing claimed: the reader treats it as
+  read by everything.
+
+The arrays are additive and `kFormatVersion` stays 1: a reader that does not
+know them never looks for them, and `parseHeader` reads a table with or
+without them. A table can hold at most 32 ids.
+
 ### What a table holds, and does not
 
 - Only the members a class declares itself; the consumer never walks base
