@@ -148,8 +148,12 @@ export function knownFilter(layouts) {
   return (name) => full.has(name);
 }
 
+// files holds each using file as <root dir name>/<path under it>; paths holds
+// the same files as the walk found them (the root joined with the path under
+// it), for a caller that groups files by where they are (layout-table.mjs gen
+// --consumer).
 export function collectUsed(dirs, known = null) {
-  const names = new Map(); // name -> { files:Set, how:Set }
+  const names = new Map(); // name -> { files:Set, paths:Set, how:Set }
   let files = 0;
   for (const root of dirs) {
     for (const file of walk(root)) {
@@ -159,8 +163,9 @@ export function collectUsed(dirs, known = null) {
       for (const { name, how, unqualified, derived } of extractFromSource(readFileSync(file, 'utf8'))) {
         if (known ? !known(name) : derived || (unqualified && !TYPE_LIKE.test(name))) continue;
         let e = names.get(name);
-        if (!e) names.set(name, (e = { files: new Set(), how: new Set() }));
+        if (!e) names.set(name, (e = { files: new Set(), paths: new Set(), how: new Set() }));
         e.files.add(tag);
+        e.paths.add(file);
         e.how.add(how);
       }
     }
