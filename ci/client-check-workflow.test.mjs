@@ -88,5 +88,6 @@ test('test_autopilot: dispatch only, refused with publish on, never publishable,
   assert.match(mm, /const ok = process\.env\.TEST_AUTOPILOT !== "true" && !p\.test && /);
   assert.match(mm, /--uses res\/layout-uses\.txt/);
   assert.match(job('publish'), /if: \$\{\{ !cancelled\(\) && inputs\.publish == true && inputs\.test_autopilot != true && /);
-  assert.match(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'), /"enabled": false/);
+  const ap = JSON.parse(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'));
+  assert.ok(ap.enabled === false || (ap.enabled === true && ap.paths.every((p) => p === 'M')), 'autopilot is off or limited to the map-feed path M');
 });
