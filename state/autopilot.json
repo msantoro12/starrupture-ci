@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "enabled": false,
+  "enabled": true,
   "paths": ["M"],
   "max_releases_per_day": 2
 }
