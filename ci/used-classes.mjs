@@ -245,6 +245,9 @@ export function collectLazyMembers(dirs) {
 //             of the compiled size): nothing at run time sees the size change
 //   live      SR_SIZE(X): the plugin reads the size from the running game, so a
 //             resize cannot reach it (it steps through X by that size)
+//             A `TArray<X>& name` parameter or local that the file uses only as
+//             the first argument of PluginMap::ElementAt (or for `.Num()`) is not
+//             a compiled use of X: it is the type ElementAt takes, so it stays live.
 // A class with a `check` is `check`: the check guards every use of it. `compiled` beats `live`:
 // code that depends on the compiled size is not helped by a live read of it elsewhere.
 // Returns Map<name, 'check' | 'compiled' | 'live'> (`SDK::` and `const` dropped).
@@ -264,6 +267,7 @@ export function collectSizeUses(dirs) {
     for (const m of code.matchAll(sized)) put(m[1], 'compiled');
     for (const m of code.matchAll(byValue)) put(m[1], 'compiled');
     for (const m of code.matchAll(container)) {
+      if (onlySteppedByElementAt(code, m)) continue;
       for (const arg of templateArgs(code, m.index + m[0].length)) {
         const t = arg.replace(/^\s*(?:const\s+)?(?:SDK\s*::\s*)?/, '').trim();
         if (/^[A-Za-z_]\w*$/.test(t)) put(t, 'compiled');
@@ -271,6 +275,37 @@ export function collectSizeUses(dirs) {
     }
   }
   return uses;
+}
+
+// True when the `TArray<X>` that `m` matched is a reference or pointer
+// declaration (`SDK::TArray<SDK::X>& name`, the type PluginMap::ElementAt takes)
+// whose name the file uses only as the first argument of ElementAt or for its
+// count (`.Num()`, `.IsValidIndex(`): nothing then strides by the compiled
+// size of X, so the mention alone is not a compiled use. Any other use of the
+// name (`name[i]`, a range-for, `GetData()`, passing it on) or any other form of
+// the mention (by value, a return type, a template argument) keeps it compiled.
+// Another declaration of the same name is judged by its own mention.
+function onlySteppedByElementAt(code, m) {
+  if (!m[0].startsWith('TArray')) return false;
+  let depth = 1;
+  let i = m.index + m[0].length;
+  for (; i < code.length && depth > 0; i++) {
+    if (code[i] === '<' || code[i] === '(') depth++;
+    else if (code[i] === '>' || code[i] === ')') depth--;
+  }
+  const decl = /^\s*(?:const\s+)?[&*]\s*(?:const\s+)?([A-Za-z_]\w*)\s*(?=[,)=;{])/.exec(code.slice(i));
+  if (!decl) return false;
+  const nameAt = i + decl[0].trimEnd().length - decl[1].length;
+  for (const u of code.matchAll(new RegExp(String.raw`\b${decl[1]}\b`, 'g'))) {
+    if (u.index === nameAt) continue;
+    const before = code.slice(0, u.index);
+    const after = code.slice(u.index + u[0].length);
+    if (/>\s*(?:const\s+)?[&*]\s*(?:const\s+)?$/.test(before)) continue; // another declaration
+    if (/\bElementAt\s*\(\s*\*?\s*$/.test(before) && /^\s*,/.test(after)) continue;
+    if (/^\s*(?:\.|->)\s*(?:Num|IsValidIndex)\s*\(/.test(after)) continue;
+    return false;
+  }
+  return true;
 }
 
 // The top-level arguments of the template list that opens just before `at`.

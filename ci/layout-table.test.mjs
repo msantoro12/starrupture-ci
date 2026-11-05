@@ -295,6 +295,18 @@ test('CLI: gen --granularity 2 writes `size <Class> live` for SR_SIZE and a memb
   assert.deepEqual(both.uses, ['size FCrThing compiled'], 'code that still strides by the compiled size is not a live user');
   assert.notEqual(both.sizeOf, 0);
   assert.deepEqual(gen('static auto Size = SR_SIZE(FCrThing);\nSR_SIZE_CHECK(FCrThing);\nint f(SDK::FCrThing* t) { return t->A; }').uses, ['size FCrThing check']);
+  // The SDK's own ElementAt takes a TArray<X>&: naming that type is not a compiled use.
+  const stepped = 'static auto Size = SR_SIZE(FCrThing);\nint g(SDK::FCrThing* t) { return t->A; }\nint f(SDK::TArray<SDK::FCrThing>& a) { if (a.Num() == 0) return 0; auto p = PluginMap::ElementAt(a, 0, Size); return p != nullptr; }';
+  const elementAt = gen(stepped);
+  assert.deepEqual(elementAt.uses, ['size FCrThing live'], 'a TArray only stepped through with ElementAt stays live');
+  assert.equal(elementAt.sizeOf, 0);
+  assert.deepEqual(gen(stepped.replace('return p != nullptr;', 'return p != nullptr && a[0].A;')).uses, ['size FCrThing compiled'], 'a typed a[i] strides by the compiled size');
+  assert.deepEqual(gen(stepped.replace('return p != nullptr;', 'return a.GetData() != nullptr;')).uses, ['size FCrThing compiled'], 'GetData() is a typed pointer');
+  assert.deepEqual(gen(stepped.replace('return p != nullptr;', 'for (auto& t : a) Use(t.A); return 1;')).uses, ['size FCrThing compiled'], 'a range-for strides too');
+  assert.deepEqual(gen(stepped.replace('return p != nullptr;', 'return Other(a);')).uses, ['size FCrThing compiled'], 'a TArray handed on is not known to be only stepped');
+  assert.deepEqual(gen(stepped + '\nSDK::TArray<SDK::FCrThing> Copy();').uses, ['size FCrThing compiled'], 'a TArray by value is a compiled use');
+  assert.deepEqual(gen(stepped + '\nSR_SIZE_CHECK(FCrThing);').uses, ['size FCrThing check'], 'the check outranks everything');
+  assert.deepEqual(gen('SR_SIZE_CHECK(FCrThing);\n' + stepped.replace('static auto Size = SR_SIZE(FCrThing);\n', 'static PluginFieldSpec Size{};\n')).uses, ['size FCrThing check']);
 });
 
 test('CLI: keys --uses-out lists every class a committed table keeps a size for', () => {
