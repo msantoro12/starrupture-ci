@@ -489,9 +489,21 @@ jobs:
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
           $tag = if (Test-Path version) { (Get-Content version -Raw).Trim() } else { 'dev' }
+          # A project that locates the SDKs through StarRupturePluginSDKRoot (MiniMap) expects the Game SDK at
+          # '<root>StarRupture SDK', a submodule of the Plugin SDK that this checkout does not fetch; the Game SDK
+          # checked out above is the same repository, so link it there. Other plugins are not touched.
+          $sdkRoot = "$env:GITHUB_WORKSPACE\plugin-sdk\"
+          $rootProp = @()
+          if (Get-ChildItem -Recurse -File -Include *.props,*.vcxproj | Select-String -Pattern 'StarRupturePluginSDKRoot' -Quiet) {
+            $link = Join-Path $sdkRoot 'StarRupture SDK'
+            if (Test-Path $link) { Remove-Item $link -Recurse -Force }
+            New-Item -ItemType Junction -Path $link -Target "$env:GITHUB_WORKSPACE\game-sdk" | Out-Null
+            $rootProp = @("/p:StarRupturePluginSDKRoot=$sdkRoot")
+          }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
+            @rootProp `
             /p:PostBuildEventUseInBuild=false `
             /p:Rule3Check=false `
             /p:ModLoaderBuildTag="$tag" `
@@ -499,7 +511,8 @@ jobs:
             /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $dll = @(Get-ChildItem 'build\Client Release\Plugins' -File -Filter *.dll)
+          # The shared output folder, or MiniMap's own (bind\Client Release\plugins).
+          $dll = @('build\Client Release\Plugins', 'bind\Client Release\plugins' | Where-Object { Test-Path $_ } | ForEach-Object { Get-ChildItem $_ -File -Filter *.dll })
           if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
           New-Item -ItemType Directory -Force ..\out | Out-Null
           Copy-Item $dll[0].FullName ..\out\
