@@ -1235,6 +1235,16 @@ jobs:
             if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
             $components.Add($m.name)
           }
+          # A plugin of the plan that is not built here (MiniMap: its author's release DLL, and its
+          # project needs the Unreal Engine headers, which a hosted runner does not have) has no source
+          # to read keys from, but ci/native-keys.txt still names the fixed-offset members it reads.
+          # Their rows belong in the map, so those lines join the key list as a component of their own.
+          foreach ($p in @($env:PLAN | ConvertFrom-Json | Where-Object { $_.source -ne 'build' } | ForEach-Object { $_.name })) {
+            if (-not $native.ContainsKey($p) -or $components.Contains($p)) { continue }
+            Set-Content "$work\keys-$p.txt" $native[$p] -Encoding ascii
+            Set-Content "$work\uses-$p.txt" '' -Encoding ascii
+            $components.Add($p)
+          }
           $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
           Copy-Item "$work\keys-all.txt" out\layout-keys.txt
