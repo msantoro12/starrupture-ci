@@ -374,10 +374,31 @@ function addRow(list, row, what, id) {
   return false;
 }
 
+// The Steam build id in a source label: `<branch> <buildid>` (older rows) or
+// `steam_build <buildid>`. Null when the label has no such trailing number.
+export function buildIdOf(source) {
+  const m = /^\S+ (\d+)$/.exec(String(source ?? ''));
+  return m ? m[1] : null;
+}
+
+// Why two build rows for one CL are not the same build, or null when they are.
+// A build is its CL, Steam build id, image stamp and image size; the label's
+// branch word is not part of it.
+export function buildMismatch(old, b) {
+  const oldId = buildIdOf(old.source);
+  const newId = buildIdOf(b.source);
+  if (oldId === null) return `the table's label "${old.source}" for CL-${b.cl} has no Steam build id (expected "<branch> <buildid>")`;
+  if (newId === null) return `the label "${b.source}" for CL-${b.cl} has no Steam build id (expected "steam_build <buildid>")`;
+  if (oldId !== newId) return `Steam build id ${oldId} in the table, ${newId} measured`;
+  if (old.stamp !== b.stamp || old.size !== b.size) return 'another image stamp or size';
+  return null;
+}
+
 export function addBuild(map, b) {
   const old = map.builds.find((x) => x.cl === b.cl);
   if (old) {
-    need(old.stamp === b.stamp && old.size === b.size && old.source === b.source, `build CL-${b.cl} is already in the table with other values`);
+    const why = buildMismatch(old, b);
+    need(why === null, `build CL-${b.cl} is already in the table with other values: ${why}`);
     return false;
   }
   map.builds.push(b);

@@ -47,7 +47,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, addAbsent, addBuild, addFunction, checkMap, emit, isGlobalKind, parse, parseKeys, replaceBuild, unionKeys,
+  EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, addAbsent, addBuild, addFunction, buildMismatch, checkMap, emit, isGlobalKind, parse, parseKeys, replaceBuild, unionKeys,
 } from './version-map.mjs';
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -251,9 +251,8 @@ export function writeRows(map, input) {
     }
   } else if (input.build) {
     const old = next.builds.find((b) => b.cl === cl);
-    if (old.stamp !== numberOf(input.build.stamp, 'build.stamp') || old.size !== numberOf(input.build.size, 'build.size', { lo: 1 }) || old.source !== input.build.source) {
-      problems.push(`CL-${cl} is already in the build table with another exe or source`);
-    }
+    const why = buildMismatch(old, { cl, stamp: numberOf(input.build.stamp, 'build.stamp'), size: numberOf(input.build.size, 'build.size', { lo: 1 }), source: input.build.source });
+    if (why) problems.push(`CL-${cl} is already in the build table with another exe or source: ${why}`);
   }
   if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes };
 
