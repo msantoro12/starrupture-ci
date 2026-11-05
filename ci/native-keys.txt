@@ -12,6 +12,10 @@ BetterCheats ACrTechnologyKeeper::bUnlockAllBuildings
 BetterCheats UCrUW_InventoryContainer::InventoryComponent
 BetterCheats UMassEntitySubsystem::EntityManager optional
 BetterCheats FMassEnemyHealthFragment::HP optional
+BetterCheats FGameplayEffectSpec::SetByCallerNameMagnitudes optional
+BetterCheats FGameplayEffectSpec::SetByCallerTagMagnitudes optional
+BetterCheats FMassEntityManager::ConstSharedFragmentsContainer
+BetterCheats FStructSharedMemory::StructMemory 0x8 0x10 0x00
 BetterDrone ACrPlayerControllerBase::PlayerControlState
 BetterDrone USceneComponent::ComponentToWorld 0x1F0 0x60 0x00
 BetterDrone FTransform::Translation 0x20 0x18 0x00
