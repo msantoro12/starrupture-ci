@@ -13,6 +13,8 @@ BetterCheats UCrUW_InventoryContainer::InventoryComponent
 BetterCheats UMassEntitySubsystem::EntityManager optional
 BetterCheats FMassEnemyHealthFragment::HP optional
 BetterDrone ACrPlayerControllerBase::PlayerControlState
+BetterDrone USceneComponent::ComponentToWorld 0x1F0 0x60 0x00
+BetterDrone FTransform::Translation 0x20 0x18 0x00
 WAILA ACrPackageTransportReplicator::SendingTime
 WAILA UMassEntitySubsystem::EntityManager optional
 ProductionViewer FCrGridEntityHandle::EntityHandle
@@ -60,6 +62,8 @@ CameraControls AAuPlayerCameraManager::FOV
 CameraControls AAuPlayerCameraManager::AdditionalFOVOffset
 CameraControls ULocalPlayer::Origin
 CameraControls ULocalPlayer::Size
+CameraControls APlayerController::bCinematicMode
+CameraControls APlayerController::bHidePawnInCinematicMode
 ProductionViewer UCrGameInstance::ServerSessionName
 ProductionViewer UMassEntitySubsystem::EntityManager
 ProductionViewer FTransform::Translation 0x20 0x18 0x00 Production Viewer/production_fields.h:PLUGIN_FIELD_NATIVE,~sizeof\(SDK::FVector\),~@
