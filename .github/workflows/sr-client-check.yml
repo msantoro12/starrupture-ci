@@ -1682,7 +1682,8 @@ jobs:
             process.stdout.write("previous_cl=" + parse(readFileSync(process.argv[1], "utf8"), "the header").builtCL + "\n");
           ' "$header" >> "$GITHUB_OUTPUT"
           status=0
-          node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json || status=$?
+          # A test run measures a CL already in the table again; any other run refuses it.
+          node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json --remeasure "$TEST_AUTOPILOT" || status=$?
           cp "$header" version_map.generated.h
           if [ "$status" -ne 0 ]; then echo "::error::map mode refused the update (exit $status); see the log and map-mode-report.json"; fi
           exit "$status"

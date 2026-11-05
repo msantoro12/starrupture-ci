@@ -43,6 +43,9 @@ node ci/map-mode.mjs write <header> --input <observations.json> [--keys <keys.tx
 `--keys` takes the tracked components' key lists (`VERSION-MAP.md`, "The coverage
 rule"), once per component; the written map must satisfy the rule over their
 union. `--report` writes `{ written, added, pruned, problems, notes, patches }`.
+`--remeasure true` (the client check passes it on a `test_autopilot` run only) replaces the build row of a
+CL already in the table and drops that CL's rows before writing, so a known CL can be measured again;
+without it a known CL with another exe or source is refused.
 Exit 0 written, 3 refused (the header is untouched, every reason is on stderr),
 2 usage or malformed input.
 

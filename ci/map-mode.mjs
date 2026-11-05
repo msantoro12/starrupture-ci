@@ -2,7 +2,7 @@
 // Map mode: writes what a game update changes into the loader's version map,
 // instead of into each plugin's source.
 //
-//   node ci/map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>]
+//   node ci/map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true]
 //
 // The header is the loader's version_map.generated.h. The input is what the
 // runner collected for one new build (see ci/MAP-MODE.md for the shape): for
@@ -47,7 +47,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, addAbsent, addBuild, addFunction, checkMap, emit, isGlobalKind, parse, parseKeys, unionKeys,
+  EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, addAbsent, addBuild, addFunction, checkMap, emit, isGlobalKind, parse, parseKeys, replaceBuild, unionKeys,
 } from './version-map.mjs';
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -293,8 +293,15 @@ export function writeRows(map, input) {
 }
 
 // The header text, or the reasons it was refused. keys: parsed key lists.
-export function mapMode(headerText, input, { keys = [] } = {}) {
+// remeasure (test runs only): a CL already in the build table is measured again.
+// Its build row is replaced by the input's and its rows are dropped, so the write
+// below measures them afresh instead of refusing on another exe or source.
+export function mapMode(headerText, input, { keys = [], remeasure = false } = {}) {
   const map = parse(headerText, 'the header');
+  const cl = Number(input.cl);
+  if (remeasure && input.build && map.builds.some((b) => b.cl === cl)) {
+    replaceBuild(map, { cl, stamp: numberOf(input.build.stamp, 'build.stamp'), size: numberOf(input.build.size, 'build.size', { lo: 1 }), source: input.build.source });
+  }
   const out = writeRows(map, input);
   if (out.map && keys.length) {
     const left = checkMap(out.map, unionKeys(keys));
@@ -369,14 +376,14 @@ export function main(argv) {
     }
   }
   if (cmd !== 'write' || !header || !o.input) {
-    process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>]\n'
+    process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true]\n'
       + '       map-mode.mjs assemble <scans.json> --out <observations.json>\n');
     return EXIT_ERROR;
   }
   try {
     const input = JSON.parse(readFileSync(o.input, 'utf8').replace(/^﻿/, ''));
     const keys = o.keys.map((p) => parseKeys(readFileSync(p, 'utf8'), p));
-    const out = mapMode(readFileSync(header, 'utf8'), input, { keys });
+    const out = mapMode(readFileSync(header, 'utf8'), input, { keys, remeasure: o.remeasure === 'true' });
     const report = { written: !!out.map, added: out.added ?? 0, pruned: out.pruned ?? 0, problems: out.problems, notes: out.notes ?? [], patches: out.patches ?? [] };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.map) {

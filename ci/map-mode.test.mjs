@@ -314,6 +314,19 @@ test('a new CL needs its build; a known one must match it', () => {
   assert.match(mapMode(header(), known).problems[0], /CL-128786 is already in the build table with another exe/);
 });
 
+test('remeasure measures a known CL again, only when asked', () => {
+  const known = base();
+  known.cl = 128786;
+  known.build = BUILD;
+  assert.match(mapMode(header(), known).problems[0], /already in the build table with another exe/);
+  const again = mapMode(header(), known, { remeasure: true });
+  assert.deepEqual(again.problems, []);
+  const text = again.text;
+  assert.ok(parse(text, 'the header').builds.some((b) => b.cl === 128786 && b.source === BUILD.source));
+  assert.deepEqual(mapMode(text, known).problems, []);
+  assert.deepEqual(mapMode(header(), base(), { remeasure: true }).problems, []);
+});
+
 test('the coverage rule runs over the written map when a key list is given', () => {
   const keys = parseKeys([
     `function ${PE}`, 'function GWorld', `function ${GO}`, `function ${BC}`, `function ${SF}`,
