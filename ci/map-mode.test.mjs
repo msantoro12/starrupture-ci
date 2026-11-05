@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse, parseKeys } from './version-map.mjs';
+import { addFunction, emit, exportFeed, parse, parseFeed, parseKeys } from './version-map.mjs';
 import { kindOf, mapMode, tupleOf } from './map-mode.mjs';
 import { selectRows } from './apply-proposals.mjs';
 
@@ -325,6 +325,27 @@ test('remeasure measures a known CL again, only when asked', () => {
   assert.ok(parse(text, 'the header').builds.some((b) => b.cl === 128786 && b.source === BUILD.source));
   assert.deepEqual(mapMode(text, known).problems, []);
   assert.deepEqual(mapMode(header(), base(), { remeasure: true }).problems, []);
+});
+
+test('a pattern row with rva 0 (scan the pattern, it must match once) survives map mode, a remeasure and the feed', () => {
+  const key = 'ACrAPHelperActorCustom::CheckMainMeshCollision';
+  const seeded = parse(header(), 'the header');
+  addFunction(seeded, { key, kind: 1, cl: 127004, pattern: '40 55 53 56 57 41 55 48 8D AC 24 ?? ?? ?? ??', rva: 0 });
+  const text = emit(seeded);
+  const rva0 = (t, cl = 127004) => parse(t, 'the header').functions.filter((r) => r.rva === 0 && !r.absent && r.cl === cl);
+  assert.equal(rva0(text).length, 1, 'the seeded row parses back');
+  assert.equal(emit(parse(text, 'the header')), text, 'parse and emit keep it byte for byte');
+  const added = mapMode(text, base());
+  assert.deepEqual(added.problems, []);
+  assert.deepEqual(rva0(added.text), rva0(text), 'a new CL leaves it alone');
+  const known = base();
+  known.cl = 128786;
+  const again = mapMode(text, known, { remeasure: true });
+  assert.deepEqual(again.problems, []);
+  assert.deepEqual(rva0(again.text), rva0(text), 'a remeasure of another CL leaves it alone');
+  const feed = exportFeed(parse(added.text, 'the header'));
+  assert.ok(feed.split('\n').some((l) => l.startsWith(`function\t${key}\t`) && l.endsWith('\t0x00000000') && l.includes('\t127004\t')), 'the feed carries it with rva 0');
+  assert.equal(exportFeed(parseFeed(feed)), feed, 'and reads it back unchanged');
 });
 
 test('the coverage rule runs over the written map when a key list is given', () => {
