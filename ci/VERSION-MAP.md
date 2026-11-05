@@ -63,7 +63,7 @@ node ci/version-map.mjs export-feed <header> --out <file>
   the CL the component's SDK and code patterns were written for (`kBuiltCL`).
 - `add-build` adds a build: its CL, the exe's PE `TimeDateStamp` and
   `SizeOfImage`, and where it came from (`public 25646882`,
-  `public_test_branch 26271156`: the branch and the Steam build ID). A plugin
+  `steam_build 26271156`: the label and the Steam build ID). A plugin
   map takes its `kBuiltCL` only.
 - `add-function` adds the row for one key on one build. The build must be in
   the table; the row takes its stamp and size from there. `--pattern` is IDA

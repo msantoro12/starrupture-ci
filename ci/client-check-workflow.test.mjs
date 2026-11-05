@@ -133,3 +133,12 @@ test('alert: a failed job or a HOLD other than "nothing new" opens or updates on
   const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
   assert.match(watch.slice(watch.indexOf('  client-check:\n')), /permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+issues: write/);
 });
+
+test('build label: the map-mode step labels a build "steam_build <build id>" and never names the branch', () => {
+  const step = wf.slice(wf.indexOf('      - name: Write the update into the header'));
+  const line = step.split('\n').find((l) => l.includes('scans.json", JSON.stringify('));
+  assert.ok(line, 'the step writes scans.json');
+  assert.match(line, /source: "steam_build " \+ process\.argv\[1\]/);
+  assert.ok(!/BRANCH|branch/.test(line), 'the label is built from the build id only');
+  assert.ok(!/source: [^,]*test_branch/.test(wf), 'no workflow step labels a build with the test branch');
+});

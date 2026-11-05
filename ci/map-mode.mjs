@@ -329,7 +329,7 @@ function harnessRow(r, owner) {
 // spec: { cl, build, source, scans: [{ owner, tracked, tag, rank, fpAware, file }] },
 // file being a harness JSON, read relative to `dir`. The CL and the build's stamp
 // and size are the registry scan's `exe` block when the spec does not give them;
-// `source` is the build's origin text (`public_test_branch 26271156`). Returns the
+// `source` is the build's origin text (`steam_build 26271156`). Returns the
 // schema 1 input.
 export function assemble(spec, dir) {
   if (!spec || !Array.isArray(spec.scans) || !spec.scans.length) throw new MapError('the spec has no scans');

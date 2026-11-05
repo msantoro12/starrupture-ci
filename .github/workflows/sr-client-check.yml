@@ -1665,6 +1665,8 @@ jobs:
           buildid="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).download?.buildid || ''")"
           [ -n "$buildid" ] || buildid="$BUILDID"
           [ -n "$buildid" ] || { echo "::error::no build id: neither the download nor the buildid input names one"; exit 2; }
+          # The build row's label is "steam_build <build id>": it names the
+          # build and never the Steam branch it was found on.
           # The loader's registry scan, then each plugin scan. A plugin is
           # tracked when it is one of the built `plugins`; otherwise (MiniMap)
           # its failing rows go to the pattern path.
@@ -1679,7 +1681,7 @@ jobs:
               const tracked = built.includes("StarRupture-Plugin-" + name);
               scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
             }
-            fs.writeFileSync("scans.json", JSON.stringify({ source: process.env.BRANCH + " " + process.argv[1], scans }));
+            fs.writeFileSync("scans.json", JSON.stringify({ source: "steam_build " + process.argv[1], scans }));
           ' "$buildid"
           node tool/ci/map-mode.mjs assemble scans.json --out observations.json
           echo "loader_sha=$(git -C loader rev-parse HEAD)" >> "$GITHUB_OUTPUT"

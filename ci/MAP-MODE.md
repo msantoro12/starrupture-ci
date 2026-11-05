@@ -58,7 +58,7 @@ One JSON file per new build, which the runner assembles from the harness
 {
   "schema": 1,
   "cl": 128786,
-  "build": { "stamp": "0x6A1B2C3D", "size": "0x0A412000", "source": "public_test_branch 26271156" },
+  "build": { "stamp": "0x6A1B2C3D", "size": "0x0A412000", "source": "steam_build 26271156" },
   "components": [
     {
       "owner": "ModLoader",
