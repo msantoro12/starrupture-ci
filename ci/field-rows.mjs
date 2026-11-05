@@ -15,7 +15,11 @@
 //     offset, size and bool mask on the new build, found by the key's own text;
 //   - a row for every `field` key (reflected) whose offset, size or mask differs
 //     between the reference and the new build. Reflection gives the live offset on
-//     any build, so a row only records the move.
+//     any build, so a row only records the move;
+//   - and, moved or not, a row for each of the loader's own field keys
+//     (LOADER_FIELD_KEYS): the loader reads an unmoved reflected key by
+//     reflection, but its signed-feed check (version_feed.cpp DropUncovered)
+//     refuses a CL that has no row for every one of them.
 //
 // The gate is per plugin, and only over what that plugin requests. The uses
 // file (`--uses`, from `layout-table.mjs gen --uses-out`) says, per component,
@@ -75,6 +79,16 @@ export const REFLECTED_SIZE_KEYS = new Set(['FTransform::Translation', 'FTransfo
 // What the scanner says of a member, or a class, the build does not have.
 export const GONE = new Set(['NOMEMBER', 'NOTYPE']);
 
+// The reflected fields the loader itself requests (VersionMap::kLoaderFieldKeys
+// in memory_scanner/version_map.h). A feed CL without a row for each is refused
+// by the loader, so each gets a row on every new CL, moved or not.
+export const LOADER_FIELD_KEYS = new Set([
+  'ACrCrafter::CraftComponent',
+  'UWorld::GameState',
+  'UWorld::LineBatchers',
+  'UWorld::NetDriver',
+]);
+
 // The loader's own component name in the uses file and in native-keys.txt.
 export const LOADER = 'ModLoader';
 
@@ -129,7 +143,7 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
   // it; a reflected key, of every plugin whose code requests it. Without a
   // uses file every owner is taken to request it.
   const demand = (key) => {
-    const d = { loader: false, required: [], optional: [] };
+    const d = { loader: LOADER_FIELD_KEYS.has(key), required: [], optional: [] };
     const owners = ownersOf(key);
     for (const o of owners) {
       if (o === LOADER) { d.loader = true; continue; }
@@ -220,7 +234,17 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
           for (const o of owners.length ? owners : ['?']) degrade(o, m.key, 'high', 'the class is not on the new build');
           covered.add(m.key);
         }
-        for (const u of diff.unresolved) notes.push(`${u.key}: resolves on neither build; reflection decides`);
+        for (const u of diff.unresolved) {
+          if (LOADER_FIELD_KEYS.has(u.key)) problems.push(`${u.key}: the loader reads it and needs a row, but it resolves on neither build`);
+          else notes.push(`${u.key}: resolves on neither build; reflection decides`);
+        }
+        // The loader's own keys get a row even when they did not move.
+        const have = new Set(rows.map((r) => r.key));
+        for (const key of fields) {
+          if (!LOADER_FIELD_KEYS.has(key) || have.has(key)) continue;
+          const n = nextBy.get(key);
+          if (n?.result === 'OK' && Number.isInteger(n.offset)) { rows.push(rowOf(key, cl, n)); covered.add(classOf(key)); }
+        }
       }
     }
   }

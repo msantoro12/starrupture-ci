@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addBuild, emit, parse, parseKeys, unionKeys } from './version-map.mjs';
-import { fieldRows, keysFromCheck, parseUses } from './field-rows.mjs';
+import { fieldRows, keysFromCheck, parseUses, LOADER_FIELD_KEYS } from './field-rows.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, 'field-rows.mjs');
@@ -67,6 +67,29 @@ test('every native key gets a row, and a reflected key that moved gets one too',
   assert.equal(row(out.text, 'ACrCrafter::CraftComponent').offset, 0x6e0, 'moved');
   assert.equal(row(out.text, 'UCrSomething::bFlag'), undefined, 'same: reflection gives it live');
   assert.equal(out.added, 4);
+});
+
+test('the loader field keys get a row on a new CL even when they did not move; other unmoved keys do not', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field UWorld::GameState\nfield UWorld::LineBatchers\nfield UWorld::NetDriver\n')]);
+  const same = [ent('UWorld::GameState', 0x1b0, 8), ent('UWorld::LineBatchers', 0xf0, 0x20), ent('UWorld::NetDriver', 0x38, 8)];
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ...same], base: [...base(), ...same] });
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual([...LOADER_FIELD_KEYS].sort(), ['ACrCrafter::CraftComponent', 'UWorld::GameState', 'UWorld::LineBatchers', 'UWorld::NetDriver']);
+  for (const key of LOADER_FIELD_KEYS) assert.ok(row(out.text, key), `${key} has a row`);
+  assert.equal(row(out.text, 'UWorld::LineBatchers').offset, 0xf0);
+  assert.equal(row(out.text, 'UWorld::LineBatchers').size, 0x20);
+  assert.equal(row(out.text, 'UCrSomething::bFlag'), undefined, 'a plugin key that did not move still gets none');
+  assert.equal(out.added, 7);
+  const twice = fieldRows(out.text, { cl: 130000, keys: k, next: [...next(), ...same], base: [...base(), ...same] });
+  assert.equal(twice.added, 0);
+  assert.deepEqual(twice.problems, []);
+});
+
+test('a loader field key that resolves on neither build is refused', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field UWorld::NetDriver\n')]);
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), gone('UWorld::NetDriver')], base: [...base(), gone('UWorld::NetDriver')] });
+  assert.equal(out.text, null);
+  assert.match(out.problems.join('\n'), /UWorld::NetDriver: the loader reads it/);
 });
 
 test('an optional reflected key that only the reference build resolves gets an absent row, not a guess', () => {
