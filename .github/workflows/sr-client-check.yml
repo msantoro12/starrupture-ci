@@ -73,7 +73,7 @@ on:
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@vmap-both-builds'
       plugin_sdk_repo:
         type: string
         default: 'msantoro12/StarRupture-Plugin-SDK'
@@ -138,7 +138,7 @@ on:
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@vmap-both-builds'
       plugin_sdk_repo:
         description: 'Plugin SDK repository the plugins build against (msantoro12 or AlienXAXS)'
         type: string
