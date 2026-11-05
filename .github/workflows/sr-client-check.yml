@@ -511,8 +511,8 @@ jobs:
             /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # The shared output folder, or MiniMap's own (bind\Client Release\plugins).
-          $dll = @('build\Client Release\Plugins', 'bind\Client Release\plugins' | Where-Object { Test-Path $_ } | ForEach-Object { Get-ChildItem $_ -File -Filter *.dll })
+          # The shared output folder, or MiniMap's own (bin\x64\Client Release\plugins).
+          $dll = @('build\Client Release\Plugins', 'bin\x64\Client Release\plugins' | Where-Object { Test-Path $_ } | ForEach-Object { Get-ChildItem $_ -File -Filter *.dll })
           if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
           New-Item -ItemType Directory -Force ..\out | Out-Null
           Copy-Item $dll[0].FullName ..\out\
