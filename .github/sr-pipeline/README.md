@@ -1,6 +1,6 @@
 # StarRupture game-update pipeline
 
-Workflows that watch Steam for a new StarRupture build, check that the loader and plugins still compile (one result per component), and check the new client build offline. They run on GitHub-hosted runners with the built-in `GITHUB_TOKEN`. No self-hosted runner, no Issues. The one secret is the Steam login of a separate CI account, used only by the client check (see "Steam login for the client check").
+Workflows that watch Steam for a new StarRupture build, check that the loader and plugins still compile (one result per component), and check the new client build offline. They run on GitHub-hosted runners with the built-in `GITHUB_TOKEN`. No self-hosted runner. Issues are used only as alerts: `vmap-watchdog.yml`, and the `alert` job of `sr-client-check.yml` (a failed job, or a map-mode HOLD for any reason but "nothing new", opens or updates the issue "SR map mode: <branch> needs attention"). The one secret is the Steam login of a separate CI account, used only by the client check (see "Steam login for the client check").
 
 They live in `msantoro12/starrupture-ci`. The mod repos are checked out from `vars.MOD_OWNER` (default `AlienXAXS`); nothing here writes to them.
 

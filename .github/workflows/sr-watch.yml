@@ -9,8 +9,9 @@ name: SR Steam watch
 # per changed branch, which comments its own result. Merging the PR means
 # "handled" and advances the baseline on main.
 #
-# Only writes: the first baseline commit to main, and game-update/* branches.
-# No issues, no tags, no releases.
+# Only writes: the first baseline commit to main, and game-update/* branches,
+# plus the alert issue the client check opens when a run fails or holds.
+# No tags, no releases.
 
 on:
   schedule:
@@ -150,6 +151,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write    # the alert job of the called workflow
     uses: ./.github/workflows/sr-client-check.yml
     with:
       branch: ${{ matrix.branch }}

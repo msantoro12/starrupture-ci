@@ -85,9 +85,51 @@ test('test_autopilot: dispatch only, refused with publish on, never publishable,
   const mm = job('map-mode');
   assert.match(mm, /TEST_AUTOPILOT: \$\{\{ inputs\.test_autopilot == true && inputs\.publish != true && contains\(github\.workflow_ref, '\/\.github\/workflows\/sr-client-check\.yml@'\) \}\}/);
   assert.match(mm, /\[ "\$TEST_AUTOPILOT" = true \] && \[ "\$decision" = HOLD \] && \[ "\$would" = M \]/);
-  assert.match(mm, /const ok = process\.env\.TEST_AUTOPILOT !== "true" && !p\.test && /);
+  assert.match(mm, /import \{ isPublishable \} from "\.\/tool\/ci\/promote\.mjs";/);
+  assert.match(mm, /const ok = isPublishable\(p, \{ testRun: process\.env\.IS_TEST === "false" \? false : true, branch: process\.env\.BRANCH \}\);/);
   assert.match(mm, /--uses res\/layout-uses\.txt/);
-  assert.match(job('publish'), /if: \$\{\{ !cancelled\(\) && inputs\.publish == true && inputs\.test_autopilot != true && /);
+  assert.match(job('publish'), /if: \$\{\{ !cancelled\(\) && inputs\.publish == true && inputs\.test_autopilot != true && needs\.map-mode\.outputs\.test == 'false' && /);
   const ap = JSON.parse(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'));
   assert.ok(ap.enabled === false || (ap.enabled === true && ap.paths.every((p) => p === 'M')), 'autopilot is off or limited to the map-feed path M');
+});
+
+test('publish lock: a test run never reaches the release key, whatever state/autopilot.json says', () => {
+  const mm = job('map-mode');
+  // The chain states explicitly whether it is a test: the dispatch input, its own flag or the decision.
+  assert.match(mm, /\n {6}test: \$\{\{ steps\.chain\.outputs\.test \}\}\n/);
+  assert.match(mm, /TEST_INPUT: \$\{\{ inputs\.test_autopilot == true \}\}/);
+  assert.ok(mm.includes(`is_test="$(node -p "String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || JSON.parse(require('fs').readFileSync('decision.json','utf8')).test === true)")"\n          echo "test=$is_test" >> "$GITHUB_OUTPUT"`));
+  const pub = job('publish');
+  assert.match(pub, /needs\.map-mode\.outputs\.test == 'false'/, 'the job needs an explicit non-test run');
+  // A second lock in the job: the input and the chain's own marks, before anything is signed.
+  const lock = pub.slice(pub.indexOf('- name: Refuse a test run'), pub.indexOf('- name: Sign with the release key'));
+  assert.ok(lock.length > 40, 'the lock step comes before the signing step');
+  assert.ok(lock.includes('[ "$TEST_INPUT" = false ] || { echo "::error::a test run never publishes"; exit 2; }'));
+  assert.ok(lock.includes('d.test !== undefined || d.wouldBe !== undefined || p.test !== undefined'));
+  assert.ok(!/VMAP_SIGN_KEY/.test(lock), 'the lock step does not read the key');
+  assert.ok(pub.indexOf('- name: Refuse a test run') < pub.indexOf('vmap-sign.mjs sign'), 'locked before signing');
+});
+
+test('field-rows: a missing reference layout is never named, and only a refusal (exit 3) is survivable', () => {
+  const mm = job('map-mode');
+  assert.ok(mm.includes('if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json); else echo '));
+  assert.ok(mm.includes('--next res/layout-target.json "${base[@]}"'));
+  assert.ok(!/--base res\/layout-reference\.json \\\n/.test(mm), '--base is never passed unconditionally');
+  assert.ok(mm.includes('if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr)'));
+  assert.ok(mm.includes('exit "$fr"; fi'));
+  assert.ok(mm.indexOf('field-rows failed') < mm.indexOf('decide.mjs --repo'), 'the job fails before decide runs without a report');
+});
+
+test('alert: a failed job or a HOLD other than "nothing new" opens or updates one issue per branch', () => {
+  const a = job('alert');
+  assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish\]/);
+  assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' \}\}/);
+  assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
+  assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
+  assert.ok(a.includes('result === "failure"'));
+  assert.ok(a.includes('gh issue create --title "$title" --body-file alert.md'));
+  assert.ok(a.includes('gh issue comment "$number" --body-file alert.md'));
+  // The caller's ceiling must grant issues: write, or GitHub rejects the call.
+  const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(watch.slice(watch.indexOf('  client-check:\n')), /permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+issues: write/);
 });

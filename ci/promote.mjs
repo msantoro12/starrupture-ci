@@ -76,6 +76,16 @@ export function plan({ index, pub, autopilot, history, lastSeq, now, verify = nu
   return { ...r, test: true };
 }
 
+// Whether the client check's chain may hand its plan to the publish job: a
+// promotion, or the public build on a new CL with nothing staged (the normal
+// flow). A test run is never publishable, whatever the autopilot file says:
+// testRun must be false (stated by the caller, never assumed) and the plan
+// itself must not be marked a test.
+export function isPublishable(p, { testRun, branch }) {
+  if (testRun !== false || !isObj(p) || p.test) return false;
+  return p.action === 'promote' || (p.action === 'normal-flow' && p.kind === 'different-cl' && branch === 'public');
+}
+
 function planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollForward, test }) {
   need(isObj(index), 'staged index is not an object');
   need(isObj(pub) && Number.isInteger(pub.cl) && /^\d+$/.test(String(pub.buildid)) && /^[0-9a-f]{64}$/.test(String(pub.exeSha256 ?? '')), 'public build needs cl, buildid and exeSha256');

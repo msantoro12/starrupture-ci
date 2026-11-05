@@ -375,8 +375,12 @@ no plugin code, no game file.
    can give it; the poller always does), else the job stops. A plugin is tracked
    when its repo is in the built `plugins` list.
 2. `field-rows.mjs write` from the PDB layouts of the check (`layout-target.json`,
-   `layout-reference.json`, `layout-keys.txt`, `ci/native-keys.txt`). A refusal does not
-   fail the job; decide reads the report and holds.
+   `layout-reference.json`, `layout-keys.txt`, `ci/native-keys.txt`). A refusal (exit 3) does
+   not fail the job; it writes the report and decide holds. Any other failure (exit 2, a
+   missing or malformed input) fails the job. The check writes `layout-reference.json` only
+   when it has an older build to compare with (not on the `public` branch, which is itself
+   the reference); without it the step runs with no `--base` and field-rows refuses while a
+   reflected key is listed, so decide holds with that reason.
 3. `decide.mjs` with the gates built from the check: G1 the builds, G2 the check, G3
    the CL against the one the header was built for, G4 the client registry scan (the
    client check alone decides; no dedicated-server scan is read), G5 the classes
@@ -388,7 +392,10 @@ no plugin code, no game file.
    for a promotion, or for `public`'s own build on a new CL with nothing staged (the
    normal flow).
 5. The `publish` job (input `publish`, default off; `public` branch only; decide `M` and
-   a publishable run) is reachable only when `publish` is explicitly on. It runs in the
+   a publishable run) is reachable only when `publish` is explicitly on and the run is
+   explicitly not a test (`test_autopilot` off, the map-mode `test` output `false`, no test
+   mark on `decision.json` or `promote-plan.json`, checked again in the job), whatever
+   `state/autopilot.json` says. It runs in the
    `vmap-sign` environment (main only), one at a time (`concurrency: vmap-publish`),
    reads the live feed's seq again right before signing, signs the exported feed with the
    release key k2 above it, verifies it without the TEST key, and uploads it with the

@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LOADER_REPO, stage } from './staging.mjs';
-import { PromoteError, gate, plan, promote } from './promote.mjs';
+import { PromoteError, gate, isPublishable, plan, promote } from './promote.mjs';
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), 'promote.mjs');
 const NOW = Date.parse('2026-11-05T12:00:00Z');
@@ -174,4 +174,21 @@ test('test autopilot: a disabled switch plans past it, every other gate stays, a
   assert.notEqual(plan(inputs({ autopilot: off, test: true, verify: { ok: false } })).action, 'promote', 'the re-verify still gates');
   assert.equal(plan(inputs({ autopilot: { ...off, paths: [] }, test: true })).action, 'hold', 'path M must still be enabled');
   assert.throws(() => promote(inputs({ autopilot: off, test: true }), { dryRun: false }), /never live/);
+});
+
+test('isPublishable: a test run is never publishable, whatever the autopilot file says', () => {
+  for (const enabled of [true, false]) {
+    const planned = plan(inputs({ autopilot: { ...autopilot, enabled }, test: true }));
+    assert.equal(planned.action, 'promote', 'the plan itself can go through');
+    assert.equal(isPublishable(planned, { testRun: false, branch: 'public' }), false, 'a plan marked a test is not publishable');
+    assert.equal(isPublishable({ ...planned, test: undefined }, { testRun: true, branch: 'public' }), false, 'a chain marked a test is not publishable');
+  }
+  const real = plan(inputs());
+  assert.equal(isPublishable(real, { testRun: false, branch: 'public' }), true);
+  for (const testRun of [true, undefined, null, 'false', 'true', 0]) assert.equal(isPublishable(real, { testRun, branch: 'public' }), false, 'the run must say, as the boolean false, that it is not a test: ' + String(testRun));
+  assert.equal(isPublishable(null, { testRun: false, branch: 'public' }), false);
+  const normal = { action: 'normal-flow', kind: 'different-cl' };
+  assert.equal(isPublishable(normal, { testRun: false, branch: 'public' }), true);
+  assert.equal(isPublishable(normal, { testRun: false, branch: 'public_test_branch' }), false, 'normal flow publishes public only');
+  assert.equal(isPublishable({ action: 'hold' }, { testRun: false, branch: 'public' }), false);
 });

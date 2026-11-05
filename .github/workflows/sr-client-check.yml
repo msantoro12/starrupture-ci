@@ -1605,6 +1605,8 @@ jobs:
       decision: ${{ steps.chain.outputs.decision }}
       action: ${{ steps.chain.outputs.action }}
       publishable: ${{ steps.chain.outputs.publishable }}
+      # 'false' only for a run that is explicitly not a test; the publish job needs exactly that.
+      test: ${{ steps.chain.outputs.test }}
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
@@ -1616,6 +1618,8 @@ jobs:
       GH_REPO: ${{ github.repository }}
       # A dispatched test run only (never a call from sr-watch): see the input.
       TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && inputs.publish != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+      # The raw dispatch input: a test run for the publish gate, however TEST_AUTOPILOT came out.
+      TEST_INPUT: ${{ inputs.test_autopilot == true }}
     steps:
       - name: Check out the map tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1695,12 +1699,23 @@ jobs:
           header=version_map.generated.h
           cl="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks.exe.cl")"
           # Field rows: the native members on the new CL, the reflected ones
-          # that moved, absent rows for what is gone. A refusal is not fatal
-          # here: decide reads the report and holds.
+          # that moved, absent rows for what is gone. A refusal (exit 3) is not
+          # fatal here: it writes the report and decide holds. Anything else
+          # (exit 2: a missing or malformed input, no report) fails the job, so a
+          # feed is never built without its member rows.
+          # The check writes layout-reference.json only when it has an older build
+          # to compare with: the public branch is itself the reference and has
+          # none, and a test branch has none when the public download failed or
+          # is the same build. Without --base, field-rows refuses while any
+          # reflected key is listed (it cannot find what moved), so decide holds
+          # with that reason; the file is never named when it does not exist.
+          base=()
+          if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json); else echo "field-rows: no reference layout in the check's artifact (branch $BRANCH); running without --base"; fi
           fr=0
-          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json --base res/layout-reference.json \
+          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" \
             --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --report field-rows.json || fr=$?
           echo "field-rows: exit $fr"
+          if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr): no member rows were written and no report exists; failing the job"; exit "$fr"; fi
           # The gate inputs, from what this run checked.
           node -e '
             const fs = require("fs");
@@ -1760,6 +1775,9 @@ jobs:
           would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
           echo "publishable=false" >> "$GITHUB_OUTPUT"
+          # A test run by the dispatch input, the chain's own flag or the decision itself.
+          is_test="$(node -p "String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || JSON.parse(require('fs').readFileSync('decision.json','utf8')).test === true)")"
+          echo "test=$is_test" >> "$GITHUB_OUTPUT"
           # Each plugin: updated, updated and degraded (what turns off), or held.
           node -e '
             const d = JSON.parse(require("fs").readFileSync("decision.json", "utf8"));
@@ -1815,14 +1833,16 @@ jobs:
           p=0
           node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
             --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${test_flag[@]}" || p=$?
-          node -e '
-            const p = JSON.parse(require("fs").readFileSync("promote-plan.json", "utf8"));
+          IS_TEST="$is_test" node --input-type=module -e '
+            import { appendFileSync, readFileSync } from "node:fs";
+            import { isPublishable } from "./tool/ci/promote.mjs";
+            const p = JSON.parse(readFileSync("promote-plan.json", "utf8"));
             for (const l of p.lines ?? []) console.log("promote: " + l);
             // Publishable: a promotion, or the build of public on a new CL with
             // nothing staged (normal flow; decide M of this run is the map).
-            // A test run is never publishable.
-            const ok = process.env.TEST_AUTOPILOT !== "true" && !p.test && (p.action === "promote" || (p.action === "normal-flow" && p.kind === "different-cl" && process.env.BRANCH === "public"));
-            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\npublishable=" + ok + "\n");
+            // A test run is never publishable (ci/promote.mjs isPublishable).
+            const ok = isPublishable(p, { testRun: process.env.IS_TEST === "false" ? false : true, branch: process.env.BRANCH });
+            appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\npublishable=" + ok + "\n");
           '
           echo "promote: exit $p (a plan only; the publish job signs with the release key)"
 
@@ -1862,7 +1882,7 @@ jobs:
   publish:
     name: publish the feed
     needs: [check, map-mode]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
+    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -1874,6 +1894,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      TEST_INPUT: ${{ inputs.test_autopilot == true }}
     steps:
       - name: Check out the sign tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1887,6 +1908,18 @@ jobs:
         with:
           name: map-mode-${{ inputs.branch }}
           path: chain
+
+      - name: Refuse a test run
+        # Second lock behind the job condition: nothing a test run produced is
+        # ever signed with the release key, whatever state/autopilot.json says.
+        run: |
+          set -euo pipefail
+          [ "$TEST_INPUT" = false ] || { echo "::error::a test run never publishes"; exit 2; }
+          node -e '
+            const read = (f) => JSON.parse(require("fs").readFileSync("chain/" + f, "utf8"));
+            const d = read("decision.json"), p = read("promote-plan.json");
+            if (d.test !== undefined || d.wouldBe !== undefined || p.test !== undefined) { console.error("::error::the chain is marked a test run; refusing to sign it"); process.exit(2); }
+          '
 
       - name: Sign with the release key, verify, publish
         env:
@@ -1912,6 +1945,77 @@ jobs:
           '
           gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
           gh release upload vmap-feed version-map-client.v1.txt vmap-history.json --clobber
+
+  # ---- Alert: a failed or held run is visible without opening Actions ----
+  # One issue per branch, opened on the first problem and commented on for every
+  # later one (the same mechanism as vmap-watchdog.yml). Alerts: a job of this
+  # run that failed, and a map-mode decision of HOLD for any reason but
+  # "nothing new" (the CL is not newer than the one the header was built for).
+  # A test run's expected HOLD (autopilot disabled, it would be M) is not an alert.
+  alert:
+    name: alert
+    needs: [build, plugin-plan, check, map-mode, publish]
+    if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BRANCH: ${{ inputs.branch }}
+      BUILDID: ${{ inputs.buildid }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      PLAN_RESULT: ${{ needs.plugin-plan.result }}
+      CHECK_RESULT: ${{ needs.check.result }}
+      MAP_MODE_RESULT: ${{ needs.map-mode.result }}
+      PUBLISH_RESULT: ${{ needs.publish.result }}
+    steps:
+      - name: Download the map-mode chain
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: map-mode-${{ inputs.branch }}
+          path: chain
+
+      - name: Work out what needs attention
+        id: what
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const e = process.env;
+            const lines = [];
+            const jobs = { "build-scanner": e.BUILD_RESULT, "plugin-plan": e.PLAN_RESULT, "check": e.CHECK_RESULT, "map mode": e.MAP_MODE_RESULT, "publish the feed": e.PUBLISH_RESULT };
+            for (const [name, result] of Object.entries(jobs)) if (result === "failure") lines.push("- job **" + name + "** failed");
+            let d = null;
+            try { d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8")); } catch {}
+            if (!d && e.MAP_MODE_RESULT === "success") lines.push("- map mode finished without a decision");
+            if (d && d.decision === "HOLD") {
+              const reasons = d.reasons ?? [];
+              const nothingNew = reasons.some((r) => /^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/.test(r));
+              const expectedTest = d.test === true && d.wouldBe === "M";
+              if (!nothingNew && !expectedTest) lines.push("- decide: **HOLD** on CL-" + (d.cl ?? "?"), ...reasons.map((r) => "  - " + r));
+            }
+            if (!lines.length) { console.log("Nothing to alert on."); process.exit(0); }
+            const md = ["Branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, "", "Details are in the run summary and the map-mode artifact."];
+            fs.writeFileSync("alert.md", md.join("\n") + "\n");
+            fs.appendFileSync(e.GITHUB_OUTPUT, "alert=true\n");
+          '
+
+      - name: Open or update the issue
+        if: steps.what.outputs.alert == 'true'
+        run: |
+          set -euo pipefail
+          title="SR map mode: $BRANCH needs attention"
+          number="$(gh issue list --state open --search "$title in:title" --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file alert.md
+          else
+            gh issue create --title "$title" --body-file alert.md
+          fi
 
   # ---- Auto-apply, part 2: push the verified fixes to the owner's forks ----
   # The only job that can read the fork deploy keys (environment fork-push),
