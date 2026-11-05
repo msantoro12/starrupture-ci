@@ -26,7 +26,7 @@
 // which keys it has (`key`), which members it requests (`request`, a field
 // request in its code), which it looks up by name on first use (`lazy`, a
 // PluginLazyField: optional) and which classes it depends on the whole size of
-// (`size <Class> check|compiled`). ModLoader is the loader itself.
+// (`size <Class> check|compiled|live`). ModLoader is the loader itself.
 //
 // A key the new build does not have (the scanner says NOMEMBER or NOTYPE for a
 // native key, or a reflected key resolves on the reference build only) never
@@ -40,8 +40,10 @@
 // verified never ships.
 //
 // A class whose size changed: a note when no component depends on its whole
-// size. A plugin that checks the size (SR_SIZE_CHECK) has that request turned
-// off by the loader on this build: degraded, high. A component that uses the
+// size, or when the only ones read it live (`size <Class> live`, SR_SIZE: the
+// running game's own size, so nothing compiled misreads it). A plugin that
+// checks the size (SR_SIZE_CHECK) has that request turned off by the loader on
+// this build: degraded, high. A component that uses the
 // compiled size without a check (sizeof, an array of it by value, a copy) is
 // refused: the loader cannot see the change, so that plugin would misread every
 // element after the first, and nothing in the map can turn it off. Without a
@@ -97,15 +99,16 @@ const classOf = (key) => key.split('::')[0];
 const memberOf = (key) => key.split('::')[1];
 
 // The uses file: `<component> key <key>`, `<component> request <Class::Member>`,
-// `<component> lazy <Member>`, `<component> size <Class> check|compiled`.
+// `<component> lazy <Member>`, `<component> size <Class> check|compiled|live`.
+const SIZE_RANK = { live: 1, compiled: 2, check: 3 };
 export function parseUses(text, where = 'uses') {
   const uses = { owners: new Map(), requests: new Map(), lazy: new Map(), size: new Map() };
   const add = (map, k, v) => { if (!map.has(k)) map.set(k, new Set()); map.get(k).add(v); };
   text.replace(/\r\n/g, '\n').split('\n').forEach((raw, i) => {
     const line = raw.trim();
     if (!line || line.startsWith('#')) return;
-    const m = /^(\S+)\s+(key|request|lazy|size)\s+(\S+)(?:\s+(check|compiled))?$/.exec(line);
-    if (!m || (m[2] === 'size') !== (m[4] !== undefined)) throw new MapError(`${where}:${i + 1}: expected "<component> key|request|lazy <name>" or "<component> size <Class> check|compiled"`);
+    const m = /^(\S+)\s+(key|request|lazy|size)\s+(\S+)(?:\s+(check|compiled|live))?$/.exec(line);
+    if (!m || (m[2] === 'size') !== (m[4] !== undefined)) throw new MapError(`${where}:${i + 1}: expected "<component> key|request|lazy <name>" or "<component> size <Class> check|compiled|live"`);
     const [, comp, kind, name, how] = m;
     if (kind === 'key') add(uses.owners, name, comp);
     else if (kind === 'request') add(uses.requests, comp, name);
@@ -113,7 +116,7 @@ export function parseUses(text, where = 'uses') {
     else {
       if (!uses.size.has(name)) uses.size.set(name, new Map());
       const per = uses.size.get(name);
-      if (per.get(comp) !== 'check') per.set(comp, how);
+      if (SIZE_RANK[how] > (SIZE_RANK[per.get(comp)] ?? 0)) per.set(comp, how);
     }
   });
   return uses;
@@ -203,12 +206,13 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
     if (!uses && !per.size) per.set('?', 'compiled');
     const compiled = [...per].filter(([, how]) => how === 'compiled').map(([o]) => o).sort(cmp);
     const checked = [...per].filter(([, how]) => how === 'check').map(([o]) => o).sort(cmp);
+    const live = [...per].filter(([, how]) => how === 'live').map(([o]) => o).sort(cmp);
     if (compiled.length) {
       problems.push(`class ${m.key}: ${change}, and ${compiled.join(', ')} use${compiled.length === 1 ? 's' : ''} its compiled size with no SR_SIZE_CHECK (sizeof, an array of it by value, or a copy): the loader cannot see the change, so that code misreads it; add SR_SIZE_CHECK(${m.key}) so the loader turns those requests off instead`);
       return;
     }
     for (const o of checked) degrade(o, m.key, 'high', `${change}; SR_SIZE_CHECK(${m.key}) fails, so the loader turns that request off`);
-    if (!checked.length) notes.push(`class ${m.key}: ${change}; no plugin depends on its whole size`);
+    if (!checked.length) notes.push(`class ${m.key}: ${change}; ${live.length ? `${live.join(', ')} read${live.length === 1 ? 's' : ''} its size live from the running game` : 'no plugin depends on its whole size'}`);
     covered.add(m.key);
   };
 

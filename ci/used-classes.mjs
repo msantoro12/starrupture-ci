@@ -189,20 +189,26 @@ export function collectMemberNames(dirs) {
 // The field requests in one file, as the Plugin SDK's plugin_map.h writes them:
 //   SR_FIELD(T, Class, Member, flags)    a member
 //   SR_BITFIELD(Class, Member)           a bool bitfield
-//   SR_SIZE_CHECK(Class)                 the size of Class (member null)
+//   SR_SIZE_CHECK(Class)                 the size of Class (member null), checked against the compiled one
+//   SR_SIZE(Class)                       the size of Class read live from the running game (member null, no check)
+//   PluginFieldSpec{ "Class", "Class", nullptr, flags, ... }   the same written by hand: PLUGIN_FIELD_CHECK in flags = checked, else live
 //   <NAME>_FIELD(Class, Member)          a plugin's own two-argument wrapper of SR_FIELD
 //   "Class::Member" as a string          a request written out by hand (its key)
-// Returns [{ className, member (null for a size), how: 'field' | 'size' }].
+// Returns [{ className, member (null for a size), how: 'field' | 'size' | 'live' }].
 const SDK_ID = String.raw`(?:SDK\s*::\s*)?([A-Za-z_]\w*)`;
 const RE_SR_FIELD = new RegExp(String.raw`\bSR_FIELD\s*\((?:[^()]|\([^()]*\))*?,\s*${SDK_ID}\s*,\s*([A-Za-z_]\w*)\s*,`, 'g');
 const RE_WRAPPED_FIELD = new RegExp(String.raw`\b(?!SR_FIELD\b)[A-Z][A-Z0-9_]*FIELD\s*\(\s*${SDK_ID}\s*,\s*([A-Za-z_]\w*)\s*\)`, 'g');
 const RE_SIZE_CHECK = new RegExp(String.raw`\bSR_SIZE_CHECK\s*\(\s*${SDK_ID}\s*\)`, 'g');
+const RE_SIZE_LIVE = new RegExp(String.raw`\bSR_SIZE\s*\(\s*${SDK_ID}\s*\)`, 'g');
+const RE_SIZE_SPEC = /\bPluginFieldSpec\s*(?:[A-Za-z_]\w*\s*)?\{\s*"([A-Za-z_]\w*)"\s*,\s*"\1"\s*,\s*nullptr\s*,([^,}]*)/g;
 export function fieldRequests(src) {
   const code = stripNonCode(src);
   const out = [];
   for (const m of code.matchAll(RE_SR_FIELD)) out.push({ className: m[1], member: m[2], how: 'field' });
   for (const m of code.matchAll(RE_WRAPPED_FIELD)) out.push({ className: m[1], member: m[2], how: 'field' });
   for (const m of code.matchAll(RE_SIZE_CHECK)) out.push({ className: m[1], member: null, how: 'size' });
+  for (const m of code.matchAll(RE_SIZE_LIVE)) out.push({ className: m[1], member: null, how: 'live' });
+  for (const m of src.matchAll(RE_SIZE_SPEC)) out.push({ className: m[1], member: null, how: /\bPLUGIN_FIELD_CHECK\b/.test(m[2]) ? 'size' : 'live' });
   for (const m of src.matchAll(/"([A-Za-z_]\w*)::([A-Za-z_]\w*)"/g)) out.push({ className: m[1], member: m[2], how: 'field' });
   return out;
 }
@@ -237,20 +243,24 @@ export function collectLazyMembers(dirs) {
 //             TSparseArray or TStaticArray (the compiled stride); or a
 //             variable, member, parameter or return value of type X (a copy
 //             of the compiled size): nothing at run time sees the size change
-// A class with both is `check`: the check guards every use of it. Returns
-// Map<name, 'check' | 'compiled'> (`SDK::` and `const` dropped).
+//   live      SR_SIZE(X): the plugin reads the size from the running game, so a
+//             resize cannot reach it (it steps through X by that size)
+// A class with a `check` is `check`: the check guards every use of it. `compiled` beats `live`:
+// code that depends on the compiled size is not helped by a live read of it elsewhere.
+// Returns Map<name, 'check' | 'compiled' | 'live'> (`SDK::` and `const` dropped).
+const SIZE_RANK = { live: 1, compiled: 2, check: 3 };
 export function collectSizeUses(dirs) {
   const uses = new Map();
   const put = (name, how) => {
     const n = name.replace(/\s+/g, '');
-    if (uses.get(n) !== 'check') uses.set(n, how);
+    if (SIZE_RANK[how] > (SIZE_RANK[uses.get(n)] ?? 0)) uses.set(n, how);
   };
   const sized = /\b(?:sizeof|alignof)\s*\(\s*(?:(?:const|class|struct)\s+)*(?:::\s*)?(?:SDK\s*::\s*)?([A-Za-z_]\w*(?:\s*::\s*[A-Za-z_]\w*)*)\s*\)/g;
   const container = /\bT(?:Array|Set|Map|SparseArray|StaticArray)\s*</g;
   const byValue = /(?<![\w:<>,*&.])(?:const\s+)?(?:SDK\s*::\s*)?([UAF][A-Z][A-Za-z0-9_]*)\s+(?:const\s+)?[A-Za-z_]\w*\s*(?=[;={[,)])/g;
   for (const raw of rawSources(dirs)) {
     const code = stripNonCode(raw);
-    for (const r of fieldRequests(raw)) if (r.how === 'size') put(r.className, 'check');
+    for (const r of fieldRequests(raw)) if (r.how !== 'field') put(r.className, r.how === 'size' ? 'check' : 'live');
     for (const m of code.matchAll(sized)) put(m[1], 'compiled');
     for (const m of code.matchAll(byValue)) put(m[1], 'compiled');
     for (const m of code.matchAll(container)) {

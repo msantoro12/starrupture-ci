@@ -136,7 +136,8 @@ export function parseSdkHeaders(dir) {
 // and its sizeOf and alignOf are written as 0 (not compared) unless its name is in sizedClasses, the types the
 // sources take sizeof or alignof of.
 // sizeUses: optional Map (granularity 2, from collectSizeUses): structs are narrowed to usedMembers too, and a
-// class or struct keeps its sizeOf and alignOf only when its name is in sizeUses; a function's parameter block
+// class or struct keeps its sizeOf and alignOf only when its name is in sizeUses and not for a live-only use (SR_SIZE:
+// the plugin reads the size from the running game, so it has no compiled size to compare); a function's parameter block
 // always keeps them.
 export function buildTable(layout, selected, { cl, sdk = null, usedMembers = null, sizedClasses = new Set(), sizeUses = null } = {}) {
   if (sizeUses && !usedMembers) throw new Error('sizeUses (granularity 2) needs usedMembers');
@@ -180,7 +181,7 @@ export function buildTable(layout, selected, { cl, sdk = null, usedMembers = nul
     if (narrowed) {
       for (const member of [...rows.keys()]) if (!usedMembers.has(member)) rows.delete(member);
     }
-    const sized = !narrowed || (sizeUses ? sizeUses.has(name) : sizedClasses.has(name));
+    const sized = !narrowed || (sizeUses ? sizeUses.has(name) && sizeUses.get(name) !== 'live' : sizedClasses.has(name));
     classes.push({
       name,
       sizeOf: sized ? members.get(SIZE) : 0,
@@ -369,7 +370,7 @@ function formatCompare(r) {
 
 // The table's classes and rows as `sr-aobscan --layout` keys, one per line.
 // The uses file next to a key list (`gen --uses-out`, `keys --uses-out`), read by field-rows.mjs --uses:
-//   size <Class> check|compiled   the code depends on the whole size of Class (see collectSizeUses)
+//   size <Class> check|compiled|live   the code depends on the whole size of Class, or reads it live (see collectSizeUses)
 //   request <Class::Member>       a field request in the code (SR_FIELD and its wrappers)
 //   lazy <Member>                 a PluginLazyField looks Member up by name: optional
 // Only classes and keys in the table are listed: a use of something no key names never gates.

@@ -268,6 +268,35 @@ test('CLI: gen --granularity 2 narrows structs to the requested members and keep
   assert.deepEqual(readFileSync(uses, 'utf8').trim().split('\n'), ['size FCrThing compiled']);
 });
 
+test('CLI: gen --granularity 2 writes `size <Class> live` for SR_SIZE and a member-null spec, and keeps no compiled size for it', () => {
+  const dir = tmp();
+  const sdk = writeSdk();
+  const asserts = join(dir, 'Assertions.inl');
+  writeFileSync(asserts, inl(WIDGET));
+  const src = join(dir, 'src');
+  mkdirSync(src);
+  const out = join(dir, 'out.h');
+  const uses = join(dir, 'uses.txt');
+  const gen = (code) => {
+    writeFileSync(join(src, 'a.cpp'), code + '\n');
+    const r = run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--granularity', '2', '--out', out, '--uses-out', uses);
+    assert.equal(r.code, 0, r.err);
+    return { sizeOf: parseHeader(readFileSync(out, 'utf8')).classes.find((c) => c.name === 'FCrThing').sizeOf, uses: readFileSync(uses, 'utf8').trim().split('\n') };
+  };
+  const live = gen('static auto Size = SR_SIZE(FCrThing);\nint f(SDK::FCrThing* t) { return t->A; }');
+  assert.deepEqual(live.uses, ['size FCrThing live']);
+  assert.equal(live.sizeOf, 0, 'a live read has no compiled size to compare');
+  assert.deepEqual(gen('static auto Size = SR_SIZE(SDK::FCrThing);\nint f(SDK::FCrThing* t) { return t->A; }').uses, ['size FCrThing live']);
+  assert.deepEqual(gen('static PluginFieldSpec S{ "FCrThing", "FCrThing", nullptr, PLUGIN_FIELD_FLAG_NONE, 0, -1 };\nint f(SDK::FCrThing* t) { return t->A; }').uses, ['size FCrThing live']);
+  const checked = gen('static PluginFieldSpec S{ "FCrThing", "FCrThing", nullptr, PLUGIN_FIELD_CHECK, sizeof(SDK::FCrThing), -1 };\nint f(SDK::FCrThing* t) { return t->A; }');
+  assert.deepEqual(checked.uses, ['size FCrThing check']);
+  assert.notEqual(checked.sizeOf, 0);
+  const both = gen('static auto Size = SR_SIZE(FCrThing);\nvoid f(SDK::TArray<SDK::FCrThing>& a) { for (auto& t : a) Use(t.A); }');
+  assert.deepEqual(both.uses, ['size FCrThing compiled'], 'code that still strides by the compiled size is not a live user');
+  assert.notEqual(both.sizeOf, 0);
+  assert.deepEqual(gen('static auto Size = SR_SIZE(FCrThing);\nSR_SIZE_CHECK(FCrThing);\nint f(SDK::FCrThing* t) { return t->A; }').uses, ['size FCrThing check']);
+});
+
 test('CLI: keys --uses-out lists every class a committed table keeps a size for', () => {
   const dir = tmp();
   const layout = parseAssertions(inl(WIDGET), 'test');

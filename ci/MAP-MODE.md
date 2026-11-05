@@ -183,7 +183,7 @@ The gate is per plugin, over what that plugin requests. `--uses` is the client c
 `layout-uses.txt`: per component, its keys (`key`), the members its code requests
 (`request`: `SR_FIELD`, its two-argument wrappers, a hand-written `"Class::Member"`), the
 members it looks up by name on first use (`lazy`, a `PluginLazyField`) and the classes it
-depends on the whole size of (`size <Class> check|compiled`). The plugin tables are built
+depends on the whole size of (`size <Class> check|compiled`) or reads live (`size <Class> live`). The plugin tables are built
 with `layout-table.mjs gen --granularity 2 --uses-out`, so a struct lists only the members
 a plugin uses or requests, as a UClass already did.
 
@@ -194,7 +194,9 @@ a plugin uses or requests, as a UClass already did.
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
 - A key the loader itself reads (component `ModLoader`) holds the update: every plugin
   depends on it.
-- A class whose size changed is a note when nothing depends on its whole size, and
+- A class whose size changed is a note when nothing depends on its whole size or the
+  only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
+  game answers with its own size on every build), and
   degrades the plugin with `SR_SIZE_CHECK` on it (the loader refuses that request). Code
   that uses the compiled size with no check (`sizeof`, a `TArray` of it by value, a copy)
   holds the update: the loader cannot see the change, so that code misreads it, and

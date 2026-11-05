@@ -146,6 +146,32 @@ test('a class whose size changed: a note when nothing depends on its size, degra
   assert.deepEqual(same.problems, []);
 });
 
+test('a class whose size changed and is read live (SR_SIZE) is a note; a check beside it still degrades, a compiled use beside it is still refused', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field ACrCrafter\n')]);
+  const b = [...base(), ent('ACrCrafter', null, 0x70)];
+  const n = [...next(), ent('ACrCrafter', null, 0x78)];
+  const live = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses('P key ACrCrafter\nP size ACrCrafter live\n') });
+  assert.deepEqual(live.problems, []);
+  assert.equal(live.degraded.P, undefined, 'a live read is not turned off');
+  assert.ok(live.notes.some((x) => x === 'class ACrCrafter: its size changed (0x70 -> 0x78); P reads its size live from the running game'));
+  assert.ok(live.covered.includes('ACrCrafter'));
+  const mixed = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses('P size ACrCrafter live\nQ size ACrCrafter check\n') });
+  assert.deepEqual(mixed.problems, []);
+  assert.deepEqual(mixed.degraded.Q.map((d) => [d.key, d.severity]), [['ACrCrafter', 'high']]);
+  assert.equal(mixed.degraded.P, undefined);
+  const compiled = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses('P size ACrCrafter live\nQ size ACrCrafter compiled\n') });
+  assert.equal(compiled.text, null);
+  assert.ok(compiled.problems.some((p) => p.includes('and Q uses its compiled size with no SR_SIZE_CHECK')));
+  const same = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ent('ACrCrafter', null, 0x70)], base: b, uses: parseUses('P size ACrCrafter live\n') });
+  assert.deepEqual(same.problems, []);
+});
+
+test('parseUses: live is a size use; one component using a class several ways keeps check over compiled over live', () => {
+  const u = parseUses('P size X live\nP size X compiled\nP size X live\nQ size X check\nQ size X live\nR size X live\n');
+  assert.deepEqual([...u.size.get('X')], [['P', 'compiled'], ['Q', 'check'], ['R', 'live']]);
+  assert.throws(() => parseUses('P size X sometimes\n'), /check\|compiled\|live/);
+});
+
 test('per plugin, only what it requests: a request is high, a lazy lookup low, a name match a note; the loader holds everything', () => {
   const k = keysFromCheck('', 'UCrOld::Removed\nUCrOld\n');
   const b = [ent('UCrOld', null, 0x50), ent('UCrOld::Removed', 0x40, 8)];
