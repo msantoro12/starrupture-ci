@@ -32,7 +32,7 @@ Release lines are always manual, need the owner's OK, and are versioned independ
 | Loader (Client) | compile check; offline client check (`sr-client-check.yml`): CL, pattern scan, SDK globals | n/a |
 | Loader (Server) | compile check; placeholder step "Pattern scan" in the `loader` job | that step (the AOB scan tool) |
 | BetterDrone, BetterCheats, WAILA, Codex | rebuild against the current SDK (the `plugin` job); offline pattern check of the built DLL (`sr-client-check.yml`) | a sibling job that `needs: plugin` |
-| MiniMap (our fork, branch `vmap-both-builds`) | built from source and pattern-checked (`sr-client-check.yml`, `plugins` as `@ref`), so its keys and hooks reach the map | n/a |
+| MiniMap (its author's latest release) | offline pattern check of the latest release's DLL (`sr-client-check.yml`, `plugins` as `@latest-release`) | n/a |
 | Game SDK | manual dump from a running game | n/a |
 
 ## Adding your plugin to CI
