@@ -81,12 +81,42 @@ test('a newer CL on the same branch supersedes the older one, never deletes it',
   assert.deepEqual(Object.keys(second), ['128786', '128900']);
 });
 
-test('public is not staged, and both exes must pass', () => {
+test('both exes must pass for a beta build', () => {
   const { fx } = effects();
-  assert.throws(() => stage(ptr({ branch: 'public' }), { index: {}, effects: fx }), /promoted, not staged/);
   assert.throws(() => stage(ptr({ scans: [{ exe: 'public_test_branch', buildid: '1', ok: true }] }), { index: {}, effects: fx }), /no scan on the public exe/);
   assert.throws(() => stage(ptr({ scans: [{ exe: 'public_test_branch', buildid: '1', ok: true }, { exe: 'public', buildid: '2', ok: false }] }), { index: {}, effects: fx }), /did not pass/);
   assert.throws(() => stage(ptr({ exeSha256: 'xyz' }), { index: {}, effects: fx }), /sha256/);
+});
+
+// A build first seen on public: pushed for the candidate loader and the rig, never staged.
+const pub = (over = {}) => ptr({ branch: 'public', buildid: '26461198', scans: [{ exe: 'public', buildid: '26461198', ok: true }], ...over });
+
+test('a build first seen on public gets a branch and a record of the public exe only, and no index entry', () => {
+  const { fx, calls } = effects();
+  const before = { '128786': { branch: 'public_test_branch', superseded: false } };
+  const plan = stage(pub({ cl: 129402 }), { index: before, effects: fx });
+  assert.equal(plan.repo, LOADER_REPO);
+  assert.equal(plan.branch, 'auto/update-129402');
+  assert.equal(calls.pushBranch.length, 1);
+  assert.equal(calls.writeIndex.length, 0, 'nothing is written to the staged index');
+  assert.deepEqual(plan.index, before, 'the index comes back unchanged');
+  const rec = parseCommitRecord(plan.message);
+  assert.equal(rec.branch, 'public');
+  assert.deepEqual(rec.verifiedOn, ['public 26461198']);
+  assert.match(plan.message, /not signed, not published/);
+  assert.throws(() => stage(pub({ scans: [{ exe: 'public', buildid: '1', ok: false }] }), { index: {}, effects: fx }), /did not pass/);
+  assert.throws(() => stage(pub({ scans: [] }), { index: {}, effects: fx }), /no scan on the public exe/);
+});
+
+test('a public record is not a staged build when the index is re-derived', () => {
+  const { fx } = effects();
+  const a = stage(ptr(), { index: {}, effects: fx });
+  const p = stage(pub({ cl: 129402 }), { index: {}, effects: fx });
+  const branches = [
+    { ref: a.branch, sha: ptr().repo.sha, tree: ptr().repo.tree, message: a.message },
+    { ref: p.branch, sha: ptr().repo.sha, tree: ptr().repo.tree, message: p.message },
+  ];
+  assert.deepEqual(Object.keys(rederive(branches)), ['128786']);
 });
 
 test('the index is re-derived from the fork branches', () => {
@@ -109,8 +139,14 @@ test('the command line stages in dry run and writes the index, and refuses a bad
   assert.match(run.stdout, /would push StarRupture-ModLoader auto\/update-128786; index now lists 1 CLs; nothing signed or published/);
   assert.equal(JSON.parse(readFileSync(index, 'utf8'))['128786'].buildid, 26271156);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8')).pushed, [{ repo: LOADER_REPO, branch: 'auto/update-128786', done: false }]);
-  const bad = spawnSync(process.execPath, [TOOL, 'stage', '--build', w('b2.json', ptr({ branch: 'public' })), '--index', index], { encoding: 'utf8', windowsHide: true });
+  const bad = spawnSync(process.execPath, [TOOL, 'stage', '--build', w('b2.json', ptr({ exeSha256: 'xyz' })), '--index', index], { encoding: 'utf8', windowsHide: true });
   assert.equal(bad.status, 3);
+  // A build of public is planned too, and the index file keeps its one entry.
+  const plan = join(dir, 'plan-public.json');
+  const ok = spawnSync(process.execPath, [TOOL, 'stage', '--build', w('b3.json', pub({ cl: 129402 })), '--index', index, '--out', plan], { encoding: 'utf8', windowsHide: true });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(JSON.parse(readFileSync(plan, 'utf8')).branch, 'auto/update-129402');
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(index, 'utf8'))), ['128786']);
 });
 
 // ------------------------------------------------------------ the real push (step 26)

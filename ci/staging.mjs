@@ -13,6 +13,10 @@
 // state/staged.json is the readable index of those branches. The index holds
 // pointers only; the rows live in the header.
 //
+// A build first seen on `public` is pushed the same way (its rows need a candidate
+// loader and a rig run too) but is not staged: there is no beta to promote it from,
+// so it gets a record naming only the public exe and no entry in the index.
+//
 // Nothing is signed or published while a CL is test-only. That is built in, not
 // promised: stage() is handed only the two effects it may use, pushBranch and
 // writeIndex, and no function in this file reaches signing, the feed or a
@@ -20,7 +24,7 @@
 //
 // <build.json>:
 //   { cl, branch, buildid, productVersion, exeSha256, imageStamp, size, run,
-//     scans: [{ exe, buildid, ok }],          // the beta exe AND the public exe
+//     scans: [{ exe, buildid, ok }],          // the beta exe AND the public exe (public: just that one)
 //     repo: { sha, tree, verdict } }          // the loader fork's data commit
 // <branches.json> (rederive): [{ ref, sha, tree, message }], the fork's
 // `auto/update-*` branches with their commit messages.
@@ -62,7 +66,6 @@ export function makeRecord(b) {
   need(b && typeof b === 'object', 'the build description is not an object');
   need(isCl(b.cl), 'build: cl is not a positive integer');
   need(typeof b.branch === 'string' && b.branch !== '', 'build: no Steam branch');
-  need(b.branch !== 'public', 'build: public is promoted, not staged');
   need(/^\d+$/.test(String(b.buildid)), 'build: buildid is not numeric');
   need(/^[0-9a-f]{64}$/.test(String(b.exeSha256 ?? '')), 'build: exeSha256 is not a sha256');
   need(typeof b.imageStamp === 'string' && /^0x[0-9a-fA-F]+$/.test(b.imageStamp), 'build: imageStamp is not hex');
@@ -70,7 +73,8 @@ export function makeRecord(b) {
   need(Number.isInteger(b.run) && b.run >= 0, 'build: run is not a non-negative integer');
   need(Array.isArray(b.scans), 'build: no scans');
   // Both exes must pass: the public pass proves the new rows cannot hurt current players.
-  for (const exe of [b.branch, 'public']) {
+  // A build of public has just the one exe.
+  for (const exe of new Set([b.branch, 'public'])) {
     const s = b.scans.find((x) => x?.exe === exe);
     need(s, `build: no scan on the ${exe} exe`);
     need(s.ok === true, `build: the scan on the ${exe} exe did not pass`);
@@ -122,6 +126,11 @@ export function stage(build, { index, existingBranches = [], effects }) {
   const rec = makeRecord(build);
   const branch = branchName(rec.CL, existingBranches, rec.run);
   const message = commitMessage(rec);
+  if (rec.branch === 'public') {
+    // Pushed for the candidate build and the rig, but nothing to promote later: the index is left alone.
+    effects.pushBranch({ repo: LOADER_REPO, branch, message });
+    return { repo: LOADER_REPO, branch, message, index: structuredClone(index ?? {}) };
+  }
   const next = updateIndex(index, rec.CL, entryOf(rec, branch, build.repo.sha, build.repo.tree));
   effects.pushBranch({ repo: LOADER_REPO, branch, message });
   effects.writeIndex(next);
@@ -131,7 +140,8 @@ export function stage(build, { index, existingBranches = [], effects }) {
 // The index, rebuilt from the fork's branches (it is missing or stale after sr-watch rebuilds the PR branch).
 export function rederive(branches) {
   let index = {};
-  const recs = branches.map((b) => ({ b, rec: parseCommitRecord(b.message) }))
+  // A record of a public build is no staged entry (see stage).
+  const recs = branches.map((b) => ({ b, rec: parseCommitRecord(b.message) })).filter(({ rec }) => rec.branch !== 'public')
     .sort((x, y) => x.rec.CL - y.rec.CL || x.rec.run - y.rec.run);
   for (const { b, rec } of recs) index = updateIndex(index, rec.CL, entryOf(rec, b.ref, b.sha, b.tree));
   return index;
