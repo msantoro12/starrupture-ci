@@ -20,6 +20,7 @@ state/steam.json                      recorded build ids (baseline, on main)
 | `sr-watch.yml` | cron at :07 and :37 every hour; manual (`force` input) | Polls api.steamcmd.net for app 1631270 and app 3809400 (every branch without a password, for both), plus the newest Steam news title. Retries 3 times per app, then skips that app for the run (warning annotation, no PR). First sight of an app: commits the baseline to `main`, no alert. On a real change against `state/steam.json` on main: pushes a `game-update/<app>-<branch>-<buildid>` branch holding the new ids, opens a PR titled `Game build <id> on <branch>` (label `game-update`) whose body has the changed-build table, the newest news title and the per-component checklist, then runs `sr-build-all.yml` with the PR number and, for each changed client branch, `sr-client-check.yml`. If a `game-update/*` PR is already open, it is updated instead of duplicated; an unchanged build is not re-announced. |
 | `sr-build-all.yml` | nightly 03:23 UTC; manual (branch per repo, default `main`; optional `pr`); called by `sr-watch.yml` | `interface-check` (Plugin SDK `PLUGIN_INTERFACE_VERSION` against the loader's `[MIN, MAX]`), `loader` (Client Release and Server Release), `plugin` (BetterDrone, BetterCheats, WAILA, Codex), `report`. Fail-fast is off. `report` writes the job summary and, when a PR number was given, posts the same table as a PR comment: one row per component with status, job link and artifact link, and a static "Game SDK: manual" row. Artifacts hold build outputs only, 3 days retention. |
 | `sr-client-check.yml` | called by `sr-watch.yml` per changed client branch (a forced run checks both); manual (`branch`, optional `pr`); weekly Monday 06:17 UTC (login age only) | `build-scanner` builds `sr-aobscan-client.exe` from the loader branch `loader_ref` (default `gss/loader-work`, so the patterns are the live ones) with `tools/AobScan` from `scanner_ref` (default `ci/aobscan`), and reads the loader's required CL (a loader with a version map has none) and the pinned Game SDK's `Offsets::`. `check` (environment `steam-client`) restores the saved steamcmd login, downloads the client build with Valve's steamcmd (`app_update 1631270`, `-beta public_test_branch` for the test branch; steamcmd cannot fetch single files, so it is the full build, about 16-17 GB down and 50 GB on disk), deletes steamcmd and the login cache, then checks the exe: the loader's version gate passes (ProductVersion ends with the required CL; for a loader with a version map, the running CL has a row in its `kBuilds`, as `sr-aobscan` reports from the loader's own gate code in `exe.supported`; a loader with neither fails), every PreflightRegistry pattern resolves (sr-aobscan; the required ones decide pass or fail), and the four Game-SDK globals (GObjects, FName::AppendString, GNames, GWorld) are compared with the SDK's `Offsets::`. `plugin-plan` lists the plugins: each `plugins` entry is `owner/repo@ref` (built from source) or `owner/repo@latest-release` (the repository's latest GitHub release, resolved through the API to its tag, which the report shows; default: MiniMap, from its author LetMeInside). A plugin owned by msantoro12 is built in the `plugins` job; another author's is fetched or built by the `check` job itself, never stored as an artifact, and validated only (see "Adding your plugin to CI"). Owners are msantoro12 and AlienXAXS, plus LetMeInside for `@latest-release`; that code runs on the runner with the same trust as `scanner_ref`. After the login cache is deleted, `sr-aobscan --plugin` runs each plugin's `OnPluginLoadHooks` against the downloaded exe through the loader's own hook scanner. Verdicts: PASS; GAME-CALL (partial coverage, never a full pass: every pattern registered before the first game call resolved, and the calls into game code, which cannot run offline, were stopped and the hook resumed; reads "N/N resolved before first game call; later scans not exercised"); FAIL (any recorded pattern MISSING or AMBIGUOUS: the loader refuses the plugin; a row the second run, with the scan cache warm, answered differently; or a request that resolved whose own pattern does not match the exe exactly once, labelled OWN-MISSING or OWN-AMBIGUOUS, which a map row would otherwise hide); CRASH (a fault in the plugin's own code, or a game call before any pattern resolved); REFUSED (interface version outside the loader's range); NONE (no `OnPluginLoadHooks`); BUILD-FAILED, FETCH-FAILED, ERROR. PASS, GAME-CALL and NONE count as pass. Limit: when a stopped game call returns null and the plugin bails out, every later scan and failure report is skipped, so GAME-CALL can hide a pattern the hook registers only after a successful call (in game the loader would refuse the plugin); it can also read GAME-CALL for a call that would fail in game. Beside the patterns, `Check the fixed offsets` reads each built plugin's source against the PDB layout of the checked build and of the public one: every offset a plugin reads at a raw number and lists in `ci/native-keys.txt` with an anchor must equal the PDB's, or the plugin fails as `OFFSETS` (`OFFSETS-UNCHECKED` when the layout report is missing). The fix step rewrites an offset when one constant is right for every build that matters, and leaves the rest failing. A failing plugin shows in `result.json` under `plugins.status`; the top-level `status` covers the loader only. Artifact `client-check-<branch>` (result.json and the scanner output, 14 days). `report` comments the result on the PR, with the age of the saved login. Without a saved login the check is skipped, green, and the comment says so. `login-expiry` (weekly) goes red when the saved login is within 30 days of its assumed 200-day lifetime. |
+| `sr-client-rig.yml` | manual; called by another workflow in this repository | Launches the real game client on a hosted Windows runner under the real Steam client and judges the loader's log with `ci/verdict.ps1 -Client`: do the mods load. No schedule, no pull request trigger. See "Client test rig". |
 
 Merging the update PR into main means the update is handled: it advances `state/steam.json`, so the watcher stops reporting that build.
 
@@ -108,6 +109,7 @@ Copied from the loader's `release.yml` and the plugins' `release.yml` build step
 | `sr-client-check` / `check` | `contents: read`, environment `steam-client` | the only job that can read the Steam login; checks out no repository |
 | `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR; no environment, no secrets |
 | `sr-client-check` / `login-expiry` | none | reads the repo variable `STEAM_CI_LOGIN_AT` |
+| `sr-client-rig` / `rig` | `contents: read`, `actions: read`, environment `steam-client` | the one job; reads the Steam login in the install, launch and leak-gate steps only; `actions: read` is for fetching a candidate run's artifact |
 
 The repo setting "Allow GitHub Actions to create and approve pull requests" must be on (Settings, Actions, General, or `gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true`).
 
@@ -122,6 +124,49 @@ The client check logs in with a separate Steam account that owns StarRupture, ne
 `-Renew` does the same fresh login (password and Steam Guard code again) for the account name saved in Bitwarden. When a run fails with "login expired, run steam-ci-login.ps1 -Renew", do that. The workflow has no `pull_request` trigger and the environment only serves `main`, so the login is never reachable from a pull request or another branch. In the `check` job the decoded token values and the account name are masked, account ids are cut from the steamcmd output, and steamcmd with its cache is deleted before the scanner runs. That does not isolate the scanner: it runs in the same job, whose process holds the secret in memory. So whoever can push to the loader branches it is built from (`loader_ref`, `scanner_ref`; `loader_repo` is limited to `msantoro12` or `AlienXAXS`) can reach the Steam login, as can whoever can push to `main` here. The `check` job runs only the scanner `build-scanner` made in the same run (SHA-256 checked).
 
 To revoke: delete the environment `steam-client` (and the Bitwarden secrets) and deauthorize the account's devices at store.steampowered.com/twofactor/manage.
+
+## Client test rig
+
+`sr-client-rig.yml` answers one question: do the mods load. Given a loader and plugin set and a Steam branch, it installs the game client with steamcmd, signs the real Steam client in with the saved login (the one `sr-client-check.yml` uses; no password), launches the game with `-nullrhi -unattended -nosound -log` and the loader's `modloader.ini` set to `[AutoUpdate] Enabled=0`, `[Logging] Level=INFO`, `[UI] Enabled=0`, stops it a minute after `Boot sequence finished` and judges the result with `ci/verdict.ps1 -Client`: every DLL still the file that went in, the loader and each plugin at the expected version and loaded, no crash dialog or crash file, the game alive at the end. A Steam `Application load error` on the first launch is retried (at most twice, recorded in `boot.json`); nothing else is.
+
+The set is the loader's client zip and each plugin's `<Name>-Client.dll` from the Latest GitHub release of each repo (or the tag given in `tags`), kept in the Actions cache keyed on repository and tag. A repeat run downloads nothing (the log prints `Release assets downloaded in this run: N`), and the rig never fetches a manifest. Outbound traffic from the game and the updater is blocked by the runner firewall.
+
+| Input | Meaning |
+|---|---|
+| `branch` | `public` (default) or `public_test_branch` |
+| `tags` | `Name=tag` overrides, space separated. Names: `Loader`, `BetterCheats`, `BetterDrone`, `CameraControls`, `Codex`, `Compass`, `ProductionViewer`, `RuptureTimer`, `WAILA`, `WaveOptimiser` |
+| `candidate_run_id`, `candidate_artifact` | optional, together: an artifact of a run in this repository whose code came from this repository (a fork's run is refused), laid over the release set. Layout: `dwmapi.dll`, `ModLoader/...`, `ModLoader/Plugins/*.dll`; nothing else is accepted |
+| `expect` | `Name=version` the log must show instead of the release tag. Required for every DLL a candidate replaces, or the run fails before launching. A name that is not one of the nine is an extra plugin to expect |
+| `expect_refused` | plugins that must be refused on this build; they pass only if refused |
+| `remove_plugins` | plugins left out of the install but still expected, so they must show as missing |
+
+Dispatch it: `gh workflow run sr-client-rig.yml --ref main -f branch=public`. The outputs are `verdict` (PASS or FAIL), `reason` and `artifact` (the scrubbed logs: `modloader.log`, `proxy.log`, `autoupdate.log`, `verdict.json`, `set.json`, `boot.json`; 3 days). The job fails on a FAIL verdict, after the upload. Game files, dumps, engine logs and Steam config files never leave the runner, the leak gate must pass before anything is uploaded, and an always-run step removes steamcmd, the Steam client and the login. Without the login secrets the run fails with that reason; it does not skip green.
+
+Call it from another workflow in this repository:
+
+```yaml
+jobs:
+  rig:
+    uses: ./.github/workflows/sr-client-rig.yml
+    with:
+      branch: public_test_branch
+      candidate_run_id: ${{ needs.build.outputs.run_id }}
+      candidate_artifact: loader-client
+      expect: Loader=1.22.0-gss.3
+    permissions:
+      contents: read
+      actions: read
+  after:
+    needs: rig
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ needs.rig.outputs.verdict }}: ${{ needs.rig.outputs.reason }}"
+```
+
+The caller must run on `main` of this repository: the job uses the environment `steam-client`, whose deployment policy serves `main` only, and the caller's permissions must grant `contents: read` and `actions: read`. Runs queue on the concurrency group `sr-client-rig` (one Steam session per account) and are not cancelled, but GitHub keeps only one pending run per group, so a third run replaces a second that is still waiting.
+
+What it does not cover: `-nullrhi` and `[UI] Enabled=0` mean no rendering, so the overlay, the config page and every UI path are not exercised. Plugins are loaded and survive 60 seconds of boot; in-game behaviour is not tested.
 
 ## Testing the update path
 
