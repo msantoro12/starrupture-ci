@@ -1,0 +1,269 @@
+# Throwaway spike: can a hosted Windows runner launch the client far enough
+# for the mod loader to load its plugins? Not the rig. Game files stay on the
+# runner: never cached, never uploaded. Only scrubbed text logs leave, and only
+# after the leak gate has passed.
+name: Rig spike
+
+on:
+  push:
+    branches: [test/replay-update2]
+    paths:
+      - '.github/workflows/rig-spike.yml'
+      - 'ci/rig-spike.ps1'
+
+permissions: {}
+
+concurrency:
+  group: rig-spike
+
+env:
+  APP_ID: '1631270'
+  BRANCH: public
+
+jobs:
+  spike:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    environment: steam-client-replay
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Before any login, so a script bug costs a minute, not a run.
+      - name: Check the script helpers
+        shell: pwsh
+        run: ./ci/rig-spike.ps1 -Check
+
+      - name: Resolve the latest releases
+        id: res
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $list = @()
+          foreach ($n in 'ModLoader', 'Plugin-BetterCheats', 'Plugin-BetterDrone', 'Plugin-CameraControls', 'Plugin-Codex', 'Plugin-Compass', 'Plugin-ProductionViewer', 'Plugin-RuptureTimer', 'Plugin-WAILA', 'Plugin-WaveOptimiser') {
+            $repo = "AlienXAXS/StarRupture-$n"
+            $rel = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/latest"
+            $rx = if ($n -eq 'ModLoader') { '^StarRupture-ModLoader-Client-.*\.zip$' } else { '-Client\.dll$' }
+            $asset = @($rel.assets | Where-Object { $_.name -match $rx })
+            if ($asset.Count -ne 1) { throw "$repo $($rel.tag_name): expected one client asset, found $($asset.Count)" }
+            $list += [pscustomobject]@{ repo = $n; tag = $rel.tag_name; name = $asset[0].name; url = $asset[0].browser_download_url }
+            "$repo $($rel.tag_name) $($asset[0].name)"
+          }
+          $list | ConvertTo-Json | Set-Content (Join-Path $env:RUNNER_TEMP 'rig-assets.json')
+          $sha = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes((($list | ForEach-Object { "$($_.repo)@$($_.tag)" }) -join ',')))
+          "key=$([Convert]::ToHexString($sha).Substring(0, 16))" >> $env:GITHUB_OUTPUT
+
+      # Repeat runs download nothing: the owner reads the public counts.
+      - name: Restore the release files
+        id: dlcache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:\rig-dl
+          key: rig-spike-dl-${{ steps.res.outputs.key }}
+          restore-keys: rig-spike-dl-
+
+      - name: Download what the cache lacks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fetched = 0
+          foreach ($a in (Get-Content (Join-Path $env:RUNNER_TEMP 'rig-assets.json') -Raw | ConvertFrom-Json)) {
+            $dir = "D:\rig-dl\$($a.repo)\$($a.tag)"
+            $file = Join-Path $dir $a.name
+            if (-not (Test-Path -LiteralPath $file)) {
+              New-Item -ItemType Directory -Force $dir | Out-Null
+              Invoke-WebRequest -Uri $a.url -OutFile $file -TimeoutSec 120
+              "Downloaded $($a.repo) $($a.tag) $($a.name)"
+              $fetched++
+            }
+          }
+          "Release assets downloaded in this run: $fetched"
+
+      - name: Save the release files
+        if: steps.dlcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:\rig-dl
+          key: rig-spike-dl-${{ steps.res.outputs.key }}
+
+      - name: Download the client
+        id: dl
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          New-Item -ItemType Directory -Force out | Out-Null
+          $root = 'C:\steamcmd'
+          $failed = $false
+          try {
+            $user = "$env:STEAM_USER".Trim()
+            if ($user -notmatch '^[A-Za-z0-9_]{3,64}$') { throw 'STEAM_CI_USERNAME is not a valid Steam account name' }
+            Write-Host "::add-mask::$user"
+            $userRx = '(?i)' + [regex]::Escape($user)
+
+            New-Item -ItemType Directory -Force $root | Out-Null
+            $zip = Join-Path $env:RUNNER_TEMP 'steamcmd.zip'
+            Invoke-WebRequest -Uri 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip' -OutFile $zip -TimeoutSec 120
+            Expand-Archive -Path $zip -DestinationPath $root -Force
+            $steamcmd = Join-Path $root 'steamcmd.exe'
+            function Assert-ValveSigned {
+              $sig = Get-AuthenticodeSignature $steamcmd
+              if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -cnotmatch '^CN=Valve(?: Corp\.)?, (?:OU=[^,"]+, )?O=Valve(?: Corp\.)?, (?:L=Bellevue, )?S=Washington, C=US$') {
+                throw "steamcmd.exe is not Valve-signed (status $($sig.Status))"
+              }
+            }
+            Assert-ValveSigned
+            Write-Host '::group::steamcmd self-update'
+            & $steamcmd +quit | ForEach-Object { Write-Host $_ }
+            Write-Host "self-update exit code: $LASTEXITCODE"
+            Write-Host '::endgroup::'
+            Assert-ValveSigned
+
+            $bytes = [Convert]::FromBase64String("$env:STEAM_CACHE".Trim())
+            $text = [Text.Encoding]::UTF8.GetString($bytes)
+            foreach ($m in [regex]::Matches($text, '"[^"\r\n]*"[ \t]+"([^"\r\n]{16,})"')) { Write-Host "::add-mask::$($m.Groups[1].Value)" }
+            if ($text -notmatch '"ConnectCache"') { throw 'STEAM_CI_LOGIN_CACHE is not a steamcmd config.vdf with a ConnectCache entry' }
+            $cfgDir = Join-Path $root 'config'
+            New-Item -ItemType Directory -Force $cfgDir | Out-Null
+            $cfg = Join-Path $cfgDir 'config.vdf'
+            [IO.File]::WriteAllBytes($cfg, $bytes)
+            $text = $null; $bytes = $null
+            $hashBefore = (Get-FileHash $cfg).Hash
+
+            $vol = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Free } | Sort-Object Free -Descending | Select-Object -First 1
+            $install = Join-Path $vol.Root 'sr-client'
+            New-Item -ItemType Directory -Force $install | Out-Null
+            Write-Host ("Installing to {0} ({1:N1} GB free)" -f $install, ($vol.Free / 1GB))
+
+            $cmd = @('+@ShutdownOnFailedCommand', '1', '+@NoPromptForPassword', '1',
+                     '+force_install_dir', $install, '+login', $user, '+app_update', $env:APP_ID, '-beta', $env:BRANCH, '+quit')
+            $manifest = Join-Path $install "steamapps\appmanifest_$($env:APP_ID).acf"
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $installed = $false
+            $loginOk = $false
+            for ($i = 1; $i -le 3 -and -not $installed; $i++) {
+              Write-Host "::group::steamcmd attempt $i of 3"
+              $lines = [Collections.Generic.List[string]]::new()
+              $lastBucket = -1
+              & $steamcmd @cmd 2>&1 | ForEach-Object {
+                $line = "$_" -replace '\[U:1:\d+\]', '[U:1:***]' -replace '7656119\d{10}', '***' -replace $userRx, '***'
+                $lines.Add($line)
+                if ($line -match 'progress:\s+([\d.]+)') {
+                  $bucket = [int]([double]$Matches[1] / 10)
+                  if ($bucket -ne $lastBucket) { $lastBucket = $bucket; Write-Host ("[{0:N0}s] {1}" -f $sw.Elapsed.TotalSeconds, $line) }
+                } else { Write-Host $line }
+              }
+              $code = $LASTEXITCODE
+              Write-Host "steamcmd exit code: $code after $([int]$sw.Elapsed.TotalSeconds) s"
+              Write-Host '::endgroup::'
+              $all = $lines -join "`n"
+              if ($all -match 'to Steam Public\.\.\.OK|Waiting for user info\.\.\.OK') { $loginOk = $true }
+              $installed = ($code -eq 0) -and (Test-Path $manifest) -and ((Get-Content $manifest -Raw) -match '"StateFlags"\s+"4"')
+              # A login failure is never retried: repeats get the account rate-limited.
+              if (-not $loginOk) { break }
+            }
+            Write-Host "Login accepted: $loginOk"
+            Write-Host ("Login cache after the install: {0}" -f $(if ((Get-FileHash $cfg).Hash -ne $hashBefore) { 'rewritten by steamcmd' } else { 'unchanged' }))
+            if (-not $installed) { throw 'The client did not install' }
+            $acf = Get-Content $manifest -Raw
+            $build = if ($acf -match '"buildid"\s+"(\d+)"') { $Matches[1] } else { '' }
+            $mounted = if ($acf -match '"MountedConfig"\s*\{([^{}]*)\}') { $Matches[1] } else { '' }
+            $beta = if ($mounted -match '"BetaKey"\s+"([^"]*)"') { $Matches[1] } else { '' }
+            if ($beta -ne $env:BRANCH -or -not $build) { throw "Wrong install: branch '$beta', build '$build'" }
+            Write-Host "Installed build $build of branch $beta in $([int]$sw.Elapsed.TotalSeconds) s"
+            "Build $build, branch $beta, login accepted: $loginOk" | Set-Content out\download.txt -Encoding utf8
+            "install_dir=$install" >> $env:GITHUB_OUTPUT
+          } catch {
+            $failed = $true
+            $why = "$($_.Exception.Message)" -replace ('(?i)' + [regex]::Escape("$env:STEAM_USER".Trim())), '***'
+            Write-Host "::error::$why"
+          } finally {
+            Remove-Item -LiteralPath 'C:\steamcmd\config\config.vdf' -Force -ErrorAction SilentlyContinue
+          }
+          if ($failed) { exit 1 }
+
+      - name: Install the loader and plugins
+        id: mods
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = (Get-ChildItem -LiteralPath $env:INSTALL_DIR -Recurse -Filter 'StarRuptureGameSteam-Win64-Shipping.exe' | Select-Object -First 1).FullName
+          $bin = Split-Path $exe
+          $ml = Join-Path $bin 'ModLoader'
+          $plugins = Join-Path $ml 'Plugins'
+          New-Item -ItemType Directory -Force $plugins | Out-Null
+          foreach ($a in (Get-Content (Join-Path $env:RUNNER_TEMP 'rig-assets.json') -Raw | ConvertFrom-Json)) {
+            $file = "D:\rig-dl\$($a.repo)\$($a.tag)\$($a.name)"
+            if ($a.repo -eq 'ModLoader') { Expand-Archive -LiteralPath $file -DestinationPath $bin -Force }
+            else { Copy-Item -LiteralPath $file -Destination (Join-Path $plugins ($a.name -replace '-Client\.dll$', '.dll')) }
+          }
+          # The updater child runs before Core creates the ini, so it must
+          # exist first. No BOM: it would hide the first section.
+          "[AutoUpdate]`r`nEnabled=0`r`n[Logging]`r`nLevel=INFO`r`n" | Set-Content -LiteralPath (Join-Path $ml 'modloader.ini') -Encoding ascii -NoNewline
+          # A second lock on the door: the updater reads a public manifest.
+          New-NetFirewallRule -DisplayName 'rig-spike-block-updater' -Direction Outbound -Action Block -Program (Join-Path $ml 'StarRupture-ModLoader-Updater.exe') | Out-Null
+          Get-ChildItem -LiteralPath $bin -Filter dwmapi.dll | ForEach-Object { "$($_.Name) $($_.Length)" }
+          Get-ChildItem -LiteralPath $ml -Recurse -File | ForEach-Object { "$($_.FullName.Substring($bin.Length)) $($_.Length)" }
+
+      - name: Try the launches
+        id: attempts
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+        run: ./ci/rig-spike.ps1 -Install $env:INSTALL_DIR -OutDir out -Attempts A,B,C
+
+      - name: Remove the login cache from the runner
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(steam|StarRupture|UnrealCEF|CrashReport|WerFault)' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Remove-Item -Recurse -Force C:\steamcmd -ErrorAction SilentlyContinue
+          if (Test-Path C:\steamcmd) { Write-Host '::error::C:\steamcmd could not be removed'; exit 1 }
+          'steamcmd and its login cache are removed from the runner.'
+
+      - name: Leak gate
+        id: leak
+        if: always()
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+        run: |
+          $user = "$env:STEAM_USER".Trim()
+          if (-not $user) { Write-Host '::error::No account name to check against'; exit 1 }
+          $bad = 0
+          if (Test-Path out) {
+            foreach ($f in Get-ChildItem out -Recurse -File) {
+              $t = [IO.File]::ReadAllText($f.FullName)
+              if ($t.IndexOf($user, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $t -match '7656119\d{10}|\[U:1:\d+\]') {
+                Write-Host "::error::Account data found in $($f.Name)"
+                $bad++
+              }
+            }
+          }
+          if ($bad) { exit 1 }
+          'No account data in the output folder.'
+
+      - name: Upload the scrubbed logs
+        if: always() && steps.leak.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rig-spike-logs
+          path: out
+          retention-days: 1
+          if-no-files-found: warn
