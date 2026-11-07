@@ -134,10 +134,10 @@ jobs:
       artifact: ${{ steps.final.outputs.artifact }}
     env:
       BRANCH: ${{ inputs.branch || 'public' }}
-      TEST_CAND_RUN: ${{ inputs.candidate_run_id || '' }}
-      TEST_CAND_ART: ${{ inputs.candidate_artifact || '' }}
+      TEST_CAND_RUN: ${{ inputs.candidate_run_id || '42357604551' }}
+      TEST_CAND_ART: ${{ inputs.candidate_artifact || 'candidate-codex' }}
       TAGS: ${{ inputs.tags || '' }}
-      EXPECT: ${{ inputs.expect || '' }}
+      EXPECT: ${{ inputs.expect || 'Codex=v1.0.0-fix.22fd071' }}
       EXPECT_REFUSED: ${{ inputs.expect_refused || '' }}
       REMOVE_PLUGINS: ${{ inputs.remove_plugins || '' }}
       MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
