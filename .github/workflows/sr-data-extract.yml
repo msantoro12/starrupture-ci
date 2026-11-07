@@ -123,10 +123,14 @@ on:
         description: 'Saved steamcmd login cache (environment steam-client); pass it by name'
         required: true
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   # No environment, no secret: everything built from a source runs here, before any login exists.
+  # This is the only job a pull_request run starts, and a fork can open one: nothing in this job
+  # (or anywhere above the extract job) reads the secrets context, and no step is given a token
+  # beyond the read-only one. The called-workflow secrets belong to the extract job alone.
   build:
     name: Build Dumper-7 and the extractor
     runs-on: windows-2025-vs2026
@@ -196,6 +200,7 @@ jobs:
         uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
 
       - name: Build Dumper-7
+        timeout-minutes: 15
         shell: pwsh
         run: |
           msbuild dumper-src\Dumper\Dumper.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WarningLevel=0 /m /nologo /v:minimal
@@ -215,6 +220,7 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Build the extractor
+        timeout-minutes: 15
         shell: pwsh
         run: |
           dotnet publish planner-src/tools/game-extract/GameExtract.csproj -c Release -r win-x64 --self-contained true -o stage-tools/extractor
@@ -235,7 +241,8 @@ jobs:
   extract:
     name: Dump the usmap and extract
     needs: build
-    if: ${{ !inputs.build_only && github.event_name != 'pull_request' }}
+    # Never on a pull request, on top of the steam-client environment admitting main only.
+    if: github.event_name != 'pull_request' && !inputs.build_only
     runs-on: windows-2025-vs2026
     timeout-minutes: 120
     environment: steam-client

@@ -24,7 +24,9 @@
 # no plugin, and run that script as a background job once the game process exists, with the
 # game's process id, its Win64 folder and -OutDir as arguments. The attempt ends when the
 # script ends (settled if it completed, else 'payload failed: <reason>') or after
-# -AttemptCapSec, which then bounds the whole payload. Everything else is as above.
+# -AttemptCapSec, which then bounds the whole payload. Everything else is as above. The script must
+# be a .ps1 file inside the checked-out repository ($env:GITHUB_WORKSPACE): a URL, a path outside
+# it or a link is refused before anything is installed or launched.
 #
 # The login arrives in STEAM_USER and STEAM_CACHE and is cleared from the environment
 # before the game starts. Everything printed or written goes through Scrub. Steam's own
@@ -83,6 +85,26 @@ public static class RigWin {
 '@
 
 # ---- helpers (also run by -Check) -----------------------------------------------------
+
+# The one payload script a run may execute: a .ps1 file that exists inside $Root (the checked-out
+# repository, $env:GITHUB_WORKSPACE), given as a path relative to $Cwd or absolute. A URL, a UNC or
+# device path, a path outside $Root (.. included), a link, or another file type is refused.
+function Resolve-PayloadScript([string]$Path, [string]$Root, [string]$Cwd) {
+    if (-not $Root) { throw '-PayloadScript is only accepted inside a workflow run (GITHUB_WORKSPACE is not set)' }
+    if ($Path -match '^[A-Za-z][A-Za-z0-9+.-]+:' -or $Path -match '^(\\\\|//)' -or $Path -match '[*?<>|"]') {
+        throw "-PayloadScript must be a path inside the repository, not a URL or a special path: $Path"
+    }
+    $base = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $full = [IO.Path]::GetFullPath([IO.Path]::Combine($Cwd, $Path))
+    if (-not $full.StartsWith($base + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "-PayloadScript must be inside the checked-out repository ($base): $Path"
+    }
+    if ([IO.Path]::GetExtension($full) -ne '.ps1') { throw "-PayloadScript must be a .ps1 file: $Path" }
+    $item = Get-Item -LiteralPath $full -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer) { throw "-PayloadScript is not a file: $Path" }
+    if ($item.LinkType) { throw "-PayloadScript must not be a link: $Path" }
+    $full
+}
 
 # The first dialog among the snapshot's windows that means a failed launch. 'load-error' is
 # the known first-launch Steam error (any owner: Steam may raise it); 'dialog' is a visible
@@ -209,6 +231,24 @@ if ($Check) {
     if ($p.Known) { throw 'a persona under 3 characters was taken as checkable' }
     $p = Get-Personas '' $mine '' $id
     if ($p.Known -or $p.Names.Count) { throw 'a missing loginusers.vdf was taken as a persona' }
+    # -PayloadScript: a .ps1 file inside the repository and nothing else.
+    $ws = Join-Path ([IO.Path]::GetTempPath()) ("rig-check-" + [guid]::NewGuid())
+    $wsLeaf = Split-Path $ws -Leaf
+    New-Item -ItemType Directory -Force (Join-Path $ws 'ci') | Out-Null
+    New-Item -ItemType Directory -Force "$ws-other" | Out-Null
+    'x' | Set-Content (Join-Path $ws 'ci\p.ps1'); 'x' | Set-Content (Join-Path $ws 'ci\p.txt'); 'x' | Set-Content "$ws-other\p.ps1"
+    try {
+        if ((Resolve-PayloadScript './ci/p.ps1' $ws $ws) -ne (Join-Path $ws 'ci\p.ps1')) { throw 'a script inside the repository was refused' }
+        if ((Resolve-PayloadScript (Join-Path $ws 'ci\p.ps1') $ws $ws) -ne (Join-Path $ws 'ci\p.ps1')) { throw 'an absolute path inside the repository was refused' }
+        foreach ($bad in 'https://example.com/p.ps1', 'http://example.com/p.ps1', 'file:///C:/p.ps1', '\\host\share\p.ps1', '//host/share/p.ps1', "../$wsLeaf-other/p.ps1", "$ws-other\p.ps1", 'ci/../../p.ps1', 'ci/p.txt', 'ci/missing.ps1', 'ci', 'C:\Windows\System32\x.ps1') {
+            $refused = $false
+            try { [void](Resolve-PayloadScript $bad $ws $ws) } catch { $refused = $true }
+            if (-not $refused) { throw "the payload path '$bad' was accepted" }
+        }
+        $refused = $false
+        try { [void](Resolve-PayloadScript './ci/p.ps1' '' $ws) } catch { $refused = $true }
+        if (-not $refused) { throw 'a payload path was accepted with no workspace' }
+    } finally { Remove-Item -LiteralPath $ws, "$ws-other" -Recurse -Force -ErrorAction SilentlyContinue }
     'Check passed.'
     exit 0
 }
@@ -620,10 +660,10 @@ function Invoke-Launch {
     Say "Recorded $($attempts.Count) attempt(s); the last: $($last.end)"
 }
 
-if ($PayloadScript) { $PayloadScript = (Resolve-Path -LiteralPath $PayloadScript).Path }
-
 $failed = $false
 try {
+    # Before anything is installed or launched: only a .ps1 inside the checked-out repository runs.
+    if ($PayloadScript) { $PayloadScript = Resolve-PayloadScript $PayloadScript $env:GITHUB_WORKSPACE (Get-Location).ProviderPath }
     switch ($Phase) {
         'Install' { Install-Client }
         'Launch' { Invoke-Launch }
