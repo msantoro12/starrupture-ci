@@ -268,22 +268,9 @@ jobs:
         env:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
         run: |
-          Stop-Service 'Steam Client Service' -Force -ErrorAction SilentlyContinue
-          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(steam|gameoverlayui|StarRupture|UnrealCEF|CrashReport|WerFault)' } | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 5
-          $left = 0
-          foreach ($d in 'C:\steamcmd', (Join-Path ${env:ProgramFiles(x86)} 'Steam'), (Join-Path $env:LOCALAPPDATA 'Steam')) {
-            Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $d) { Write-Host "::error::$d could not be removed"; $left++ }
-          }
-          # The saved login's registry entries, and the app id file the launch wrote.
-          Remove-Item -LiteralPath 'HKCU:\Software\Valve' -Recurse -Force -ErrorAction SilentlyContinue
-          if (Test-Path -LiteralPath 'HKCU:\Software\Valve') { Write-Host '::error::HKCU\Software\Valve could not be removed'; $left++ }
-          if ($env:INSTALL_DIR -and (Test-Path -LiteralPath $env:INSTALL_DIR)) {
-            Get-ChildItem -LiteralPath $env:INSTALL_DIR -Recurse -Filter steam_appid.txt -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-          }
-          if ($left) { exit 1 }
-          'steamcmd, the Steam client and the login are removed from the runner.'
+          if (-not (Test-Path ./ci/steam-cleanup.ps1)) { 'The sources were not checked out, so nothing was installed.'; exit 0 }
+          ./ci/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR
+          exit $LASTEXITCODE
 
       # Fails the step on a FAIL verdict; the job is failed by the last step, after the
       # leak gate and the upload have run. It prints check names only and writes its text
@@ -302,33 +289,7 @@ jobs:
         env:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
-        run: |
-          # The launch could not tell the persona name: the gate cannot cover it, so nothing
-          # taken from the logs goes out.
-          $hold = Join-Path $env:RUNNER_TEMP 'rig-hold.txt'
-          if (Test-Path -LiteralPath $hold) { Write-Host "::error::$((Get-Content -LiteralPath $hold -Raw).Trim())"; exit 1 }
-          $user = "$env:STEAM_USER".Trim()
-          if (-not $user) { Write-Host '::error::No account name to check against'; exit 1 }
-          # The name, every long value in the login, and the IDs and persona the launch met.
-          $terms = @($user)
-          $vdf = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("$env:STEAM_CACHE".Trim()))
-          foreach ($m in [regex]::Matches($vdf, '"[^"\r\n]*"[ \t]+"([^"\r\n]{16,})"')) { $terms += $m.Groups[1].Value }
-          $extra = Join-Path $env:RUNNER_TEMP 'rig-gate-terms.txt'
-          if (Test-Path -LiteralPath $extra) { $terms += @(Get-Content -LiteralPath $extra | Where-Object { $_ }); Remove-Item -LiteralPath $extra -Force }
-          $bad = 0
-          if (Test-Path out) {
-            foreach ($f in Get-ChildItem out -Recurse -File) {
-              $t = [IO.File]::ReadAllText($f.FullName)
-              $hit = $t -match '7656119\d{10}|\[U:1:\d+\]'
-              foreach ($term in $terms) { if ($t.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $true } }
-              if ($hit) {
-                Write-Host "::error::Account data found in $($f.Name)"
-                $bad++
-              }
-            }
-          }
-          if ($bad) { exit 1 }
-          'No account data in the output folder.'
+        run: ./ci/leak-gate.ps1 -Path out -AllowMissing
 
       - name: Upload the scrubbed logs
         id: upload

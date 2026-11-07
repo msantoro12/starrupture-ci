@@ -14,23 +14,28 @@ name: SR data extract
 #     buildid        the Steam build id that branch must be on; the job fails if Steam
 #                    installs another one, so the usmap and the extract are for the build asked for
 #     extractor_ref  commit sha (40 hex) of GoodStuffSoftware/star-rupture-planner whose
-#                    tools/game-extract is built and run (dispatch and PR runs: empty means
-#                    ffc6eebd98b589bc53942de29ef3e76bebda9521)
+#                    tools/game-extract is built and run. Required, no default. A run that
+#                    uses the Steam login refuses a sha that is not reachable from planner
+#                    main (see TRUST below).
 #     build_only     (dispatch only) default true: build Dumper-7 and the extractor and check
 #                    the scripts; no secret, no environment, no download, no launch.
-#                    A pull request that touches this workflow or ci/data runs it too.
-#                    (GitHub can dispatch a workflow only once it is on main, so the PR is
-#                    how a branch proves the build.)
+#                    A pull request that touches this workflow or ci/data runs it too, with
+#                    the compile-check sha below (GitHub can dispatch a workflow only once it
+#                    is on main, so the PR is how a branch proves the build).
 #   secrets (pass both by name; an unpassed environment secret reads as empty)
 #     STEAM_CI_USERNAME, STEAM_CI_LOGIN_CACHE
 #   outputs
 #     artifact_name  sr-data-<buildid>, or empty if nothing was uploaded
-#     status         ok | usmap-failed | extract-failed. usmap-failed: the game was launched
-#                    but no usable .usmap came out. extract-failed: the usmap exists but the
-#                    extractor or its changelist/data guard failed, or the leak gate, the
-#                    cleanup or the upload failed. Empty: the job failed before the launch
-#                    (login, install, build id mismatch); the job result is failure. The job
-#                    fails unless the status is ok; the outputs are still set.
+#     status         ok | login-failed | usmap-failed | extract-failed.
+#                    login-failed: Steam did not accept the saved CI login (rejected,
+#                    rate-limited, Guard code asked, client never signed in): the login needs
+#                    renewing, Dumper-7 is not at fault. usmap-failed: the game process ran
+#                    (or a usmap exists) but no usable .usmap came out. extract-failed: the
+#                    usmap exists but the extractor or its changelist/data guard failed, or
+#                    the leak gate, the cleanup or the upload failed. Empty: the job failed
+#                    before the game started for another reason (install, build id mismatch,
+#                    Steam client start); the job result is failure. The job fails unless the
+#                    status is ok; the outputs are still set.
 #   artifact sr-data-<buildid>, kept 30 days
 #     pipeline.json   buildid, branch, extractor_ref, Dumper-7 commit, status
 #     usmap/<name>.usmap
@@ -39,13 +44,34 @@ name: SR data extract
 #   Artifacts of a public repository can be downloaded by any signed-in GitHub user.
 #
 # FLOW
-#   build job (no environment, no secret): Dumper-7 is built from a pinned upstream commit and
-#   the extractor from extractor_ref, both with MSBuild / dotnet on the runner; the binaries
-#   travel to the next job as a run artifact. Candidate code is compiled where no login exists.
+#   build job (no environment, no secret): checks extractor_ref (TRUST below), then Dumper-7 is
+#   built from a pinned upstream commit and the extractor from extractor_ref, both with
+#   MSBuild / dotnet on the runner; the binaries travel to the next job as a run artifact
+#   named by the run id alone, so a re-run of only the failed extract job finds it again.
+#   The job passes the artifact name, the extractor sha and the Dumper-7 sha on as outputs.
 #   extract job (environment steam-client): download the game with steamcmd and launch it
 #   with the Steam client, both through ci/client-rig-launch.ps1; dump; remove Steam and the
-#   login from the runner (always, even on failure); only then run the extractor, with no
-#   secret in reach; leak-gate and upload.
+#   login files from the runner (always, even on failure); only then run the extractor;
+#   leak-gate and upload. The cleanup and the leak gate are ci/steam-cleanup.ps1 and
+#   ci/leak-gate.ps1, the same scripts sr-client-rig.yml runs.
+#
+# TRUST. The extract job's secrets are delivered to the runner process at job start and stay
+# in its memory for the whole job; deleting the login files does not take them out of reach.
+# Any program the job runs after that, GameExtract.exe included, is therefore trusted code.
+# It is trusted because the build job proves that extractor_ref is an ancestor of (or equal to)
+# planner main, with the GitHub compare API (repos/GoodStuffSoftware/star-rupture-planner/
+# compare/<sha>...main, status ahead or identical; anything else, and any API error, fails),
+# so only code that went through the planner's review and merge runs here. A commit that
+# exists only on a branch or in a fork is refused. A build-only run (a pull request, a
+# dispatch) skips that check: it holds no secret, so compiling any sha there is safe.
+#
+# WHY NOT A SEPARATE, SECRET-FREE EXTRACTOR JOB. Considered and not adopted: it would have to
+# carry the game's pakchunk0-Windows.ucas (45.5 GB), .utoc (15 MB) and .pak (277 MB) and
+# global.utoc/.ucas (4 MB) through a run artifact. This is a public repository, so that artifact
+# would be a download of the game's files for any signed-in GitHub user while it lives (the
+# shortest retention is 1 day). GitHub documents no per-artifact size limit, but a 45.5 GB
+# upload and download has not been tried here, and it would add two transfers of that size
+# to a job of 25 to 40 minutes. The reachability check bounds the risk at its source instead.
 #
 # DUMPER-7 PIN. Upstream is Encryqed/Dumper-7. Pinned: v7.1.0 = 4dafbe5487e144d7fdc85b5dae1e641995d734ec
 # (2026-10-16, the newest release; main has later, unreleased commits). Why: the prebuilt
@@ -61,7 +87,11 @@ name: SR data extract
 #
 # The Steam login is live while the game, with Dumper-7 in it, runs: the launch blocks outbound
 # network for every program of the install (firewall rule per exe, as the client rig does).
-# Run only trusted refs: extractor_ref is built before the login exists and run after it is gone.
+#
+# COMPILE-CHECK SHA. A pull request cannot pass an input, so its build-only run compiles the
+# extractor at the sha in the build job's EXTRACTOR_REF fallback (planner feat/game-extract; planner main does not hold
+# tools/game-extract yet). It is used for no other event, and a run that holds the login never
+# takes it. Replace it with a planner main sha once the extractor is merged.
 #
 # One Steam client session per account: the launching job shares the concurrency group of
 # sr-client-rig.yml, so it never signs in while a rig run does. GitHub keeps one waiting run per
@@ -73,6 +103,8 @@ on:
     paths:
       - .github/workflows/sr-data-extract.yml
       - ci/data/**
+      - ci/steam-cleanup.ps1
+      - ci/leak-gate.ps1
       - ci/client-rig-launch.ps1
   workflow_dispatch:
     inputs:
@@ -85,9 +117,9 @@ on:
         type: string
         default: ''
       extractor_ref:
-        description: 'Commit sha of GoodStuffSoftware/star-rupture-planner to build the extractor from (empty: the reference build)'
+        description: 'Commit sha (40 hex) of GoodStuffSoftware/star-rupture-planner to build the extractor from'
         type: string
-        default: ''
+        required: true
       build_only:
         description: 'Only build Dumper-7 and the extractor and check the scripts (no login, no download, no launch)'
         type: boolean
@@ -111,7 +143,7 @@ on:
         description: 'sr-data-<buildid>, or empty if nothing was uploaded'
         value: ${{ jobs.extract.outputs.artifact_name }}
       status:
-        description: 'ok, usmap-failed or extract-failed; empty if the job failed before the launch'
+        description: 'ok, login-failed, usmap-failed or extract-failed; empty if the job failed before the game started'
         value: ${{ jobs.extract.outputs.status }}
     # Environment secrets of steam-client. Unpassed, they read as empty with no error;
     # required, a caller that leaves them out fails at the call.
@@ -137,22 +169,49 @@ jobs:
     timeout-minutes: 40
     permissions:
       contents: read
+    outputs:
+      tools_artifact: ${{ steps.pins.outputs.tools_artifact }}
+      extractor_ref: ${{ steps.pins.outputs.extractor_ref }}
+      dumper7_commit: ${{ steps.pins.outputs.dumper7_commit }}
     env:
       DUMPER7_COMMIT: 4dafbe5487e144d7fdc85b5dae1e641995d734ec # Encryqed/Dumper-7 v7.1.0
-      EXTRACTOR_REF: ${{ inputs.extractor_ref || 'ffc6eebd98b589bc53942de29ef3e76bebda9521' }}
+      # Only a pull request (build-only) falls back to the compile-check sha; nothing else has a default.
+      EXTRACTOR_REF: ${{ inputs.extractor_ref || (github.event_name == 'pull_request' && 'ffc6eebd98b589bc53942de29ef3e76bebda9521' || '') }}
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
       BUILD_ONLY: ${{ inputs.build_only || github.event_name == 'pull_request' }}
-      TOOLS_ARTIFACT: sr-data-tools-${{ github.run_id }}-${{ github.run_attempt }}
+      TOOLS_ARTIFACT: sr-data-tools-${{ github.run_id }}
     steps:
       - name: Check the inputs
+        id: pins
         shell: pwsh
         run: |
-          if ($env:EXTRACTOR_REF -notmatch '^[0-9a-f]{40}$') { throw 'extractor_ref must be a full commit sha (40 hex characters)' }
+          if ($env:EXTRACTOR_REF -notmatch '^[0-9a-f]{40}$') { throw 'extractor_ref is required and must be a full commit sha (40 hex characters)' }
           if ($env:BUILD_ONLY -ne 'true') {
             if ($env:BRANCH -notmatch '^[A-Za-z0-9_]{1,64}$') { throw 'branch must be letters, digits and underscore' }
             if ($env:BUILDID -notmatch '^[0-9]{1,12}$') { throw 'buildid must be digits' }
           }
+          # The extract job reads these three from here, so no value is written twice.
+          "tools_artifact=$env:TOOLS_ARTIFACT" >> $env:GITHUB_OUTPUT
+          "extractor_ref=$env:EXTRACTOR_REF" >> $env:GITHUB_OUTPUT
+          "dumper7_commit=$env:DUMPER7_COMMIT" >> $env:GITHUB_OUTPUT
+
+      # The extractor runs in the job that holds the Steam login, so it must be reviewed code:
+      # a commit on planner main. compare/<sha>...main reports main relative to the sha:
+      # "identical" (the sha is main) or "ahead" (main has moved on past it) mean the sha is in
+      # main's history. "behind" (the sha is past main, e.g. an unmerged branch), "diverged" (a
+      # fork or branch commit) and a 404 (unknown sha) all stop the run, and so does any API error.
+      - name: Check the extractor is on planner main
+        if: env.BUILD_ONLY != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $uri = "repos/GoodStuffSoftware/star-rupture-planner/compare/$($env:EXTRACTOR_REF)...main"
+          $status = (gh api $uri --jq .status | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $status) { throw "could not check extractor_ref against planner main (gh api exit $LASTEXITCODE); not running it" }
+          "extractor_ref $env:EXTRACTOR_REF vs planner main: $status"
+          if ($status -notin 'identical', 'ahead') { throw "extractor_ref $env:EXTRACTOR_REF is not reachable from planner main (compare status '$status'); only merged code runs next to the Steam login" }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,13 +243,13 @@ jobs:
           if ($p -ne $env:EXTRACTOR_REF) { throw "the extractor source is at $p, not extractor_ref" }
           "Dumper-7 $d, extractor source $p"
           # Parse every script of the data pipeline and of the launch it extends.
-          foreach ($f in @(Get-ChildItem ci/data -Filter *.ps1) + (Get-Item ci/client-rig-launch.ps1)) {
+          foreach ($f in @(Get-ChildItem ci/data -Filter *.ps1) + @(Get-Item ci/client-rig-launch.ps1, ci/steam-cleanup.ps1, ci/leak-gate.ps1)) {
             $errs = $null; $tok = $null
             [void][Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tok, [ref]$errs)
             if ($errs) { $errs | ForEach-Object { Write-Host "::error file=$($f.FullName)::$($_.Message)" }; throw "$($f.Name) does not parse" }
           }
           # PSScriptAnalyzer ships on the image; errors fail, warnings are shown.
-          $found = @(Invoke-ScriptAnalyzer -Path ci/data -Recurse)
+          $found = @(Invoke-ScriptAnalyzer -Path ci/data -Recurse) + @(Invoke-ScriptAnalyzer -Path ci/steam-cleanup.ps1) + @(Invoke-ScriptAnalyzer -Path ci/leak-gate.ps1)
           $found | Format-Table RuleName, Severity, ScriptName, Line -AutoSize | Out-String | Write-Host
           if (@($found | Where-Object Severity -eq 'Error').Count) { throw 'PSScriptAnalyzer reported errors' }
           ./ci/client-rig-launch.ps1 -Check
@@ -236,6 +295,7 @@ jobs:
           name: ${{ env.TOOLS_ARTIFACT }}
           path: stage-tools
           retention-days: 1
+          overwrite: true
           if-no-files-found: error
 
   extract:
@@ -243,7 +303,8 @@ jobs:
     needs: build
     # Never on a pull request, on top of the steam-client environment admitting main only.
     if: github.event_name != 'pull_request' && !inputs.build_only
-    runs-on: windows-2025-vs2026
+    # The rig's image: the Steam behaviour is the proven one; this job compiles nothing.
+    runs-on: windows-latest
     timeout-minutes: 120
     environment: steam-client
     permissions:
@@ -258,9 +319,10 @@ jobs:
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
-      EXTRACTOR_REF: ${{ inputs.extractor_ref || 'ffc6eebd98b589bc53942de29ef3e76bebda9521' }}
-      TOOLS_ARTIFACT: sr-data-tools-${{ github.run_id }}-${{ github.run_attempt }}
-      DUMPER7_COMMIT: 4dafbe5487e144d7fdc85b5dae1e641995d734ec
+      # From the build job, which a re-run of only this job does not run again.
+      EXTRACTOR_REF: ${{ needs.build.outputs.extractor_ref }}
+      TOOLS_ARTIFACT: ${{ needs.build.outputs.tools_artifact }}
+      DUMPER7_COMMIT: ${{ needs.build.outputs.dumper7_commit }}
     steps:
       # Without the login there is nothing to do: fail with that reason, never skip green.
       - name: Check the Steam login secrets are set
@@ -329,8 +391,8 @@ jobs:
         env:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
         run: |
-          if (-not (Test-Path ./ci/data/steam-cleanup.ps1)) { 'The sources were not checked out, so nothing was installed.'; exit 0 }
-          ./ci/data/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR
+          if (-not (Test-Path ./ci/steam-cleanup.ps1)) { 'The sources were not checked out, so nothing was installed.'; exit 0 }
+          ./ci/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR
           exit $LASTEXITCODE
 
       - name: Find the usmap
@@ -348,7 +410,9 @@ jobs:
             Write-Host "::error title=usmap::no usable .usmap came out of the dump ($($f.Count) found)"
           }
 
-      # After the cleanup: no Steam client, no login on the runner, and no secret in this step.
+      # After the cleanup: no Steam client and no login file on the runner, and no secret in this
+      # step's environment. The secrets are still in the runner's memory (see TRUST): the
+      # extractor is main-reachable code, checked by the build job.
       - name: Run the extractor
         id: extract
         if: always() && steps.usmap.outputs.ok == 'true' && steps.cleanup.outcome == 'success'
@@ -377,7 +441,7 @@ jobs:
             ConvertTo-Json | Set-Content stage/pipeline.json -Encoding utf8
           "status=$status" >> $env:GITHUB_OUTPUT
 
-      # The only step after the launch that holds the login, and it only reads files.
+      # The only step after the launch that is given the login, and it only reads files.
       - name: Leak gate
         id: leak
         if: always() && steps.stage.outcome == 'success'
@@ -385,7 +449,7 @@ jobs:
         env:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
-        run: ./ci/data/leak-gate.ps1 -Path stage
+        run: ./ci/leak-gate.ps1 -Path stage -Strict
 
       - name: Upload the usmap and the extract
         id: upload
@@ -402,14 +466,22 @@ jobs:
         if: always()
         shell: pwsh
         env:
-          LAUNCHED: ${{ steps.launch.outcome != 'skipped' }}
           STAGE_STATUS: ${{ steps.stage.outputs.status }}
           USMAP_OK: ${{ steps.usmap.outputs.ok }}
           UPLOAD: ${{ steps.upload.outcome }}
         run: |
-          # Empty before the launch; usmap-failed without a usmap; a status that says ok needs the upload.
+          # login-failed: the launch script left its marker (Steam did not accept the saved login).
+          # Otherwise empty until the game started (boot.json saw the process, or a usmap came out);
+          # then usmap-failed without a usmap; a status that says ok needs the upload.
+          $loginFailed = Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-login-failed.txt')
+          $started = $env:USMAP_OK -eq 'true'
+          if (Test-Path -LiteralPath out/boot.json) {
+            try { if ((Get-Content -LiteralPath out/boot.json -Raw | ConvertFrom-Json).process_found) { $started = $true } } catch { Write-Host 'out/boot.json could not be read' }
+          }
           $status = ''
-          if ($env:LAUNCHED -eq 'true') {
+          if ($loginFailed) {
+            $status = 'login-failed'
+          } elseif ($started) {
             $status = if ($env:USMAP_OK -ne 'true') { 'usmap-failed' } elseif ($env:UPLOAD -ne 'success') { 'extract-failed' } else { $env:STAGE_STATUS }
           }
           $artifact = if ($env:UPLOAD -eq 'success') { "sr-data-$env:BUILDID" } else { '' }
@@ -417,5 +489,5 @@ jobs:
           "artifact_name=$artifact" >> $env:GITHUB_OUTPUT
           $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
           $reason = if (Test-Path -LiteralPath $why) { (Get-Content -LiteralPath $why -Raw).Trim() } else { '' }
-          "### Data extract: $(if ($status) { $status } else { 'stopped before the launch' })`n`nbuild $env:BUILDID, artifact: $(if ($artifact) { $artifact } else { 'none' })`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "### Data extract: $(if ($status) { $status } else { 'stopped before the game started' })`n`nbuild $env:BUILDID, artifact: $(if ($artifact) { $artifact } else { 'none' })`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($status -ne 'ok') { Write-Host "::error title=Data extract::status '$status'. $reason"; exit 1 }

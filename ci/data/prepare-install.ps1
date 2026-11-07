@@ -1,6 +1,6 @@
 # After the game client is installed (client-rig-launch.ps1 -Phase Install), before it is
 # launched: the install must be the build the caller asked for, from the branch it asked for,
-# and clean (no loader, no plugin). Writes bin and paks to GITHUB_OUTPUT.
+# and clean (no loader, no plugin). Writes paks to GITHUB_OUTPUT.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$InstallDir,
@@ -28,5 +28,4 @@ if ((Test-Path -LiteralPath (Join-Path $bin 'dwmapi.dll')) -or (Test-Path -Liter
 $paks = Join-Path (Get-Item $bin).Parent.Parent.FullName 'Content\Paks'
 if (-not (Test-Path -LiteralPath (Join-Path $paks 'pakchunk0-Windows.utoc'))) { throw "no pakchunk0-Windows.utoc in $paks" }
 "Install is build $build of branch $beta."
-"bin=$bin" >> $env:GITHUB_OUTPUT
 "paks=$paks" >> $env:GITHUB_OUTPUT

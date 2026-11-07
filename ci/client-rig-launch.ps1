@@ -272,6 +272,12 @@ function Set-Reason([string]$msg) {
     if (-not (Test-Path -LiteralPath $f)) { Set-Content -LiteralPath $f -Value (($msg -replace '\s+', ' ').Trim()) -Encoding utf8 }
 }
 function Stop-WithReason([string]$msg) { Set-Reason $msg; throw $msg }
+# A Steam sign-in that failed (rejected, rate-limited, Guard asked, never signed in) is a
+# different failure from a game that did not run: the marker lets a caller tell them apart.
+function Stop-WithLogin([string]$msg) {
+    Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-login-failed.txt') -Value 'login' -Encoding ascii
+    Stop-WithReason $msg
+}
 
 # ---- the login: read once, cleared from the environment ------------------------------
 $user = "$env:STEAM_USER".Trim()
@@ -377,8 +383,8 @@ function Install-Client {
     }
     if (-not $installed) {
         if (-not $loginOk) {
-            if ($all -match 'Rate Limit') { throw 'Steam rate-limited the CI login; run the rig again later' }
-            throw 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew'
+            if ($all -match 'Rate Limit') { Stop-WithLogin 'Steam rate-limited the CI login; run the rig again later' }
+            Stop-WithLogin 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew'
         }
         if ($all -match 'No subscription|missing license|No license') { throw "The CI Steam account does not own StarRupture (app $appId)" }
         throw 'The game client did not install'
@@ -621,9 +627,9 @@ function Invoke-Launch {
     Write-ClientLogin
     Start-Steam
     $login = Wait-ClientLogin
-    if ($login -eq 'denied') { throw 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew' }
-    if ($login -eq 'guard') { throw 'Steam asked for a Guard code; the saved CI login is not accepted' }
-    if ($login -ne 'live') { throw "The Steam client did not sign in from the saved login ($login)" }
+    if ($login -eq 'denied') { Stop-WithLogin 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew' }
+    if ($login -eq 'guard') { Stop-WithLogin 'Steam asked for a Guard code; the saved CI login is not accepted' }
+    if ($login -ne 'live') { Stop-WithLogin "The Steam client did not sign in from the saved login ($login)" }
 
     $attempts = @()
     $last = $null
