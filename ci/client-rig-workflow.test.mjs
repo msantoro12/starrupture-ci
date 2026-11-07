@@ -8,7 +8,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -137,7 +139,8 @@ test('candidate layouts: the game folder, and the pipeline\'s own flat plugin ar
   assert.match(setup, /\$LoaderFiles = @\('StarRupture-ModLoader-Core\.dll', 'StarRupture-ImGui\.dll', 'StarRupture-ModLoader-Updater\.exe'\)/);
   assert.match(setup, /if \(\$rel -notmatch '\/'\)/);
   assert.match(setup, /ModLoader\/Plugins\/\$rel/);
-  assert.match(setup, /a root file must be dwmapi\.dll, one of the loader's files or a plugin DLL/);
+  assert.match(setup, /a root file must be dwmapi\.dll, one of the loader's files, a plugin DLL or build metadata/);
+  assert.match(setup, /Candidate metadata ignored: \$rel/);
   // Resolve and Install read the layout through the same function, and every overlaid DLL still needs an expect.
   assert.match(setup, /function Get-CandidateFiles\(\[string\]\$Dir\)/);
   assert.equal(setup.match(/\(Get-CandidateFiles |= Get-CandidateFiles /g)?.length, 2, 'used by Resolve and Install');
@@ -145,6 +148,35 @@ test('candidate layouts: the game folder, and the pipeline\'s own flat plugin ar
   // The workflow's builds really are flat: sr-build-all uploads one plugin DLL per artifact.
   const build = read('.github', 'workflows', 'sr-build-all.yml');
   assert.match(build, /path: build\/Client Release\/Plugins\/\$\{\{ matrix\.dll \}\}/);
+});
+
+// Runs the script's own Get-CandidateFiles over a folder holding the named root files.
+function candidateFiles(names) {
+  const dir = mkdtempSync(join(tmpdir(), 'rig-cand-'));
+  try {
+    for (const n of names) writeFileSync(join(dir, n), 'x');
+    const fn = setup.match(/^function Get-CandidateFiles[\s\S]*?\n}\n/m)[0];
+    const files = setup.match(/^\$LoaderFiles = .*$/m)[0];
+    const script = `$ErrorActionPreference = 'Stop'\n${files}\n${fn}\n'FILES=' + ((Get-CandidateFiles '${dir}' | ForEach-Object { $_.Rel }) -join ',')`;
+    for (const exe of ['pwsh', 'powershell']) {
+      const r = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true });
+      if (!r.error) return r;
+    }
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('candidate root metadata is ignored and logged; unknown executables are refused', (t) => {
+  const ok = candidateFiles(['build.json', 'Codex.dll']);
+  if (!ok) return t.skip('no PowerShell on this machine');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /Candidate metadata ignored: build\.json/);
+  assert.match(ok.stdout, /^FILES=Codex\.dll$/m);
+  const bad = candidateFiles(['foo.exe', 'Codex.dll']);
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /candidate holds 'foo\.exe' at its root/);
 });
 
 test('actions are pinned to a full sha', () => {
