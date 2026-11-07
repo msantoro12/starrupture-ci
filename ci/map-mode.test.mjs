@@ -546,3 +546,142 @@ test('an OK row without a pattern refuses the write and the message names the ke
   input.components[1].releases[0].rows.push(ok(`${SF}`, 'function', 0x123000, { pattern: undefined }));
   assert.throws(() => mapMode(header(), input), (e) => e.message.includes(JSON.stringify(SF)) && e.message.includes('CL-130000') && /gives no pattern/.test(e.message));
 });
+
+// ---- carried rows and the completeness check ----------------------------------
+
+import { completeness } from './map-mode.mjs';
+
+const carryScratch = (carryRows) => {
+  const dir = scratch({
+    'loader.json': { patterns: [loaderScan.patterns[0]] },
+    'carry.json': { kind: 'carry', cl: 130000, rows: carryRows },
+  });
+  writeFileSync(join(dir, 'base.h'), header());
+  return { dir, spec: { cl: 130000, build: BUILD, scans: [{ owner: 'ModLoader', tag: 'v1.22.1', rank: 'current', file: 'loader.json' }], carry: { file: 'carry.json', header: 'base.h' } } };
+};
+const entry = (key, fromCL, result, extra = {}) => ({ key, fromCL, matches: result === 'match' ? 1 : result === 'none' ? 0 : 2, rva: '0x1339290', result, ...extra });
+
+test('a carried match is a present row with the earlier row locator', () => {
+  const { dir, spec } = carryScratch([entry(BC, 127004, 'match')]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.deepEqual(out.problems, []);
+  const row = find(out.text, BC, 0);
+  assert.equal(row.absent, false);
+  assert.equal(row.rva, 0x1339290);
+  assert.equal(row.pattern, '48 89 5C 24 ?? 55 56 57 48 8D AC 24');
+});
+
+test('a carried match on a scoped key writes one row per fp that had a pattern', () => {
+  const { dir, spec } = carryScratch([entry(PE, 128786, 'match', { followRipDispAt: 3 })]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.deepEqual(out.problems, []);
+  assert.equal(find(out.text, PE, FP_A).followRipDispAt, 3, 'a named extra field is copied');
+  assert.equal(find(out.text, PE, FP_B), undefined, 'the fp that was absent has no pattern to carry');
+});
+
+test('a carried absent row copies the owners the earlier rows name, with the reason as a note', () => {
+  const { dir, spec } = carryScratch([entry(SF, 127004, 'none', { reason: 'no hit' })]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.deepEqual(out.problems, []);
+  const row = find(out.text, SF, 0);
+  assert.equal(row.absent, true);
+  assert.deepEqual(row.owners, ['BetterCheats', 'WAILA'], 'the owners of the earlier absent row');
+  assert.ok(out.notes.some((n) => n.startsWith(`${SF}:`) && n.includes('no hit')));
+  assert.deepEqual(out.absences, []);
+});
+
+test('a carried absent key whose earlier rows name no owner gets no row, only a report entry', () => {
+  const { dir, spec } = carryScratch([entry(BC, 127004, 'ambiguous', { reason: '2 hits' })]);
+  const input = assemble(spec, dir);
+  assert.equal(input.absences.length, 1);
+  assert.equal(input.absences[0].key, BC);
+  assert.match(input.absences[0].reason, /2 hits/);
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  assert.equal(find(out.text, BC, 0), undefined, 'no row is written');
+  assert.deepEqual(out.absences, input.absences);
+});
+
+test('a match that is not unique is a report-only absence', () => {
+  const { dir, spec } = carryScratch([entry(BC, 127004, 'match', { matches: 2 })]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.equal(find(out.text, BC, 0), undefined);
+  assert.match(out.absences[0].reason, /2 matches/);
+});
+
+test('the placeholder owner Carry appears nowhere', () => {
+  const { dir, spec } = carryScratch([entry(SF, 127004, 'none'), entry(BC, 127004, 'none'), entry(PE, 128786, 'match')]);
+  const input = assemble(spec, dir);
+  const out = mapMode(header(), input);
+  assert.ok(!input.components.some((c) => c.owner === 'Carry'));
+  assert.ok(!/Carry/.test(out.text));
+  assert.ok(!/Carry/.test(JSON.stringify(out.absences)) && !out.notes.some((n) => /Carry/.test(n)));
+});
+
+test('a fresh scan row beats a carried row for the same key', () => {
+  const { dir, spec } = carryScratch([entry('GWorld', 128786, 'match', { rva: '0x999' }), entry(BC, 127004, 'match')]);
+  const input = assemble(spec, dir);
+  assert.equal(input.components.flatMap((c) => c.releases).filter((r) => r.tag === '128786').flatMap((r) => r.rows).some((r) => r.key === 'GWorld'), false);
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  assert.equal(find(out.text, 'GWorld', 0).rva, 0xe30000);
+});
+
+test('without a carry input assemble is unchanged', () => {
+  const { dir, spec } = carryScratch([entry(BC, 127004, 'match')]);
+  const { carry, ...plain } = spec;
+  const input = assemble(plain, dir);
+  assert.deepEqual(input.components.map((c) => c.owner), ['ModLoader']);
+});
+
+test('a carry report for another CL or of another kind is refused', () => {
+  const { dir, spec } = carryScratch([]);
+  writeFileSync(join(dir, 'carry.json'), JSON.stringify({ kind: 'carry', cl: 1, rows: [] }));
+  assert.throws(() => assemble(spec, dir), /not CL-130000/);
+  writeFileSync(join(dir, 'carry.json'), JSON.stringify({ kind: 'scan', rows: [] }));
+  assert.throws(() => assemble(spec, dir), /not a carry report/);
+});
+
+test('completeness lists the keys with an earlier row and none on the CL', () => {
+  const before = completeness(parse(header()), 130000);
+  assert.equal(before.missing.length, 5, 'PE, GWorld, GObjects, BC and SF');
+  assert.match(before.line, /^5 of 5 function keys have no CL-130000 row/);
+  const { dir, spec } = carryScratch([entry(PE, 128786, 'match'), entry(GO, 128786, 'none'), entry(BC, 127004, 'match'), entry(SF, 127004, 'none')]);
+  const out = mapMode(header(), assemble(spec, dir));
+  const after = completeness(parse(out.text), 130000, out.absences);
+  assert.deepEqual(after.missing, [], after.line);
+});
+
+test('the gate counts a report-only absence and fails without it', () => {
+  const { dir, spec } = carryScratch([entry(PE, 128786, 'match'), entry(GO, 128786, 'none'), entry(BC, 127004, 'none'), entry(SF, 127004, 'none')]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.deepEqual(out.absences.map((a) => a.key), [BC]);
+  assert.deepEqual(completeness(parse(out.text), 130000).missing, [BC], 'without the report the key is missing');
+  assert.deepEqual(completeness(parse(out.text), 130000, out.absences).missing, []);
+  writeFileSync(join(dir, 'new.h'), out.text);
+  const bare = spawnSync(process.execPath, [TOOL, 'complete', join(dir, 'new.h'), '--cl', '130000'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(bare.status, 3);
+  writeFileSync(join(dir, 'w.json'), JSON.stringify({ written: true, absences: out.absences }));
+  const withReport = spawnSync(process.execPath, [TOOL, 'complete', join(dir, 'new.h'), '--cl', '130000', '--report', join(dir, 'w.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(withReport.status, 0, withReport.stdout + withReport.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'w.json'), 'utf8')).missing, []);
+});
+
+test('complete exits 3 on a gap and 0 when there is none, from the command line', () => {
+  const dir = scratch({});
+  writeFileSync(join(dir, 'h.h'), header());
+  const run = spawnSync(process.execPath, [TOOL, 'complete', join(dir, 'h.h'), '--cl', '130000'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 3);
+  assert.match(run.stdout, /5 of 5 function keys have no CL-130000 row/);
+  const done = spawnSync(process.execPath, [TOOL, 'complete', join(dir, 'h.h'), '--cl', '128786'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(done.status, 0, done.stdout);
+});
+
+test('assemble --carry --base runs from the command line', () => {
+  const { dir, spec } = carryScratch([entry(BC, 127004, 'match')]);
+  const { carry, ...plain } = spec;
+  writeFileSync(join(dir, 'spec.json'), JSON.stringify(plain));
+  const run = spawnSync(process.execPath, [TOOL, 'assemble', join(dir, 'spec.json'), '--out', join(dir, 'in.json'), '--carry', join(dir, 'carry.json'), '--base', join(dir, 'base.h')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(JSON.parse(readFileSync(join(dir, 'in.json'), 'utf8')).components.some((c) => c.owner === 'ModLoader' && c.releases.some((r) => r.tag === '127004')));
+});
