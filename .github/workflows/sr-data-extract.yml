@@ -14,9 +14,13 @@ name: SR data extract
 #     buildid        the Steam build id that branch must be on; the job fails if Steam
 #                    installs another one, so the usmap and the extract are for the build asked for
 #     extractor_ref  commit sha (40 hex) of GoodStuffSoftware/star-rupture-planner whose
-#                    tools/game-extract is built and run
+#                    tools/game-extract is built and run (dispatch and PR runs: empty means
+#                    ffc6eebd98b589bc53942de29ef3e76bebda9521)
 #     build_only     (dispatch only) default true: build Dumper-7 and the extractor and check
-#                    the scripts; no secret, no environment, no download, no launch
+#                    the scripts; no secret, no environment, no download, no launch.
+#                    A pull request that touches this workflow or ci/data runs it too.
+#                    (GitHub can dispatch a workflow only once it is on main, so the PR is
+#                    how a branch proves the build.)
 #   secrets (pass both by name; an unpassed environment secret reads as empty)
 #     STEAM_CI_USERNAME, STEAM_CI_LOGIN_CACHE
 #   outputs
@@ -64,6 +68,12 @@ name: SR data extract
 # group (a third replaces the second); nothing cancels a run that is going.
 
 on:
+  # Build-only: compiles Dumper-7 and the extractor, checks the scripts. No environment, no secret.
+  pull_request:
+    paths:
+      - .github/workflows/sr-data-extract.yml
+      - ci/data/**
+      - ci/client-rig-launch.ps1
   workflow_dispatch:
     inputs:
       branch:
@@ -75,9 +85,9 @@ on:
         type: string
         default: ''
       extractor_ref:
-        description: 'Commit sha of GoodStuffSoftware/star-rupture-planner to build the extractor from'
+        description: 'Commit sha of GoodStuffSoftware/star-rupture-planner to build the extractor from (empty: the reference build)'
         type: string
-        default: ffc6eebd98b589bc53942de29ef3e76bebda9521
+        default: ''
       build_only:
         description: 'Only build Dumper-7 and the extractor and check the scripts (no login, no download, no launch)'
         type: boolean
@@ -125,10 +135,10 @@ jobs:
       contents: read
     env:
       DUMPER7_COMMIT: 4dafbe5487e144d7fdc85b5dae1e641995d734ec # Encryqed/Dumper-7 v7.1.0
-      EXTRACTOR_REF: ${{ inputs.extractor_ref }}
+      EXTRACTOR_REF: ${{ inputs.extractor_ref || 'ffc6eebd98b589bc53942de29ef3e76bebda9521' }}
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
-      BUILD_ONLY: ${{ inputs.build_only }}
+      BUILD_ONLY: ${{ inputs.build_only || github.event_name == 'pull_request' }}
       TOOLS_ARTIFACT: sr-data-tools-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check the inputs
@@ -225,7 +235,7 @@ jobs:
   extract:
     name: Dump the usmap and extract
     needs: build
-    if: ${{ !inputs.build_only }}
+    if: ${{ !inputs.build_only && github.event_name != 'pull_request' }}
     runs-on: windows-2025-vs2026
     timeout-minutes: 120
     environment: steam-client
