@@ -295,13 +295,18 @@ give the key's kind, fp and locator. Per entry:
   `resultOffset`, `followRel32At`, `followRipDispAt`) replaces the header's value;
   other fields are ignored.
 - `none`, `ambiguous`, or a `match` with other than 1 hit: an absent row. The
-  header has no reason column, so the `reason` shows as a note in the write report. A global absent row must list owners, so a carried one lists the placeholder owner `Carry`, which no plugin matches: no plugin request is recorded as tested absent.
+  header has no reason column, so the `reason` shows as a note in the write report. A global
+  absent row must list owners, so a carried one copies the owners of the key's earlier rows
+  in `--base` (present or absent, sorted, each once). A scoped key lists none. If no earlier
+  row of a global key names an owner, no row is written: the key and its reason go to the
+  write report's `absences` and the gate below counts it as accounted for.
 - A key with a fresh scan row (any component) gets no carried row. A report whose
   `cl` is not the spec's CL, or whose `kind` is not `carry`, is refused. Without
   `--carry` nothing changes.
 
 `complete` is the gate: every function key with a row on an earlier CL must have a
-row on `<CL>`, present or absent. It prints one line (`N of M function keys have no
+row on `<CL>`, present or absent, or be named in the `absences` of the write report given as
+`--report` (the result is merged into that file). A key missing from both still fails. It prints one line (`N of M function keys have no
 CL-X row: a, b, c, +k more`), lists each key on stderr, and exits 3 when any is
 missing, 0 otherwise.
 
