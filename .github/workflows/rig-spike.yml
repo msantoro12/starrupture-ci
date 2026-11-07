@@ -21,7 +21,105 @@ env:
   BRANCH: public
 
 jobs:
+  # The icon fix branches, built the way sr-client-check.yml builds a plugin
+  # (Client Release, Plugin SDK and Game SDK checked out beside it). No secrets
+  # here. The label names the commit, so the loader's Plugin info line proves
+  # which build ran. Commits are pinned, not branch heads.
+  fixes:
+    name: fix ${{ matrix.name }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Codex
+            repo: msantoro12/StarRupture-Plugin-Codex
+            sha: 22fd07131832780234606427e7f3c2186af4b88a
+            label: v1.0.0-fix.22fd071
+          - name: ProductionViewer
+            repo: msantoro12/StarRupture-Plugin-ProductionViewer
+            sha: b395f13ac90e46a797c9339dc01e4971e6f3ecfb
+            label: v0.17.0-fix.b395f13
+    steps:
+      - name: Check out the plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.sha }}
+          path: plugin
+          persist-credentials: false
+
+      # v1.23.0: the Plugin SDK the released set is built from (interface 75,
+      # has object_ref.h). The Game SDK is its main at the time of writing.
+      - name: Check out the Plugin SDK
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AlienXAXS/StarRupture-Plugin-SDK
+          ref: 5b4f76c40d6b0d068bb0397d8c66c3b0aabb66de
+          path: plugin-sdk
+          persist-credentials: false
+
+      - name: Check out the Game SDK
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AlienXAXS/StarRupture-Game-SDK
+          ref: 659656c002e883312db46433c7b388a1184d6ad9
+          path: game-sdk
+          persist-credentials: false
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+
+      - name: Build the plugin (Client Release)
+        shell: pwsh
+        working-directory: plugin
+        env:
+          NAME: ${{ matrix.name }}
+          WANT: ${{ matrix.sha }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD)
+          if ($head -ne $env:WANT) { throw "checked out $head, wanted $($env:WANT)" }
+          $sln = @(Get-ChildItem -File -Filter *.sln)
+          if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          msbuild $sln[0].Name `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /p:PostBuildEventUseInBuild=false `
+            /p:ModLoaderBuildTag="$env:LABEL" `
+            /p:GameSDKRoot="$env:GITHUB_WORKSPACE\game-sdk" `
+            /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem 'build\Client Release\Plugins' -File -Filter *.dll)
+          if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
+          New-Item -ItemType Directory -Force ..\out | Out-Null
+          Copy-Item $dll[0].FullName ..\out\
+          [ordered]@{ name = $env:NAME; commit = $head; label = $env:LABEL; dll = $dll[0].Name
+                      pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdk = (git -C ..\game-sdk rev-parse HEAD)
+                      sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
+            ConvertTo-Json | Set-Content ..\out\build.json -Encoding utf8
+          Get-Content ..\out\build.json
+          # The label is compiled into the DLL as plain text.
+          $bytes = [IO.File]::ReadAllBytes($dll[0].FullName)
+          $hit = [Text.Encoding]::ASCII.GetString($bytes).Contains($env:LABEL) -or [Text.Encoding]::Unicode.GetString($bytes).Contains($env:LABEL)
+          "label '$($env:LABEL)' found in the DLL: $hit"
+          if (-not $hit) { throw 'the build label is not in the DLL' }
+
+      - name: Upload the fix DLL
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fix-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
   spike:
+    needs: fixes
     runs-on: windows-latest
     timeout-minutes: 95
     environment: steam-client-replay
@@ -217,6 +315,12 @@ jobs:
           Get-ChildItem -LiteralPath $bin -Filter dwmapi.dll | ForEach-Object { "$($_.Name) $($_.Length)" }
           Get-ChildItem -LiteralPath $ml -Recurse -File | ForEach-Object { "$($_.FullName.Substring($bin.Length)) $($_.Length)" }
 
+      - name: Download the fix DLLs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: fix-*
+          path: D:\rig-fix
+
       - name: Try the Steam client and the launches
         id: attempts
         timeout-minutes: 60
@@ -225,7 +329,7 @@ jobs:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
-        run: ./ci/rig-spike.ps1 -Install $env:INSTALL_DIR -OutDir out
+        run: ./ci/rig-spike.ps1 -Install $env:INSTALL_DIR -OutDir out -FixDir D:\rig-fix
 
       - name: Remove Steam and the login from the runner
         if: always()

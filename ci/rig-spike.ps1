@@ -1,6 +1,7 @@
-# Spike 3: with the real Steam client signed in from the saved CI login, which
-# launch args keep the plugin set up, and does the crash under Codex's tick need
-# -nullrhi? Several launches in one client session, each with fresh logs.
+# Spike 4: with the real Steam client signed in from the saved CI login, do the
+# icon stale-pointer fixes stop the crash under the icon code's tick, and does a
+# plain -dx11 launch of the released set hit it? Several launches in one client
+# session, each with fresh logs: CONTROL, FIX-ALL x2, FIX-G x2, DX11.
 # Reads the login from STEAM_USER / STEAM_CACHE, then clears both from the
 # environment, so no launched process inherits them. Decides nothing for the
 # pipeline: it records what each stage did under -OutDir. Everything written or
@@ -14,6 +15,7 @@ param(
   [int]$CapSec = 300,
   [int]$SettleSec = 90,
   [int]$BudgetMin = 50,
+  [string]$FixDir,
   [switch]$Check
 )
 $ErrorActionPreference = 'Stop'
@@ -466,10 +468,17 @@ function Run-Attempt([string]$label, [string]$route, [string]$line, [int]$noGame
   $stubExit = ("$(Get-Content -LiteralPath $procFile -Raw)") -match 'rigStop StarRuptureGam\S* pid=\d+ exit=0x00000035'
   $mlLines = @(($mlText -split "`r?`n") | Where-Object { $_ })
   $crashed = $mlText -match 'FATAL ENGINE CRASH'
+  # Seconds from "Boot sequence finished" to the crash, by the log's own clock.
+  $stamp = { param($rx) $m = ($mlLines | Where-Object { $_ -match $rx } | Select-Object -First 1); if ($m -and $m -match '^\[(\d\d:\d\d:\d\d\.\d+)\]') { [TimeSpan]::Parse($Matches[1]) } else { $null } }
+  $tBoot = & $stamp 'Boot sequence finished'
+  $tCrash = & $stamp 'FATAL ENGINE CRASH'
+  $bootToCrash = if ($tBoot -and $tCrash) { [math]::Round(($tCrash - $tBoot).TotalSeconds, 1) } else { $null }
+  $upAfterBoot = if ($doneAt -and -not $crashed) { [int]($sw.Elapsed.TotalSeconds - $doneAt) } else { $null }
   $gameExits = @([regex]::Matches("$(Get-Content -LiteralPath $procFile -Raw)", 'rigStop StarRuptureGam\S* pid=\d+ exit=(0x[0-9A-F]+)') | ForEach-Object { $_.Groups[1].Value })
   $summary = [ordered]@{
     bootFinishedSec = $(if ($doneAt) { [int]$doneAt } else { $null }); crashSec = $(if ($crashAt) { [int]$crashAt } else { $null }); fatalCrash = $crashed; steamErrorDialog = $stubError
     crashDialog = ("$(Get-Content -LiteralPath $winFile -Raw)") -match 'The game has crashed'; killedByRig = $alive; gameExitCodes = $gameExits
+    bootToCrashSec = $bootToCrash; upAfterBootSec = $upAfterBoot
     errorLines = @($mlLines -match '\[ERROR\]').Count; lastLogLine = $(if ($mlLines.Count) { $mlLines[-1] } else { '' })
     attempt = $label; seconds = [int]$sw.Elapsed.TotalSeconds; launch = "$launchInfo"; sawGameProcess = $sawGame; gameAliveAtEnd = $alive
     peakWorkingSetMb = [int]$peakMb; stages = $reached; stubExit35 = $stubExit; success = $ok; engineLogs = @($engine | ForEach-Object { "$($_.Name) $($_.Length)" })
@@ -478,6 +487,11 @@ function Run-Attempt([string]$label, [string]$route, [string]$line, [int]$noGame
   Set-Content -LiteralPath (Join-Path $dir 'summary.json') -Value (Scrub ($summary | ConvertTo-Json -Depth 4)) -Encoding utf8
   Say "Attempt $label stages: $($reached -join ', '); exit 0x35: $stubExit; success: $ok; fatal crash: $crashed; killed by the rig: $alive; exits: $($gameExits -join ' ')"
   ($mlText -split "`r?`n") | Where-Object { $_ -match 'Plugin info - |InitAllLoadedPlugins|Plugin startup phase complete|Boot sequence finished' } | ForEach-Object { Say $_ }
+  Say "Attempt $label last log line: $($mlLines | Select-Object -Last 1 | ForEach-Object { $_.Substring(0, [math]::Min(300, $_.Length)) })"
+  Say "Attempt $label timing: boot finished at $(if ($doneAt) { [int]$doneAt } else { 'never' }) s; boot to crash by the log: $(if ($null -ne $bootToCrash) { "$bootToCrash s" } else { 'no crash' }); up after boot without a crash: $(if ($null -ne $upAfterBoot) { "$upAfterBoot s" } else { 'n/a' }); crash dialog: $($summary.crashDialog); [ERROR] lines: $($summary.errorLines)"
+  # The crash block, if any, with its frames.
+  $blk = @($mlLines | Where-Object { $_ -match 'PluginGuard|CrashReporter|^\s+#\d+ |Fault addr' } | Select-Object -First 45)
+  foreach ($b in $blk) { Say ("  | " + $b.Substring(0, [math]::Min(300, $b.Length))) }
   Say-ClientFacts "attempt $label"
   $script:last = [pscustomobject]@{ ok = $ok; crashed = $crashed; stubError = $stubError }
 }
@@ -523,6 +537,44 @@ function Set-Ini([bool]$uiOff, [string]$level = 'INFO') {
   $ini = "[AutoUpdate]`r`nEnabled=0`r`n[Logging]`r`nLevel=$level`r`n"
   if ($uiOff) { $ini += "[UI]`r`nEnabled=0`r`n" }
   Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value $ini -Encoding ascii -NoNewline
+}
+
+# The released Codex and ProductionViewer DLLs are kept aside; each attempt
+# gets the set it names: released, fixall (both fixed) or fixg (no Codex, fixed
+# ProductionViewer). The fix DLLs come from the fixes job's artifacts.
+$script:released = @{}
+function Stash-Released {
+  $dir = Join-Path $env:RUNNER_TEMP 'released'
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  foreach ($n in 'Codex', 'ProductionViewer') {
+    $f = @(Get-ChildItem -LiteralPath (Join-Path $script:mlDir 'Plugins') -Filter "*$n*.dll")
+    if ($f.Count -ne 1) { throw "Expected one $n DLL, found $($f.Count)" }
+    Copy-Item -LiteralPath $f[0].FullName -Destination (Join-Path $dir $f[0].Name)
+    $script:released[$n] = [pscustomobject]@{ name = $f[0].Name; stash = (Join-Path $dir $f[0].Name) }
+  }
+}
+
+function Set-PluginSet([string]$set) {
+  $plugins = Join-Path $script:mlDir 'Plugins'
+  foreach ($n in 'Codex', 'ProductionViewer') {
+    $r = $script:released[$n]
+    $dest = Join-Path $plugins $r.name
+    if ($set -eq 'fixg' -and $n -eq 'Codex') {
+      Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+      Say "Plugin set ${set}: $n removed"
+      continue
+    }
+    $fix = ($set -eq 'fixall') -or ($set -eq 'fixg' -and $n -eq 'ProductionViewer')
+    $src = $r.stash
+    if ($fix) {
+      $f = @(Get-ChildItem -LiteralPath (Join-Path $FixDir "fix-$n") -Filter *.dll -ErrorAction SilentlyContinue)
+      if ($f.Count -ne 1) { throw "Expected one fixed $n DLL under $FixDir, found $($f.Count)" }
+      $src = $f[0].FullName
+      Say ("Fix build of ${n}: " + (Get-Content -LiteralPath (Join-Path $FixDir "fix-$n\build.json") -Raw) -replace '\s+', ' ')
+    }
+    Copy-Item -LiteralPath $src -Destination $dest -Force
+    Say ("Plugin set ${set}: $n is the {0} DLL, sha256 {1}" -f $(if ($fix) { 'FIX' } else { 'released' }), (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant())
+  }
 }
 
 # Steam must be stopped first: one account, one session.
@@ -578,33 +630,30 @@ try {
   if ($script:loginResult -ne 'live') {
     $verdict = "not portable or no login: $($script:loginResult)"
   } else {
-    $rendered = '-nosound -log -unattended -windowed -ResX=640 -ResY=360'
-    # The first launch of run 1 hit a Steam Error dialog 6 s after sign-in.
+    $dx11 = '-dx11 -unattended -nosound -log -windowed -ResX=640 -ResY=360'
+    # The first launch of earlier runs hit a Steam Error dialog; a relaunch passed.
     Say 'Letting the client settle for 90 s after sign-in'
     Start-Sleep -Seconds 90
+    Stash-Released
     $results = @()
-    $renderReached = $false
     foreach ($p in @(
-        @{ label = 'F2'; line = $rendered; remove = @(); level = 'INFO'; render = $true },
-        @{ label = 'F3'; line = $rendered; remove = @(); level = 'INFO'; render = $true },
-        @{ label = 'J'; line = $GameArgs; remove = @('Codex', 'ProductionViewer'); level = 'INFO'; render = $false },
-        @{ label = 'K'; line = $GameArgs; remove = @(); level = 'TRACE'; render = $false },
-        @{ label = 'F4'; line = $rendered; remove = @(); level = 'INFO'; render = $true })) {
-      if ($p.render -and $renderReached) { continue }
+        @{ label = 'CONTROL';   line = $GameArgs; set = 'released'; plugins = 9 },
+        @{ label = 'FIX-ALL-1'; line = $GameArgs; set = 'fixall';   plugins = 9 },
+        @{ label = 'FIX-ALL-2'; line = $GameArgs; set = 'fixall';   plugins = 9 },
+        @{ label = 'FIX-G-1';   line = $GameArgs; set = 'fixg';     plugins = 8 },
+        @{ label = 'FIX-G-2';   line = $GameArgs; set = 'fixg';     plugins = 8 },
+        @{ label = 'DX11';      line = $dx11;     set = 'released'; plugins = 9 })) {
       if ((Get-Date) -gt $deadline -or $script:downloadTripped -or -not (Test-ActiveUser)) { Say "Stopping before attempt $($p.label): client signed in: $(Test-ActiveUser)"; break }
-      Set-Ini $false $p.level
-      $held = @()
-      foreach ($r in $p.remove) {
-        $dll = @(Get-ChildItem -LiteralPath (Join-Path $script:mlDir 'Plugins') -Filter "*$r*.dll")
-        if ($dll.Count -ne 1) { throw "Expected one $r DLL, found $($dll.Count)" }
-        $held += $dll[0].FullName
-        Move-Item -LiteralPath $dll[0].FullName -Destination (Join-Path $env:RUNNER_TEMP $dll[0].Name)
+      Set-Ini $false 'INFO'
+      Set-PluginSet $p.set
+      # A Steam Error dialog means the game never started; relaunch the same attempt.
+      for ($try = 0; $try -lt 3; $try++) {
+        $name = if ($try) { "$($p.label)-retry$try" } else { $p.label }
+        Run-Attempt $name 'appid' $p.line 240 $p.plugins
+        $results += "${name}: loaded $($script:last.ok), crashed $($script:last.crashed), Steam Error $($script:last.stubError)"
+        if (-not $script:last.stubError) { break }
+        Start-Sleep -Seconds $(if ($try) { 120 } else { 5 })
       }
-      try { Run-Attempt $p.label 'appid' $p.line 240 (9 - $p.remove.Count) }
-      finally { foreach ($h in $held) { Move-Item -LiteralPath (Join-Path $env:RUNNER_TEMP (Split-Path $h -Leaf)) -Destination $h } }
-      $results += "$($p.label): loaded $($script:last.ok), crashed $($script:last.crashed), Steam Error $($script:last.stubError)"
-      if ($p.render -and -not $script:last.stubError) { $renderReached = $true }
-      if ($p.render -and $script:last.stubError) { Start-Sleep -Seconds 120 }
     }
     $verdict = $results -join '; '
   }
