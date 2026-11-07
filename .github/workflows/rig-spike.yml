@@ -219,13 +219,13 @@ jobs:
 
       - name: Try the launches
         id: attempts
-        timeout-minutes: 30
+        timeout-minutes: 35
         shell: pwsh
         env:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
-        run: ./ci/rig-spike.ps1 -Install $env:INSTALL_DIR -OutDir out -Attempts B,C,D
+        run: ./ci/rig-spike.ps1 -Install $env:INSTALL_DIR -OutDir out -Attempts B,E
 
       - name: Remove the login cache from the runner
         if: always()
