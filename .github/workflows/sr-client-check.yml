@@ -2474,7 +2474,7 @@ jobs:
                 if (!owner) continue;
                 // The released scan of the same plugin joins the same component, which has one tracked flag.
                 for (const x of scans) if (x.owner === owner) x.tracked = true;
-                scans.push({ owner, tracked: true, tag: k.tag, rank: "current", file });
+                scans.push({ owner, tracked: true, tag: k.tag, rank: "current", keySource: true, file });
               }
             }
             fs.writeFileSync("scans.json", JSON.stringify({ source: "steam_build " + process.argv[1], scans }));
@@ -3351,6 +3351,11 @@ jobs:
             // gate nor takes the chain-passed mark away.
             const review = [...new Set([e.PLAN_REVIEW, e.BRANCH_RIG_REVIEW, e.OTHER_RIG_REVIEW].flatMap((t) => String(t ?? "").split(/\s+/)).filter((t) => /^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(t)))]
               .map((t) => "- new " + t.split("=")[0] + " release " + t.split("=")[1] + " waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in `ci/plugin-names.json`");
+            // Lines the map writers left in their reports (alerts): a stale fork branch, a fork build that compiles a changed
+            // size. Loud like the review lines, and for the same reason they block nothing.
+            for (const f of ["chain/map-mode-report.json", "chain/field-rows.json"]) {
+              for (const x of readJson(f)?.alerts ?? []) if (typeof x === "string" && x) review.push("- " + clip(x, 400));
+            }
 
             const out = (kv) => fs.appendFileSync(e.GITHUB_OUTPUT, Object.entries(kv).map(([k, v]) => k + "=" + v + "\n").join(""));
             const passed = lines.length === 0 && d !== null;

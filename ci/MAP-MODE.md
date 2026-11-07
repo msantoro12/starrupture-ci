@@ -669,6 +669,22 @@ wins and the row's `from` names `<Owner> current`. A key only a source requests 
 (`from` is `<Owner> <repo>@<branch>`). Resolved rows at different addresses still refuse the write, as for any two
 scans.
 
+**A key source never gates.** The release the scans builder gives a source's scan carries `keySource: true`, and
+two rules follow from it:
+
+- One key per symbol. When a source's key names a symbol that a plan plugin's key also names, the plan
+  plugin's key wins: the source key is dropped, with a note (`<key>: asked for by key source <tag> at <rva>, where
+  the released map has <key2>; no row`) and an alert line (`key source <tag> asks for <key> at <rva>, which the
+  released map names <key2>: that fork branch is stale`). Two plan plugins on one symbol, a plan plugin
+  against itself, and two source keys alone on one symbol still refuse.
+- Compiled sizes (`field-rows.mjs`). A use of `size <Class> compiled` that comes only from a key source (a
+  component named `<Name>@<branch>`) on a class whose size changed is a note and an alert line (`<plugin> key
+  source compiles the size of <Class>, which changed on CL-<n>: that build needs SR_SIZE_CHECK or live`), not a
+  refusal; the class-key size row is still written. A plan plugin's compiled use still refuses.
+
+Both kinds of alert line go to `map-mode-report.json` and `field-rows.json` (`alerts`), and the alert job lists them as
+review lines: loud, but they do not fail the chain.
+
 ## The workflow chain
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by

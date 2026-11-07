@@ -396,3 +396,55 @@ test('the command line writes class-key rows from --uses and from a native-keys 
   assert.deepEqual([row(text, 'ACrCrafter').size, row(text, 'FMassQuery').size, row(text, 'FMassQuery').offset], [0x78, 0x350, 0]);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).rows, ['ACrCrafter', 'FMassQuery']);
 });
+
+// From run 42412572050 (CL-129402): MiniMap's key source (component MiniMap@ci/hosted-build) compiles the
+// size of two classes whose size changed on the build.
+const MM = 'MiniMap@ci/hosted-build';
+const RESIZED = `size ACrGameStateBase compiled\n`;
+const resizedKeys = () => unionKeys([parseKeys('field ACrGameStateBase\nfield UCrEnviroWaveVisualsWorldSubsystem\n')]);
+const resizedBase = () => [ent('ACrGameStateBase', null, 0xbc0), ent('UCrEnviroWaveVisualsWorldSubsystem', null, 0x1f0)];
+const resizedNext = () => [ent('ACrGameStateBase', null, 0xc08), ent('UCrEnviroWaveVisualsWorldSubsystem', null, 0x208)];
+
+test('key source: a compiled use of a changed class size is a note and an alert, the class-key size row is still written', () => {
+  const uses = parseUses(`${MM} ${RESIZED}${MM} size UCrEnviroWaveVisualsWorldSubsystem compiled\n`);
+  const out = fieldRows(header(), { cl: 130000, keys: resizedKeys(), next: resizedNext(), base: resizedBase(), uses });
+  assert.deepEqual(out.problems, []);
+  assert.notEqual(out.text, null);
+  assert.equal(row(out.text, 'ACrGameStateBase').size, 0xc08);
+  assert.equal(row(out.text, 'UCrEnviroWaveVisualsWorldSubsystem').size, 0x208);
+  assert.deepEqual(out.alerts, [
+    `${MM} key source compiles the size of ACrGameStateBase, which changed on CL-130000: that build needs SR_SIZE_CHECK or live`,
+    `${MM} key source compiles the size of UCrEnviroWaveVisualsWorldSubsystem, which changed on CL-130000: that build needs SR_SIZE_CHECK or live`,
+  ]);
+  assert.ok(out.notes.includes(`class ACrGameStateBase: its size changed (0xBC0 -> 0xC08); key source ${MM} compiles its size`));
+  assert.ok(!out.notes.some((n) => n.includes('no plugin depends on its whole size')));
+  assert.deepEqual(out.degraded, {}, 'the key source is not degraded: it is not a plan plugin');
+});
+
+test('key source: a plan plugin that compiles the size beside a key source is still refused, naming only the plan plugin', () => {
+  const uses = parseUses(`${MM} ${RESIZED}MiniMap ${RESIZED}`);
+  const out = fieldRows(header(), { cl: 130000, keys: resizedKeys(), next: resizedNext(), base: resizedBase(), uses });
+  assert.equal(out.text, null);
+  assert.equal(out.problems.length, 1);
+  assert.match(out.problems[0], /^class ACrGameStateBase: its size changed \(0xBC0 -> 0xC08\), and MiniMap uses its compiled size with no SR_SIZE_CHECK/);
+  assert.ok(!out.problems[0].includes(MM));
+});
+
+test('key source: a check or a live read from a key source is not an alert; the report carries the alerts from the command line', () => {
+  const live = fieldRows(header(), { cl: 130000, keys: resizedKeys(), next: resizedNext(), base: resizedBase(), uses: parseUses(`${MM} size ACrGameStateBase live\n${MM} size UCrEnviroWaveVisualsWorldSubsystem check\n`) });
+  assert.deepEqual(live.alerts, []);
+  assert.deepEqual(live.degraded[MM].map((d) => d.key), ['UCrEnviroWaveVisualsWorldSubsystem']);
+  const dir = mkdtempSync(join(tmpdir(), 'fr-ks-'));
+  const w = (n, text) => writeFileSync(join(dir, n), text);
+  w('h.h', header());
+  w('native.txt', '');
+  w('keys.txt', 'ACrGameStateBase\nUCrEnviroWaveVisualsWorldSubsystem\n');
+  w('uses.txt', `${MM} ${RESIZED}`);
+  const layout = (a, b) => JSON.stringify({ keys: [ent('ACrGameStateBase', null, a), ent('UCrEnviroWaveVisualsWorldSubsystem', null, b)] });
+  w('next.json', layout(0xc08, 0x208));
+  w('base.json', layout(0xbc0, 0x1f0));
+  const run = spawnSync(process.execPath, [TOOL, 'write', join(dir, 'h.h'), '--cl', '130000', '--next', join(dir, 'next.json'), '--base', join(dir, 'base.json'),
+    '--native-keys', join(dir, 'native.txt'), '--layout-keys', join(dir, 'keys.txt'), '--uses', join(dir, 'uses.txt'), '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).alerts, [`${MM} key source compiles the size of ACrGameStateBase, which changed on CL-130000: that build needs SR_SIZE_CHECK or live`]);
+});

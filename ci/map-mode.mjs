@@ -28,7 +28,10 @@
 // It refuses, writing nothing and exiting 3, when
 //   - two keys name one symbol, or one key lands on two addresses, or a global
 //     key lands off the start of a symbol (the runner's symbol table, passed as
-//     the rva of the symbol's start, never its name);
+//     the rva of the symbol's start, never its name). The exception: a key that
+//     only key sources ask for (`keySource` on its release) and that names the
+//     symbol of one plan plugin's key is dropped, with a note and an alert line
+//     in the report (`alerts`), since a stale fork branch must not stop the map;
 //   - two different request tuples share one fp under one key;
 //   - a required key (the loader's) has no locator under the newest release's fp;
 //   - the map already holds a different verified row for a key, fp and CL
@@ -122,7 +125,7 @@ export function readObservations(input) {
         const where = `${c.owner} ${rel.tag} ${JSON.stringify(r.key)}`;
         if (typeof r.key !== 'string' || !r.key) throw new MapError(`${where}: a row has no key`);
         const row = {
-          owner: c.owner, tracked: c.tracked !== false, rank: rel.rank, fpAware: rel.fpAware !== false, tag: rel.tag,
+          owner: c.owner, tracked: c.tracked !== false, rank: rel.rank, fpAware: rel.fpAware !== false, tag: rel.tag, keySource: rel.keySource === true,
           key: r.key, kind: kindOf(r.kind), fp: r.fp === undefined ? 0 : numberOf(r.fp, `${where}: fp`),
           ok: r.result === 'OK', result: r.result, required: r.required === true,
           pattern: r.pattern ?? null, resultOffset: r.resultOffset ?? 0, followRel32At: r.followRel32At ?? -1,
@@ -218,6 +221,12 @@ export function planRows(rows, { cl }) {
     for (const r of g) if (r.reason) notes.push(`${key}${fp ? ` (fp ${hex8(fp)})` : ''}: absent on CL-${cl}, ${r.reason}`);
     ops.push({ type: 'absent', key, kind, fp, owners: scoped ? null : [...new Set(g.flatMap((r) => r.owners ?? [r.owner]))].sort(cmp) });
   }
+  // A key only key sources ask for contributes keys and never gates (see the symbol check below).
+  for (const o of ops) {
+    const g = groups.get(`${o.key}\n${o.fp}`);
+    o.sourceOnly = g.every((r) => r.keySource);
+    o.sourceTag = g[0].tag;
+  }
 
   // One key, one symbol (global keys only: a scoped row names a site).
   const globals = ops.filter((o) => o.type === 'function' && isGlobalKind(o.kind));
@@ -228,12 +237,27 @@ export function planRows(rows, { cl }) {
   const bySymbol = new Map();
   for (const o of globals.filter((x) => x.symbolRva !== null)) {
     if (!bySymbol.has(o.symbolRva)) bySymbol.set(o.symbolRva, []);
-    bySymbol.get(o.symbolRva).push(o.key);
+    bySymbol.get(o.symbolRva).push(o);
   }
-  for (const [sym, keys] of [...bySymbol].sort((a, b) => a[0] - b[0])) {
-    if (keys.length > 1) problems.push(`keys ${keys.slice().sort(cmp).join(' and ')} name one symbol (${hex(sym)}); a symbol has one key`);
+  // A key source's key that names the symbol of one plan plugin's key loses to it: the key is
+  // dropped (no row) with a note and an alert line, since a stale fork branch must not stop the
+  // map. Two plan plugins' keys, or keys of key sources alone, on one symbol still refuse.
+  const alerts = [];
+  const dropped = new Set();
+  for (const [sym, group] of [...bySymbol].sort((a, b) => a[0] - b[0])) {
+    if (group.length < 2) continue;
+    const plan = group.filter((o) => !o.sourceOnly);
+    if (plan.length === 1) {
+      for (const o of group.filter((x) => x.sourceOnly)) {
+        dropped.add(o);
+        notes.push(`${o.key}: asked for by key source ${o.sourceTag} at ${hex(o.rva)}, where the released map has ${plan[0].key}; no row`);
+        alerts.push(`key source ${o.sourceTag} asks for ${o.key} at ${hex(o.rva)}, which the released map names ${plan[0].key}: that fork branch is stale`);
+      }
+    } else {
+      problems.push(`keys ${group.map((o) => o.key).sort(cmp).join(' and ')} name one symbol (${hex(sym)}); a symbol has one key`);
+    }
   }
-  return { problems, ops, live, liveOwners, notes };
+  return { problems, ops: ops.filter((o) => !dropped.has(o)), live, liveOwners, notes, alerts };
 }
 
 // ---- Writing ------------------------------------------------------------------
@@ -256,7 +280,7 @@ export function writeRows(map, input) {
     const why = buildMismatch(old, { cl, stamp: numberOf(input.build.stamp, 'build.stamp'), size: numberOf(input.build.size, 'build.size', { lo: 1 }), source: input.build.source });
     if (why) problems.push(`CL-${cl} is already in the build table with another exe or source: ${why}`);
   }
-  if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes };
+  if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes, alerts: plan.alerts };
 
   // The exe is known to be the one the build row names only when the input gave
   // its build and the table already held the same build (checked above).
@@ -289,8 +313,8 @@ export function writeRows(map, input) {
   const before = next.functions.length;
   next.functions = next.functions.filter((r) => r.fp === 0 || !prunable(r.key) || plan.live.get(r.key).has(r.fp));
   const pruned = before - next.functions.length;
-  if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes };
-  return { map: next, added, pruned, problems, patches, notes: plan.notes };
+  if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes, alerts: plan.alerts };
+  return { map: next, added, pruned, problems, patches, notes: plan.notes, alerts: plan.alerts };
 }
 
 // The header text, or the reasons it was refused. keys: parsed key lists.
@@ -418,7 +442,7 @@ export function assemble(spec, dir) {
     if (!components.has(s.owner)) components.set(s.owner, { owner: s.owner, tracked: s.tracked !== false, releases: [] });
     const c = components.get(s.owner);
     if (c.tracked !== (s.tracked !== false)) throw new MapError(`${s.owner} is both tracked and not`);
-    c.releases.push({ tag: s.tag, rank: s.rank, fpAware: s.fpAware !== false, rows: scan.patterns.map((r) => harnessRow(r, s.owner)).filter(Boolean) });
+    c.releases.push({ tag: s.tag, rank: s.rank, fpAware: s.fpAware !== false, ...(s.keySource === true ? { keySource: true } : {}), rows: scan.patterns.map((r) => harnessRow(r, s.owner)).filter(Boolean) });
   }
   const cl = spec.cl ?? exe?.cl;
   let absences = [];
@@ -505,7 +529,7 @@ export function main(argv) {
     const input = JSON.parse(readFileSync(o.input, 'utf8').replace(/^﻿/, ''));
     const keys = o.keys.map((p) => parseKeys(readFileSync(p, 'utf8'), p));
     const out = mapMode(readFileSync(header, 'utf8'), input, { keys, remeasure: o.remeasure === 'true' });
-    const report = { written: !!out.map, added: out.added ?? 0, pruned: out.pruned ?? 0, problems: out.problems, notes: out.notes ?? [], absences: out.absences ?? [], patches: out.patches ?? [] };
+    const report = { written: !!out.map, added: out.added ?? 0, pruned: out.pruned ?? 0, problems: out.problems, notes: out.notes ?? [], alerts: out.alerts ?? [], absences: out.absences ?? [], patches: out.patches ?? [] };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.map) {
       for (const p of out.problems) process.stderr.write(`refused: ${p}\n`);

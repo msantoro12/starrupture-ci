@@ -783,3 +783,90 @@ test('assemble --carry --base runs from the command line', () => {
   assert.equal(run.status, 0, run.stderr);
   assert.ok(JSON.parse(readFileSync(join(dir, 'in.json'), 'utf8')).components.some((c) => c.owner === 'ModLoader' && c.releases.some((r) => r.tag === '127004')));
 });
+
+// ---- key sources never gate ---------------------------------------------------
+//
+// From run 42412572050 (CL-129402): the released WaveOptimiser asks for
+// UCrMassEnviroWaveSubsystem::AddEntitiesToWave / RemoveEntitiesFromWave, the fork's
+// gss/plugin-work (a stale branch) for UCrWaveSubsystem::*; both resolve to the same
+// two functions.
+
+const WAVE_ADD = { rva: 0x76b59b0, pattern: '48 89 5C 24 ?? 48 89 54 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B DA' };
+const WAVE_REMOVE = { rva: 0x76d7fd0, pattern: '48 89 5C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 48 8B DA 48 89 54 24' };
+const FORK = 'msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work';
+const waveRow = (key, w) => ok(key, 'function', w.rva, { pattern: w.pattern, symbolRva: w.rva });
+
+function withWave({ released = true, fork = [['UCrWaveSubsystem::AddEntitiesToWave', WAVE_ADD], ['UCrWaveSubsystem::RemoveEntitiesFromWave', WAVE_REMOVE]] } = {}) {
+  const input = base();
+  const releases = [];
+  if (released) {
+    releases.push(release('current', 'current', [
+      waveRow('UCrMassEnviroWaveSubsystem::AddEntitiesToWave', WAVE_ADD),
+      waveRow('UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave', WAVE_REMOVE),
+    ]));
+  }
+  releases.push(release(FORK, 'current', fork.map(([k, w]) => waveRow(k, w)), { keySource: true }));
+  input.components.push({ owner: 'WaveOptimiser', releases });
+  return input;
+}
+
+test('key source: a stale fork key on the symbol of a released key is dropped with a note and an alert, and the map is written', () => {
+  const out = mapMode(header(), withWave());
+  assert.deepEqual(out.problems, []);
+  assert.notEqual(out.text, null);
+  for (const k of ['UCrMassEnviroWaveSubsystem::AddEntitiesToWave', 'UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave']) assert.ok(find(out.text, k, 0), k);
+  for (const k of ['UCrWaveSubsystem::AddEntitiesToWave', 'UCrWaveSubsystem::RemoveEntitiesFromWave']) assert.equal(find(out.text, k, 0), undefined, `${k} gets no row`);
+  assert.deepEqual(out.alerts, [
+    `key source ${FORK} asks for UCrWaveSubsystem::AddEntitiesToWave at 0x76B59B0, which the released map names UCrMassEnviroWaveSubsystem::AddEntitiesToWave: that fork branch is stale`,
+    `key source ${FORK} asks for UCrWaveSubsystem::RemoveEntitiesFromWave at 0x76D7FD0, which the released map names UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave: that fork branch is stale`,
+  ]);
+  assert.ok(out.notes.some((n) => n.startsWith('UCrWaveSubsystem::AddEntitiesToWave: asked for by key source') && n.includes('UCrMassEnviroWaveSubsystem::AddEntitiesToWave')));
+});
+
+test('key source: the same input without the flag (two plan plugins) still refuses, naming both keys', () => {
+  const input = withWave();
+  delete input.components[2].releases[1].keySource;
+  const out = mapMode(header(), input);
+  assert.equal(out.text, null);
+  assert.equal(out.problems.length, 2);
+  assert.match(out.problems[0], /UCrMassEnviroWaveSubsystem::AddEntitiesToWave and UCrWaveSubsystem::AddEntitiesToWave name one symbol \(0x76B59B0\)/);
+});
+
+test('key source: two plan keys and a source key on one symbol still refuse; so do two source keys alone', () => {
+  const input = withWave();
+  input.components[1].releases[0].rows.push(waveRow('UCrOther::Alias', WAVE_ADD));
+  const three = mapMode(header(), input);
+  assert.equal(three.text, null);
+  assert.match(three.problems[0], /UCrMassEnviroWaveSubsystem::AddEntitiesToWave and UCrOther::Alias and UCrWaveSubsystem::AddEntitiesToWave name one symbol/);
+  const alone = mapMode(header(), withWave({ released: false, fork: [['UCrWaveSubsystem::AddEntitiesToWave', WAVE_ADD], ['UCrOther::Alias', WAVE_ADD]] }));
+  assert.equal(alone.text, null);
+  assert.match(alone.problems[0], /UCrOther::Alias and UCrWaveSubsystem::AddEntitiesToWave name one symbol/);
+});
+
+test('key source: a key only the source asks for, on a symbol of its own, still gets its row', () => {
+  const out = mapMode(header(), withWave({ released: false }));
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(out.alerts, []);
+  assert.ok(find(out.text, 'UCrWaveSubsystem::AddEntitiesToWave', 0));
+});
+
+test('key source: assemble marks the release, and the alerts reach the report and survive complete', () => {
+  const dir = scratch({ 'loader.json': loaderScan, 'bc.json': pluginScan, 'bc-fork.json': pluginScan });
+  const input = assemble({ cl: 130000, build: BUILD, scans: [
+    { owner: 'ModLoader', tag: 'v1.22.1', rank: 'current', file: 'loader.json' },
+    { owner: 'BetterCheats', tag: 'current', rank: 'current', file: 'bc.json' },
+    { owner: 'BetterCheats', tag: FORK, rank: 'current', keySource: true, file: 'bc-fork.json' },
+  ] }, dir);
+  const bc = input.components.find((c) => c.owner === 'BetterCheats');
+  assert.deepEqual(bc.releases.map((r) => r.keySource), [undefined, true]);
+  // The report file holds the alerts, and complete keeps them.
+  const wdir = scratch({});
+  const withAlert = withWave();
+  writeFileSync(join(wdir, 'in.json'), JSON.stringify(withAlert));
+  writeFileSync(join(wdir, 'h.h'), header());
+  const w = spawnSync(process.execPath, [TOOL, 'write', join(wdir, 'h.h'), '--input', join(wdir, 'in.json'), '--report', join(wdir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(w.status, 0, w.stdout + w.stderr);
+  assert.equal(JSON.parse(readFileSync(join(wdir, 'r.json'), 'utf8')).alerts.length, 2);
+  spawnSync(process.execPath, [TOOL, 'complete', join(wdir, 'h.h'), '--cl', '130000', '--report', join(wdir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(JSON.parse(readFileSync(join(wdir, 'r.json'), 'utf8')).alerts.length, 2);
+});
