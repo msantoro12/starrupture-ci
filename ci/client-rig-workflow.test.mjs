@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -59,6 +59,10 @@ test('workflow_call outputs: verdict, reason and artifact, from the job', () => 
     assert.match(wf, new RegExp(`\\n {6}${o}:\\n {8}description: .*\\n {8}value: \\$\\{\\{ jobs\\.rig\\.outputs\\.${o} \\}\\}`));
     assert.match(wf, new RegExp(`\\n {6}${o}: \\$\\{\\{ steps\\.final\\.outputs\\.${o} \\}\\}`));
   }
+  // Leg C2: the plugins of other authors with a newer release than the reviewed one, for the check's alert.
+  assert.match(wf, /\n {6}review:\n {8}description: .*\n {8}value: \$\{\{ jobs\.rig\.outputs\.review \}\}/);
+  assert.match(wf, /\n {6}review: \$\{\{ steps\.res\.outputs\.review \}\}/);
+  assert.ok(indexOfStep('res') >= 0, 'the step that writes review has the id the job output reads');
 });
 
 test('permissions: none at the top, contents and actions read on the one job', () => {
@@ -371,16 +375,21 @@ test('the rig is in the node test line', () => {
 // ---- Leg B3: MiniMap, the tenth plugin, from its author's repo ----
 
 const names = JSON.parse(read('ci', 'plugin-names.json'));
+// Leg C2: MiniMap is another author's plugin, so the rig runs it only at this reviewed release.
+const PIN_TAG = 'v1.2.0';
+const PIN_HEX = '7d1ec9264b763e13519fa211c9409ff9655c8fd40357cdf285e2a7614e0d43e1';
 
-test('rig set: ten plugins, MiniMap from its author with the version form it logs', () => {
+test('rig set: ten plugins, MiniMap from its author with the version form it logs, pinned to a reviewed release', () => {
   assert.equal(names.length, 10);
   assert.deepEqual(names.map((p) => p.Name).sort(), ['BetterCheats', 'BetterDrone', 'CameraControls', 'Codex', 'Compass', 'MiniMap', 'ProductionViewer', 'RuptureTimer', 'WAILA', 'WaveOptimiser']);
   const m = names.find((p) => p.Name === 'MiniMap');
-  assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true });
-  // The other nine keep the rig's owner and the tag as logged.
+  assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true, Pin: { Tag: PIN_TAG, Digest: `sha256:${PIN_HEX}` } });
+  // The other nine keep the rig's owner and Latest: no owner, no pin.
   for (const p of names.filter((x) => x.Name !== 'MiniMap')) {
-    assert.ok(!('Owner' in p) && !('StripV' in p), `${p.Name}: unchanged`);
+    assert.ok(!('Owner' in p) && !('StripV' in p) && !('Pin' in p), `${p.Name}: unchanged`);
   }
+  // Every plugin whose owner is neither the rig's nor the loader's author has a pin.
+  for (const p of names.filter((x) => x.Owner && !['msantoro12', 'AlienXAXS'].includes(x.Owner))) assert.ok(p.Pin?.Tag && /^sha256:[0-9a-f]{64}$/.test(p.Pin.Digest), `${p.Name} is pinned`);
   assert.match(setup, /the ten plugins/);
   assert.ok(!/one of the nine/.test(setup), 'the script no longer counts nine');
 });
@@ -395,24 +404,34 @@ test('rig set: docs say ten and name the MiniMap source repo', () => {
 
 // Runs Resolve with a stand-in releases API: every repo has a Latest release holding the
 // client DLL beside a zip and a manifest (MiniMap's real layout), the loader its client zip.
-function resolveWithMock(args) {
+// minimapLatest is the tag /latest names for MiniMap, minimapDigest the digest of its client DLL
+// on every release, plugins the plugin-names.json the script reads (default: the repository's).
+function resolveWithMock(args, { minimapLatest = PIN_TAG, minimapDigest = PIN_HEX, plugins = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'rig-res-'));
   try {
     const plan = join(dir, 'plan.json');
     const uris = join(dir, 'uris.txt');
     const wrapper = join(dir, 'run.ps1');
+    const out = join(dir, 'github-output.txt');
+    // A copy of the script beside its own names file, so a test can change the names.
+    const tool = join(dir, 'tool');
+    mkdirSync(tool);
+    copyFileSync(join(here, 'client-rig-set.ps1'), join(tool, 'client-rig-set.ps1'));
+    writeFileSync(join(tool, 'plugin-names.json'), JSON.stringify(plugins ?? names));
     writeFileSync(wrapper, [
       "$ErrorActionPreference = 'Stop'",
-      `$names = Get-Content -LiteralPath '${join(here, 'plugin-names.json')}' -Raw | ConvertFrom-Json`,
+      `$names = Get-Content -LiteralPath '${join(tool, 'plugin-names.json')}' -Raw | ConvertFrom-Json`,
       'function Invoke-RestMethod { param($Headers, $Uri, $TimeoutSec)',
       `  Add-Content -LiteralPath '${uris}' -Value $Uri`,
       '  if ($Uri -notmatch \'/repos/([^/]+)/([^/]+)/releases/(latest|tags/(.+))$\') { throw "unexpected $Uri" }',
-      "  $repo = $Matches[2]; $tag = if ($Matches[4]) { $Matches[4] } elseif ($repo -eq 'StarRupture-Plugin-MiniMap') { 'v1.2.0' } else { 'v1.0.0' }",
+      `  $repo = $Matches[2]; $tag = if ($Matches[4]) { $Matches[4] } elseif ($repo -eq 'StarRupture-Plugin-MiniMap') { '${minimapLatest}' } else { 'v1.0.0' }`,
       '  $p = $names | Where-Object { $_.Repo -eq $repo }',
-      '  $assets = if ($p) { @(@{ name = "$($p.Asset)-Client.dll"; id = 11; browser_download_url = "https://x/$repo/$($p.Asset)-Client.dll"; digest = \'sha256:\' + (\'a\' * 64); updated_at = \'t\' }, @{ name = "$($p.Asset)-v1.zip"; id = 12; browser_download_url = \'https://x/z\'; updated_at = \'t\' }, @{ name = \'manifest.json\'; id = 13; browser_download_url = \'https://x/m\'; updated_at = \'t\' }) } else { @(@{ name = \'StarRupture-ModLoader-Client-1.zip\'; id = 21; browser_download_url = \'https://x/loader.zip\'; updated_at = \'t\' }) }',
+      `  $digest = if ($repo -eq 'StarRupture-Plugin-MiniMap') { 'sha256:${minimapDigest}' } else { 'sha256:' + ('a' * 64) }`,
+      '  $assets = if ($p) { @(@{ name = "$($p.Asset)-Client.dll"; id = 11; browser_download_url = "https://x/$repo/$($p.Asset)-Client.dll"; digest = $digest; updated_at = \'t\' }, @{ name = "$($p.Asset)-v1.zip"; id = 12; browser_download_url = \'https://x/z\'; updated_at = \'t\' }, @{ name = \'manifest.json\'; id = 13; browser_download_url = \'https://x/m\'; updated_at = \'t\' }) } else { @(@{ name = \'StarRupture-ModLoader-Client-1.zip\'; id = 21; browser_download_url = \'https://x/loader.zip\'; updated_at = \'t\' }) }',
       '  return [pscustomobject]@{ tag_name = $tag; assets = @($assets | ForEach-Object { [pscustomobject]$_ }) }',
       '}',
-      `& '${join(here, 'client-rig-set.ps1')}' -Mode Resolve -PlanPath '${plan}' ${args}`,
+      `$env:GITHUB_OUTPUT = '${out}'`,
+      `& '${join(tool, 'client-rig-set.ps1')}' -Mode Resolve -PlanPath '${plan}' ${args}`,
       'exit $LASTEXITCODE',
     ].join('\n'));
     for (const exe of ['pwsh', 'powershell']) {
@@ -422,7 +441,9 @@ function resolveWithMock(args) {
       try { planJson = JSON.parse(readFileSync(plan, 'utf8').replace(/^﻿/, '')); } catch { /* no plan on a failed run */ }
       let seen = [];
       try { seen = readFileSync(uris, 'utf8').split(/\r?\n/).filter(Boolean); } catch { /* none */ }
-      return { r, plan: planJson, uris: seen };
+      let outputs = '';
+      try { const b = readFileSync(out); outputs = b[0] === 0xff && b[1] === 0xfe ? b.toString('utf16le').slice(1) : b.toString('utf8'); } catch { /* none */ } // Windows PowerShell 5.1 writes UTF-16 with >>; pwsh on the runner writes UTF-8
+      return { r, plan: planJson, uris: seen, outputs, text: `${r.stdout}\n${r.stderr}` };
     }
     return null;
   } finally {
@@ -430,38 +451,102 @@ function resolveWithMock(args) {
   }
 }
 
-test('rig set: Resolve gives ten plugins, MiniMap from LetMeInside, its DLL picked, its logged version without the v', (t) => {
+const MINIMAP_LATEST_URL = 'https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest';
+const MINIMAP_PIN_URL = `https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/tags/${PIN_TAG}`;
+
+test('rig set: Resolve gives ten plugins, MiniMap from LetMeInside at its pinned release, its DLL picked, its logged version without the v', (t) => {
   const out = resolveWithMock('-Branch public');
   if (!out) return t.skip('no PowerShell on this machine');
-  assert.equal(out.r.status, 0, out.r.stdout + out.r.stderr);
+  assert.equal(out.r.status, 0, out.text);
   assert.equal(out.plan.plugins.length, 10);
   const m = out.plan.plugins.find((p) => p.name === 'MiniMap');
-  assert.equal(m.tag, 'v1.2.0');
+  assert.equal(m.tag, PIN_TAG);
   assert.equal(m.expect, '1.2.0', 'the log prints 1.2.0 for the tag v1.2.0');
   assert.equal(m.logName, 'MiniMap');
   assert.equal(m.dll, 'MiniMap.dll');
   assert.equal(m.expectRefused, false, 'refused on public is a fail');
   assert.equal(m.asset.name, 'MiniMap-Client.dll', 'the client DLL, not the zip or the manifest');
-  assert.ok(out.uris.includes('https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest'), out.uris.join('\n'));
+  // The pinned release is fetched by its tag; Latest is only asked about, to see whether a newer one waits.
+  assert.ok(out.uris.includes(MINIMAP_PIN_URL), out.uris.join('\n'));
   assert.ok(out.uris.includes('https://api.github.com/repos/AlienXAXS/StarRupture-Plugin-Codex/releases/latest'));
+  assert.ok(!out.uris.some((u) => /StarRupture-Plugin-Codex\/releases\/tags/.test(u)), 'the nine owner and AlienX plugins resolve Latest, not a tag');
   assert.ok(!out.uris.some((u) => /AlienXAXS\/StarRupture-Plugin-MiniMap/.test(u)), 'MiniMap is not looked up under the rig owner');
   // The other nine are as before: the tag is what the log must show.
   for (const p of out.plan.plugins.filter((x) => x.name !== 'MiniMap')) assert.equal(p.expect, 'v1.0.0', `${p.name} keeps the tag`);
-  // The cache key covers MiniMap's asset id and digest.
+  // The cache key covers MiniMap's asset id and the reviewed digest, which is what the download is checked against.
   const dl = out.plan.downloads.find((d) => d.repo === 'StarRupture-Plugin-MiniMap');
   assert.equal(dl.id, '11');
-  assert.match(dl.digest, /^a{64}$/);
+  assert.equal(dl.digest, PIN_HEX);
+  // Latest is the pinned release: nothing waits for review.
+  assert.deepEqual(out.plan.review, []);
+  assert.match(out.outputs, /^review=$/m);
 });
 
-test('rig set: expect_refused MiniMap is accepted for the test branch, and a tag override reaches the author repo', (t) => {
-  const out = resolveWithMock("-Branch public_test_branch -ExpectRefused 'MiniMap' -Tags 'MiniMap=v1.1.0'");
+test('rig set: a newer MiniMap release is reported for review and never run, and the other plugins are unaffected', (t) => {
+  const out = resolveWithMock('-Branch public', { minimapLatest: 'v1.3.0', minimapDigest: PIN_HEX });
   if (!out) return t.skip('no PowerShell on this machine');
-  assert.equal(out.r.status, 0, out.r.stdout + out.r.stderr);
+  assert.equal(out.r.status, 0, out.text);
+  // Still the pinned release: same tag, same digest, same asset, fetched by its tag.
+  const m = out.plan.plugins.find((p) => p.name === 'MiniMap');
+  assert.equal(m.tag, PIN_TAG);
+  assert.equal(m.expect, '1.2.0');
+  assert.equal(out.plan.downloads.find((d) => d.repo === 'StarRupture-Plugin-MiniMap').digest, PIN_HEX);
+  assert.ok(out.uris.includes(MINIMAP_PIN_URL) && out.uris.includes(MINIMAP_LATEST_URL), out.uris.join('\n'));
+  // The newer tag is the review item: in the plan, the step output and a loud workflow line.
+  assert.deepEqual(out.plan.review, ['MiniMap=v1.3.0']);
+  assert.match(out.outputs, /^review=MiniMap=v1\.3\.0$/m);
+  assert.match(out.text, /::warning title=New release waiting for review::new MiniMap release v1\.3\.0 waiting for review/);
+  // The run is not blocked and the cache key does not move with the unreviewed release.
+  const same = resolveWithMock('-Branch public');
+  assert.equal(out.plan.cacheKey, same.plan.cacheKey);
+  assert.equal(out.plan.plugins.length, 10);
+});
+
+test('rig set: the pinned tag with another digest fails, and says why', (t) => {
+  const out = resolveWithMock('-Branch public', { minimapDigest: 'b'.repeat(64) });
+  if (!out) return t.skip('no PowerShell on this machine');
+  assert.notEqual(out.r.status, 0, 'a swapped asset is a failed run, not a warning');
+  assert.match(out.text, /MiniMap v1\.2\.0: the release's MiniMap-Client\.dll has the digest sha256:b{64}, not the reviewed sha256:7d1ec9264b763e13519fa211c9409ff9655c8fd40357cdf285e2a7614e0d43e1/);
+  assert.equal(out.plan, null, 'no plan is written, so nothing runs');
+});
+
+test('rig set: a plugin of another author without a reviewed pin, or with a malformed one, is refused', (t) => {
+  const withMiniMap = (change) => names.map((p) => (p.Name === 'MiniMap' ? change(p) : p));
+  const without = resolveWithMock('-Branch public', { plugins: withMiniMap(({ Pin, ...rest }) => rest) });
+  if (!without) return t.skip('no PowerShell on this machine');
+  assert.notEqual(without.r.status, 0);
+  assert.match(without.text, /MiniMap is another author's plugin \(LetMeInside\), and the rig runs it only at a reviewed release: add a Pin/);
+  assert.ok(!without.uris.some((u) => /StarRupture-Plugin-MiniMap/.test(u)), 'refused before any release is read');
+  const badTag = resolveWithMock('-Branch public', { plugins: withMiniMap((p) => ({ ...p, Pin: { ...p.Pin, Tag: 'v1.2.0; calc' } })) });
+  assert.notEqual(badTag.r.status, 0);
+  assert.match(badTag.text, /the Pin tag 'v1\.2\.0; calc' is not a release tag/);
+  for (const digest of ['sha256:abc', `sha256:${PIN_HEX.toUpperCase()}`, PIN_HEX, 'sha1:' + PIN_HEX]) {
+    const bad = resolveWithMock('-Branch public', { plugins: withMiniMap((p) => ({ ...p, Pin: { ...p.Pin, Digest: digest } })) });
+    assert.notEqual(bad.r.status, 0, digest);
+    assert.match(bad.text, /the Pin digest '.*' is not sha256:<64 lower-case hex digits>/, digest);
+  }
+  // The nine of the rig owner and AlienX need no pin (they resolve Latest, as before).
+  assert.equal(resolveWithMock('-Branch public').r.status, 0);
+});
+
+test('rig set: expect_refused MiniMap is accepted for the test branch, and a tag override can only name the reviewed release', (t) => {
+  const out = resolveWithMock(`-Branch public_test_branch -ExpectRefused 'MiniMap' -Tags 'MiniMap=${PIN_TAG}'`);
+  if (!out) return t.skip('no PowerShell on this machine');
+  assert.equal(out.r.status, 0, out.text);
   const m = out.plan.plugins.find((p) => p.name === 'MiniMap');
   assert.equal(m.expectRefused, true);
-  assert.equal(m.tag, 'v1.1.0');
-  assert.equal(m.expect, '1.1.0');
-  assert.ok(out.uris.includes('https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/tags/v1.1.0'), out.uris.join('\n'));
+  assert.equal(m.tag, PIN_TAG);
+  assert.equal(m.expect, '1.2.0');
+  assert.ok(out.uris.includes(MINIMAP_PIN_URL), out.uris.join('\n'));
+  // Another tag for a third-party plugin is an error, however it is asked for.
+  const other = resolveWithMock("-Branch public -Tags 'MiniMap=v1.1.0'");
+  assert.notEqual(other.r.status, 0);
+  assert.match(other.text, /tags names MiniMap=v1\.1\.0, but MiniMap is another author's plugin: the rig runs only its reviewed release v1\.2\.0/);
+  assert.ok(!other.uris.some((u) => /MiniMap\/releases\/tags\/v1\.1\.0/.test(u)), 'the unreviewed tag is never fetched');
+  // A tag for a plugin of the rig's owners still works.
+  const codex = resolveWithMock("-Branch public -Tags 'Codex=v0.9.0'");
+  assert.equal(codex.r.status, 0, codex.text);
+  assert.ok(codex.uris.includes('https://api.github.com/repos/AlienXAXS/StarRupture-Plugin-Codex/releases/tags/v0.9.0'));
 });
 
 test('rig artifact: its name carries the branch, the candidate and the run, so two rigs of one run do not collide', () => {
