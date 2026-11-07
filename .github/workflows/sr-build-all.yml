@@ -172,6 +172,7 @@ jobs:
             manifest: manifest-server.json
     steps:
       - name: Check the loader repository
+        shell: bash
         run: |
           # Only our own branches are built, never an arbitrary repository.
           case "$LOADER_REPO_INPUT" in
@@ -190,6 +191,7 @@ jobs:
           persist-credentials: false
 
       - name: Log what was checked out
+        shell: bash
         run: echo "Loader $LOADER_REPO at $(git rev-parse HEAD)"
 
       # The build steps are shared with the candidate job of sr-client-check.yml.
@@ -211,6 +213,7 @@ jobs:
           manifest_url: ${{ github.server_url }}/${{ env.LOADER_REPO }}/releases/latest/download/${{ matrix.manifest }}
 
       - name: Pattern scan (placeholder)
+        shell: bash
         run: echo "::notice::No pattern scan in the compile check. The client patterns are scanned against a new client build by sr-client-check.yml (its own PR comment); the server patterns are only checked in game."
 
       - name: Upload build

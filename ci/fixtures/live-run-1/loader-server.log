@@ -1,0 +1,65 @@
+﻿2026-11-07T16:58:09.4545213Z Current runner version: '2.338.2'
+2026-11-07T16:58:09.4573891Z ##[group]Runner Image Provisioner
+2026-11-07T16:58:09.4574677Z Hosted Compute Agent
+2026-11-07T16:58:09.4575247Z Version: 20261103.629
+2026-11-07T16:58:09.4575855Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-07T16:58:09.4576531Z Build Date: 2026-11-03T17:26:59Z
+2026-11-07T16:58:09.4577155Z Worker ID: {83453936-10a0-4d98-973c-d71a94211c7f}
+2026-11-07T16:58:09.4577807Z Region: southcentralus
+2026-11-07T16:58:09.4578359Z Cloud: Azure
+2026-11-07T16:58:09.4578879Z ##[endgroup]
+2026-11-07T16:58:09.4580204Z ##[group]Operating System
+2026-11-07T16:58:09.4580837Z Microsoft Windows Server 2025
+2026-11-07T16:58:09.4581388Z 10.0.26100
+2026-11-07T16:58:09.4581849Z Datacenter
+2026-11-07T16:58:09.4582424Z ##[endgroup]
+2026-11-07T16:58:09.4582982Z ##[group]Runner Image
+2026-11-07T16:58:09.4583589Z Image: windows-2025-vs2026
+2026-11-07T16:58:09.4584165Z Version: 20261103.298.1
+2026-11-07T16:58:09.4585838Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261103.298/images/windows/Windows2025-VS2026-Readme.md
+2026-11-07T16:58:09.4587655Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261103.298
+2026-11-07T16:58:09.4588681Z ##[endgroup]
+2026-11-07T16:58:09.4589759Z ##[group]GITHUB_TOKEN Permissions
+2026-11-07T16:58:09.4592342Z Contents: read
+2026-11-07T16:58:09.4592895Z Metadata: read
+2026-11-07T16:58:09.4593451Z ##[endgroup]
+2026-11-07T16:58:09.4595574Z Secret source: Actions
+2026-11-07T16:58:09.4596448Z Cache mode: write
+2026-11-07T16:58:09.4597151Z Prepare workflow directory
+2026-11-07T16:58:09.5217570Z Prepare all required actions
+2026-11-07T16:58:09.5290337Z Getting action download info
+2026-11-07T16:58:09.7745585Z Download action repository 'actions/checkout@v7.0.1' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-11-07T16:58:09.9155642Z Download action repository 'actions/upload-artifact@v7.0.2' (SHA:cf430e030ddbb5b0abf93d22962f4752f3646cd9)
+2026-11-07T16:58:10.1376181Z Uses: msantoro12/starrupture-ci/.github/workflows/sr-build-all.yml@refs/heads/main (7b355d4fe231beab643d0af792968760b5fd1048)
+2026-11-07T16:58:10.1380984Z ##[group] Inputs
+2026-11-07T16:58:10.1381470Z   loader_branch: main
+2026-11-07T16:58:10.1381911Z   loader_repo: 
+2026-11-07T16:58:10.1382861Z   plugin_sdk_branch: main
+2026-11-07T16:58:10.1383986Z   game_sdk_branch: main
+2026-11-07T16:58:10.1384429Z   betterdrone_branch: main
+2026-11-07T16:58:10.1386563Z   bettercheats_branch: main
+2026-11-07T16:58:10.1387612Z   waila_branch: main
+2026-11-07T16:58:10.1388110Z   codex_branch: main
+2026-11-07T16:58:10.1389147Z   pr: 38
+2026-11-07T16:58:10.1391016Z   force: false
+2026-11-07T16:58:10.1391522Z ##[endgroup]
+2026-11-07T16:58:10.1392532Z Complete job name: build-all / loader-server
+2026-11-07T16:58:10.2755413Z ##[group]Run # Only our own branches are built, never an arbitrary repository.
+2026-11-07T16:58:10.2756550Z [36;1m# Only our own branches are built, never an arbitrary repository.[0m
+2026-11-07T16:58:10.2757302Z [36;1mcase "$LOADER_REPO_INPUT" in[0m
+2026-11-07T16:58:10.2758577Z [36;1m  ''|msantoro12/StarRupture-ModLoader|AlienXAXS/StarRupture-ModLoader) ;;[0m
+2026-11-07T16:58:10.2760023Z [36;1m  *) echo "::error::loader_repo '$LOADER_REPO_INPUT' is not allowed; use msantoro12/StarRupture-ModLoader or AlienXAXS/StarRupture-ModLoader"; exit 1 ;;[0m
+2026-11-07T16:58:10.2761179Z [36;1mesac[0m
+2026-11-07T16:58:10.3477301Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+2026-11-07T16:58:10.3478452Z env:
+2026-11-07T16:58:10.3478866Z   OWNER: AlienXAXS
+2026-11-07T16:58:10.3479358Z   LOADER_REPO: AlienXAXS/StarRupture-ModLoader
+2026-11-07T16:58:10.3479960Z   LOADER_REPO_INPUT: 
+2026-11-07T16:58:10.3480396Z ##[endgroup]
+2026-11-07T16:58:10.9327807Z [31;1mParserError: [0mD:\a\_temp\9c0bcf8a-fb13-4f1a-af99-e5705b16c089.ps1:4[0m
+2026-11-07T16:58:10.9329278Z [31;1m[0m[36;1mLine |[0m
+2026-11-07T16:58:10.9330907Z [31;1m[0m[36;1m[36;1m   4 | [0m … |msantoro12/StarRupture-ModLoader|AlienXAXS/StarRupture-ModLoader[36;1m)[0m ;;[0m
+2026-11-07T16:58:10.9335814Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m     | [31;1m                                                                    ~[0m
+2026-11-07T16:58:10.9336972Z [31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m     | [31;1mUnexpected token ')' in expression or statement.[0m
+2026-11-07T16:58:10.9883607Z ##[error]Process completed with exit code 1.
+2026-11-07T16:58:11.0090741Z Cleaning up orphan processes
