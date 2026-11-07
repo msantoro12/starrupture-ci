@@ -1,6 +1,6 @@
 # Spike 3: with the real Steam client signed in from the saved CI login, which
 # launch args keep the plugin set up, and does the crash under Codex's tick need
-# -nullrhi? Three launches in one client session, each with fresh logs.
+# -nullrhi? Several launches in one client session, each with fresh logs.
 # Reads the login from STEAM_USER / STEAM_CACHE, then clears both from the
 # environment, so no launched process inherits them. Decides nothing for the
 # pipeline: it records what each stage did under -OutDir. Everything written or
@@ -367,6 +367,7 @@ function Run-Attempt([string]$label, [string]$route, [string]$line, [int]$noGame
   if (Test-Path -LiteralPath $ml) { Say 'A ModLoader.log survived the clean-up: this attempt reads an old log' }
   $launchInfo = Launch-Game $route $line
   $crashAt = $null
+  $stubError = $false
   $nextBeat = 0
   $beatFile = Join-Path $dir 'heartbeat.txt'
 
@@ -374,7 +375,13 @@ function Run-Attempt([string]$label, [string]$route, [string]$line, [int]$noGame
   while ($doneAt -or $sw.Elapsed.TotalSeconds -lt $CapSec) {
     Start-Sleep -Seconds 2
     Write-TraceEvents $procFile ([int]$sw.Elapsed.TotalSeconds)
-    [void](Note-Windows $winFile ([int]$sw.Elapsed.TotalSeconds))
+    $snapNow = @(Note-Windows $winFile ([int]$sw.Elapsed.TotalSeconds))
+    # The stub's dialog holds the process open with no engine behind it.
+    if (@($snapNow -match 'visible=True class=#32770 title=\[Steam Error\]').Count) {
+      $stubError = $true
+      Say "Steam Error dialog at $([int]$sw.Elapsed.TotalSeconds) s"
+      break
+    }
     # Value names only, never values.
     $reg = Get-Item $activeKey -ErrorAction SilentlyContinue
     if ($reg) { foreach ($v in $reg.Property) { $regNames[$v] = $true }; $regNames['(key present)'] = $true }
@@ -461,7 +468,7 @@ function Run-Attempt([string]$label, [string]$route, [string]$line, [int]$noGame
   $crashed = $mlText -match 'FATAL ENGINE CRASH'
   $gameExits = @([regex]::Matches("$(Get-Content -LiteralPath $procFile -Raw)", 'rigStop StarRuptureGam\S* pid=\d+ exit=(0x[0-9A-F]+)') | ForEach-Object { $_.Groups[1].Value })
   $summary = [ordered]@{
-    bootFinishedSec = $(if ($doneAt) { [int]$doneAt } else { $null }); crashSec = $(if ($crashAt) { [int]$crashAt } else { $null }); fatalCrash = $crashed
+    bootFinishedSec = $(if ($doneAt) { [int]$doneAt } else { $null }); crashSec = $(if ($crashAt) { [int]$crashAt } else { $null }); fatalCrash = $crashed; steamErrorDialog = $stubError
     crashDialog = ("$(Get-Content -LiteralPath $winFile -Raw)") -match 'The game has crashed'; killedByRig = $alive; gameExitCodes = $gameExits
     errorLines = @($mlLines -match '\[ERROR\]').Count; lastLogLine = $(if ($mlLines.Count) { $mlLines[-1] } else { '' })
     attempt = $label; seconds = [int]$sw.Elapsed.TotalSeconds; launch = "$launchInfo"; sawGameProcess = $sawGame; gameAliveAtEnd = $alive
@@ -472,7 +479,7 @@ function Run-Attempt([string]$label, [string]$route, [string]$line, [int]$noGame
   Say "Attempt $label stages: $($reached -join ', '); exit 0x35: $stubExit; success: $ok; fatal crash: $crashed; killed by the rig: $alive; exits: $($gameExits -join ' ')"
   ($mlText -split "`r?`n") | Where-Object { $_ -match 'Plugin info - |InitAllLoadedPlugins|Plugin startup phase complete|Boot sequence finished' } | ForEach-Object { Say $_ }
   Say-ClientFacts "attempt $label"
-  $script:last = [pscustomobject]@{ ok = $ok; crashed = $crashed }
+  $script:last = [pscustomobject]@{ ok = $ok; crashed = $crashed; stubError = $stubError }
 }
 
 function Launch-Game([string]$route, [string]$line) {
@@ -512,8 +519,8 @@ function Set-SteamLibrary {
   Say "Install is now a Steam library, app manifest present: $(Test-Path -LiteralPath (Join-Path $lib "steamapps\appmanifest_$appId.acf"))"
 }
 
-function Set-Ini([bool]$uiOff) {
-  $ini = "[AutoUpdate]`r`nEnabled=0`r`n[Logging]`r`nLevel=INFO`r`n"
+function Set-Ini([bool]$uiOff, [string]$level = 'INFO') {
+  $ini = "[AutoUpdate]`r`nEnabled=0`r`n[Logging]`r`nLevel=$level`r`n"
   if ($uiOff) { $ini += "[UI]`r`nEnabled=0`r`n" }
   Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value $ini -Encoding ascii -NoNewline
 }
@@ -572,23 +579,32 @@ try {
     $verdict = "not portable or no login: $($script:loginResult)"
   } else {
     $rendered = '-nosound -log -unattended -windowed -ResX=640 -ResY=360'
+    # The first launch of run 1 hit a Steam Error dialog 6 s after sign-in.
+    Say 'Letting the client settle for 90 s after sign-in'
+    Start-Sleep -Seconds 90
     $results = @()
+    $renderReached = $false
     foreach ($p in @(
-        @{ label = 'F'; line = $rendered; uiOff = $false; plugins = 9 },
-        @{ label = 'G'; line = $GameArgs; uiOff = $false; plugins = 8 },
-        @{ label = 'H'; line = $GameArgs; uiOff = $true; plugins = 9 })) {
+        @{ label = 'F2'; line = $rendered; remove = @(); level = 'INFO'; render = $true },
+        @{ label = 'F3'; line = $rendered; remove = @(); level = 'INFO'; render = $true },
+        @{ label = 'J'; line = $GameArgs; remove = @('Codex', 'ProductionViewer'); level = 'INFO'; render = $false },
+        @{ label = 'K'; line = $GameArgs; remove = @(); level = 'TRACE'; render = $false },
+        @{ label = 'F4'; line = $rendered; remove = @(); level = 'INFO'; render = $true })) {
+      if ($p.render -and $renderReached) { continue }
       if ((Get-Date) -gt $deadline -or $script:downloadTripped -or -not (Test-ActiveUser)) { Say "Stopping before attempt $($p.label): client signed in: $(Test-ActiveUser)"; break }
-      Set-Ini $p.uiOff
-      $codex = $null
-      if ($p.plugins -eq 8) {
-        $codex = @(Get-ChildItem -LiteralPath (Join-Path $script:mlDir 'Plugins') -Filter '*Codex*.dll')
-        if ($codex.Count -ne 1) { throw "Expected one Codex DLL, found $($codex.Count)" }
-        $codex = $codex[0].FullName
-        Move-Item -LiteralPath $codex -Destination (Join-Path $env:RUNNER_TEMP 'rig-held-codex.dll')
+      Set-Ini $false $p.level
+      $held = @()
+      foreach ($r in $p.remove) {
+        $dll = @(Get-ChildItem -LiteralPath (Join-Path $script:mlDir 'Plugins') -Filter "*$r*.dll")
+        if ($dll.Count -ne 1) { throw "Expected one $r DLL, found $($dll.Count)" }
+        $held += $dll[0].FullName
+        Move-Item -LiteralPath $dll[0].FullName -Destination (Join-Path $env:RUNNER_TEMP $dll[0].Name)
       }
-      try { Run-Attempt $p.label 'appid' $p.line 240 $p.plugins }
-      finally { if ($codex) { Move-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-held-codex.dll') -Destination $codex } }
-      $results += "$($p.label): loaded $($script:last.ok), crashed $($script:last.crashed)"
+      try { Run-Attempt $p.label 'appid' $p.line 240 (9 - $p.remove.Count) }
+      finally { foreach ($h in $held) { Move-Item -LiteralPath (Join-Path $env:RUNNER_TEMP (Split-Path $h -Leaf)) -Destination $h } }
+      $results += "$($p.label): loaded $($script:last.ok), crashed $($script:last.crashed), Steam Error $($script:last.stubError)"
+      if ($p.render -and -not $script:last.stubError) { $renderReached = $true }
+      if ($p.render -and $script:last.stubError) { Start-Sleep -Seconds 120 }
     }
     $verdict = $results -join '; '
   }
