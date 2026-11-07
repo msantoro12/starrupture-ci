@@ -69,6 +69,22 @@ rig's `expect` value) and `sha`; the candidate run id is this run's `github.run_
 The `build-scanner` job also builds and runs the scanner's `ObservedTests` before it
 hashes the scanner. The alert job does not yet watch these two jobs.
 
+### The client rig gate
+
+The client rig is a required gate on the unattended path (owner: version updates are
+verified and deployed with the GitHub rig). After `candidate-loader`, the jobs `rig-branch`
+and `rig-other` call `sr-client-rig.yml` with the candidate (`candidate_run_id` = this run,
+`candidate_artifact` and `expect` from `candidate-loader`), the default plugin set (the
+Latest releases of ten plugins, MiniMap included) and both Steam secrets by name. They run
+one after the other, `rig-other` after `rig-branch` whatever its result, because the rig's
+concurrency group keeps one pending run. `rig-branch` runs on the Steam branch the check is
+for and gets `map-mode`'s `expect_refused`; `rig-other` runs on the other branch and gets
+none, so any refusal there is a fail: that branch's current build must keep working with the
+same DLLs. `rig-gate` writes both verdicts, reasons and logs artifacts into the run summary
+and is red unless both passed. `publish` needs both rig jobs at verdict `PASS`; the promote
+step above is only a plan. With the autopilot off, publish is held and the rigs still run.
+Details: `.github/sr-pipeline/README.md`, "Client test rig".
+
 ## Step 27: `map-mode.mjs write`
 
 ```

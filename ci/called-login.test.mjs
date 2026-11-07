@@ -57,6 +57,9 @@ test('every caller of the client check or the rig passes both Steam secrets by n
     }
   }
   assert.ok(callers.includes('sr-watch.yml:client-check'), `sr-watch calls the client check (found: ${callers.join(', ')})`);
+  for (const rigJob of ['rig-branch', 'rig-other']) {
+    assert.ok(callers.includes(`sr-client-check.yml:${rigJob}`), `the client check calls the rig in ${rigJob} (found: ${callers.join(', ')})`);
+  }
 });
 
 test('the rig call example in the README passes both Steam secrets by name', () => {
@@ -75,6 +78,8 @@ test('both called workflows declare the Steam secrets as required, and read them
     }
     for (const j of jobs(workflows[file])) {
       if (!/secrets\.STEAM_CI_/.test(j)) continue;
+      // A call job (the client check's two rig calls) only passes the secrets by name; the rig's own job reads them.
+      if (/\n {4}uses: \.\/\.github\/workflows\/sr-client-rig\.yml\n/.test(j)) continue;
       assert.match(j, /\n {4}environment: steam-client\n/, `${file}: a job that reads the login runs in steam-client`);
     }
   }

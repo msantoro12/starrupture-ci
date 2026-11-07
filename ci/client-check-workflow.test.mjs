@@ -489,3 +489,219 @@ test('expect_refused: the step turns decision.json into the rig input (names sep
   assert.equal(bad.status, 2);
   assert.equal(bad.out, '');
 });
+
+// ------------------------------------------------------------ leg B3: the client rig is a required gate
+
+// Evaluates a job's `if: ${{ ... }}` with the expression syntax these workflows use (a JS subset:
+// && || ! == != and string literals), against fake needs and inputs.
+const jobIf = (name) => job(name).match(/\n {4}if: (\$\{\{ .* \}\})\n/)[1];
+const evalExpr = (expr, ctx) => {
+  const inner = expr.replace(/^\$\{\{ /, '').replace(/ \}\}$/, '');
+  const js = inner
+    .replace(/!cancelled\(\)|always\(\)/g, 'true')
+    .replace(/needs\.([\w-]+)\./g, 'needs["$1"].')
+    .replace(/!=/g, '!==').replace(/([^=!<>])==(?!=)/g, '$1===');
+  return new Function('needs', 'inputs', `return (${js});`)(ctx.needs, ctx.inputs);
+};
+const okNeeds = () => ({
+  'map-mode': { result: 'success', outputs: { test: 'false', decision: 'M', publishable: 'true', staged: 'true', expect_refused: '' } },
+  'candidate-loader': { result: 'success', outputs: { artifact: 'loader-candidate-public', version: 'cand-1-abcdef0', expect: 'Loader=cand-1-abcdef0', sha: 'a'.repeat(40) } },
+  'rig-branch': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public-x-1-1' } },
+  'rig-other': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public_test_branch-x-1-1' } },
+  check: { result: 'success', outputs: {} },
+});
+const okInputs = () => ({ publish: true, test_autopilot: false, branch: 'public', loader_repo: 'msantoro12/StarRupture-ModLoader', map_mode: true });
+// The `with:` and `secrets:` maps of a call job, as written (values are the raw expressions).
+const mapOf = (j, key) => {
+  const at = j.indexOf(`\n    ${key}:\n`);
+  assert.ok(at >= 0, `${key}: block exists`);
+  const out = {};
+  for (const line of j.slice(at + 1).split('\n').slice(1)) {
+    const m = line.match(/^ {6}(\w+): (.*)$/);
+    if (!m) break;
+    out[m[1]] = m[2];
+  }
+  return out;
+};
+const RIG_JOBS = ['rig-branch', 'rig-other'];
+
+test('rig gate: two jobs call the reusable rig, with the keyless call shape (no runner, no environment, both Steam secrets by name)', () => {
+  for (const n of RIG_JOBS) {
+    const j = job(n);
+    assert.match(j, /\n {4}uses: \.\/\.github\/workflows\/sr-client-rig\.yml\n/, `${n} calls the rig`);
+    assert.ok(!/\n {4}(runs-on|environment|steps|continue-on-error):/.test(j), `${n}: a call job has no runner, environment, steps or continue-on-error`);
+    assert.match(j, /\n {4}permissions:\n {6}contents: read\n {6}actions: read\n/, `${n}: the rig's own permissions`);
+    assert.deepEqual(mapOf(j, 'secrets'), { STEAM_CI_USERNAME: '${{ secrets.STEAM_CI_USERNAME }}', STEAM_CI_LOGIN_CACHE: '${{ secrets.STEAM_CI_LOGIN_CACHE }}' }, `${n}: both secrets by name, nothing else`);
+    assert.ok(!/secrets: inherit/.test(j));
+    assert.match(j, /\n {4}needs: \[map-mode, candidate-loader/, `${n} needs the map job and the candidate loader`);
+  }
+  // The rig is called twice in the file, by these two jobs.
+  assert.equal(wf.match(/uses: \.\/\.github\/workflows\/sr-client-rig\.yml/g)?.length, 2);
+});
+
+test('rig gate: the second rig follows the first, even when the first fails (the rig keeps one pending run per group)', () => {
+  assert.match(job('rig-branch'), /\n {4}needs: \[map-mode, candidate-loader\]\n/);
+  assert.match(job('rig-other'), /\n {4}needs: \[map-mode, candidate-loader, rig-branch\]\n/);
+  const n = okNeeds();
+  assert.equal(evalExpr(jobIf('rig-branch'), { needs: n, inputs: okInputs() }), true);
+  assert.equal(evalExpr(jobIf('rig-other'), { needs: n, inputs: okInputs() }), true);
+  // The first rig failed, was cancelled or skipped: the second still runs.
+  for (const result of ['failure', 'cancelled', 'skipped']) {
+    n['rig-branch'] = { result, outputs: { verdict: result === 'failure' ? 'FAIL' : '' } };
+    assert.equal(evalExpr(jobIf('rig-other'), { needs: n, inputs: okInputs() }), true, `second rig runs after a first that is ${result}`);
+  }
+  // No candidate loader or no map job: neither runs (nothing to test).
+  for (const dead of ['map-mode', 'candidate-loader']) {
+    const m = okNeeds();
+    m[dead].result = 'skipped';
+    for (const r of RIG_JOBS) assert.equal(evalExpr(jobIf(r), { needs: m, inputs: okInputs() }), false, `${r} does not run when ${dead} was skipped`);
+  }
+  // The queue is the rig's own concurrency group; the call jobs add none.
+  assert.ok(!/concurrency:\n {6}group: sr-client-rig/.test(wf), 'the call jobs add no group of their own');
+});
+
+test('rig gate: the candidate, the run id and the expect come from candidate-loader; default tags; no extra inputs', () => {
+  const a = mapOf(job('rig-branch'), 'with');
+  const b = mapOf(job('rig-other'), 'with');
+  assert.deepEqual(Object.keys(a).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused']);
+  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect']);
+  for (const w of [a, b]) {
+    assert.equal(w.candidate_run_id, '${{ github.run_id }}');
+    assert.equal(w.candidate_artifact, '${{ needs.candidate-loader.outputs.artifact }}');
+    assert.equal(w.expect, '${{ needs.candidate-loader.outputs.expect }}');
+  }
+  assert.ok(!/\n {6}tags:/.test(job('rig-branch') + job('rig-other')), "the default tags: each repo's Latest release");
+  assert.ok(!/remove_plugins/.test(job('rig-branch') + job('rig-other')));
+});
+
+test('rig gate: the first rig runs on the branch of this check, the second on the other one', () => {
+  assert.equal(mapOf(job('rig-branch'), 'with').branch, '${{ inputs.branch }}');
+  const other = mapOf(job('rig-other'), 'with').branch;
+  for (const [mine, theirs] of [['public', 'public_test_branch'], ['public_test_branch', 'public']]) {
+    assert.equal(evalExpr(other, { needs: okNeeds(), inputs: { branch: mine } }), theirs, `${mine} -> ${theirs}`);
+  }
+  // The job name follows the same rule, so the Actions list says which branch each rig is.
+  assert.match(job('rig-branch'), /\n {4}name: client rig \(\$\{\{ inputs\.branch \}\}\)\n/);
+  assert.equal(job('rig-other').match(/\n {4}name: client rig \((\$\{\{ .* \}\})\)\n/)[1], other);
+});
+
+test('rig gate: expect_refused goes to the branch of this check only; the other branch gets none, and the rule is written down', () => {
+  assert.equal(mapOf(job('rig-branch'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused }}');
+  assert.ok(!('expect_refused' in mapOf(job('rig-other'), 'with')), 'the other branch is given no expect_refused');
+  const comment = wf.slice(wf.indexOf('  # ---- Client rig: the candidate loader'), wf.indexOf('\n  rig-branch:\n')).replace(/\n\s*#\s*/g, ' ');
+  assert.match(comment, /rig-other\s+the other Steam branch[^.]*with NO expect_refused: [^.]*so any refusal there is a fail/);
+  const readme = readFileSync(join(here, '..', '.github', 'sr-pipeline', 'README.md'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(readme, /the other branch gets no `expect_refused`/);
+  assert.match(readme, /any refusal there is a fail/);
+});
+
+test('rig gate: publish needs both rigs with result success and verdict PASS, and every old condition still applies', () => {
+  assert.match(job('publish'), /\n {4}needs: \[check, map-mode, rig-branch, rig-other\]\n/);
+  const run = (mut = () => {}, inputs = okInputs()) => {
+    const n = okNeeds();
+    mut(n);
+    return evalExpr(jobIf('publish'), { needs: n, inputs });
+  };
+  assert.equal(run(), true, 'both rigs pass: it runs');
+  for (const r of RIG_JOBS) {
+    assert.equal(run((n) => { n[r] = { result: 'failure', outputs: { verdict: 'FAIL' } }; }), false, `${r} FAIL`);
+    assert.equal(run((n) => { n[r] = { result: 'skipped', outputs: { verdict: '' } }; }), false, `${r} skipped is not a pass`);
+    assert.equal(run((n) => { n[r] = { result: 'cancelled', outputs: { verdict: '' } }; }), false, `${r} cancelled`);
+    assert.equal(run((n) => { n[r].outputs.verdict = ''; }), false, `${r} success without a verdict`);
+    assert.equal(run((n) => { n[r].outputs.verdict = 'FAIL'; }), false, `${r} success result with a FAIL verdict`);
+    assert.equal(run((n) => { n[r] = { result: 'failure', outputs: { verdict: 'PASS' } }; }), false, `${r} a failed job is not a pass whatever it says`);
+  }
+  // The old conditions are all still there.
+  assert.equal(run(() => {}, { ...okInputs(), publish: false }), false, 'publish input off');
+  assert.equal(run(() => {}, { ...okInputs(), test_autopilot: true }), false, 'test run');
+  assert.equal(run(() => {}, { ...okInputs(), branch: 'public_test_branch' }), false, 'only public publishes');
+  assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; }), false, 'a HOLD decision (autopilot off)');
+  assert.equal(run((n) => { n['map-mode'].outputs.publishable = 'false'; }), false);
+  assert.equal(run((n) => { n['map-mode'].outputs.test = 'true'; }), false);
+});
+
+test('rig gate: the promote step only writes a plan, so the publish job is the one gate', () => {
+  // promote.mjs plan runs inside map-mode and uploads nothing; the one job that signs with the release key or writes the feed is publish.
+  assert.ok(job('map-mode').includes('promote.mjs plan'));
+  assert.ok(!/promote\.mjs (apply|publish|run)/.test(wf));
+  const writers = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /gh release upload|vmap-sign\.mjs sign [^\n]*--key-id k2/.test(job(n)));
+  assert.deepEqual(writers, ['publish']);
+});
+
+test('rig gate: a rig failure fails the chain visibly (the gate job is red unless both pass), and the autopilot stays untouched', () => {
+  const g = job('rig-gate');
+  assert.match(g, /\n {4}needs: \[map-mode, candidate-loader, rig-branch, rig-other\]\n/);
+  assert.match(g, /process\.exit\(1\)/);
+  assert.ok(!/continue-on-error/.test(g));
+  // It runs for what the chain staged and pushed (push-loader's cue), also when a rig failed or never ran.
+  const cond = (needs, inputs) => evalExpr(jobIf('rig-gate'), { needs, inputs });
+  assert.equal(cond(okNeeds(), okInputs()), true);
+  const failed = okNeeds();
+  failed['rig-branch'] = { result: 'failure', outputs: { verdict: 'FAIL' } };
+  failed['rig-other'] = { result: 'skipped', outputs: {} };
+  assert.equal(cond(failed, okInputs()), true, 'a failed first rig still gets a gate verdict');
+  const notStaged = okNeeds();
+  notStaged['map-mode'].outputs.staged = 'false';
+  assert.equal(cond(notStaged, okInputs()), false, 'nothing staged: nothing to test');
+  assert.equal(cond(okNeeds(), { ...okInputs(), test_autopilot: true }), false, 'a test run pushes nothing');
+  assert.equal(cond(okNeeds(), { ...okInputs(), loader_repo: 'AlienXAXS/StarRupture-ModLoader' }), false, 'another loader repository is never pushed');
+  // The autopilot decides publishing only; the rig runs either way (a HOLD with the autopilot off is still a candidate).
+  assert.ok(!/state\/autopilot/.test(wf.slice(wf.indexOf('  rig-branch:'), wf.indexOf('  alert:'))));
+});
+
+test('rig gate: the summary carries both verdicts, reasons and the logs artifact, and the job exits 1 unless both pass', { skip: !bash }, () => {
+  const g = job('rig-gate');
+  const head = '        run: |\n';
+  const script = g.slice(g.indexOf(head) + head.length).replace(/^ {10}/gm, '');
+  const base = {
+    RUN_URL: 'https://github.com/o/r/actions/runs/7', DECISION: 'HOLD', PUBLISHABLE: 'false', CANDIDATE_RESULT: 'success', CANDIDATE_VERSION: 'cand-7-abcdef0', CANDIDATE_SHA: 'abcdef0123456789abcdef0123456789abcdef01',
+    BRANCH_NAME: 'public_test_branch', BRANCH_RESULT: 'success', BRANCH_VERDICT: 'PASS', BRANCH_REASON: 'All 41 checks passed', BRANCH_ARTIFACT: 'sr-client-rig-public_test_branch-cand-7-1', BRANCH_EXPECT_REFUSED: 'MiniMap',
+    OTHER_NAME: 'public', OTHER_RESULT: 'success', OTHER_VERDICT: 'PASS', OTHER_REASON: 'All 41 checks passed', OTHER_ARTIFACT: 'sr-client-rig-public-cand-7-1',
+  };
+  const run = (over = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'rig-gate-'));
+    const summary = join(dir, 'summary.md');
+    writeFileSync(summary, '');
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...base, ...over, GITHUB_STEP_SUMMARY: summary } });
+    return { status: r.status, out: r.stdout, md: readFileSync(summary, 'utf8') };
+  };
+  const ok = run();
+  assert.equal(ok.status, 0);
+  assert.match(ok.md, /### Client rig gate: PASS/);
+  assert.match(ok.md, /Decision HOLD, not publishable\. Candidate loader cand-7-abcdef0 \(loader commit abcdef0\)/);
+  assert.match(ok.md, /\*\*public_test_branch\*\*: PASS - All 41 checks passed\. Must be refused here: MiniMap\./);
+  assert.match(ok.md, /\*\*public\*\*: PASS - All 41 checks passed\. No refusals allowed/);
+  assert.match(ok.md, /artifact `sr-client-rig-public-cand-7-1` of https:\/\/github\.com\/o\/r\/actions\/runs\/7/);
+  const bad = run({ OTHER_RESULT: 'failure', OTHER_VERDICT: 'FAIL', OTHER_REASON: 'plugin_not_refused_MiniMap: FOUND' });
+  assert.equal(bad.status, 1);
+  assert.match(bad.md, /### Client rig gate: FAIL/);
+  assert.match(bad.md, /\*\*public\*\*: FAIL - plugin_not_refused_MiniMap: FOUND/);
+  assert.match(bad.out, /::error title=Client rig gate::public did not pass; the feed is not published\./);
+  // A rig that never ran for a staged candidate is not a pass.
+  const skipped = run({ BRANCH_RESULT: 'skipped', BRANCH_VERDICT: '', BRANCH_REASON: '', BRANCH_ARTIFACT: '', CANDIDATE_RESULT: 'failure' });
+  assert.equal(skipped.status, 1);
+  assert.match(skipped.md, /\*\*public_test_branch\*\*: did not run - candidate loader job: failure/);
+  assert.match(skipped.md, /no logs artifact/);
+  const cancelled = run({ OTHER_RESULT: 'cancelled', OTHER_VERDICT: '', OTHER_REASON: '' });
+  assert.equal(cancelled.status, 1);
+  assert.match(cancelled.md, /\*\*public\*\*: cancelled/);
+  // A success result with a verdict that is not PASS fails too.
+  assert.equal(run({ BRANCH_VERDICT: '' }).status, 1);
+  // No expected refusals says so.
+  assert.match(run({ BRANCH_EXPECT_REFUSED: '' }).md, /No refusals expected\./);
+});
+
+test('rig gate: the nested call fits its callers (permissions ceiling, depth, main-only environment)', () => {
+  const caller = watch.slice(watch.indexOf('  client-check:\n'));
+  const grants = (text) => Object.fromEntries([...text.matchAll(/ {6}([a-z-]+): (read|write)\b/g)].map((m) => [m[1], m[2]]));
+  const ceiling = grants(caller.match(/\n {4}permissions:\n((?: {6}[a-z-]+: .*\n)+)/)[1]);
+  assert.equal(ceiling.actions, 'read', "sr-watch grants the rig its actions: read (a nested call is checked against the top caller)");
+  for (const n of RIG_JOBS) {
+    const asked = grants(job(n).match(/\n {4}permissions:\n((?: {6}[a-z-]+: .*\n)+)/)[1]);
+    for (const [k, v] of Object.entries(asked)) assert.ok(ceiling[k] === v || (v === 'read' && ceiling[k] === 'write'), `${n}: ${k}: ${v} fits sr-watch's ceiling`);
+  }
+  // sr-watch -> sr-client-check -> sr-client-rig: the rig itself calls nothing, and its one environment serves main only.
+  const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(!/\n {4}uses: /.test(rig));
+  assert.match(rig, /\n {4}environment: steam-client\n/);
+});

@@ -1975,16 +1975,19 @@ jobs:
   # ---- Publish: the feed signed with the release key ---------------------
   # Only with the publish input (default off; the owner turns it on), only for
   # public, and only when decide chose M and the chain marked it publishable
-  # (a promotion, or public's own new CL with nothing staged). The only job
-  # that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
-  # environment, deployments from main only). Reads the live feed's seq again
+  # (a promotion, or public's own new CL with nothing staged), and only when both
+  # client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
+  # loader: a failed, cancelled or skipped rig keeps the feed unsigned. The promote
+  # step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
+  # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in
+  # the vmap-sign environment, deployments from main only). Reads the live feed's seq again
   # right before signing (one publish at a time), signs above it, verifies
   # with no TEST key allowed, and uploads it with the updated history to the
   # vmap-feed release.
   publish:
     name: publish the feed
-    needs: [check, map-mode]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
+    needs: [check, map-mode, rig-branch, rig-other]
+    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -2260,6 +2263,119 @@ jobs:
           "expect=Loader=$($env:TAG)" >> $env:GITHUB_OUTPUT
           "sha=$($env:LOADER_SHA)" >> $env:GITHUB_OUTPUT
           "Candidate loader $($env:TAG): artifact $($env:ARTIFACT) of run $($env:GITHUB_RUN_ID), loader commit $($env:LOADER_SHA)" >> $env:GITHUB_STEP_SUMMARY
+
+  # ---- Client rig: the candidate loader in the real game, on both branches ----
+  # A REQUIRED gate on the unattended path (owner: "we will do auto verify and
+  # deploy with the github rig for version updates"). Two calls of the reusable
+  # sr-client-rig.yml, each launching the real client under the real Steam client
+  # with the candidate loader (candidate-loader's artifact, this run's id) laid over
+  # the Latest released plugins, MiniMap included (the rig's default set: no tags input):
+  #   rig-branch  the Steam branch this check is for, with map-mode's expect_refused:
+  #               the plugins the loader refuses on that build must be refused, and
+  #               every other plugin must load.
+  #   rig-other   the other Steam branch (public <-> public_test_branch) with NO
+  #               expect_refused: that branch's current build must keep working with
+  #               the same DLLs, so any refusal there is a fail.
+  # They run one after the other: the rig's concurrency group keeps only one pending run,
+  # so a second queued call would cancel the first. rig-other waits for rig-branch whatever
+  # its result (!cancelled() keeps it running after a failure), so a failing first rig does
+  # not hide the second one's verdict. A rig fails its job on a FAIL verdict.
+  # The call jobs set no environment (the rig's job runs in steam-client, which serves main
+  # only, so the whole run must be on main). Each passes both Steam secrets by name and asks
+  # for the rig's own permissions (contents: read, actions: read); sr-watch's client-check
+  # job grants the same ceiling. Nesting: sr-watch -> sr-client-check -> sr-client-rig.
+  rig-branch:
+    name: client rig (${{ inputs.branch }})
+    needs: [map-mode, candidate-loader]
+    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.candidate-loader.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/sr-client-rig.yml
+    with:
+      branch: ${{ inputs.branch }}
+      candidate_run_id: ${{ github.run_id }}
+      candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
+      expect: ${{ needs.candidate-loader.outputs.expect }}
+      expect_refused: ${{ needs.map-mode.outputs.expect_refused }}
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+
+  rig-other:
+    name: client rig (${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }})
+    needs: [map-mode, candidate-loader, rig-branch]
+    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.candidate-loader.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/sr-client-rig.yml
+    with:
+      branch: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      candidate_run_id: ${{ github.run_id }}
+      candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
+      expect: ${{ needs.candidate-loader.outputs.expect }}
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+
+  # ---- Rig gate: both verdicts in the run summary, and the chain's visible result ----
+  # Runs for every candidate the chain staged (the same cue as push-loader) and writes
+  # the decision, the candidate and both rigs' verdict, reason and logs artifact into the
+  # run summary. It fails unless both rigs passed, so a rig that failed, was cancelled or
+  # never ran for a staged candidate is a red job, never a skipped green. The publish job
+  # reads the two rigs itself; this job is what a person reads. With the autopilot off the
+  # rigs still run on the candidate and publish stays held.
+  rig-gate:
+    name: rig gate
+    needs: [map-mode, candidate-loader, rig-branch, rig-other]
+    if: ${{ always() && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      DECISION: ${{ needs.map-mode.outputs.decision }}
+      PUBLISHABLE: ${{ needs.map-mode.outputs.publishable }}
+      CANDIDATE_RESULT: ${{ needs.candidate-loader.result }}
+      CANDIDATE_VERSION: ${{ needs.candidate-loader.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.candidate-loader.outputs.sha }}
+      BRANCH_NAME: ${{ inputs.branch }}
+      BRANCH_RESULT: ${{ needs.rig-branch.result }}
+      BRANCH_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
+      BRANCH_REASON: ${{ needs.rig-branch.outputs.reason }}
+      BRANCH_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
+      BRANCH_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused }}
+      OTHER_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      OTHER_RESULT: ${{ needs.rig-other.result }}
+      OTHER_VERDICT: ${{ needs.rig-other.outputs.verdict }}
+      OTHER_REASON: ${{ needs.rig-other.outputs.reason }}
+      OTHER_ARTIFACT: ${{ needs.rig-other.outputs.artifact }}
+    steps:
+      - name: Judge both rigs
+        run: |
+          set -euo pipefail
+          node -e '
+            const e = process.env;
+            const one = (p, name, rule) => {
+              const result = e[p + "_RESULT"], verdict = e[p + "_VERDICT"];
+              const pass = result === "success" && verdict === "PASS";
+              const state = pass ? "PASS" : verdict === "FAIL" ? "FAIL" : result === "skipped" ? "did not run" : result === "cancelled" ? "cancelled" : "no verdict (" + result + ")";
+              const why = (e[p + "_REASON"] || (pass ? "" : result === "skipped" ? "candidate loader job: " + e.CANDIDATE_RESULT : "see the rig job")).replace(/\s+/g, " ").trim();
+              const logs = e[p + "_ARTIFACT"] ? "artifact `" + e[p + "_ARTIFACT"] + "` of " + e.RUN_URL : "no logs artifact, run " + e.RUN_URL;
+              return { name, pass, line: "- **" + name + "**: " + state + (why ? " - " + why : "") + ". " + rule + " Logs: " + logs + "." };
+            };
+            const a = one("BRANCH", e.BRANCH_NAME, e.BRANCH_EXPECT_REFUSED ? "Must be refused here: " + e.BRANCH_EXPECT_REFUSED + "." : "No refusals expected.");
+            const b = one("OTHER", e.OTHER_NAME, "No refusals allowed: its current build must keep working with the same DLLs.");
+            const ok = a.pass && b.pass;
+            const md = ["### Client rig gate: " + (ok ? "PASS" : "FAIL"), "",
+              "Decision " + (e.DECISION || "none") + (e.PUBLISHABLE === "true" ? ", publishable" : ", not publishable") + ". Candidate loader " + (e.CANDIDATE_VERSION || "none") + (e.CANDIDATE_SHA ? " (loader commit " + e.CANDIDATE_SHA.slice(0, 7) + ")" : "") + ", job " + e.CANDIDATE_RESULT + ". The feed is published only when both rigs pass.", "", a.line, b.line];
+            require("fs").appendFileSync(e.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+            if (!ok) {
+              console.log("::error title=Client rig gate::" + [a, b].filter((x) => !x.pass).map((x) => x.name).join(" and ") + " did not pass; the feed is not published.");
+              process.exit(1);
+            }
+          '
 
   # ---- Alert: a failed or held run is visible without opening Actions ----
   # One issue per branch, opened on the first problem and commented on for every

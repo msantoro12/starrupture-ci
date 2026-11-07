@@ -152,11 +152,14 @@ jobs:
     # These permissions are a ceiling, not a grant: GitHub checks every called
     # job against them when it parses the call, before any if. Each called job
     # sets its own, and only publish (vmap-sign environment, main only, publish
-    # input on) asks for contents: write.
+    # input on) asks for contents: write. actions: read is the client rig's
+    # (sr-client-check calls sr-client-rig, which reads the candidate run's
+    # artifacts); without it here the nested call would not parse.
     permissions:
       contents: write
       pull-requests: write
       issues: write    # the alert job of the called workflow
+      actions: read    # the client rig, called by the called workflow
     uses: ./.github/workflows/sr-client-check.yml
     with:
       branch: ${{ matrix.branch }}
