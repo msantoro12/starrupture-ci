@@ -157,6 +157,14 @@ previous release (`rank: previous`), the key lists (`--keys`), and the push of t
 header to the loader fork (step 26). So today the job feeds the current releases
 only, and prunes nothing.
 
+A build the loader does not run on yet is the case this job exists for. With
+`map_mode` on, the check records a failed loader version gate as a new build
+(`checks.exe.newBuild`, top-level status `new-build`) instead of failing, so the
+job runs and measures it; the PR comment and the alert issue say "new build,
+measured by map mode". With `map_mode` off the same build still fails the check.
+Every other gate (login, download, branch, exe, pattern scan, PDB) fails the check
+as before, and a failed check never reaches this job.
+
 The harness side of this input (plugin scan rows printing `key`, `kind`, `fp` and
 `symbolRva`, the suggester's `followRipDispAt` and kinds `data` and `any`) is in the
 scanner repo's `tools/AobScan`, not here. A plugin row prints no
