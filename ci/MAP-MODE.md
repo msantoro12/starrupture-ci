@@ -295,7 +295,7 @@ give the key's kind, fp and locator. Per entry:
   `resultOffset`, `followRel32At`, `followRipDispAt`) replaces the header's value;
   other fields are ignored.
 - `none`, `ambiguous`, or a `match` with other than 1 hit: an absent row. The
-  header has no reason column, so the `reason` shows as a note in the write report.
+  header has no reason column, so the `reason` shows as a note in the write report. A global absent row must list owners, so a carried one lists the placeholder owner `Carry`, which no plugin matches: no plugin request is recorded as tested absent.
 - A key with a fresh scan row (any component) gets no carried row. A report whose
   `cl` is not the spec's CL, or whose `kind` is not `carry`, is refused. Without
   `--carry` nothing changes.
