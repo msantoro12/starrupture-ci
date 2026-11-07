@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, emit, emptyMap, exportFeed, parse, parseFeed, parseKeys, prune,
+  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, parse, parseFeed, parseKeys, prune,
   removeKey, replaceBuild, unionKeys,
 } from './version-map.mjs';
 
@@ -542,4 +542,15 @@ test('addBuild compares the Steam build id, stamp and size, not the label', () =
   assert.throws(() => addBuild(map, { cl: 127004, stamp: 1, size: 2, source: 'steam_build 25646883' }), /Steam build id 25646882 in the table, 25646883 measured/);
   assert.throws(() => addBuild(map, { cl: 127004, stamp: 9, size: 2, source: 'public 25646882' }), /another image stamp or size/);
   assert.throws(() => addBuild(map, { cl: 127004, stamp: 1, size: 2, source: 'steam_build' }), /no Steam build id/);
+});
+
+test('clOfBuild: the CL of a Steam build id comes from the build rows, in either label form; unknown or odd ids give null', () => {
+  const m = emptyMap('loader', 127004);
+  addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
+  addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
+  assert.equal(clOfBuild(m, '25646882'), 127004);
+  assert.equal(clOfBuild(m, '26271156'), 129402);
+  assert.equal(clOfBuild(m, 26271156), 129402);
+  assert.equal(clOfBuild(m, '26271157'), null, 'a build the map has not measured');
+  for (const odd of ['', undefined, null, 'public', '12 34', '1e3']) assert.equal(clOfBuild(m, odd), null, String(odd));
 });

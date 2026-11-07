@@ -11,8 +11,10 @@
 //   changed=true|false   alert wanted (real change, or --force)
 //   dirty=true|false     state file was rewritten
 //   client_matrix=<json> client branches for sr-client-check.yml, as
-//                        [{"branch":"public","buildid":"..."}]: the changed
-//                        ones, or every recorded one on a forced run; []
+//                        [{"branch":"public","buildid":"...","other_buildid":"..."}]:
+//                        the changed ones, or every recorded one on a forced run
+//                        (other_buildid: the build id of the other client branch,
+//                        public <-> public_test_branch, as of this poll); []
 //                        when there is no alert
 //
 // Failure policy: an API problem never raises an alert. Each request is
@@ -161,11 +163,15 @@ if (dirty) {
 
 const alert = changes.length > 0 || (force && !everyoneFailed);
 const CLIENT_APP = APPS[0].id;
+// other_buildid: the build the other client branch (public <-> public_test_branch) runs as of this
+// poll, which the check needs to find its CL; empty when the state does not hold that branch.
+const clientBranches = state.apps[CLIENT_APP]?.branches ?? {};
+const otherBuildid = (branch) => clientBranches[branch === 'public' ? 'public_test_branch' : 'public']?.buildid ?? '';
 const clientMatrix = !alert
   ? []
   : changes.length > 0
-    ? changes.filter((c) => c.app.id === CLIENT_APP).map((c) => ({ branch: c.branch, buildid: c.now }))
-    : Object.entries(state.apps[CLIENT_APP]?.branches ?? {}).map(([branch, v]) => ({ branch, buildid: v.buildid }));
+    ? changes.filter((c) => c.app.id === CLIENT_APP).map((c) => ({ branch: c.branch, buildid: c.now, other_buildid: otherBuildid(c.branch) }))
+    : Object.entries(clientBranches).map(([branch, v]) => ({ branch, buildid: v.buildid, other_buildid: otherBuildid(branch) }));
 const lines = [];
 if (alert) {
   const news = await fetchNewestNews();

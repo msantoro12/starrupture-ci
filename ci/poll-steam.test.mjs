@@ -73,7 +73,7 @@ test('a second client beta is tracked the day it appears and goes to the client 
   const r = await withApi(info, (base) => run(base, recorded));
   assert.equal(r.code, 0, r.log);
   assert.equal(r.outputs.changed, 'true');
-  assert.deepEqual(JSON.parse(r.outputs.client_matrix), [{ branch: 'beta_two', buildid: '120' }]);
+  assert.deepEqual(JSON.parse(r.outputs.client_matrix), [{ branch: 'beta_two', buildid: '120', other_buildid: '100' }]);
   assert.equal(r.state.apps[CLIENT].branches.beta_two.buildid, '120');
   assert.equal(r.file('pr-branch.txt'), 'game-update/client-beta_two-120');
   assert.match(r.file('pr-body.md'), /\| StarRupture \| beta_two \| \(new branch\) \| 120 \|/);
@@ -108,4 +108,27 @@ test('a stale answer on the second beta is ignored', async () => {
   assert.equal(r.outputs.changed, 'false');
   assert.equal(r.state.apps[CLIENT].branches.beta_two.buildid, '120');
   assert.match(r.log, /stale API answer/);
+});
+
+test('the client matrix names the build id of the other client branch, public and the test branch being each other', async () => {
+  const info = {
+    [CLIENT]: { public: branch(101, 1010), public_test_branch: branch(111, 1110) },
+    [SERVER]: serverInfo,
+  };
+  const r = await withApi(info, (base) => run(base, recorded));
+  assert.equal(r.code, 0, r.log);
+  const m = JSON.parse(r.outputs.client_matrix);
+  // Both moved: each check gets the OTHER branch's new id, as of this poll.
+  assert.deepEqual(m, [{ branch: 'public', buildid: '101', other_buildid: '111' }, { branch: 'public_test_branch', buildid: '111', other_buildid: '101' }]);
+  // Only the test branch moved: public's recorded id is its current one.
+  const one = await withApi({ [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(111, 1110) }, [SERVER]: serverInfo }, (base) => run(base, recorded));
+  assert.deepEqual(JSON.parse(one.outputs.client_matrix), [{ branch: 'public_test_branch', buildid: '111', other_buildid: '100' }]);
+  // A forced run carries it for every recorded branch.
+  const forced = await withApi({ [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) }, [SERVER]: serverInfo }, (base) => run(base, recorded, ['--force']));
+  assert.deepEqual(JSON.parse(forced.outputs.client_matrix), [{ branch: 'public', buildid: '100', other_buildid: '110' }, { branch: 'public_test_branch', buildid: '110', other_buildid: '100' }]);
+  // No other client branch recorded: the id is empty, never missing.
+  const solo = structuredClone(recorded);
+  delete solo.apps[CLIENT].branches.public_test_branch;
+  const alone = await withApi({ [CLIENT]: { public: branch(105, 1050) }, [SERVER]: serverInfo }, (base) => run(base, solo));
+  assert.deepEqual(JSON.parse(alone.outputs.client_matrix), [{ branch: 'public', buildid: '105', other_buildid: '' }]);
 });

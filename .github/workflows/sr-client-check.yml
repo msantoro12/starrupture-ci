@@ -61,6 +61,10 @@ on:
         description: 'Build id the watcher saw (compared with what Steam installs)'
         type: string
         default: ''
+      other_buildid:
+        description: 'Build id of the other client branch (public or public_test_branch) as the watcher saw it; its CL decides which refusals the rig of that branch expects'
+        type: string
+        default: ''
       pr:
         description: 'Pull request number to post the result on'
         type: string
@@ -162,6 +166,10 @@ on:
         default: public
       buildid:
         description: 'Build id the watcher saw (blank: what Steam installs); map mode names the build row with it'
+        type: string
+        default: ''
+      other_buildid:
+        description: 'Build id of the other client branch (blank: the one recorded in state/steam.json on main); its CL decides which refusals the rig of that branch expects'
         type: string
         default: ''
       pr:
@@ -1704,9 +1712,14 @@ jobs:
       # expect_refused input takes them: log names separated by spaces, empty when none. Set
       # whenever decide ran, held or not.
       expect_refused: ${{ steps.chain.outputs.expect_refused }}
+      # The same for the OTHER Steam branch's current build: what the loader's rule predicts refused
+      # there (decide --other-cl). Empty when that build's CL is not in the candidate map, so every
+      # refusal on that branch is unexpected.
+      expect_refused_other: ${{ steps.chain.outputs.expect_refused_other }}
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
+      OTHER_BUILDID: ${{ inputs.other_buildid }}
       PLUGINS: ${{ inputs.plugins }}
       LOADER_REF: ${{ inputs.loader_ref }}
       BUILD_RESULT: ${{ needs.build.result }}
@@ -1882,10 +1895,27 @@ jobs:
           test_flag=()
           [ "$TEST_AUTOPILOT" = true ] && test_flag=(--test-autopilot)
           [ "$CANDIDATE" = true ] && test_flag=(--candidate)
+          # The other Steam branch's current build: its id from the watcher (else the id recorded on
+          # main), its CL from the build rows of the candidate map (the row this run just wrote
+          # included). Unknown means no --other-cl: no refusal is expected there and any one fails.
+          other_branch=public; [ "$BRANCH" = public ] && other_branch=public_test_branch
+          other_buildid="$OTHER_BUILDID"
+          if [ -z "$other_buildid" ]; then
+            other_buildid="$(node -p "JSON.parse(require('fs').readFileSync('tool/state/steam.json','utf8')).apps?.['1631270']?.branches?.[process.argv[1]]?.buildid ?? ''" "$other_branch" 2>/dev/null || true)"
+          fi
+          other_cl="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parse, clOfBuild } from "./tool/ci/version-map.mjs";
+            const cl = clOfBuild(parse(readFileSync(process.argv[1], "utf8"), "the header"), process.argv[2]);
+            if (cl !== null) process.stdout.write(String(cl));
+          ' "$header" "$other_buildid")"
+          other_flag=()
+          if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "$other_branch runs build $other_buildid = CL-$other_cl"
+          else echo "::notice title=Other branch unknown::$other_branch build '${other_buildid:-unknown}' has no row in the candidate map: its rig expects no refusals"; fi
           d=0
           node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
             --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json --fields field-rows.json \
-            --history history.json --out decision.json "${test_flag[@]}" || d=$?
+            --history history.json --out decision.json "${test_flag[@]}" "${other_flag[@]}" || d=$?
           decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
           would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
@@ -1897,6 +1927,12 @@ jobs:
           fi
           echo "expect_refused=$expect_refused" >> "$GITHUB_OUTPUT"
           [ -z "$expect_refused" ] || echo "::notice title=Loader refuses on CL::expected refusals on $BRANCH: $expect_refused"
+          expect_refused_other="$(node -p "(JSON.parse(require('fs').readFileSync('decision.json','utf8')).expectRefusedOther ?? []).join(' ')")"
+          if [ -n "$expect_refused_other" ] && ! printf '%s' "$expect_refused_other" | grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'; then
+            echo "::error::expectRefusedOther is not a list of plugin names the rig takes: $expect_refused_other"; exit 2
+          fi
+          echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"
+          [ -z "$expect_refused_other" ] || echo "::notice title=Loader refuses on CL::expected refusals on $other_branch (CL-$other_cl): $expect_refused_other"
           # A test run by the dispatch input, the chain's own flag or the decision itself.
           # A candidate that is not M (the autopilot holds it) is never publishable either.
           is_test="$(node -p "const d = JSON.parse(require('fs').readFileSync('decision.json','utf8')); String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || d.test === true || (d.candidate === true && d.decision !== 'M'))")"
@@ -2300,9 +2336,14 @@ jobs:
   #   rig-branch  the Steam branch this check is for, with map-mode's expect_refused:
   #               the plugins the loader refuses on that build must be refused, and
   #               every other plugin must load.
-  #   rig-other   the other Steam branch (public <-> public_test_branch) with NO
-  #               expect_refused: that branch's current build must keep working with
-  #               the same DLLs, so any refusal there is a fail.
+  #   rig-other   the other Steam branch (public <-> public_test_branch) with the refusals
+  #               the loader's own rule predicts for THAT branch's current build
+  #               (map-mode's expect_refused_other: decide's loaderRefusal on the other
+  #               branch's CL, the CL found through its build id in the candidate map).
+  #               Its current build must keep working with the same DLLs: a refusal the
+  #               rule predicts there (a v70 plugin on a newer build) is declared, and any
+  #               refusal it does not predict is a fail. Public is never excused by hand:
+  #               when that CL cannot be named, nothing is declared and a refusal fails.
   # They run one after the other: the rig's concurrency group keeps only one pending run,
   # so a second queued call would cancel the first. rig-other waits for rig-branch whatever
   # its result (!cancelled() keeps it running after a failure), so a failing first rig does
@@ -2342,6 +2383,7 @@ jobs:
       candidate_run_id: ${{ github.run_id }}
       candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
       expect: ${{ needs.candidate-loader.outputs.expect }}
+      expect_refused: ${{ needs.map-mode.outputs.expect_refused_other }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
@@ -2373,6 +2415,7 @@ jobs:
       BRANCH_REASON: ${{ needs.rig-branch.outputs.reason }}
       BRANCH_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
       BRANCH_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused }}
+      OTHER_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused_other }}
       OTHER_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
       OTHER_RESULT: ${{ needs.rig-other.result }}
       OTHER_VERDICT: ${{ needs.rig-other.outputs.verdict }}
@@ -2393,7 +2436,7 @@ jobs:
               return { name, pass, line: "- **" + name + "**: " + state + (why ? " - " + why : "") + ". " + rule + " Logs: " + logs + "." };
             };
             const a = one("BRANCH", e.BRANCH_NAME, e.BRANCH_EXPECT_REFUSED ? "Must be refused here: " + e.BRANCH_EXPECT_REFUSED + "." : "No refusals expected.");
-            const b = one("OTHER", e.OTHER_NAME, "No refusals allowed: its current build must keep working with the same DLLs.");
+            const b = one("OTHER", e.OTHER_NAME, e.OTHER_EXPECT_REFUSED ? "Must be refused here (the loader rule for the build this branch runs): " + e.OTHER_EXPECT_REFUSED + ". Any other refusal is a fail." : "No refusals expected: its current build must keep working with the same DLLs.");
             const ok = a.pass && b.pass;
             const md = ["### Client rig gate: " + (ok ? "PASS" : "FAIL"), "",
               "Decision " + (e.DECISION || "none") + (e.PUBLISHABLE === "true" ? ", publishable" : ", not publishable") + ". Candidate loader " + (e.CANDIDATE_VERSION || "none") + (e.CANDIDATE_SHA ? " (loader commit " + e.CANDIDATE_SHA.slice(0, 7) + ")" : "") + ", job " + e.CANDIDATE_RESULT + ". The feed is published only when both rigs pass.", "", a.line, b.line];
@@ -2461,11 +2504,13 @@ jobs:
       BRANCH_RIG_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
       BRANCH_RIG_REASON: ${{ needs.rig-branch.outputs.reason }}
       BRANCH_RIG_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
+      BRANCH_RIG_REVIEW: ${{ needs.rig-branch.outputs.review }}
       OTHER_RIG_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
       OTHER_RIG_RESULT: ${{ needs.rig-other.result }}
       OTHER_RIG_VERDICT: ${{ needs.rig-other.outputs.verdict }}
       OTHER_RIG_REASON: ${{ needs.rig-other.outputs.reason }}
       OTHER_RIG_ARTIFACT: ${{ needs.rig-other.outputs.artifact }}
+      OTHER_RIG_REVIEW: ${{ needs.rig-other.outputs.review }}
     steps:
       - name: Download the map-mode chain
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -2574,17 +2619,23 @@ jobs:
               }
             }
 
+            // A newer release of a plugin by another author than the reviewed one the rig ran. The rig kept
+            // running the reviewed release, so nothing failed: the line is loud, but it neither blocks the
+            // gate nor takes the chain-passed mark away.
+            const review = [...new Set(["BRANCH", "OTHER"].flatMap((p) => String(e[p + "_RIG_REVIEW"] ?? "").split(/\s+/)).filter((t) => /^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(t)))]
+              .map((t) => "- new " + t.split("=")[0] + " release " + t.split("=")[1] + " waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in `ci/plugin-names.json`");
+
             const out = (kv) => fs.appendFileSync(e.GITHUB_OUTPUT, Object.entries(kv).map(([k, v]) => k + "=" + v + "\n").join(""));
             const passed = lines.length === 0 && d !== null;
-            if (!lines.length) {
+            if (passed && readyHold) fs.writeFileSync("ready.md", "<!-- sr-ready-held:" + e.BRANCH + " -->\n**Ready, publish held (autopilot off).** CL-" + (d.cl ?? "?") + " on `" + e.BRANCH + "`: every gate and job passed, [run](" + e.RUN_URL + ").\n");
+            if (!lines.length && !review.length) {
               console.log("Nothing to alert on.");
-              if (passed && readyHold) fs.writeFileSync("ready.md", "<!-- sr-ready-held:" + e.BRANCH + " -->\n**Ready, publish held (autopilot off).** CL-" + (d.cl ?? "?") + " on `" + e.BRANCH + "`: every gate and job passed, [run](" + e.RUN_URL + ").\n");
               out({ alert: "false", passed: String(passed), ready: String(passed && readyHold) });
               process.exit(0);
             }
-            const md = ["@" + e.OWNER + " branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, ...(info.length ? ["", ...info] : []), "", "Details are in the run summary and the map-mode artifact. The watcher does not check a build again while its update PR is open; once the cause is fixed: `gh workflow run sr-watch.yml --ref main -f force=true`."];
+            const md = ["@" + e.OWNER + " branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, ...review, ...(info.length ? ["", ...info] : []), "", "Details are in the run summary and the map-mode artifact. The watcher does not check a build again while its update PR is open; once the cause is fixed: `gh workflow run sr-watch.yml --ref main -f force=true`."];
             fs.writeFileSync("alert.md", md.join("\n") + "\n");
-            out({ alert: "true", passed: "false", ready: "false" });
+            out({ alert: "true", passed: String(passed), ready: String(passed && readyHold) });
           '
 
       - name: Open or update the issue

@@ -7,11 +7,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { addBuild, emit, emptyMap } from './version-map.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -564,7 +565,7 @@ test('rig gate: the candidate, the run id and the expect come from candidate-loa
   const a = mapOf(job('rig-branch'), 'with');
   const b = mapOf(job('rig-other'), 'with');
   assert.deepEqual(Object.keys(a).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused']);
-  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect']);
+  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused']);
   for (const w of [a, b]) {
     assert.equal(w.candidate_run_id, '${{ github.run_id }}');
     assert.equal(w.candidate_artifact, '${{ needs.candidate-loader.outputs.artifact }}');
@@ -585,14 +586,16 @@ test('rig gate: the first rig runs on the branch of this check, the second on th
   assert.equal(job('rig-other').match(/\n {4}name: client rig \((\$\{\{ .* \}\})\)\n/)[1], other);
 });
 
-test('rig gate: expect_refused goes to the branch of this check only; the other branch gets none, and the rule is written down', () => {
+test('rig gate: each rig declares the refusals the loader rule predicts for the build ITS branch runs, and the rule is written down', () => {
   assert.equal(mapOf(job('rig-branch'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused }}');
-  assert.ok(!('expect_refused' in mapOf(job('rig-other'), 'with')), 'the other branch is given no expect_refused');
+  assert.equal(mapOf(job('rig-other'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused_other }}');
   const comment = wf.slice(wf.indexOf('  # ---- Client rig: the candidate loader'), wf.indexOf('\n  rig-branch:\n')).replace(/\n\s*#\s*/g, ' ');
-  assert.match(comment, /rig-other\s+the other Steam branch[^.]*with NO expect_refused: [^.]*so any refusal there is a fail/);
+  assert.match(comment, /rig-other\s+the other Steam branch[^.]*the refusals the loader's own rule predicts for THAT branch's current build/);
+  assert.match(comment, /any refusal it does not predict is a fail/);
   const readme = readFileSync(join(here, '..', '.github', 'sr-pipeline', 'README.md'), 'utf8').replace(/\r\n/g, '\n');
-  assert.match(readme, /the other branch gets no `expect_refused`/);
-  assert.match(readme, /any refusal there is a fail/);
+  assert.match(readme, /the loader's own rule predicts for the other branch's current build/);
+  assert.match(readme, /any refusal the rule does not predict is a fail/);
+  assert.ok(!/the other branch gets no `expect_refused`/.test(readme), 'the old rule is gone');
 });
 
 test('rig gate: publish needs both rigs with result success and verdict PASS, and every old condition still applies', () => {
@@ -670,7 +673,9 @@ test('rig gate: the summary carries both verdicts, reasons and the logs artifact
   assert.match(ok.md, /### Client rig gate: PASS/);
   assert.match(ok.md, /Decision HOLD, not publishable\. Candidate loader cand-7-abcdef0 \(loader commit abcdef0\)/);
   assert.match(ok.md, /\*\*public_test_branch\*\*: PASS - All 41 checks passed\. Must be refused here: MiniMap\./);
-  assert.match(ok.md, /\*\*public\*\*: PASS - All 41 checks passed\. No refusals allowed/);
+  assert.match(ok.md, /\*\*public\*\*: PASS - All 41 checks passed\. No refusals expected: its current build must keep working/);
+  // The other rig's declared refusals are named, with the rule that any other refusal fails.
+  assert.match(run({ OTHER_EXPECT_REFUSED: 'MiniMap' }).md, /\*\*public\*\*: PASS - All 41 checks passed\. Must be refused here \(the loader rule for the build this branch runs\): MiniMap\. Any other refusal is a fail\./);
   assert.match(ok.md, /artifact `sr-client-rig-public-cand-7-1` of https:\/\/github\.com\/o\/r\/actions\/runs\/7/);
   const bad = run({ OTHER_RESULT: 'failure', OTHER_VERDICT: 'FAIL', OTHER_REASON: 'plugin_not_refused_MiniMap: FOUND' });
   assert.equal(bad.status, 1);
@@ -1051,4 +1056,135 @@ test('plugin keys (leg C1): sr-watch passes the nine fork keys by name; the clie
   // The nine are the ones the auto-apply name check admits.
   const allowed = job('auto-apply').match(/\^\(([A-Za-z|]+)\)\$/)[1].split('|').map((n) => `SR_DEPLOYKEY_${n.toUpperCase()}`).sort();
   assert.deepEqual(allowed, [...FORK_KEYS].sort());
+});
+
+// ------------------------------------------------------------ leg C2: expected refusals on the other branch, pinned third-party plugins
+
+const OTHER_STEP_FROM = '          other_branch=public; [ "$BRANCH" = public ] && other_branch=public_test_branch\n';
+const otherStep = () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf(OTHER_STEP_FROM);
+  const end = mm.indexOf('\n', mm.indexOf("its rig expects no refusals\"; fi", start)) + 1;
+  assert.ok(start > 0 && end > start, 'the step that finds the other branch\'s CL exists');
+  return mm.slice(start, end).replace(/^ {10}/gm, '');
+};
+
+test('other branch: map-mode finds the other branch\'s CL, hands it to decide, and outputs the rig input before the chain can stop', () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}expect_refused_other: \$\{\{ steps\.chain\.outputs\.expect_refused_other \}\}\n/);
+  assert.match(mm, /\n {6}OTHER_BUILDID: \$\{\{ inputs\.other_buildid \}\}\n/);
+  const find = mm.indexOf(OTHER_STEP_FROM);
+  const decideAt = mm.indexOf('node tool/ci/decide.mjs');
+  assert.ok(find > 0 && find < decideAt, 'the CL is found before decide runs');
+  assert.match(mm.slice(decideAt, decideAt + 500), /"\$\{test_flag\[@\]\}" "\$\{other_flag\[@\]\}"/);
+  const out = mm.indexOf('echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"');
+  assert.ok(out > mm.indexOf('echo "expect_refused=$expect_refused"') && out < mm.indexOf('nothing exported or signed'), 'set ahead of the exit that ends a chain whose decision is not M');
+  assert.ok(mm.includes("grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'"));
+  // The watcher hands the id over, from the poll; both triggers of the check declare the input.
+  assert.match(watch, /\n {6}other_buildid: \$\{\{ matrix\.other_buildid \}\}\n/);
+  assert.match(call, /\n {6}other_buildid:\n {8}description: [^\n]*\n {8}type: string\n {8}default: ''\n/);
+  assert.match(dispatch, /\n {6}other_buildid:\n {8}description: [^\n]*\n {8}type: string\n {8}default: ''\n/);
+});
+
+test('other branch: the CL comes from the watcher\'s build id through the candidate map\'s build rows, else from the recorded state', { skip: !bash }, () => {
+  const header = (() => {
+    const m = emptyMap('loader', 127004);
+    addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
+    addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
+    return emit(m);
+  })();
+  const run = ({ branch, otherBuildid = '', state = { apps: { 1631270: { branches: { public: { buildid: '25646882' }, public_test_branch: { buildid: '26271156' } } } } } }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'other-cl-'));
+    cpSync(here, join(dir, 'tool', 'ci'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
+    mkdirSync(join(dir, 'tool', 'state'), { recursive: true });
+    if (state) writeFileSync(join(dir, 'tool', 'state', 'steam.json'), JSON.stringify(state));
+    writeFileSync(join(dir, 'version_map.generated.h'), header);
+    const script = `set -euo pipefail\nheader=version_map.generated.h\n${otherStep()}\nprintf 'cl=[%s] flag=[%s] id=[%s]\\n' "$other_cl" "\${other_flag[*]}" "$other_buildid"`;
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, BRANCH: branch, OTHER_BUILDID: otherBuildid } });
+    return { status: r.status, out: r.stdout, err: r.stderr };
+  };
+  // A public check, the watcher saw the test branch on build 26271156 (CL-129402).
+  const a = run({ branch: 'public', otherBuildid: '26271156' });
+  assert.equal(a.status, 0, a.err);
+  assert.match(a.out, /cl=\[129402\] flag=\[--other-cl 129402\] id=\[26271156\]/);
+  assert.match(a.out, /public_test_branch runs build 26271156 = CL-129402/);
+  // A test-branch check without the input: public's recorded build is the id, and its row is CL-127004.
+  const b = run({ branch: 'public_test_branch' });
+  assert.equal(b.status, 0, b.err);
+  assert.match(b.out, /cl=\[127004\] flag=\[--other-cl 127004\] id=\[25646882\]/);
+  // The input wins over the recorded state.
+  assert.match(run({ branch: 'public', otherBuildid: '25646882' }).out, /cl=\[127004\]/);
+  // A build the map has never measured, a non-number and a missing state name no CL: nothing is declared.
+  for (const odd of [{ otherBuildid: '999' }, { otherBuildid: 'not-a-build' }, { otherBuildid: '', state: null }, { otherBuildid: '', state: {} }]) {
+    const r = run({ branch: 'public', ...odd });
+    assert.equal(r.status, 0, r.err);
+    assert.match(r.out, /cl=\[\] flag=\[\]/, JSON.stringify(odd));
+    assert.match(r.out, /::notice title=Other branch unknown::public_test_branch build/);
+  }
+});
+
+test('other branch: the step turns decision.json into the other rig\'s input, and refuses a name outside the rig\'s grammar', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          expect_refused_other="$(node -p');
+  const end = mm.indexOf('\n', mm.indexOf('Loader refuses on CL::expected refusals on $other_branch')) + 1;
+  assert.ok(start > 0 && end > start);
+  const snippet = mm.slice(start, end).replace(/^ {10}/gm, '');
+  const run = (decision) => {
+    const dir = mkdtempSync(join(tmpdir(), 'expect-other-'));
+    writeFileSync(join(dir, 'decision.json'), JSON.stringify(decision));
+    const r = spawnSync(bash, ['-c', `other_branch=public_test_branch; other_cl=129402\n${snippet}`], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_OUTPUT: join(dir, 'out.txt') } });
+    return { status: r.status, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '', log: r.stdout };
+  };
+  const a = run({ decision: 'HOLD', expectRefused: [], expectRefusedOther: ['MiniMap'] });
+  assert.deepEqual([a.status, a.out], [0, 'expect_refused_other=MiniMap\n']);
+  assert.match(a.log, /expected refusals on public_test_branch \(CL-129402\): MiniMap/);
+  assert.equal(run({ decision: 'M', expectRefusedOther: ['Codex', 'MiniMap'] }).out, 'expect_refused_other=Codex MiniMap\n');
+  assert.equal(run({ decision: 'M', expectRefusedOther: [] }).out, 'expect_refused_other=\n');
+  assert.equal(run({ decision: 'M', expectRefused: ['MiniMap'] }).out, 'expect_refused_other=\n', 'no prediction for the other branch means nothing is declared there');
+  const bad = run({ decision: 'M', expectRefusedOther: ['Mini Map; rm'] });
+  assert.deepEqual([bad.status, bad.out], [2, '']);
+});
+
+test('other branch: a plugin the rule does not predict is never declared, and the rig verdict still fails it', () => {
+  // The workflow feeds the rig exactly decide\'s list: nothing is added by hand, nothing is read from a name list.
+  const mm = job('map-mode');
+  assert.ok(!/expect_refused_other="[A-Za-z]/.test(mm), 'no literal plugin name in the output');
+  assert.ok(!/MiniMap/.test(otherStep()), 'the CL step names no plugin');
+  // verdict.ps1: a refusal line for a plugin whose expectRefused is false fails plugin_not_refused_<plugin>;
+  // ci/test-verdict.ps1 (refused_not_loaded, refused_plugin_unlisted) runs that.
+  const verdict = readFileSync(join(here, 'verdict.ps1'), 'utf8');
+  assert.match(verdict, /Add-Check "plugin_not_refused_\$\(\$s\.Repo\)"/);
+  assert.match(verdict, /Add-Check 'no_unexpected_refusal'/);
+});
+
+test('review alert: a pinned plugin with a newer release is a loud line, deduplicated, and it neither fails the chain nor withholds the passed mark', { skip: !bash }, () => {
+  const line = (n, t) => `- new ${n} release ${t} waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in \`ci/plugin-names.json\``;
+  const a = alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0', OTHER_RIG_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.equal(a.status, 0, a.stderr);
+  assert.ok(a.md.includes(line('MiniMap', 'v1.3.0') + '\n'), a.md);
+  assert.equal(a.md.split(line('MiniMap', 'v1.3.0')).length, 2, 'once, though both rigs reported it');
+  assert.match(a.md, /^@msantoro12 branch `public_test_branch`/);
+  // Loud: an alert is raised. Not a failure: the chain still counts as passed.
+  assert.deepEqual(a.outputs, { alert: 'true', passed: 'true', ready: 'false' });
+  // Two plugins, and tokens outside the grammar are dropped.
+  const b = alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0 Other=2.0.0 bad;rm=1 =x', OTHER_RIG_REVIEW: '' } });
+  assert.ok(b.md.includes(line('MiniMap', 'v1.3.0')) && b.md.includes(line('Other', '2.0.0')));
+  assert.ok(!b.md.includes('bad;rm') && !b.md.includes('=x'), b.md);
+  // A real problem next to it still fails the chain (passed false) and keeps its own line.
+  const c = alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0', OTHER_RIG_RESULT: 'failure', OTHER_RIG_VERDICT: 'FAIL', OTHER_RIG_REASON: 'plugin_not_refused_MiniMap: FOUND', RIG_GATE_RESULT: 'failure' } });
+  assert.deepEqual(c.outputs, { alert: 'true', passed: 'false', ready: 'false' });
+  assert.match(c.md, /client rig gate\*\* failed/);
+  assert.ok(c.md.includes(line('MiniMap', 'v1.3.0')));
+  // With the autopilot off and everything passing, the ready note is still written beside the review line.
+  const d = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.deepEqual(d.outputs, { alert: 'true', passed: 'true', ready: 'true' });
+  assert.match(d.ready, /Ready, publish held/);
+  // No review output, no line.
+  assert.equal(alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: '', OTHER_RIG_REVIEW: '' } }).outputs.alert, 'false');
+});
+
+test('review alert: the alert job reads the review output of both rigs', () => {
+  const al = job('alert');
+  assert.match(al, /\n {6}BRANCH_RIG_REVIEW: \$\{\{ needs\.rig-branch\.outputs\.review \}\}\n/);
+  assert.match(al, /\n {6}OTHER_RIG_REVIEW: \$\{\{ needs\.rig-other\.outputs\.review \}\}\n/);
 });

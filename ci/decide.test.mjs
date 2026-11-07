@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, loaderRefusal, LIMITS, SDK_GLOBALS } from './decide.mjs';
+import { decide, expectedRefusals, loaderRefusal, LIMITS, SDK_GLOBALS } from './decide.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const NOW = Date.parse('2026-10-29T12:00:00Z');
@@ -850,4 +850,85 @@ test("cli: the decision names the plugins the rig must expect refused, in the ri
   assert.ok(r.out.expectRefused.every((n) => /^[A-Za-z0-9_.-]+$/.test(n)));
   // An early HOLD, with no plugin picture at all: the list is empty, never missing.
   assert.deepEqual(decide(base({ g1: { ok: false } })).expectRefused, []);
+});
+
+// ------------------------------------------------------------ leg C2: expected refusals on the other branch
+// The rig of the other Steam branch declares what the loader's own rule predicts for the build that
+// branch runs (--other-cl), from the plugin metadata this check scanned. MiniMap is interface v70, made
+// for CL-127004: refused on CL-129402 (the test branch), loaded on CL-127004 (public).
+
+const PUBLIC_CL = { g3: ok({ ok: true, cl: '127004', previousCl: '126000' }) };
+const v = (name, interfaceVersion, gameBuild, extra = {}) => ({ name, verdict: 'PASS', plugin: { interfaceVersion, gameBuild, hasLoadHooks: true }, ...extra });
+
+test('other branch: a public check while the test branch is on CL-129402 declares MiniMap for the other rig', () => {
+  const r = decide(run3Inputs({ ...PUBLIC_CL, otherCl: 129402 }));
+  assert.deepEqual(r.expectRefused, [], 'nothing is refused on the build this check is for');
+  assert.deepEqual(r.expectRefusedOther, ['MiniMap']);
+  assert.equal(r.otherCl, 129402);
+  // BetterCheats (migrated) is not listed: only what the loader predicts.
+  assert.ok(!r.expectRefusedOther.includes('BetterCheats'));
+});
+
+test('other branch: a test-branch check declares nothing for public, where MiniMap loads', () => {
+  const r = decide(run3Inputs({ otherCl: 127004 }));
+  assert.deepEqual(r.expectRefused, ['MiniMap'], 'refused on the build this check is for');
+  assert.deepEqual(r.expectRefusedOther, [], 'public is strict: nothing is expected refused there');
+  assert.equal(r.otherCl, 127004);
+});
+
+test('other branch: with no other CL the decision carries no prediction (strict: any refusal there fails)', () => {
+  const r = decide(run3Inputs(PUBLIC_CL));
+  assert.equal(r.expectRefusedOther, undefined);
+  assert.equal(r.otherCl, undefined);
+  assert.equal(decide(run3Inputs({ ...PUBLIC_CL, otherCl: null })).expectRefusedOther, undefined);
+});
+
+test('other branch: the same CL on both branches gives the same list as the check itself', () => {
+  const r = decide(run3Inputs({ otherCl: 129402 }));
+  assert.deepEqual(r.expectRefusedOther, r.expectRefused);
+  // The scanner's own REFUSED verdict counts there, as it does for the check's CL.
+  const refused = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), otherCl: 129402, plugins: ok({ status: 'fail', plugins: [{ name: 'WAILA', verdict: 'REFUSED' }, { name: 'Codex', verdict: 'PASS' }] }) }));
+  assert.deepEqual(refused.expectRefusedOther, ['WAILA']);
+});
+
+test('other branch: only the loader rule predicts a refusal; what is specific to the scanned build predicts none', () => {
+  // The scanner's REFUSED verdict and a probe note are about the scanned CL (129402), not another build.
+  const noted = v('Noted', 74, 'CL-129402', { note: "Needs an update to run on CL-129402: it does not declare PLUGIN_MAP_MIGRATED, so it would read this game's data where CL-127004 had it." });
+  const refused = { name: 'Refused', verdict: 'REFUSED', plugin: { interfaceVersion: 74, gameBuild: 'CL-129402' } };
+  assert.deepEqual(expectedRefusals([noted, refused], 128000), []);
+  assert.deepEqual(expectedRefusals([noted], 129402), ['Noted'], 'its own CL: the loader note says so');
+  // A v72+ plugin of unknown migrated flag, off its build: not predicted, so a refusal there stays unexpected.
+  assert.deepEqual(expectedRefusals([v('Unknown', 74, 'CL-127004')], 129402), []);
+  // The flag known (built here): predicted on the other build.
+  assert.deepEqual(expectedRefusals([v('Plain', 74, 'CL-127004', { rule3: { migrated: false } }), v('Migrated', 74, 'CL-127004', { rule3: { migrated: true } })], 129402), ['Plain']);
+  // v70/v71 are made for CL-127004 whatever they say.
+  assert.deepEqual(expectedRefusals([v('Old70', 70, 'CL-127004 (none declared)'), v('Old71', 71, 'CL-129402')], 129402), ['Old70', 'Old71']);
+  assert.deepEqual(expectedRefusals([v('Old70', 70, 'CL-127004 (none declared)')], 127004), []);
+});
+
+test('other branch: the list is sorted and unique, and junk rows or CLs predict nothing', () => {
+  const rows = [v('Zed', 70, 'CL-127004'), v('Alpha', 70, 'CL-127004'), v('Zed', 70, 'CL-127004'), null, { verdict: 'PASS' }, { name: '', plugin: { interfaceVersion: 70 } }];
+  assert.deepEqual(expectedRefusals(rows, 129402), ['Alpha', 'Zed']);
+  assert.deepEqual(expectedRefusals(rows, 0), []);
+  assert.deepEqual(expectedRefusals(rows, null), []);
+  assert.deepEqual(expectedRefusals(undefined, 129402), []);
+  assert.deepEqual(expectedRefusals({ plugins: rows }, 129402), []);
+});
+
+test('other branch: an early HOLD with no plugin picture still gives a list, never a crash', () => {
+  const r = decide(base({ otherCl: 129402, plugins: { error: 'unreadable' } }));
+  assert.equal(r.decision, 'HOLD');
+  assert.deepEqual(r.expectRefusedOther, []);
+});
+
+test('cli: --other-cl puts the prediction in decision.json in the rig grammar, and a bad value is a usage error', () => {
+  const fieldsFile = join(mkdtempSync(join(tmpdir(), 'decide-fields-')), 'fields.json');
+  writeFileSync(fieldsFile, JSON.stringify(run3('field-rows.json')));
+  const files = cliFiles({ g3: { ok: true, cl: '127004', previousCl: '126000' }, plugins: { status: 'fail', plugins: [run3Plugin('BetterCheats'), run3Plugin('MiniMap')] } });
+  const r = runCli(files, ['--fields', fieldsFile, '--other-cl', '129402']);
+  assert.deepEqual(r.out.expectRefusedOther, ['MiniMap']);
+  assert.equal(r.out.otherCl, 129402);
+  assert.ok(r.out.expectRefusedOther.every((n) => /^[A-Za-z0-9_.-]+$/.test(n)));
+  assert.equal(runCli(files, ['--fields', fieldsFile]).out.expectRefusedOther, undefined);
+  for (const bad of ['abc', '0', '-1', '12.5', '']) assert.equal(runCli(files, ['--other-cl', bad]).status, 2, `--other-cl ${JSON.stringify(bad)}`);
 });

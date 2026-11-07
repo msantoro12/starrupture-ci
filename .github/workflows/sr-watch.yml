@@ -235,6 +235,7 @@ jobs:
     with:
       branch: ${{ matrix.branch }}
       buildid: ${{ matrix.buildid }}
+      other_buildid: ${{ matrix.other_buildid }}
       pr: ${{ needs.poll.outputs.pr }}
       map_mode: true
     secrets:
