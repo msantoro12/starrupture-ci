@@ -162,16 +162,19 @@ function Start-Login {
   [IO.File]::WriteAllBytes($cfg, $cacheBytes)
   $script:scBuf = ''
   [void]$script:scAll.Clear()
+  # steamcmd's own logs show the login when its piped output lags. Old ones would match falsely.
+  Remove-Item -LiteralPath (Join-Path $root 'logs') -Recurse -Force -ErrorAction SilentlyContinue
   Add-Content -LiteralPath $scLog -Value "--- login $(Get-Date -Format HH:mm:ss)"
   $scArgs = "+@ShutdownOnFailedCommand 0 +@NoPromptForPassword 1 +force_install_dir `"$Install`" +login $user"
   $script:sc = [RigPump]::new($steamcmd, $scArgs, $root)
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $ok = $false
-  while ($sw.Elapsed.TotalSeconds -lt 120) {
-    Start-Sleep -Seconds 1
+  while ($sw.Elapsed.TotalSeconds -lt 360) {
+    Start-Sleep -Seconds 2
     Pump-Steamcmd
     $t = $script:scAll.ToString()
     if ($t -match 'Waiting for user info\.\.\.OK') { $ok = $true; break }
+    if ((Read-SteamLog 'connection_log.txt') -match '(?i)Logged On|LogOnResponse.*OK') { $ok = $true; break }
     if ($t -match 'Login Failure|Logon Denied|Rate Limit|Invalid Password|FAILED \(') { break }
     if ($script:sc.P.HasExited) { break }
   }
@@ -189,6 +192,11 @@ function Send-Steamcmd([string]$cmd, [int]$waitSec) {
   Start-Sleep -Seconds $waitSec
   Pump-Steamcmd
   $script:scAll.ToString().Substring($from)
+}
+
+function Read-SteamLog([string]$name) {
+  $p = Join-Path $root "logs\$name"
+  if (Test-Path -LiteralPath $p) { Read-Shared $p } else { '' }
 }
 
 function Read-Shared([string]$path) {
@@ -247,7 +255,7 @@ function Run-Attempt([string]$label, [scriptblock]$launch) {
   $sawGame = $false
   $goneAt = $null
   $launchInfo = & $launch
-  $noGameCap = if ($label -eq 'A') { 60 } else { 120 }
+  $noGameCap = if ($label -eq 'B') { 120 } else { 60 }
 
   while ($sw.Elapsed.TotalSeconds -lt $CapSec) {
     Start-Sleep -Seconds 2
@@ -296,7 +304,7 @@ function Run-Attempt([string]$label, [scriptblock]$launch) {
   $reached = @()
   foreach ($s in $stages) {
     $p = Join-Path $mlLogs $s[1]
-    if ((Test-Path -LiteralPath $p) -and ((Read-Shared $p) -match $s[2])) { $reached += $s[0] }
+    if ((Test-Path -LiteralPath $p) -and ((Read-Shared $p) -cmatch $s[2])) { $reached += $s[0] }
   }
   # The engine log itself never leaves the runner: matching lines only.
   $engine = @()
@@ -331,6 +339,11 @@ function Launch-Direct {
   'direct'
 }
 
+function Launch-WithAppId {
+  $env:SteamAppId = '1631270'
+  try { Launch-Direct } finally { Remove-Item Env:SteamAppId }
+}
+
 function Launch-ViaSteamcmd {
   $found = Send-Steamcmd 'find app_' 5
   Say "find app_ returned $($found.Length) chars (see steamcmd-session.log)"
@@ -350,10 +363,13 @@ try {
     switch ($a) {
       'A' { Watch-Config 'before A'; $hit = Run-Attempt 'A' { Launch-Direct } | Select-Object -Last 1 }
       'B' {
-        if (Start-Login) { Start-Sleep -Seconds 10; Watch-Config 'before B'; $hit = Run-Attempt 'B' { Launch-ViaSteamcmd } | Select-Object -Last 1 } else { Say 'B skipped: no login' }
+        if ((Start-Login) -or (Steamcmd-Alive)) { Start-Sleep -Seconds 10; Watch-Config 'before B'; $hit = Run-Attempt 'B' { Launch-ViaSteamcmd } | Select-Object -Last 1 } else { Say 'B skipped: steamcmd is gone' }
       }
       'C' {
-        if (Start-Login) { Start-Sleep -Seconds 10; Watch-Config 'before C'; $hit = Run-Attempt 'C' { Launch-Direct } | Select-Object -Last 1 } else { Say 'C skipped: no login' }
+        if ((Start-Login) -or (Steamcmd-Alive)) { Start-Sleep -Seconds 10; Watch-Config 'before C'; $hit = Run-Attempt 'C' { Launch-Direct } | Select-Object -Last 1 } else { Say 'C skipped: steamcmd is gone' }
+      }
+      'D' {
+        if ((Start-Login) -or (Steamcmd-Alive)) { Start-Sleep -Seconds 10; Watch-Config 'before D'; $hit = Run-Attempt 'D' { Launch-WithAppId } | Select-Object -Last 1 } else { Say 'D skipped: steamcmd is gone' }
       }
       default { Say "Unknown attempt $a" }
     }
@@ -368,6 +384,8 @@ try {
   }
   Pump-Steamcmd
   if ($script:scBuf) { Add-Content -LiteralPath $scLog -Value (Scrub $script:scBuf) }
+  (Read-SteamLog 'console_log.txt') -split "`r?`n" | Select-Object -First 400 | ForEach-Object { Add-Content -LiteralPath (Join-Path $OutDir 'steamcmd-console_log.txt') -Value (Scrub $_) }
+  (Read-SteamLog 'connection_log.txt') -split "`r?`n" | Where-Object { $_ -match '(?i)Logged|LogOn' } | Select-Object -First 40 | ForEach-Object { Add-Content -LiteralPath (Join-Path $OutDir 'steamcmd-connection_log.txt') -Value (Scrub ($_.Substring(0, [math]::Min(200, $_.Length)))) }
   Say "config.vdf on disk after steamcmd exit: $(Test-Path -LiteralPath $cfg); deletions during the attempts: $($script:cfgEvents)"
   $cacheBytes = $null
 }
