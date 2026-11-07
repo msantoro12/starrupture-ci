@@ -144,6 +144,8 @@ test('release files: cached by repo and tag, no manifest anywhere in the rig', (
   assert.match(wf, /key: sr-client-rig-dl-\$\{\{ steps\.res\.outputs\.key \}\}/);
   assert.match(setup, /Release assets downloaded in this run: /);
   assert.match(setup, /-Client\.dll/);
+  // A restore key may bring back other tags' files: the fetch keeps exactly the plan's files.
+  assert.match(setup, /Files from other releases removed from the cache folder/);
   assert.match(setup, /StarRupture-ModLoader-Client-/);
   // The loader's update manifest, by any name or address, is not in any file of the rig.
   const manifestUrl = /manifest\.json|[\w-]*manifest[\w.-]*\.(?:json|xml|txt)|raw\.githubusercontent|releases\/download\/[^\s'"]*manifest|update[-_]?feed/i;
