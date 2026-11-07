@@ -42,7 +42,10 @@ name: SR client check
 # account. Its steamcmd login cache (config.vdf) is the secret
 # STEAM_CI_LOGIN_CACHE in the environment `steam-client` (deployment branch:
 # main only), made by steam-ci-login.ps1 on the owner's PC. No password ever
-# reaches CI. Without the secret the check is skipped and says so, green.
+# reaches CI. A caller must pass STEAM_CI_USERNAME and STEAM_CI_LOGIN_CACHE by
+# name: a reusable workflow sees an environment secret only when its caller
+# passes it, and an unpassed one reads as empty. Without the login the check
+# job fails with the cause; it never skips green.
 #
 # Game files only live on the runner: never cached, never uploaded.
 # No pull_request trigger: the login secret is never reachable from a PR.
@@ -101,10 +104,20 @@ on:
         description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
         type: boolean
         default: false
-    # A caller passes only this one; the Steam login, the fork deploy keys and
-    # the release key are environment secrets (steam-client, fork-push,
-    # vmap-sign), read by the one job in that environment.
+    # A called job sees an environment secret only when the caller passes it
+    # by name (the calling job cannot set an environment; the value comes from
+    # the environment of the called job that reads it). Unpassed, it reads as
+    # empty, with no error. The Steam login is required, so a caller that leaves
+    # it out fails at the call instead of checking nothing. The fork deploy keys
+    # and the release key (fork-push, vmap-sign) are not declared, so a call
+    # gives auto-apply and publish no key; sr-watch keeps publish off.
     secrets:
+      STEAM_CI_USERNAME:
+        description: 'Steam CI account name (environment steam-client); pass it by name'
+        required: true
+      STEAM_CI_LOGIN_CACHE:
+        description: 'Saved steamcmd login cache (environment steam-client); pass it by name'
+        required: true
       VMAP_SIGN_KEY_TEST:
         description: 'TEST signing key (k1) for the map-mode dry run'
         required: false
@@ -570,11 +583,13 @@ jobs:
       BRANCH: ${{ inputs.branch }}
       EXPECTED_BUILDID: ${{ inputs.buildid }}
     steps:
-      - name: Is a Steam login configured?
+      # Without the login there is nothing to check: fail with the cause, never skip green.
+      - name: Check the Steam login secrets are set
         id: gate
         shell: pwsh
         env:
           HAS_LOGIN: ${{ secrets.STEAM_CI_LOGIN_CACHE != '' && secrets.STEAM_CI_USERNAME != '' }}
+          CALLED: ${{ !contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           if ($env:HAS_LOGIN -eq 'true') {
@@ -582,10 +597,15 @@ jobs:
             exit 0
           }
           "has_login=false" >> $env:GITHUB_OUTPUT
-          Write-Host "::notice title=Client check skipped::No Steam login for CI is configured (environment steam-client has no STEAM_CI_LOGIN_CACHE / STEAM_CI_USERNAME). Run steam-ci-login.ps1 once to set it up."
-          [ordered]@{ schema = 1; status = 'skipped'; branch = $env:BRANCH; expectedBuildid = $env:EXPECTED_BUILDID;
-                      reason = 'no Steam login configured for CI' } |
+          $reason = if ($env:CALLED -eq 'true') {
+            'the Steam login secrets reached the called check empty: the calling job must pass STEAM_CI_USERNAME and STEAM_CI_LOGIN_CACHE by name under secrets:, and environment steam-client must hold them'
+          } else {
+            'environment steam-client has no STEAM_CI_USERNAME or STEAM_CI_LOGIN_CACHE: run steam-ci-login.ps1 once to set it up'
+          }
+          Write-Host "::error title=No Steam login::The client build was not checked: $reason."
+          [ordered]@{ schema = 1; status = 'no-login'; branch = $env:BRANCH; expectedBuildid = $env:EXPECTED_BUILDID; reason = $reason } |
             ConvertTo-Json | Set-Content out\result.json -Encoding utf8
+          exit 1
 
       - name: Download the client build
         id: dl
@@ -1660,6 +1680,13 @@ jobs:
         id: write
         run: |
           set -euo pipefail
+          # No scanner result means the check did not measure the build: name
+          # its cause instead of failing on the missing file.
+          if [ ! -f res/scanner.json ]; then
+            why="$(node -p "const r = JSON.parse(require('fs').readFileSync('res/result.json', 'utf8')); (r.status || 'unknown') + (r.reason ? ': ' + r.reason : '')" 2>/dev/null || echo 'no result.json')"
+            echo "::error title=No scanner result::The client check did not measure the build ($why); nothing to map."
+            exit 2
+          fi
           # The build Steam installed names the build row; the watcher's id is
           # only the fallback.
           buildid="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).download?.buildid || ''")"
@@ -1993,6 +2020,13 @@ jobs:
           name: map-mode-${{ inputs.branch }}
           path: chain
 
+      - name: Download the check result
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: client-check-${{ inputs.branch }}
+          path: res
+
       - name: Work out what needs attention
         id: what
         run: |
@@ -2003,6 +2037,9 @@ jobs:
             const lines = [];
             const jobs = { "build-scanner": e.BUILD_RESULT, "plugin-plan": e.PLAN_RESULT, "check": e.CHECK_RESULT, "map mode": e.MAP_MODE_RESULT, "publish the feed": e.PUBLISH_RESULT };
             for (const [name, result] of Object.entries(jobs)) if (result === "failure") lines.push("- job **" + name + "** failed");
+            let r = null;
+            try { r = JSON.parse(fs.readFileSync("res/result.json", "utf8")); } catch {}
+            if (e.CHECK_RESULT === "failure") lines.push("  - cause: " + (r?.reason || (r?.status ? "check status " + r.status : "no check result; see the run log")));
             let d = null;
             try { d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8")); } catch {}
             if (!d && e.MAP_MODE_RESULT === "success") lines.push("- map mode finished without a decision");
@@ -2013,7 +2050,7 @@ jobs:
               if (!nothingNew && !expectedTest) lines.push("- decide: **HOLD** on CL-" + (d.cl ?? "?"), ...reasons.map((r) => "  - " + r));
             }
             if (!lines.length) { console.log("Nothing to alert on."); process.exit(0); }
-            const md = ["Branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, "", "Details are in the run summary and the map-mode artifact."];
+            const md = ["Branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, "", "Details are in the run summary and the map-mode artifact. The watcher does not check a build again while its update PR is open; once the cause is fixed: `gh workflow run sr-watch.yml --ref main -f force=true`."];
             fs.writeFileSync("alert.md", md.join("\n") + "\n");
             fs.appendFileSync(e.GITHUB_OUTPUT, "alert=true\n");
           '
@@ -2186,8 +2223,8 @@ jobs:
           $md.Add('')
           $md.Add("Run: $($env:RUN_URL)")
           $md.Add('')
-          if ($status -eq 'skipped') {
-            $md.Add('No Steam login is configured for CI (environment `steam-client` has no `STEAM_CI_LOGIN_CACHE`), so the new client build was not checked offline. The owner sets it up once with `steam-ci-login.ps1`.')
+          if ($status -eq 'no-login') {
+            $md.Add("The client build was not checked: $($r.reason).")
           } elseif ($r) {
             $dl = $r.download; $ck = $r.checks
             $md.Add('| Check | Result |')
@@ -2359,8 +2396,12 @@ jobs:
             $line = "Steam CI login saved $($env:LOGIN_AT); assumed to last about $($env:LOGIN_DAYS) days (until about $($exp.ToString('yyyy-MM-dd')), $left days left)."
             if ($left -lt [int]$env:WARN_DAYS) { $line = "**Warning:** $line Run ``steam-ci-login.ps1 -Renew`` before then." }
             $md.Add($line)
-          } elseif ($status -ne 'skipped') {
+          } elseif ($status -ne 'no-login') {
             $md.Add('Steam CI login age unknown (repo variable `STEAM_CI_LOGIN_AT` is not set).')
+          }
+          if ($env:CHECK_RESULT -ne 'success') {
+            $md.Add('')
+            $md.Add('The watcher does not check a build again while its update PR is open. Once the cause is fixed: `gh workflow run sr-watch.yml --ref main -f force=true`.')
           }
           $md.Add('')
           $md.Add('Offline check of the downloaded build only: the game is never started. Plugin checks run each plugin''s load hook and stop any call it makes into game code. Game files stay on the runner.')
