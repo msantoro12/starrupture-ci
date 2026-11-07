@@ -17,7 +17,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const read = (...p) => readFileSync(join(here, '..', ...p), 'utf8').replace(/\r\n/g, '\n');
 const extract = read('.github', 'workflows', 'sr-data-extract.yml');
 const rig = read('.github', 'workflows', 'sr-client-rig.yml');
-const launch = read('ci', 'client-rig-launch.ps1');
+// The launch script without its comment lines: a call that is commented out must not count.
+const launch = read('ci', 'client-rig-launch.ps1').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
 
 const noComments = (s) => s.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
 const at = extract.indexOf('\njobs:\n');
@@ -30,7 +31,7 @@ const buildJob = jobs.slice(buildAt, extractAt);
 const extractJob = jobs.slice(extractAt);
 
 test('the client rig workflow never passes -PayloadScript', () => {
-  assert.ok(!/PayloadScript/i.test(rig), 'sr-client-rig.yml must not mention -PayloadScript');
+  assert.ok(!/-Payload/i.test(rig), 'sr-client-rig.yml must not pass -PayloadScript (or an abbreviation of it)');
   assert.match(rig, /client-rig-launch\.ps1/, 'the rig still runs the launch script');
 });
 
@@ -53,9 +54,11 @@ test('the launch script checks the payload path against the workspace before any
   assert.match(fn, /\[A-Za-z\]\[A-Za-z0-9\+\.-\]\+:/, 'a URL scheme is refused');
   assert.match(fn, /StartsWith\(\$base \+/, 'a path outside the workspace is refused');
   assert.match(fn, /LinkType/, 'a link is refused');
+  assert.match(fn, /ReparsePoint/, 'a junction or symlink in a parent directory is refused');
   assert.match(fn, /\.ps1/, 'only a .ps1 is accepted');
   // And the -Check run exercises it.
   assert.match(launch, /the payload path '\$bad' was accepted/);
+  assert.match(launch, /a path through a junction was accepted/);
 });
 
 test('triggers: pull_request only for the build-only check, never pull_request_target or push', () => {
@@ -79,7 +82,7 @@ test('permissions: contents read for the whole workflow, nothing wider anywhere'
 
 test('the Steam job is never started by a pull request, on top of the environment rule', () => {
   const head = extractJob.slice(0, extractJob.indexOf('\n    steps:\n'));
-  assert.match(head, /\n {4}if: github\.event_name != 'pull_request'/);
+  assert.match(head, /\n {4}if: github\.event_name != 'pull_request' && !inputs\.build_only\n/);
   assert.match(head, /\n {4}environment: steam-client\n/);
   assert.match(head, /\n {4}needs: build\n/);
   assert.ok(!/\n {4}environment:/.test(buildJob), 'the build job has no environment');
@@ -97,6 +100,13 @@ test('the build job (the one a pull request runs) reads no secret and no secret 
   // Every checkout drops its credentials.
   const checkouts = buildJob.match(/actions\/checkout@/g).length;
   assert.equal(buildJob.match(/persist-credentials: false/g).length, checkouts);
+});
+
+test('the extractor runs only after a successful cleanup', () => {
+  const s = extractJob.split('\n      - ').find((x) => x.startsWith('name: Run the extractor\n'));
+  assert.ok(s, 'the extractor step exists');
+  assert.match(s, /\n {8}if: always\(\) && steps\.usmap\.outputs\.ok == 'true' && steps\.cleanup\.outcome == 'success'\n/);
+  assert.ok(extractJob.indexOf('id: cleanup') < extractJob.indexOf('id: extract'), 'cleanup comes first');
 });
 
 test('the build steps that compile pinned sources have a timeout', () => {

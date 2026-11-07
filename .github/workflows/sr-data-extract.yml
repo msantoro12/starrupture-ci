@@ -258,7 +258,7 @@ jobs:
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
-      EXTRACTOR_REF: ${{ inputs.extractor_ref }}
+      EXTRACTOR_REF: ${{ inputs.extractor_ref || 'ffc6eebd98b589bc53942de29ef3e76bebda9521' }}
       TOOLS_ARTIFACT: sr-data-tools-${{ github.run_id }}-${{ github.run_attempt }}
       DUMPER7_COMMIT: 4dafbe5487e144d7fdc85b5dae1e641995d734ec
     steps:
@@ -351,7 +351,7 @@ jobs:
       # After the cleanup: no Steam client, no login on the runner, and no secret in this step.
       - name: Run the extractor
         id: extract
-        if: always() && steps.usmap.outputs.ok == 'true'
+        if: always() && steps.usmap.outputs.ok == 'true' && steps.cleanup.outcome == 'success'
         shell: pwsh
         env:
           PAKS: ${{ steps.prep.outputs.paks }}

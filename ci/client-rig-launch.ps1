@@ -103,6 +103,12 @@ function Resolve-PayloadScript([string]$Path, [string]$Root, [string]$Cwd) {
     $item = Get-Item -LiteralPath $full -ErrorAction SilentlyContinue
     if (-not $item -or $item.PSIsContainer) { throw "-PayloadScript is not a file: $Path" }
     if ($item.LinkType) { throw "-PayloadScript must not be a link: $Path" }
+    # No link on the way either: a junction or symlink in a parent directory could lead outside.
+    $cur = $base
+    foreach ($part in $full.Substring($base.Length + 1).Split([char[]]@('\', '/'))) {
+        $cur = Join-Path $cur $part
+        if ((Get-Item -LiteralPath $cur -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "-PayloadScript must not go through a link ($cur): $Path" }
+    }
     $full
 }
 
@@ -245,6 +251,11 @@ if ($Check) {
             try { [void](Resolve-PayloadScript $bad $ws $ws) } catch { $refused = $true }
             if (-not $refused) { throw "the payload path '$bad' was accepted" }
         }
+        # A junction in a parent directory that leads outside the repository.
+        New-Item -ItemType Junction -Path (Join-Path $ws 'ci\jl') -Target "$ws-other" | Out-Null
+        $refused = $false
+        try { [void](Resolve-PayloadScript './ci/jl/p.ps1' $ws $ws) } catch { $refused = $true }
+        if (-not $refused) { throw 'a path through a junction was accepted' }
         $refused = $false
         try { [void](Resolve-PayloadScript './ci/p.ps1' '' $ws) } catch { $refused = $true }
         if (-not $refused) { throw 'a payload path was accepted with no workspace' }
