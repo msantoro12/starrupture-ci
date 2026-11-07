@@ -43,6 +43,10 @@ jobs:
             repo: msantoro12/StarRupture-Plugin-ProductionViewer
             sha: b395f13ac90e46a797c9339dc01e4971e6f3ecfb
             label: v0.17.0-fix.b395f13
+          - name: Waila
+            repo: msantoro12/StarRupture-Plugin-WAILA
+            sha: f559daeb73cf41c5502913607ccbec0e92ba7ee4
+            label: v0.20.0-fix.f559dae
     steps:
       - name: Check out the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -1,7 +1,8 @@
 # Spike 4: with the real Steam client signed in from the saved CI login, do the
 # icon stale-pointer fixes stop the crash under the icon code's tick, and does a
 # plain -dx11 launch of the released set hit it? Several launches in one client
-# session, each with fresh logs: CONTROL, FIX-ALL x2, FIX-G x2, DX11.
+# session, each with fresh logs: CONTROL-A, FIX-ALL x2 (Codex, ProductionViewer
+# and WAILA fixed), CONTROL-B.
 # Reads the login from STEAM_USER / STEAM_CACHE, then clears both from the
 # environment, so no launched process inherits them. Decides nothing for the
 # pipeline: it records what each stage did under -OutDir. Everything written or
@@ -539,14 +540,15 @@ function Set-Ini([bool]$uiOff, [string]$level = 'INFO') {
   Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value $ini -Encoding ascii -NoNewline
 }
 
-# The released Codex and ProductionViewer DLLs are kept aside; each attempt
-# gets the set it names: released, fixall (both fixed) or fixg (no Codex, fixed
-# ProductionViewer). The fix DLLs come from the fixes job's artifacts.
+# The released Codex, ProductionViewer and WAILA DLLs are kept aside; each attempt
+# gets the set it names: released or fixall (all three fixed). The fix DLLs come
+# from the fixes job's artifacts.
 $script:released = @{}
+$script:swapped = 'Codex', 'ProductionViewer', 'Waila'
 function Stash-Released {
   $dir = Join-Path $env:RUNNER_TEMP 'released'
   New-Item -ItemType Directory -Force $dir | Out-Null
-  foreach ($n in 'Codex', 'ProductionViewer') {
+  foreach ($n in $script:swapped) {
     $f = @(Get-ChildItem -LiteralPath (Join-Path $script:mlDir 'Plugins') -Filter "*$n*.dll")
     if ($f.Count -ne 1) { throw "Expected one $n DLL, found $($f.Count)" }
     Copy-Item -LiteralPath $f[0].FullName -Destination (Join-Path $dir $f[0].Name)
@@ -556,15 +558,10 @@ function Stash-Released {
 
 function Set-PluginSet([string]$set) {
   $plugins = Join-Path $script:mlDir 'Plugins'
-  foreach ($n in 'Codex', 'ProductionViewer') {
+  foreach ($n in $script:swapped) {
     $r = $script:released[$n]
     $dest = Join-Path $plugins $r.name
-    if ($set -eq 'fixg' -and $n -eq 'Codex') {
-      Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
-      Say "Plugin set ${set}: $n removed"
-      continue
-    }
-    $fix = ($set -eq 'fixall') -or ($set -eq 'fixg' -and $n -eq 'ProductionViewer')
+    $fix = ($set -eq 'fixall')
     $src = $r.stash
     if ($fix) {
       $f = @(Get-ChildItem -LiteralPath (Join-Path $FixDir "fix-$n") -Filter *.dll -ErrorAction SilentlyContinue)
@@ -630,19 +627,16 @@ try {
   if ($script:loginResult -ne 'live') {
     $verdict = "not portable or no login: $($script:loginResult)"
   } else {
-    $dx11 = '-dx11 -unattended -nosound -log -windowed -ResX=640 -ResY=360'
     # The first launch of earlier runs hit a Steam Error dialog; a relaunch passed.
     Say 'Letting the client settle for 90 s after sign-in'
     Start-Sleep -Seconds 90
     Stash-Released
     $results = @()
     foreach ($p in @(
-        @{ label = 'CONTROL';   line = $GameArgs; set = 'released'; plugins = 9 },
+        @{ label = 'CONTROL-A'; line = $GameArgs; set = 'released'; plugins = 9 },
         @{ label = 'FIX-ALL-1'; line = $GameArgs; set = 'fixall';   plugins = 9 },
         @{ label = 'FIX-ALL-2'; line = $GameArgs; set = 'fixall';   plugins = 9 },
-        @{ label = 'FIX-G-1';   line = $GameArgs; set = 'fixg';     plugins = 8 },
-        @{ label = 'FIX-G-2';   line = $GameArgs; set = 'fixg';     plugins = 8 },
-        @{ label = 'DX11';      line = $dx11;     set = 'released'; plugins = 9 })) {
+        @{ label = 'CONTROL-B'; line = $GameArgs; set = 'released'; plugins = 9 })) {
       if ((Get-Date) -gt $deadline -or $script:downloadTripped -or -not (Test-ActiveUser)) { Say "Stopping before attempt $($p.label): client signed in: $(Test-ActiveUser)"; break }
       Set-Ini $false 'INFO'
       Set-PluginSet $p.set
