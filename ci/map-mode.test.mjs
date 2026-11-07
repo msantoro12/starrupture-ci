@@ -794,6 +794,8 @@ test('assemble --carry --base runs from the command line', () => {
 const WAVE_ADD = { rva: 0x76b59b0, pattern: '48 89 5C 24 ?? 48 89 54 24 ?? 48 89 4C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B DA' };
 const WAVE_REMOVE = { rva: 0x76d7fd0, pattern: '48 89 5C 24 ?? 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 ?? 48 8B DA 48 89 54 24' };
 const FORK = 'msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work';
+const FORK_SHA = 'c0ffee0123456789abcdef0123456789abcdef01';
+const FORK_WHO = `key source ${FORK} (${FORK_SHA.slice(0, 12)}, checked the branch, not an installed DLL)`;
 const waveRow = (key, w) => ok(key, 'function', w.rva, { pattern: w.pattern, symbolRva: w.rva });
 
 function withWave({ released = true, fork = [['UCrWaveSubsystem::AddEntitiesToWave', WAVE_ADD], ['UCrWaveSubsystem::RemoveEntitiesFromWave', WAVE_REMOVE]] } = {}) {
@@ -805,7 +807,7 @@ function withWave({ released = true, fork = [['UCrWaveSubsystem::AddEntitiesToWa
       waveRow('UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave', WAVE_REMOVE),
     ]));
   }
-  releases.push(release(FORK, 'current', fork.map(([k, w]) => waveRow(k, w)), { keySource: true }));
+  releases.push(release(FORK, 'current', fork.map(([k, w]) => waveRow(k, w)), { keySource: true, commit: FORK_SHA }));
   input.components.push({ owner: 'WaveOptimiser', releases });
   return input;
 }
@@ -817,8 +819,8 @@ test('key source: a stale fork key on the symbol of a released key is dropped wi
   for (const k of ['UCrMassEnviroWaveSubsystem::AddEntitiesToWave', 'UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave']) assert.ok(find(out.text, k, 0), k);
   for (const k of ['UCrWaveSubsystem::AddEntitiesToWave', 'UCrWaveSubsystem::RemoveEntitiesFromWave']) assert.equal(find(out.text, k, 0), undefined, `${k} gets no row`);
   assert.deepEqual(out.alerts, [
-    `key source ${FORK} asks for UCrWaveSubsystem::AddEntitiesToWave at 0x76B59B0, which the released map names UCrMassEnviroWaveSubsystem::AddEntitiesToWave: that fork branch is stale`,
-    `key source ${FORK} asks for UCrWaveSubsystem::RemoveEntitiesFromWave at 0x76D7FD0, which the released map names UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave: that fork branch is stale`,
+    `${FORK_WHO}: asks for UCrWaveSubsystem::AddEntitiesToWave at 0x76B59B0, which the released map names UCrMassEnviroWaveSubsystem::AddEntitiesToWave; that branch is stale`,
+    `${FORK_WHO}: asks for UCrWaveSubsystem::RemoveEntitiesFromWave at 0x76D7FD0, which the released map names UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave; that branch is stale`,
   ]);
   assert.ok(out.notes.some((n) => n.startsWith('UCrWaveSubsystem::AddEntitiesToWave: asked for by key source') && n.includes('UCrMassEnviroWaveSubsystem::AddEntitiesToWave')));
 });
@@ -869,4 +871,27 @@ test('key source: assemble marks the release, and the alerts reach the report an
   assert.equal(JSON.parse(readFileSync(join(wdir, 'r.json'), 'utf8')).alerts.length, 2);
   spawnSync(process.execPath, [TOOL, 'complete', join(wdir, 'h.h'), '--cl', '130000', '--report', join(wdir, 'r.json')], { encoding: 'utf8', windowsHide: true });
   assert.equal(JSON.parse(readFileSync(join(wdir, 'r.json'), 'utf8')).alerts.length, 2);
+});
+
+test('key source: a dropped key that an earlier build has a row for is accounted for in absences, so complete still passes', () => {
+  const seeded = parse(header(), 'the header');
+  addFunction(seeded, { key: 'UCrWaveSubsystem::AddEntitiesToWave', kind: 1, cl: 128786, pattern: WAVE_ADD.pattern, rva: WAVE_ADD.rva });
+  const out = mapMode(emit(seeded), withWave());
+  assert.deepEqual(out.problems, []);
+  assert.equal(find(out.text, 'UCrWaveSubsystem::AddEntitiesToWave', 0), undefined);
+  assert.deepEqual(out.absences.map((a) => a.key), ['UCrWaveSubsystem::AddEntitiesToWave', 'UCrWaveSubsystem::RemoveEntitiesFromWave']);
+  const done = completeness(parse(out.text, 'the header'), 130000, out.absences);
+  assert.deepEqual(done.missing, []);
+});
+
+test('key source: a dropped key whose old pattern lands inside the symbol does not refuse the write', () => {
+  const input = withWave({ fork: [['UCrWaveSubsystem::AddEntitiesToWave', { ...WAVE_ADD, rva: WAVE_ADD.rva + 0x20 }]] });
+  input.components[2].releases[1].rows[0].symbolRva = '0x' + WAVE_ADD.rva.toString(16);
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.alerts.length, 1);
+  // A plan plugin's key off the start of its symbol still refuses.
+  const plan = withWave({ released: false, fork: [] });
+  plan.components[2].releases.push(release('current', 'current', [ok('UCrPlan::Inside', 'function', WAVE_ADD.rva + 0x20, { symbolRva: '0x' + WAVE_ADD.rva.toString(16) })]));
+  assert.match(mapMode(header(), plan).problems[0], /UCrPlan::Inside: lands at 0x76B59D0, off the start of its symbol/);
 });

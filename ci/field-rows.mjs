@@ -142,7 +142,7 @@ export function parseUses(text, where = 'uses') {
 
 // Plans the rows. next/base: arrays of { key, result, offset?, size?, boolMask? };
 // uses: parseUses() or null. Returns { problems, rows, absent, covered, notes, degraded }.
-export function planFieldRows(keys, next, base, cl, uses = null) {
+export function planFieldRows(keys, next, base, cl, uses = null, sources = new Map()) {
   const problems = [];
   const notes = [];
   const alerts = [];
@@ -231,7 +231,8 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
     const compiled = compiledAll.filter((o) => !isKeySource(o));
     for (const o of compiledAll.filter(isKeySource)) {
       notes.push(`class ${m.key}: ${change}; key source ${o} compiles its size`);
-      alerts.push(`${o} key source compiles the size of ${m.key}, which changed on CL-${cl}: that build needs SR_SIZE_CHECK or live`);
+      const src = sources.get(o);
+      alerts.push(`key source ${src?.tag ?? o} (${src?.commit ? src.commit.slice(0, 12) : 'commit unknown'}, checked the branch, not an installed DLL): compiles the size of ${m.key}, which changed on CL-${cl}; that build needs SR_SIZE_CHECK or live`);
     }
     const checked = [...per].filter(([, how]) => how === 'check').map(([o]) => o).sort(cmp);
     const live = [...per].filter(([, how]) => how === 'live').map(([o]) => o).sort(cmp);
@@ -302,11 +303,11 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
 }
 
 // The header text with the rows added, or the reasons it was refused.
-export function fieldRows(headerText, { cl, keys, next, base, uses = null }) {
+export function fieldRows(headerText, { cl, keys, next, base, uses = null, sources = new Map() }) {
   const map = parse(headerText, 'the header');
   if (map.flavour !== 'loader') throw new MapError('field rows go into the loader map; this header is a plugin map');
   if (!map.builds.some((b) => b.cl === cl)) throw new MapError(`CL-${cl} is not in the build table; add the build first (map-mode.mjs write, or version-map.mjs add-build)`);
-  const plan = planFieldRows(keys, next, base, cl, uses);
+  const plan = planFieldRows(keys, next, base, cl, uses, sources);
   const problems = [...plan.problems];
   const out = parse(emit(map), 'the header');
   let added = 0;
@@ -357,6 +358,16 @@ export function keysFromCheck(nativeText, layoutText) {
   return keys;
 }
 
+// The scans builder's commits.json (the check's keysrc.json, name, tag and sha only): component name (`<Name>@<branch>`, as in the uses file) -> { tag, commit }.
+export function keySourcesOf(text) {
+  const out = new Map();
+  for (const k of JSON.parse(text.replace(/^﻿/, '')).sources ?? []) {
+    if (typeof k?.name !== 'string' || typeof k.tag !== 'string' || !k.tag.includes('@')) continue;
+    out.set(`${k.name}@${k.tag.slice(k.tag.indexOf('@') + 1)}`, { tag: k.tag, commit: typeof k.sha === 'string' ? k.sha : undefined });
+  }
+  return out;
+}
+
 export function main(argv) {
   const [cmd, header, ...rest] = argv;
   const o = { keys: [] };
@@ -369,7 +380,7 @@ export function main(argv) {
   const fromCheck = o['native-keys'] !== undefined || o['layout-keys'] !== undefined;
   const keysOk = fromCheck ? !!(o['native-keys'] && o['layout-keys']) && !o.keys.length : o.keys.length > 0 && o.uses === undefined;
   if (cmd !== 'write' || !header || !o.cl || !o.next || !keysOk || !/^\d+$/.test(o.cl)) {
-    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt>]) [--report <file>]\n');
+    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt> [--sources <commits.json>]]) [--report <file>]\n');
     return EXIT_ERROR;
   }
   try {
@@ -379,7 +390,7 @@ export function main(argv) {
     const uses = o.uses ? parseUses(readFileSync(o.uses, 'utf8'), o.uses) : null;
     const next = parseLayoutReport(readFileSync(o.next, 'utf8'), o.next);
     const base = o.base ? parseLayoutReport(readFileSync(o.base, 'utf8'), o.base) : null;
-    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses });
+    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses, sources: o.sources ? keySourcesOf(readFileSync(o.sources, 'utf8')) : new Map() });
     const report = { written: !!out.text, cl: Number(o.cl), added: out.added, rows: out.rows, absent: out.absent, degraded: out.degraded, covered: out.covered, notes: out.notes, alerts: out.alerts, problems: out.problems };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.text) {

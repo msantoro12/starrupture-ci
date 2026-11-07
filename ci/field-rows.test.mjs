@@ -400,6 +400,10 @@ test('the command line writes class-key rows from --uses and from a native-keys 
 // From run 42412572050 (CL-129402): MiniMap's key source (component MiniMap@ci/hosted-build) compiles the
 // size of two classes whose size changed on the build.
 const MM = 'MiniMap@ci/hosted-build';
+const MM_TAG = 'msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build';
+const MM_SHA = 'c0ffee0123456789abcdef0123456789abcdef01';
+const MM_WHO = `key source ${MM_TAG} (${MM_SHA.slice(0, 12)}, checked the branch, not an installed DLL)`;
+const SOURCES = new Map([[MM, { tag: MM_TAG, commit: MM_SHA }]]);
 const RESIZED = `size ACrGameStateBase compiled\n`;
 const resizedKeys = () => unionKeys([parseKeys('field ACrGameStateBase\nfield UCrEnviroWaveVisualsWorldSubsystem\n')]);
 const resizedBase = () => [ent('ACrGameStateBase', null, 0xbc0), ent('UCrEnviroWaveVisualsWorldSubsystem', null, 0x1f0)];
@@ -407,14 +411,14 @@ const resizedNext = () => [ent('ACrGameStateBase', null, 0xc08), ent('UCrEnviroW
 
 test('key source: a compiled use of a changed class size is a note and an alert, the class-key size row is still written', () => {
   const uses = parseUses(`${MM} ${RESIZED}${MM} size UCrEnviroWaveVisualsWorldSubsystem compiled\n`);
-  const out = fieldRows(header(), { cl: 130000, keys: resizedKeys(), next: resizedNext(), base: resizedBase(), uses });
+  const out = fieldRows(header(), { cl: 130000, keys: resizedKeys(), next: resizedNext(), base: resizedBase(), uses, sources: SOURCES });
   assert.deepEqual(out.problems, []);
   assert.notEqual(out.text, null);
   assert.equal(row(out.text, 'ACrGameStateBase').size, 0xc08);
   assert.equal(row(out.text, 'UCrEnviroWaveVisualsWorldSubsystem').size, 0x208);
   assert.deepEqual(out.alerts, [
-    `${MM} key source compiles the size of ACrGameStateBase, which changed on CL-130000: that build needs SR_SIZE_CHECK or live`,
-    `${MM} key source compiles the size of UCrEnviroWaveVisualsWorldSubsystem, which changed on CL-130000: that build needs SR_SIZE_CHECK or live`,
+    `${MM_WHO}: compiles the size of ACrGameStateBase, which changed on CL-130000; that build needs SR_SIZE_CHECK or live`,
+    `${MM_WHO}: compiles the size of UCrEnviroWaveVisualsWorldSubsystem, which changed on CL-130000; that build needs SR_SIZE_CHECK or live`,
   ]);
   assert.ok(out.notes.includes(`class ACrGameStateBase: its size changed (0xBC0 -> 0xC08); key source ${MM} compiles its size`));
   assert.ok(!out.notes.some((n) => n.includes('no plugin depends on its whole size')));
@@ -440,11 +444,12 @@ test('key source: a check or a live read from a key source is not an alert; the 
   w('native.txt', '');
   w('keys.txt', 'ACrGameStateBase\nUCrEnviroWaveVisualsWorldSubsystem\n');
   w('uses.txt', `${MM} ${RESIZED}`);
+  w('keysrc.json', JSON.stringify({ sources: [{ name: 'MiniMap', tag: MM_TAG, sha: MM_SHA, status: 'ok' }, { name: 'Waila', tag: 'msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work', sha: 'a'.repeat(40), status: 'ok' }] }));
   const layout = (a, b) => JSON.stringify({ keys: [ent('ACrGameStateBase', null, a), ent('UCrEnviroWaveVisualsWorldSubsystem', null, b)] });
   w('next.json', layout(0xc08, 0x208));
   w('base.json', layout(0xbc0, 0x1f0));
   const run = spawnSync(process.execPath, [TOOL, 'write', join(dir, 'h.h'), '--cl', '130000', '--next', join(dir, 'next.json'), '--base', join(dir, 'base.json'),
-    '--native-keys', join(dir, 'native.txt'), '--layout-keys', join(dir, 'keys.txt'), '--uses', join(dir, 'uses.txt'), '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+    '--native-keys', join(dir, 'native.txt'), '--layout-keys', join(dir, 'keys.txt'), '--uses', join(dir, 'uses.txt'), '--sources', join(dir, 'keysrc.json'), '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).alerts, [`${MM} key source compiles the size of ACrGameStateBase, which changed on CL-130000: that build needs SR_SIZE_CHECK or live`]);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).alerts, [`${MM_WHO}: compiles the size of ACrGameStateBase, which changed on CL-130000; that build needs SR_SIZE_CHECK or live`]);
 });

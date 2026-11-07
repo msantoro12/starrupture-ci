@@ -125,7 +125,7 @@ export function readObservations(input) {
         const where = `${c.owner} ${rel.tag} ${JSON.stringify(r.key)}`;
         if (typeof r.key !== 'string' || !r.key) throw new MapError(`${where}: a row has no key`);
         const row = {
-          owner: c.owner, tracked: c.tracked !== false, rank: rel.rank, fpAware: rel.fpAware !== false, tag: rel.tag, keySource: rel.keySource === true,
+          owner: c.owner, tracked: c.tracked !== false, rank: rel.rank, fpAware: rel.fpAware !== false, tag: rel.tag, keySource: rel.keySource === true, commit: rel.commit,
           key: r.key, kind: kindOf(r.kind), fp: r.fp === undefined ? 0 : numberOf(r.fp, `${where}: fp`),
           ok: r.result === 'OK', result: r.result, required: r.required === true,
           pattern: r.pattern ?? null, resultOffset: r.resultOffset ?? 0, followRel32At: r.followRel32At ?? -1,
@@ -226,14 +226,11 @@ export function planRows(rows, { cl }) {
     const g = groups.get(`${o.key}\n${o.fp}`);
     o.sourceOnly = g.every((r) => r.keySource);
     o.sourceTag = g[0].tag;
+    o.sourceCommit = g[0].commit;
   }
 
   // One key, one symbol (global keys only: a scoped row names a site).
   const globals = ops.filter((o) => o.type === 'function' && isGlobalKind(o.kind));
-  for (const o of globals) {
-    if (o.symbolRva !== null && o.symbolRva !== o.rva) problems.push(`${o.key}: lands at ${hex(o.rva)}, off the start of its symbol (${hex(o.symbolRva)})`);
-    if (o.symbolRva === null && o.key.includes('::')) notes.push(`${o.key}: no symbol for ${hex(o.rva)}; the symbol-start and one-key-per-symbol checks did not run for it`);
-  }
   const bySymbol = new Map();
   for (const o of globals.filter((x) => x.symbolRva !== null)) {
     if (!bySymbol.has(o.symbolRva)) bySymbol.set(o.symbolRva, []);
@@ -251,13 +248,18 @@ export function planRows(rows, { cl }) {
       for (const o of group.filter((x) => x.sourceOnly)) {
         dropped.add(o);
         notes.push(`${o.key}: asked for by key source ${o.sourceTag} at ${hex(o.rva)}, where the released map has ${plan[0].key}; no row`);
-        alerts.push(`key source ${o.sourceTag} asks for ${o.key} at ${hex(o.rva)}, which the released map names ${plan[0].key}: that fork branch is stale`);
+        alerts.push(`key source ${o.sourceTag} (${o.sourceCommit ? o.sourceCommit.slice(0, 12) : 'commit unknown'}, checked the branch, not an installed DLL): asks for ${o.key} at ${hex(o.rva)}, which the released map names ${plan[0].key}; that branch is stale`);
       }
     } else {
       problems.push(`keys ${group.map((o) => o.key).sort(cmp).join(' and ')} name one symbol (${hex(sym)}); a symbol has one key`);
     }
   }
-  return { problems, ops: ops.filter((o) => !dropped.has(o)), live, liveOwners, notes, alerts };
+  // The symbol-start check runs on the keys that stay: a dropped key is no row, so its address gates nothing.
+  for (const o of globals.filter((x) => !dropped.has(x))) {
+    if (o.symbolRva !== null && o.symbolRva !== o.rva) problems.push(`${o.key}: lands at ${hex(o.rva)}, off the start of its symbol (${hex(o.symbolRva)})`);
+    if (o.symbolRva === null && o.key.includes('::')) notes.push(`${o.key}: no symbol for ${hex(o.rva)}; the symbol-start and one-key-per-symbol checks did not run for it`);
+  }
+  return { problems, ops: ops.filter((o) => !dropped.has(o)), live, liveOwners, notes, alerts, dropped: [...dropped].map((o) => ({ key: o.key, fromCL: null, reason: `dropped: asked for by key source ${o.sourceTag}, whose symbol belongs to another key; no row is written` })) };
 }
 
 // ---- Writing ------------------------------------------------------------------
@@ -314,7 +316,7 @@ export function writeRows(map, input) {
   next.functions = next.functions.filter((r) => r.fp === 0 || !prunable(r.key) || plan.live.get(r.key).has(r.fp));
   const pruned = before - next.functions.length;
   if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes, alerts: plan.alerts };
-  return { map: next, added, pruned, problems, patches, notes: plan.notes, alerts: plan.alerts };
+  return { map: next, added, pruned, problems, patches, notes: plan.notes, alerts: plan.alerts, dropped: plan.dropped };
 }
 
 // The header text, or the reasons it was refused. keys: parsed key lists.
@@ -332,7 +334,7 @@ export function mapMode(headerText, input, { keys = [], remeasure = false } = {}
     const left = checkMap(out.map, unionKeys(keys));
     if (left.length) return { ...out, map: null, text: null, problems: left.map((l) => `coverage: ${l}`) };
   }
-  return { ...out, absences: input.absences ?? [], text: out.map ? emit(out.map) : null };
+  return { ...out, absences: [...(input.absences ?? []), ...(out.dropped ?? [])], text: out.map ? emit(out.map) : null };
 }
 
 // ---- Assembling the input from the harness -----------------------------------
@@ -442,7 +444,7 @@ export function assemble(spec, dir) {
     if (!components.has(s.owner)) components.set(s.owner, { owner: s.owner, tracked: s.tracked !== false, releases: [] });
     const c = components.get(s.owner);
     if (c.tracked !== (s.tracked !== false)) throw new MapError(`${s.owner} is both tracked and not`);
-    c.releases.push({ tag: s.tag, rank: s.rank, fpAware: s.fpAware !== false, ...(s.keySource === true ? { keySource: true } : {}), rows: scan.patterns.map((r) => harnessRow(r, s.owner)).filter(Boolean) });
+    c.releases.push({ tag: s.tag, rank: s.rank, fpAware: s.fpAware !== false, ...(s.keySource === true ? { keySource: true, ...(typeof s.commit === 'string' ? { commit: s.commit } : {}) } : {}), rows: scan.patterns.map((r) => harnessRow(r, s.owner)).filter(Boolean) });
   }
   const cl = spec.cl ?? exe?.cl;
   let absences = [];

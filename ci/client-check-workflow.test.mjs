@@ -1958,8 +1958,8 @@ test('key sources: the scans builder adds the sources after the released scans, 
   put('keysrc-MiniMap.json', { plugin: { name: 'MiniMap' }, patterns: [row('MiniMap/Free', 0x3000, { fp: '0x11111111' })] });
   const tag = (n, b) => `msantoro12/StarRupture-Plugin-${n}@${b}`;
   put('keysrc.json', { sources: [
-    { name: 'WAILA', tag: tag('WAILA', 'gss/plugin-work'), status: 'ok' },
-    { name: 'MiniMap', tag: tag('MiniMap', 'ci/hosted-build'), status: 'ok' },
+    { name: 'WAILA', tag: tag('WAILA', 'gss/plugin-work'), sha: 'a'.repeat(40), status: 'ok' },
+    { name: 'MiniMap', tag: tag('MiniMap', 'ci/hosted-build'), sha: 'b'.repeat(40), status: 'ok' },
     { name: 'Codex', tag: tag('Codex', 'gss/plugin-work'), status: 'failed', error: 'x' },
     { name: '../evil', tag: 'x', status: 'ok' },
   ] });
@@ -1974,6 +1974,7 @@ test('key sources: the scans builder adds the sources after the released scans, 
   ]);
   // Only the key sources are marked, so map mode can tell a key that must not gate from a plan plugin's.
   assert.deepEqual(scans.map((s) => s.keySource), [undefined, undefined, true, true]);
+  assert.deepEqual(scans.map((s) => s.commit), [undefined, undefined, 'a'.repeat(40), 'b'.repeat(40)]);
   // One component per plugin name: a key both ask for is one row, supplied by the released scan; a key only the source asks for gets a row too.
   const input = assemble(JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')), dir);
   assert.deepEqual(input.components.map((c) => [c.owner, c.releases.map((x) => x.tag)]), [
@@ -1993,8 +1994,8 @@ test('key sources: the scans builder adds the sources after the released scans, 
 });
 
 test('key sources: the alert job lists the alert lines of the map writers, loudly, without failing the chain', { skip: !bash }, () => {
-  const line1 = 'key source msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work asks for UCrWaveSubsystem::AddEntitiesToWave at 0x76B59B0, which the released map names UCrMassEnviroWaveSubsystem::AddEntitiesToWave: that fork branch is stale';
-  const line2 = 'MiniMap@ci/hosted-build key source compiles the size of ACrGameStateBase, which changed on CL-129402: that build needs SR_SIZE_CHECK or live';
+  const line1 = 'key source msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work (c0ffee012345, checked the branch, not an installed DLL): asks for UCrWaveSubsystem::AddEntitiesToWave at 0x76B59B0, which the released map names UCrMassEnviroWaveSubsystem::AddEntitiesToWave; that branch is stale';
+  const line2 = 'key source msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build (c0ffee012345, checked the branch, not an installed DLL): compiles the size of ACrGameStateBase, which changed on CL-129402; that build needs SR_SIZE_CHECK or live';
   const NL = String.fromCharCode(10);
   const a = alertRun({ decision: goodDecision, extra: { 'chain/map-mode-report.json': { alerts: [line1, 7] }, 'chain/field-rows.json': { alerts: [line2] } } });
   assert.equal(a.status, 0, a.stderr);
