@@ -1,0 +1,22 @@
+name: tmp called login proof
+
+# Temporary: one dispatch proves a called sr-client-check reads the steam-client
+# login when the caller passes it by name. Removed after that run.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  client-check:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    uses: ./.github/workflows/sr-client-check.yml
+    with:
+      branch: public
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
