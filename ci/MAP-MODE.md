@@ -621,6 +621,54 @@ does for the server app, so a second beta is tracked the day it appears; a
 password-protected branch is ignored. `SR_STEAMCMD_API` and `SR_NEWS_API` replace the
 two service addresses, for the tests.
 
+## Key sources
+
+Map mode learns a plugin's function keys only by scanning its DLL, and its field and size keys
+only from the source of a build. The plugins of the `plugins` input are the released line, so a
+key that only our fork builds request never got a row, and the loader refused that request on
+a new build until a row was written by hand. A **key source** is such a fork build, built and
+scanned for its keys alone, so every key it requests gets a row on every build.
+
+Input `key_sources` (both triggers): space-separated `msantoro12/StarRupture-Plugin-<Name>@<branch>[:<commit>]`.
+The default is the nine plugins on `gss/plugin-work`, plus the MiniMap key-scan build
+(`ci/hosted-build`, pinned to a commit). Only `msantoro12` plugin repositories are accepted, the ref
+is a branch name (never a pull request ref or a tag), and a ref with no commit pin is accepted only
+for the nine plugins on `gss/plugin-work`; anything else needs `:<40-digit commit>`, which must be the
+branch head or in its history. Nothing from an issue or a fork pull request is ever built.
+
+Jobs (map mode only; none holds a secret or an environment):
+
+1. `key-sources-plan` (ubuntu) checks the list and resolves each branch to its commit with
+   `git ls-remote` (the pin is verified with `gh api compare`). It logs `<repo>@<branch> = <sha>` for each.
+2. `key-sources` (Windows, one leg per source, `fail-fast: false`) builds exactly that commit and uploads it as
+   `keysrc-<branch>-<name>` for one day. A plugin is built the way the `plugins` job builds one. MiniMap
+   needs the Unreal Engine headers for its readback adapter, so it is built `MiniMapKeyScanOnly` on the Plugin SDK
+   commit it was written against (`d66217e`): the DLL reports `<version>-keyscan` and refuses at PluginInit,
+   but every key request runs first. A MiniMap build without `-keyscan` in it is not taken. These DLLs are
+   never installed, released or published.
+3. The `check` job (it alone has the game files) downloads the artifacts after the login cache is removed, scans each with
+   `sr-aobscan --plugin` into `out/keysrc-<name>.json` and writes `out/keysrc.json` (status, commit, number of keyed
+   requests). In the layout step each source's keys and uses are read from its source with `layout-table.mjs gen`
+   as a component named `<Name>@<branch>`: in `layout-keys.txt` and `layout-uses.txt` (so field and size
+   rows exist for them) but not in `layout.json`, so no gate or pdb-diff reads them. The step records
+   `layout: ok` in `keysrc.json`. A key source never changes what the check job reports.
+4. The `map-mode` job requires every key source: the step "Require the key sources" fails the job, naming the source and the
+   cause, when the list was refused, a source did not build, was not scanned or had no keys read. Then the
+   scans builder adds each source's scan after the released plugin scans: owner the name the plugin reports,
+   `tracked: true`, rank `current`, tag `<repo>@<branch>`.
+
+A key source is a source of observations and nothing else. It is not in `plugins.json`, so not in decide's
+plugin verdicts, `expect_refused`, rule 3 or auto-apply; it is not in the client rig's set
+(`ci/client-rig-set.ps1` reads the `plugins` input); it is not a candidate, not staged and not in the feed. Tests
+(`ci/client-check-workflow.test.mjs`) hold each of these.
+
+**Duplicate observations.** A key a released plugin and a key source both request is one row: rows group by
+(key, fp), and the first resolved row in the order of the Step 27 plan supplies the locator. Released scans come
+first in `scans.json`, and the sort keeps input order among equal owners and ranks, so the released plugin's row
+wins and the row's `from` names `<Owner> current`. A key only a source requests gets its row from the source
+(`from` is `<Owner> <repo>@<branch>`). Resolved rows at different addresses still refuse the write, as for any two
+scans.
+
 ## The workflow chain
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by

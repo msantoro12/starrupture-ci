@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -1507,7 +1507,13 @@ test('bases: no workflow, script or doc reads a default base from the stale gss 
     'README.md': readFileSync(join(ci, 'sr-pipeline', 'README.md'), 'utf8'),
     'MAP-MODE.md': readFileSync(join(here, 'MAP-MODE.md'), 'utf8'),
   };
-  for (const [name, text] of Object.entries(texts)) assert.ok(!/gss\/(loader|plugin|sdk)-work/.test(text), `${name} still names a gss work branch`);
+  // The key sources name the plugins' work branch on purpose (they are built for their keys, not read as a base): the
+  // key_sources inputs, the two key source jobs and the "Key sources" section of MAP-MODE.md are the one place it appears.
+  const withoutKeySources = (t) => t.replace(/\r\n/g, '\n')
+    .replace(/^ {6}key_sources:\n(?: {8}.*\n)+/gm, '')
+    .replace(/^ {2}# ---- Key sources:[\s\S]*?(?=^ {2}# ---- Job A:)/m, '')
+    .replace(/^## Key sources\n[\s\S]*?(?=^## |(?![\s\S]))/m, '');
+  for (const [name, text] of Object.entries(texts)) assert.ok(!/gss\/(loader|plugin|sdk)-work/.test(withoutKeySources(text)), `${name} still names a gss work branch`);
   // The nine default plugins are AlienX's, every one a branch ref, so plugin-plan resolves each to a commit before any plugin code runs.
   const entries = defaultOf(call, 'plugins').split(' ');
   assert.equal(entries.length, 10);
@@ -1693,4 +1699,304 @@ test('carry: map mode uploads carry.json with its other files, and the gate runs
   assert.match(mm, /path: \|\n\s+version_map\.generated\.h\n\s+map-mode-report\.json\n\s+carry\.json\n\s+observations\.json\n/);
   assert.ok(mm.indexOf('assemble scans.json') < mm.indexOf('map-mode.mjs write "$header"') && mm.indexOf('map-mode.mjs write "$header"') < mm.indexOf('map-mode.mjs complete "$header"'));
   assert.ok(mm.indexOf('map-mode.mjs complete "$header"') < mm.indexOf('- name: Decide, export, sign, stage and plan the promotion'), 'the gate runs before decide');
+});
+
+// ---- Key sources: fork builds scanned for map keys only ----------------------------------------------------
+
+const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls'];
+const KEY_PIN = 'bfd12a08506a494a89d07a139e734c96101abbff';
+const HEX40 = 'a'.repeat(40);
+// The node program of a step's `node -e '...'` run block.
+const nodeScriptOf = (j, name) => runOf(j, name).match(/node -e '\n([\s\S]*)\n'\s*$/)[1];
+
+test('key sources: both triggers default to the nine work branches and the pinned MiniMap key-scan build', () => {
+  const want = [...KEY_NINE.map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`), `msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build:${KEY_PIN}`];
+  for (const s of [call, dispatch]) assert.deepEqual(defaultOf(s, 'key_sources').split(' '), want);
+});
+
+const keyPlan = (env = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'key-plan-'));
+  const script = nodeScriptOf(job('key-sources-plan'), 'Check the key source list');
+  const r = spawnSync(process.execPath, ['-e', script], {
+    cwd: dir, encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, KEY_SOURCES: defaultOf(call, 'key_sources'), PLUGIN_SDK_REPO: 'AlienXAXS/StarRupture-Plugin-SDK', GAME_SDK_REPO: 'AlienXAXS/StarRupture-Game-SDK', LOADER_REPO: 'msantoro12/StarRupture-ModLoader', ...env },
+  });
+  const file = join(dir, 'key-sources-unresolved.json');
+  return { r, dir, entries: r.status === 0 ? JSON.parse(readFileSync(file, 'utf8')) : null };
+};
+
+test('key sources: the default list is accepted, MiniMap gets its key-scan recipe and the others the standard build', () => {
+  const { r, entries } = keyPlan();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(entries.length, 10);
+  const mini = entries.find((e) => e.name === 'MiniMap');
+  assert.deepEqual([mini.recipe, mini.pin, mini.branch, mini.tag, mini.component], ['keyscan', KEY_PIN, 'ci/hosted-build', 'msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build', 'MiniMap@ci/hosted-build']);
+  assert.equal(mini.pluginSdkRepo, 'AlienXAXS/StarRupture-Plugin-SDK');
+  assert.equal(mini.pluginSdkRef, 'd66217e63aeb80917656800c42a1a107e3be238d');
+  for (const e of entries.filter((x) => x !== mini)) {
+    assert.deepEqual([e.recipe, e.branch, e.pin, e.repo], ['standard', 'gss/plugin-work', '', `msantoro12/StarRupture-Plugin-${e.name}`]);
+    assert.equal(e.tag, `${e.repo}@gss/plugin-work`);
+  }
+  assert.equal(keyPlan({ KEY_SOURCES: '' }).entries.length, 0);
+});
+
+test('key sources: only msantoro12 plugin repositories, branch names, and a commit pin unless it is one of the nine on the work branch', () => {
+  const refused = [
+    ['AlienXAXS/StarRupture-Plugin-BetterCheats@gss/plugin-work', /is not msantoro12\/StarRupture-Plugin-/],
+    ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', /is not msantoro12\/StarRupture-Plugin-/],
+    ['msantoro12/StarRupture-ModLoader@gss/plugin-work', /is not msantoro12\/StarRupture-Plugin-/],
+    ['msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work;echo', /is not msantoro12\/StarRupture-Plugin-/],
+    ['msantoro12/StarRupture-Plugin-Codex@gss/plugin-work:abc123', /is not msantoro12\/StarRupture-Plugin-/],
+    [`msantoro12/StarRupture-Plugin-Codex@gss/plugin-work:${HEX40.toUpperCase()}`, /is not msantoro12\/StarRupture-Plugin-/],
+    ['msantoro12/StarRupture-Plugin-Other@gss/plugin-work', /has no commit pin/],
+    ['msantoro12/StarRupture-Plugin-BetterCheats@main', /has no commit pin/],
+    ['msantoro12/StarRupture-Plugin-BetterCheats@feat/x', /has no commit pin/],
+    [`msantoro12/StarRupture-Plugin-Other@refs/pull/12/head:${HEX40}`, /is not a branch name/],
+    [`msantoro12/StarRupture-Plugin-Other@pull/12/head:${HEX40}`, /is not a branch name/],
+    [`msantoro12/StarRupture-Plugin-Other@a..b:${HEX40}`, /is not a branch name/],
+    ['msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work', /more than once/],
+  ];
+  for (const [list, why] of refused) {
+    const { r } = keyPlan({ KEY_SOURCES: list });
+    assert.equal(r.status, 1, `${list} is refused`);
+    assert.match(r.stdout, /^::error title=Key sources::/m, list);
+    assert.match(r.stdout, why, list);
+  }
+  // A pinned commit makes any branch of a plugin repository acceptable; the nine need no pin on the work branch.
+  const { r, entries } = keyPlan({ KEY_SOURCES: `msantoro12/StarRupture-Plugin-Other@feat/x:${HEX40} msantoro12/StarRupture-Plugin-Codex@gss/plugin-work` });
+  assert.equal(r.status, 0, r.stdout);
+  assert.deepEqual(entries.map((e) => [e.name, e.pin, e.recipe]), [['Other', HEX40, 'standard'], ['Codex', '', 'standard']]);
+  // The repositories the build is made from are on the plugin plan's allowlist too.
+  for (const env of [{ PLUGIN_SDK_REPO: 'evil/StarRupture-Plugin-SDK' }, { GAME_SDK_REPO: 'evil/StarRupture-Game-SDK' }, { LOADER_REPO: 'evil/StarRupture-ModLoader' }]) {
+    assert.equal(keyPlan(env).r.status, 1, JSON.stringify(env));
+  }
+});
+
+// git ls-remote and gh api, answered from FAKE ({ heads: { "<repo> <ref>": sha }, compare: { "<repo> <pin>": status } }).
+const FAKE_TOOLS = `const cp = require('child_process');
+cp.execFileSync = (cmd, args) => {
+  const f = JSON.parse(process.env.FAKE);
+  if (cmd === 'git' && args[0] === 'ls-remote') {
+    const repo = args[1].replace('https://github.com/', '');
+    const sha = f.heads[repo + ' ' + args[2]];
+    return sha ? sha + '\\t' + args[2] + '\\n' : '';
+  }
+  if (cmd === 'gh' && args[0] === 'api') {
+    const m = /^repos\\/(.+)\\/compare\\/([0-9a-f]{40})\\.\\.\\.([0-9a-f]{40})$/.exec(args[1]);
+    const status = m && f.compare[m[1] + ' ' + m[2]];
+    if (!status) throw new Error('404 not found');
+    return status + '\\n';
+  }
+  throw new Error('unexpected ' + cmd);
+};
+`;
+const keyResolve = (list, fake) => {
+  const { r: planned, dir } = keyPlan({ KEY_SOURCES: list });
+  assert.equal(planned.status, 0, planned.stdout);
+  const tools = join(dir, 'fake-tools.cjs');
+  writeFileSync(tools, FAKE_TOOLS);
+  const out = join(dir, 'github-output');
+  writeFileSync(out, '');
+  const script = nodeScriptOf(job('key-sources-plan'), 'Resolve the branches to commits');
+  const r = spawnSync(process.execPath, ['-r', tools, '-e', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE: JSON.stringify(fake), GITHUB_OUTPUT: out } });
+  const o = readFileSync(out, 'utf8');
+  return { r, any: /^any=(.*)$/m.exec(o)?.[1], matrix: /^matrix=(.*)$/m.exec(o) ? JSON.parse(/^matrix=(.*)$/m.exec(o)[1]) : null };
+};
+
+test('key sources: a branch is resolved to its commit before any code runs, and a pin must lie in the branch', () => {
+  const head = 'b'.repeat(40);
+  const repo = 'msantoro12/StarRupture-Plugin-Codex';
+  const unpinned = `${repo}@gss/plugin-work`;
+  const fake = { heads: { [`${repo} refs/heads/gss/plugin-work`]: head }, compare: {} };
+  let x = keyResolve(unpinned, fake);
+  assert.equal(x.r.status, 0, x.r.stdout + x.r.stderr);
+  assert.equal(x.any, 'true');
+  assert.deepEqual([x.matrix[0].sha, x.matrix[0].name], [head, 'Codex']);
+  assert.ok(!('pin' in x.matrix[0]));
+  assert.match(x.r.stdout, new RegExp(`^::notice title=Key source Codex::${repo}@gss/plugin-work = ${head}$`, 'm'), 'the resolved commit is logged');
+  // A pin is the branch's head, or a commit in its history.
+  const pinned = `${repo}@gss/plugin-work:${HEX40}`;
+  x = keyResolve(pinned, { ...fake, compare: { [`${repo} ${HEX40}`]: 'ahead' } });
+  assert.equal(x.r.status, 0, x.r.stdout);
+  assert.equal(x.matrix[0].sha, HEX40);
+  assert.match(x.r.stdout, /\(pinned; the branch is at b{40}\)/);
+  x = keyResolve(`${repo}@gss/plugin-work:${head}`, fake);
+  assert.equal(x.matrix[0].sha, head);
+  // A commit only another ref carries (a pull request), or one ahead of the branch, is refused.
+  for (const status of ['diverged', 'behind']) {
+    x = keyResolve(pinned, { ...fake, compare: { [`${repo} ${HEX40}`]: status } });
+    assert.equal(x.r.status, 1, status);
+    assert.match(x.r.stdout, /^::error title=Key sources::.*is not in the history of the branch/m);
+  }
+  x = keyResolve(pinned, fake);
+  assert.equal(x.r.status, 1, 'an unknown commit');
+  assert.match(x.r.stdout, /cannot compare the pin/);
+  x = keyResolve(unpinned, { heads: {}, compare: {} });
+  assert.equal(x.r.status, 1);
+  assert.match(x.r.stdout, /has no branch gss\/plugin-work/);
+  x = keyResolve('', fake);
+  assert.deepEqual([x.r.status, x.any, x.matrix], [0, 'false', []]);
+});
+
+test('key sources: built in jobs of their own with no secret and no environment, never uploaded as a plugin', () => {
+  for (const name of ['key-sources-plan', 'key-sources']) {
+    const j = job(name);
+    assert.ok(!/secrets\./.test(j), `${name}: no secret`);
+    assert.ok(!/^ {4}environment:/m.test(j), `${name}: no environment`);
+    assert.match(j, /^ {4}permissions:\n {6}contents: read\n/m, name);
+    assert.ok(!/pull_request|issue|github\.event/.test(j), `${name}: nothing from an issue or a pull request`);
+    assert.ok(!/persist-credentials: true/.test(j), name);
+  }
+  const j = job('key-sources');
+  assert.match(j, /^ {4}needs: key-sources-plan\n/m);
+  assert.match(j, /ref: \$\{\{ matrix\.sha \}\}/, 'the resolved commit, not the branch');
+  assert.match(j, /fail-fast: false/);
+  // The artifact is keysrc-*, which the check job's `plugin-<branch>-*` pattern does not match, and it holds a DLL for one day.
+  const up = j.match(/uses: actions\/upload-artifact@[^\n]*\n {8}with:\n {10}name: ([^\n]+)\n/);
+  assert.equal(up[1], 'keysrc-${{ inputs.branch }}-${{ matrix.name }}');
+  assert.ok(!up[1].startsWith('plugin-'));
+  assert.match(j, /retention-days: 1/);
+  assert.ok(!/gh release|softprops|action-gh-release|--clobber/.test(j), 'never published');
+  // The MiniMap build: key-scan only, on the SDK the plan names, and refused unless it carries the -keyscan version.
+  const mini = runOf(j, 'Build the key-scan build (Client Release)');
+  assert.match(mini, /\/p:MiniMapKeyScanOnly=true/);
+  assert.match(mini, /\/p:StarRupturePluginSDKRoot=/);
+  assert.match(mini, /-keyscan/);
+  assert.match(j, /- name: Build the key-scan build[^\n]*\n {8}if: matrix\.recipe == 'keyscan'/);
+  assert.match(j, /- name: Build the key source \(Client Release\)\n {8}if: matrix\.recipe == 'standard'/);
+});
+
+test('key sources: nothing but the scan, the layout keys and the scans builder reads them', () => {
+  // Comments are not read: the one above the key source jobs sits at the end of the job before them in the text.
+  const mentions = (text) => /key-?sources?|keysrc/i.test(text.replace(/^ *#.*\r?\n/gm, ''));
+  // Every other job and every other step of the check and map-mode jobs: no mention.
+  for (const name of ['build', 'plugin-plan', 'plugins', 'publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'alert', 'auto-apply', 'report', 'expiry']) {
+    assert.ok(!mentions(job(name)), `${name} does not read the key sources`);
+  }
+  // Comments are not read: the one above a step belongs to the step before it in the text.
+  const stepsOf = (j) => j.split(/\n(?= {6}- name: )/).map((t) => [t.match(/^ *- name: (.+)$/m)?.[1], t.replace(/^ *#.*\n/gm, '')]);
+  const allowed = {
+    check: ['Download the key sources', 'Scan the key sources', 'Read the used layouts from the PDBs', 'Upload the result'],
+    'map-mode': ['Require the key sources', 'Write the update into the header'],
+  };
+  for (const [name, ok] of Object.entries(allowed)) {
+    const j = job(name);
+    const named = stepsOf(j).filter(([, t]) => mentions(t)).map(([n]) => n);
+    // `needs` and the comment above the job are not steps; only steps are compared here.
+    for (const n of named) assert.ok(ok.includes(n) || n === undefined, `${name}: step "${n}" reads the key sources`);
+  }
+  // The steps that decide, stage, gate the rig, grade the plugins or build the rig's set name no key source.
+  for (const [j, n] of [['check', "Check the plugins' patterns"], ['check', "Resolve the rig's plugin set"], ['check', "Read the rig's plugin DLLs"], ['check', 'Write the result'], ['map-mode', 'Decide, export, sign, stage and plan the promotion']]) {
+    const text = stepsOf(job(j)).find(([x]) => x === n)?.[1];
+    assert.ok(text !== undefined, `${j}: step "${n}" exists`);
+    assert.ok(!mentions(text), `${j}: "${n}" does not read the key sources`);
+  }
+  // The scans reach map mode only through the one artifact, under names no plugin glob matches.
+  const up = job('check').match(/name: client-check-\$\{\{ inputs\.branch \}\}\n {10}path: \|\n((?: {12}.*\n)+)/)[1];
+  assert.match(up, /^ {12}out\/keysrc\.json$/m);
+  assert.match(up, /^ {12}out\/keysrc-\*\.json$/m);
+  assert.ok(!/plugin-\*/.test('out/keysrc.json out/keysrc-*.json'), 'not a plugin-* scan');
+  // The released plugins and the key sources are separate lists: the plan's matrix feeds the scan, plugins.json is the plugin check's alone.
+  assert.ok(!/needs\.key-sources/.test(runOf(job('check'), "Check the plugins' patterns")));
+  const scan = stepsOf(job('check')).find(([x]) => x === 'Scan the key sources')[1];
+  assert.match(scan, /out\\keysrc\.json/);
+  assert.ok(!/plugins\.json|rig-plugins|rule3/.test(scan), 'it writes no plugins.json, rig set or rule 3 result');
+  const lay = runOf(job('check'), 'Read the used layouts from the PDBs');
+  assert.match(lay, /component = \$s\.component; stem = \$stem/, 'a component of its own');
+  assert.match(lay, /\$components\.Add\('ModLoader'\)/);
+  assert.ok(!/\$components\.Add\(\$s\./.test(lay) && !/\$components\.Add\(\$k/.test(lay), 'never in the components layout.json and its gate read');
+});
+
+test('key sources: a failing one stops map mode with its cause, a clean list does not', () => {
+  const gate = runOf(job('map-mode'), 'Require the key sources');
+  assert.match(job('map-mode'), /^ {4}needs: \[build, plugins, check, key-sources-plan, key-sources\]$/m);
+  const run = (env, keysrc) => {
+    const dir = mkdtempSync(join(tmpdir(), 'key-gate-'));
+    mkdirSync(join(dir, 'res'));
+    if (keysrc) writeFileSync(join(dir, 'res', 'keysrc.json'), JSON.stringify({ sources: keysrc }));
+    return spawnSync(bash, ['-c', gate], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, KEY_PLAN: 'success', KEY_ANY: 'true', KEY_BUILD: 'success', ...env } });
+  };
+  const good = { name: 'Codex', tag: 'msantoro12/StarRupture-Plugin-Codex@gss/plugin-work', sha: HEX40, status: 'ok', layout: 'ok', keys: 7 };
+  let r = run({}, [good]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Codex@gss\/plugin-work a{40}: 7 keyed requests/);
+  r = run({ KEY_ANY: 'false', KEY_BUILD: 'skipped' }, null);
+  assert.equal(r.status, 0, 'no key sources listed');
+  const stops = [
+    [{ KEY_PLAN: 'failure' }, [good], /key source list was refused/],
+    [{ KEY_BUILD: 'failure' }, [good], /a key source did not build/],
+    [{}, null, /recorded no key source result/],
+    [{}, [{ ...good, status: 'failed', error: 'it did not build (no artifact)' }], /Key source msantoro12\/StarRupture-Plugin-Codex@gss\/plugin-work::it did not build/],
+    [{}, [{ ...good, layout: 'failed: gen failed' }], /its keys were not read: failed: gen failed/],
+    [{}, [{ ...good, layout: undefined }], /layout step stopped before the key sources/],
+  ];
+  for (const [env, keysrc, why] of stops) {
+    r = run(env, keysrc);
+    assert.equal(r.status, 2, `${JSON.stringify(env)} ${why}`);
+    assert.match(r.stdout, /^::error title=Key source/m);
+    assert.match(r.stdout, why);
+  }
+  // It runs before anything is written into the header.
+  const m = job('map-mode');
+  assert.ok(m.indexOf('- name: Require the key sources') < m.indexOf('- name: Write the update into the header'));
+});
+
+test('key sources: the scans builder adds the sources after the released scans, tracked, tagged with their repo and branch', async () => {
+  const { assemble, readObservations, planRows } = await import('./map-mode.mjs');
+  const script = wf.match(/node -e '\n(\s+const fs = require\("fs"\);\n[\s\S]*?)\n\s+' "\$buildid"/)[1];
+  const dir = mkdtempSync(join(tmpdir(), 'key-scans-'));
+  mkdirSync(join(dir, 'res'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
+  const row = (key, rva, extra = {}) => ({ key, kind: 'infunction', result: 'OK', rva: `0x${rva.toString(16)}`, pattern: '48 8B 05 ?? ?? ?? ??', fp: '0x2D1AC6AE', resultOffset: 0, ...extra });
+  const put = (f, doc) => writeFileSync(join(dir, 'res', f), JSON.stringify(doc));
+  put('scanner.json', { exe: { cl: 129402, imageStamp: '0x6B000001', imageSize: '0x0A430000' }, patterns: [] });
+  // Waila is released (plugins names WAILA) and a key source: both ask for Shared/Hook (one address), the key source also for Only/Fork.
+  put('plugin-Waila.json', { plugin: { name: 'Waila' }, patterns: [row('Waila/Shared', 0x1000)] });
+  put('keysrc-WAILA.json', { plugin: { name: 'Waila' }, patterns: [row('Waila/Shared', 0x1000), row('Waila/Only', 0x2000, { fp: '0x0BADF00D' })] });
+  // MiniMap: not released here (nothing scanned), only the key-scan build; Codex: a source that failed, so it left no scan.
+  put('keysrc-MiniMap.json', { plugin: { name: 'MiniMap' }, patterns: [row('MiniMap/Free', 0x3000, { fp: '0x11111111' })] });
+  const tag = (n, b) => `msantoro12/StarRupture-Plugin-${n}@${b}`;
+  put('keysrc.json', { sources: [
+    { name: 'WAILA', tag: tag('WAILA', 'gss/plugin-work'), status: 'ok' },
+    { name: 'MiniMap', tag: tag('MiniMap', 'ci/hosted-build'), status: 'ok' },
+    { name: 'Codex', tag: tag('Codex', 'gss/plugin-work'), status: 'failed', error: 'x' },
+    { name: '../evil', tag: 'x', status: 'ok' },
+  ] });
+  const r = spawnSync(process.execPath, ['-e', script, '129402'], { cwd: dir, env: { ...process.env, PLUGINS: 'AlienXAXS/StarRupture-Plugin-WAILA@main', LOADER_REF: 'v1' }, encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, r.stderr);
+  const scans = JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans;
+  assert.deepEqual(scans.map((s) => [s.owner, s.tracked, s.tag, s.rank, s.file]), [
+    ['ModLoader', true, 'v1', 'current', 'res/scanner.json'],
+    ['Waila', true, 'current', 'current', 'res/plugin-Waila.json'],
+    ['Waila', true, tag('WAILA', 'gss/plugin-work'), 'current', 'res/keysrc-WAILA.json'],
+    ['MiniMap', true, tag('MiniMap', 'ci/hosted-build'), 'current', 'res/keysrc-MiniMap.json'],
+  ]);
+  // One component per plugin name: a key both ask for is one row, supplied by the released scan; a key only the source asks for gets a row too.
+  const input = assemble(JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')), dir);
+  assert.deepEqual(input.components.map((c) => [c.owner, c.releases.map((x) => x.tag)]), [
+    ['ModLoader', ['v1']], ['Waila', ['current', tag('WAILA', 'gss/plugin-work')]], ['MiniMap', [tag('MiniMap', 'ci/hosted-build')]],
+  ]);
+  const plan = planRows(readObservations(input).rows, { cl: 129402 });
+  assert.deepEqual(plan.problems, []);
+  assert.deepEqual(plan.ops.map((o) => [o.key, o.from]).sort(), [
+    ['MiniMap/Free', `MiniMap ${tag('MiniMap', 'ci/hosted-build')}`],
+    ['Waila/Only', `Waila ${tag('WAILA', 'gss/plugin-work')}`],
+    ['Waila/Shared', 'Waila current'],
+  ]);
+  // Without the file nothing changes: the scans are the released ones.
+  rmSync(join(dir, 'res', 'keysrc.json'));
+  assert.equal(spawnSync(process.execPath, ['-e', script, '129402'], { cwd: dir, env: { ...process.env, PLUGINS: 'AlienXAXS/StarRupture-Plugin-WAILA@main', LOADER_REF: 'v1' }, encoding: 'utf8', windowsHide: true }).status, 0);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans.map((s) => s.owner), ['ModLoader', 'Waila']);
+});
+
+test('key sources: no program in a node -e block closes its single quotes early (an apostrophe in a comment would)', () => {
+  let n = 0;
+  for (let at = wf.indexOf("node -e '"); at >= 0; at = wf.indexOf("node -e '", at + 1)) {
+    const end = wf.indexOf("'", at + "node -e '".length);
+    // The program ends at a quote that closes the argument: end of line, or the shell arguments that follow it.
+    assert.match(wf.slice(end + 1, end + 40), /^(?: "\$\w+")*[ \t]*\n/, `the node -e program at offset ${at} ends early, at: ${wf.slice(end - 40, end + 20)}`);
+    n++;
+  }
+  assert.ok(n >= 8, `${n} programs checked`);
 });
