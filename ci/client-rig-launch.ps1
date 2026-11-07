@@ -20,6 +20,12 @@
 # that, kills the game and launches it again, at most -MaxRelaunch times; every attempt is
 # recorded in boot.json. Any other failure is left as it is for the verdict.
 #
+# -PayloadScript <ps1> (the data-extract workflow): launch a clean install with no loader and
+# no plugin, and run that script as a background job once the game process exists, with the
+# game's process id, its Win64 folder and -OutDir as arguments. The attempt ends when the
+# script ends (settled if it completed, else 'payload failed: <reason>') or after
+# -AttemptCapSec, which then bounds the whole payload. Everything else is as above.
+#
 # The login arrives in STEAM_USER and STEAM_CACHE and is cleared from the environment
 # before the game starts. Everything printed or written goes through Scrub. Steam's own
 # logs and config files, the game's files and its engine logs never reach -OutDir.
@@ -39,6 +45,7 @@ param(
     [int]$AttemptCapSec = 300,
     [int]$SettleSec = 60,
     [int]$MaxRelaunch = 2,
+    [string]$PayloadScript = '',
     [switch]$Check
 )
 
@@ -472,7 +479,7 @@ function Invoke-Attempt([int]$Number) {
         n = $Number; started_utc = $started.ToString('o'); process_found = $false; process_found_s = $null; exited_early = $false; exit_code = $null
         alive_at_end = $false; boot_finished_s = $null; peak_working_set_mb = 0; dialog = $null; load_error = $false; end = ''; seconds = 0
     }
-    $doneAt = $null; $dialogAt = $null; $crashAt = $null; $peak = 0.0
+    $doneAt = $null; $dialogAt = $null; $crashAt = $null; $peak = 0.0; $job = $null
     while ($true) {
         Start-Sleep -Seconds 2
         $t = [int]$sw.Elapsed.TotalSeconds
@@ -480,6 +487,11 @@ function Invoke-Attempt([int]$Number) {
         if (-not $a.process_found -and (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)) { $a.process_found = $true; $a.process_found_s = $t }
         if ($proc.HasExited) { $a.exited_early = $true; $a.exit_code = $proc.ExitCode; $a.end = "the game exited with code $($proc.ExitCode)"; break }
         try { $peak = [math]::Max($peak, $proc.WorkingSet64 / 1MB) } catch { }
+        if ($PayloadScript -and -not $job -and $a.process_found) {
+            $job = Start-Job -FilePath $PayloadScript -ArgumentList $proc.Id, $script:bin, (Resolve-Path -LiteralPath $OutDir).Path
+            Say "Payload started at $t s"
+        }
+        if ($job) { foreach ($l in @(Receive-Job -Job $job -ErrorAction SilentlyContinue)) { Say "payload: $l" } }
 
         $pids = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like 'StarRupture*' } | ForEach-Object { $_.Id })
         $dlg = Find-GameDialog @([RigWin]::Snapshot()) $pids
@@ -488,6 +500,15 @@ function Invoke-Attempt([int]$Number) {
         # The dialog holds the process open; give the loader's log a moment, then stop.
         if ($dialogAt -and ($t - $dialogAt) -ge 5) { $a.end = "dialog '$($a.dialog)'"; break }
 
+        if ($PayloadScript) {
+            if ($job -and $job.State -notin 'Running', 'NotStarted') {
+                foreach ($l in @(Receive-Job -Job $job -ErrorAction SilentlyContinue)) { Say "payload: $l" }
+                $a.end = if ($job.State -eq 'Completed') { 'settled' } else { "payload failed: $($job.ChildJobs[0].JobStateInfo.Reason.Message)" }
+                break
+            }
+            if ($t -ge $AttemptCapSec) { $a.end = "the payload did not finish in $AttemptCapSec s"; break }
+            continue
+        }
         $text = if (Test-Path -LiteralPath $ml) { try { Read-Shared $ml } catch { '' } } else { '' }
         if (-not $crashAt -and $text -match 'FATAL ENGINE CRASH') { $crashAt = $t; Say "Fatal crash in the log at $t s" }
         if ($crashAt -and ($t - $crashAt) -ge 15) { $a.end = 'fatal crash in the log'; break }
@@ -496,6 +517,7 @@ function Invoke-Attempt([int]$Number) {
         # The cap bounds the boot only.
         if (-not $doneAt -and $t -ge $AttemptCapSec) { $a.end = "no 'Boot sequence finished' in $AttemptCapSec s"; break }
     }
+    if ($job) { Stop-Job -Job $job -ErrorAction SilentlyContinue; Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
     if (-not $a.exited_early) { $a.alive_at_end = $true }
     $a.peak_working_set_mb = [int]$peak
     $a.seconds = [int]$sw.Elapsed.TotalSeconds
@@ -511,9 +533,11 @@ function Invoke-Launch {
     $script:mlDir = Join-Path $script:bin 'ModLoader'
     $script:mlLogs = Join-Path $script:mlDir 'Logs'
     $script:updater = Join-Path $script:mlDir 'StarRupture-ModLoader-Updater.exe'
+    # With a payload there is no loader and no updater: the program check below covers the game only.
+    if ($PayloadScript) { $script:updater = $script:exe }
     $gameRoot = (Get-Item $script:bin).Parent.Parent.FullName
     $script:crashDirs = @((Join-Path $gameRoot 'Saved\Crashes'), (Join-Path $env:LOCALAPPDATA 'StarRupture\Saved\Crashes'))
-    if (-not (Test-Path -LiteralPath (Join-Path $script:bin 'dwmapi.dll'))) { throw 'The loader is not installed (no dwmapi.dll)' }
+    if (-not $PayloadScript -and -not (Test-Path -LiteralPath (Join-Path $script:bin 'dwmapi.dll'))) { throw 'The loader is not installed (no dwmapi.dll)' }
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     $OutDir = (Resolve-Path $OutDir).Path
 
@@ -535,7 +559,7 @@ function Invoke-Launch {
         if ($exes -notcontains $must) { throw "$(Split-Path $must -Leaf) is not among the install's programs; the firewall rules would miss it" }
     }
     Enable-Firewall $exes
-    Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value (New-IniText) -Encoding ascii -NoNewline
+    if (-not $PayloadScript) { Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value (New-IniText) -Encoding ascii -NoNewline }
     Set-Content -LiteralPath (Join-Path $script:bin 'steam_appid.txt') -Value $appId -Encoding ascii -NoNewline
     $hashes = Get-DllHashes $script:bin
     Say "$(@($hashes.Keys).Count) loader and plugin binaries hashed"
@@ -595,6 +619,8 @@ function Invoke-Launch {
     [IO.File]::WriteAllText((Join-Path $OutDir 'boot.json'), (Scrub ($boot | ConvertTo-Json -Depth 5)), (New-Object Text.UTF8Encoding $false))
     Say "Recorded $($attempts.Count) attempt(s); the last: $($last.end)"
 }
+
+if ($PayloadScript) { $PayloadScript = (Resolve-Path -LiteralPath $PayloadScript).Path }
 
 $failed = $false
 try {
