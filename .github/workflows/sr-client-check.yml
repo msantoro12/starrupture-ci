@@ -18,6 +18,14 @@ name: SR client check
 #     auto/update-<CL> (ci/apply-proposals.mjs)
 # The result is a JSON artifact and a comment on the game-update PR.
 #
+# Bases: the released line, which is what players run and what reads the feed.
+# The loader, the Plugin SDK, the Game SDK and the nine plugins are AlienX's
+# `main` (inputs loader_repo/loader_ref, plugin_sdk_*, game_sdk_*, plugins). Only
+# tools/AobScan comes from elsewhere (scanner_repo@scanner_ref, the fork's
+# ci/aobscan), laid over the loader. The fork is where results go, never where a
+# base is read from: push-loader and auto-apply cut `auto/update-<CL>` from the
+# exact AlienX commit this run scanned and push it to the owner's fork.
+#
 # Trust: the scanner and plugin code run in the job that held the Steam
 # login, after the login cache is deleted from disk. Deleting it does not
 # clear it from the runner's memory, so that code only ever comes from the
@@ -71,22 +79,25 @@ on:
         default: ''
       loader_repo:
         type: string
-        default: 'msantoro12/StarRupture-ModLoader'
+        default: 'AlienXAXS/StarRupture-ModLoader'
       loader_ref:
         type: string
-        default: 'gss/loader-work'
+        default: 'main'
+      scanner_repo:
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
       scanner_ref:
         type: string
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
+        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
       plugin_sdk_repo:
         type: string
-        default: 'msantoro12/StarRupture-Plugin-SDK'
+        default: 'AlienXAXS/StarRupture-Plugin-SDK'
       plugin_sdk_ref:
         type: string
-        default: 'gss/sdk-work'
+        default: 'main'
       game_sdk_repo:
         type: string
         default: 'AlienXAXS/StarRupture-Game-SDK'
@@ -177,29 +188,33 @@ on:
         type: string
         default: ''
       loader_repo:
-        description: 'Loader repository the patterns come from'
+        description: 'Loader repository the patterns and the header come from (the released line: AlienXAXS main)'
+        type: string
+        default: 'AlienXAXS/StarRupture-ModLoader'
+      loader_ref:
+        description: 'Loader branch the patterns and the header come from'
+        type: string
+        default: 'main'
+      scanner_repo:
+        description: 'Repository holding the scanner branch (only tools/AobScan is taken from it)'
         type: string
         default: 'msantoro12/StarRupture-ModLoader'
-      loader_ref:
-        description: 'Loader branch the patterns come from'
-        type: string
-        default: 'gss/loader-work'
       scanner_ref:
-        description: 'Branch of the loader repository holding tools/AobScan'
+        description: 'Branch of the scanner repository holding tools/AobScan'
         type: string
         default: 'ci/aobscan'
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
+        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
       plugin_sdk_repo:
         description: 'Plugin SDK repository the plugins build against (msantoro12 or AlienXAXS)'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-SDK'
+        default: 'AlienXAXS/StarRupture-Plugin-SDK'
       plugin_sdk_ref:
         description: 'Plugin SDK ref the plugins build against'
         type: string
-        default: 'gss/sdk-work'
+        default: 'main'
       game_sdk_repo:
         description: 'Game SDK repository the plugins build against (msantoro12 or AlienXAXS)'
         type: string
@@ -258,17 +273,23 @@ jobs:
     outputs:
       required_cl: ${{ steps.read.outputs.required_cl }}
       sdk_offsets: ${{ steps.read.outputs.sdk_offsets }}
+      # The loader commit the scanner was built from: map-mode reads the header at this one.
+      loader_sha: ${{ steps.read.outputs.loader_sha }}
       scanner_sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
       - name: Check the loader repository
         shell: pwsh
         env:
           LOADER_REPO: ${{ inputs.loader_repo }}
+          SCANNER_REPO: ${{ inputs.scanner_repo }}
         run: |
           # The scanner built here runs in the job that holds the Steam login,
           # so it only ever comes from the owner's fork or the upstream repo.
           if ($env:LOADER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
             throw "loader_repo '$($env:LOADER_REPO)' is not allowed"
+          }
+          if ($env:SCANNER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
+            throw "scanner_repo '$($env:SCANNER_REPO)' is not allowed"
           }
 
       - name: Check out the loader (with its pinned Game SDK)
@@ -283,7 +304,7 @@ jobs:
       - name: Check out tools/AobScan
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.loader_repo }}
+          repository: ${{ inputs.scanner_repo }}
           ref: ${{ inputs.scanner_ref }}
           path: scanner-src
           sparse-checkout: tools/AobScan
@@ -292,6 +313,9 @@ jobs:
       - name: Read the required CL and the SDK offsets
         id: read
         shell: pwsh
+        env:
+          LOADER_REPO: ${{ inputs.loader_repo }}
+          LOADER_REF: ${{ inputs.loader_ref }}
         run: |
           # The scanner source comes from its own branch; the patterns, the
           # scan code and the SDK are the loader branch's, so the scan always
@@ -312,8 +336,12 @@ jobs:
             $offsets[$k] = if ($o) { $o.Matches[0].Groups[1].Value } else { '' }
           }
           $json = $offsets | ConvertTo-Json -Compress
+          $loaderSha = git -C loader rev-parse HEAD
+          if ($loaderSha -notmatch '^[0-9a-f]{40}$') { throw "no loader commit ('$loaderSha')" }
+          "Loader: $($env:LOADER_REPO)@$($env:LOADER_REF) = $loaderSha"
           "Required CL: $(if ($cl) { $cl } else { 'none (the loader''s version map decides)' })"
           "SDK Offsets: $json"
+          "loader_sha=$loaderSha" >> $env:GITHUB_OUTPUT
           "required_cl=$cl" >> $env:GITHUB_OUTPUT
           "sdk_offsets=$json" >> $env:GITHUB_OUTPUT
 
@@ -1763,8 +1791,9 @@ jobs:
               $r.reasons = @($v.reasons)
               $r.rows = @($v.rows)
               $r.offsets = @($v.offsets)
-              # Only the owner's forks are pushed to, and only a verified fix.
-              if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^msantoro12/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$') {
+              # Only a verified fix of one of the nine, and it is pushed to the owner's fork of that plugin
+              # (auto-apply), however the commit it is built on was read: AlienX's main or the fork's branch.
+              if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^(msantoro12|AlienXAXS)/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$') {
                 $push.Add([ordered]@{ name = $p.name; sha = $r.sha; tree = $r.tree; cl = $cl; referenceCl = $refCl; verdict = $r.verdict; plan = $plan })
               }
             } catch {
@@ -1922,7 +1951,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.loader_repo }}
-          ref: ${{ inputs.loader_ref }}
+          ref: ${{ needs.build.outputs.loader_sha }}
           path: loader
           sparse-checkout: StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
           sparse-checkout-cone-mode: false
@@ -1936,6 +1965,8 @@ jobs:
 
       - name: Write the update into the header
         id: write
+        env:
+          SCANNED_LOADER_SHA: ${{ needs.build.outputs.loader_sha }}
         run: |
           set -euo pipefail
           # No scanner result means the check did not measure the build: name
@@ -1945,6 +1976,10 @@ jobs:
             echo "::error title=No scanner result::The client check did not measure the build ($why); nothing to map."
             exit 2
           fi
+          # The header is read at the commit the scanner was built from, so the rows and the
+          # patterns they were measured with come from one loader commit even if the branch moved.
+          read_sha="$(git -C loader rev-parse HEAD)"
+          [ -n "$SCANNED_LOADER_SHA" ] && [ "$read_sha" = "$SCANNED_LOADER_SHA" ] || { echo "::error::the header was read at $read_sha, not at the loader commit the scanner was built from ('$SCANNED_LOADER_SHA')"; exit 2; }
           # The build Steam installed names the build row; the watcher's id is
           # only the fallback.
           buildid="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).download?.buildid || ''")"
@@ -2314,13 +2349,17 @@ jobs:
   # commit that changes only that header, and pushes auto/update-<CL> (ci/staging.mjs
   # push: one repository, one branch pattern, never a tag, never a force). The
   # branch is the input of the next steps: the candidate-loader job and the client rig.
-  # A missing key fails the job with its name; it never skips quietly. A run that
-  # targets another loader repository, a test run and a run whose chain held
-  # have nothing to push and skip. A build first seen on public is pushed too.
+  # A missing key fails the job with its name; it never skips quietly. A test run
+  # and a run whose chain held have nothing to push and skip. A build first seen on
+  # public is pushed too.
+  # The base is not the fork: the header was read from loader_repo (AlienX's released
+  # line, main), so the checkout is that repository at that exact commit, with its full
+  # history, and the branch is pushed to the fork on top of it. The fork's own branches
+  # are never the base.
   push-loader:
     name: push the map rows to the loader fork
     needs: [map-mode]
-    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' }}
+    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: fork-push
@@ -2330,7 +2369,9 @@ jobs:
       branch: ${{ steps.push.outputs.branch }}
       sha: ${{ steps.push.outputs.sha }}
     env:
+      # Where the rows were read from, and the only repository this job writes to.
       LOADER_REPO: ${{ inputs.loader_repo }}
+      PUSH_REPO: msantoro12/StarRupture-ModLoader
     steps:
       - name: Check the deploy key
         env:
@@ -2359,7 +2400,7 @@ jobs:
         run: |
           set -euo pipefail
           # The repository and the branch name come from the chain; both are checked against the allowlist before a key is used.
-          node tool/ci/staging.mjs target --repo "$LOADER_REPO" --plan chain/stage-plan.json
+          node tool/ci/staging.mjs target --repo "$PUSH_REPO" --plan chain/stage-plan.json
           sha="$(node -p "JSON.parse(require('fs').readFileSync('chain/build.json','utf8')).repo.sha")"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::build.json names no loader commit'; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -2367,9 +2408,11 @@ jobs:
       - name: Check out the loader at the commit the rows were read from
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: msantoro12/StarRupture-ModLoader
+          repository: ${{ inputs.loader_repo }}
           ref: ${{ steps.base.outputs.sha }}
           path: loader
+          # Whole history: the fork's refs need not hold this commit, and the push must not be shallow.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Commit the header and push the branch
@@ -2387,7 +2430,7 @@ jobs:
           # GitHub's published host keys, not trust on first use.
           curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$ssh_dir/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
-          out="$(node tool/ci/staging.mjs push --repo "$LOADER_REPO" --plan chain/stage-plan.json --build chain/build.json \
+          out="$(node tool/ci/staging.mjs push --repo "$PUSH_REPO" --plan chain/stage-plan.json --build chain/build.json \
             --header chain/version_map.generated.h --checkout loader --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT")"
           echo "$out" >> "$GITHUB_OUTPUT"
           echo "Loader fork: $(echo $out)" >> "$GITHUB_STEP_SUMMARY"
@@ -2595,7 +2638,7 @@ jobs:
   rig-gate:
     name: rig gate
     needs: [map-mode, candidate-loader, rig-branch, rig-other]
-    if: ${{ always() && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' }}
+    if: ${{ always() && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -2695,7 +2738,7 @@ jobs:
       MAP_MODE_RESULT: ${{ needs.map-mode.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
       # The cue that staged map rows should have been pushed, built and put through the rigs.
-      STAGED_EXPECTED: ${{ needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' }}
+      STAGED_EXPECTED: ${{ needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
       PUSH_RESULT: ${{ needs.push-loader.result }}
       CANDIDATE_RESULT: ${{ needs.candidate-loader.result }}
       RIG_GATE_RESULT: ${{ needs.rig-gate.result }}
@@ -2887,6 +2930,7 @@ jobs:
         include: ${{ fromJSON(needs.check.outputs.autofix) }}
     steps:
       - name: Check the work item
+        id: item
         env:
           NAME: ${{ matrix.name }}
           SHA: ${{ matrix.sha }}
@@ -2898,14 +2942,16 @@ jobs:
         run: |
           # The work list comes from the job that ran plugin code, so every
           # field that picks a repository, a key or a ref is checked here. The
-          # commit must be the one plugin-plan resolved before plugin code ran;
-          # any commit in the fork network can be fetched by id.
+          # commit must be the one plugin-plan resolved before plugin code ran
+          # (on the plugin's repository the plan named, AlienX's main by default); the
+          # branch is pushed to the owner's fork of that plugin.
           [[ "$NAME" =~ ^(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$ ]] || { echo "::error::'$NAME' is not a fork this job pushes to"; exit 1; }
           [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$TREE" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::bad commit or tree id'; exit 1; }
           [[ "$CL" =~ ^[0-9]+$ && "$REFERENCE_CL" =~ ^[0-9]*$ ]] || { echo '::error::bad CL'; exit 1; }
           [[ "$VERDICT" =~ ^(FIXED|PARTIAL)$ ]] || { echo '::error::bad verdict'; exit 1; }
-          planned="$(jq -r --arg n "$NAME" '.[] | select(.name == $n and .source == "build" and .repo == "msantoro12/StarRupture-Plugin-" + $n) | .sha' <<< "$PLAN")"
-          [ "$planned" = "$SHA" ] || { echo "::error::$SHA is not the commit plugin-plan resolved for msantoro12/StarRupture-Plugin-$NAME"; exit 1; }
+          planned="$(jq -r --arg n "$NAME" '.[] | select(.name == $n and .source == "build" and (.repo == "AlienXAXS/StarRupture-Plugin-" + $n or .repo == "msantoro12/StarRupture-Plugin-" + $n)) | .repo + " " + .sha' <<< "$PLAN")"
+          [ "${planned#* }" = "$SHA" ] || { echo "::error::$SHA is not the commit plugin-plan resolved for $NAME"; exit 1; }
+          echo "repo=${planned% *}" >> "$GITHUB_OUTPUT"
 
       - name: Check out the apply tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2918,9 +2964,11 @@ jobs:
       - name: Check out the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: msantoro12/StarRupture-Plugin-${{ matrix.name }}
+          repository: ${{ steps.item.outputs.repo }}
           ref: ${{ matrix.sha }}
           path: plugin
+          # Whole history: the fork's refs need not hold this commit, and the push must not be shallow.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Re-create the fix
@@ -3173,13 +3221,15 @@ jobs:
             foreach ($p in @($af.plugins)) {
               $where = '-'
               if ($p.verdict -eq 'PATCH') { $where = "information only: ``$($p.patch)`` in the run's artifact, not pushed" }
-              elseif ($p.verdict -in 'FIXED', 'PARTIAL' -and $p.repo -match '^msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+$') {
+              elseif ($p.verdict -in 'FIXED', 'PARTIAL' -and $p.repo -match '^(msantoro12|AlienXAXS)/(StarRupture-Plugin-[A-Za-z0-9_-]+)$') {
+                # The branch is on the owner's fork of the plugin, whichever repository the commit was read from.
+                $fork = "msantoro12/$($Matches[2])"
                 $where = 'not pushed (see the auto-apply job)'
                 # The fallback name carries the attempt that pushed it, which may be an earlier one.
-                foreach ($line in @(git ls-remote "https://github.com/$($p.repo)" "refs/heads/auto/update-$($af.cl)" "refs/heads/auto/update-$($af.cl)-$($env:RUN_ID)-*" 2>$null)) {
+                foreach ($line in @(git ls-remote "https://github.com/$fork" "refs/heads/auto/update-$($af.cl)" "refs/heads/auto/update-$($af.cl)-$($env:RUN_ID)-*" 2>$null)) {
                   $sha, $b = "$line" -split "`t"
                   $b = "$b" -replace '^refs/heads/', ''
-                  if ($sha -match '^[0-9a-f]{40}$' -and (gh api "repos/$($p.repo)/git/commits/$sha" --jq .tree.sha 2>$null) -eq $p.tree) { $where = "``$b`` ($($sha.Substring(0, 7)))"; break }
+                  if ($sha -match '^[0-9a-f]{40}$' -and (gh api "repos/$fork/git/commits/$sha" --jq .tree.sha 2>$null) -eq $p.tree) { $where = "``$b`` ($($sha.Substring(0, 7)))"; break }
                 }
               }
               $skip = @($p.skipped | ForEach-Object { "$($_.name): $($_.reason)" })

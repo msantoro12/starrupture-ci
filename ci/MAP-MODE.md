@@ -8,6 +8,12 @@ Map mode puts what a game update changes into the loader's version map
 plugin's source. A plugin repo gets no commit for a game update; the loader
 fork's `auto/update-<CL>` branch gets one.
 
+The bases are the released line, AlienX's `main` (loader, Plugin SDK, Game SDK and the
+nine plugins), because that is what players run and what reads the feed; the fork's old
+work branches are behind it. Only `tools/AobScan` comes from the fork's `ci/aobscan`
+(`scanner_repo`, `scanner_ref`). The fork is a target only: `auto/update-<CL>` is cut
+from the exact AlienX commit the run scanned.
+
 ## Step 26: the loader fork's deploy key and ruleset (the owner sets it up once)
 
 The `push-loader` job of `sr-client-check.yml` pushes `auto/update-<CL>` to the
@@ -40,16 +46,17 @@ What the job does. It reads the stage plan and `build.json` from the
 `map-mode-<branch>` artifact and checks the repository (only
 msantoro12/StarRupture-ModLoader) and the branch name (only `auto/update-<CL>`,
 optionally with `-<run id>-<attempt>`) against the allowlist in `ci/staging.mjs`.
-It checks out the loader commit the header was read from (the head of
-`loader_ref` that run used), adds one commit that changes only
-`version_map.generated.h`, and pushes it. It never pushes a tag and never forces.
+It checks out the loader commit the header was read from (the AlienX `main`
+commit the scanner was built from, `loader_repo`@`loader_ref`, with its full history), adds one
+commit that changes only `version_map.generated.h`, and pushes it to the fork. It never pushes
+a tag and never forces.
 A branch that already holds the same tree is left alone; one that holds another
 tree stays as it is, and the push goes to `auto/update-<CL>-<run id>-<attempt>`.
 The job outputs `branch` and `sha` for the next steps (the `candidate-loader` job,
 below, and the client rig). A missing key fails the job with "Loader deploy key missing",
 naming the secret and the environment; it is never skipped quietly. The job runs
-for a build the chain carried through to staging: not a `test_autopilot` run, and the
-loader repository must be the fork. A build first seen on `public` is pushed too: it gets its
+for a build the chain carried through to staging: not a `test_autopilot` run. A build first
+seen on `public` is pushed too: it gets its
 own `auto/update-<CL>` and a candidate like any other (it is not entered in the
 staged index, since public is what a staged build is promoted to).
 
@@ -124,7 +131,7 @@ Policy (owner), in plain words:
   into `out/rig-plugins.json`, and `decide.mjs --rig-plugins res/rig-plugins.json` applies the
   loader's rule (`loaderRefusal`) to those facts, for `expect_refused` and
   `expect_refused_other`. The resolved tags go to both rigs as `tags` (output `rig_tags`).
-  The `gss/plugin-work` builds still produce the map rows and the verdicts, but declare
+  The plugin builds from `main` still produce the map rows and the verdicts, but declare
   nothing. A DLL whose facts cannot be read, or no `rig-plugins.json` at all, declares
   nothing (a note in the decision), so a refusal there is a loud fail.
 - No player-facing text mentions the test branch.
@@ -247,7 +254,7 @@ rows are `required`. A scan whose `plugin.name` is not the `owner` is refused.
 
 `sr-client-check.yml` runs both commands in its `map-mode` job when the input
 `map_mode` is true: it takes the check job's scans and the loader's header at
-`loader_ref`, and uploads the rewritten header and the report as the artifact
+the commit the scanner was built from (`loader_ref` of `loader_repo`), and uploads the rewritten header and the report as the artifact
 `map-mode-<branch>`; the `push-loader` job then pushes the staged header to the
 loader fork (step 26). Not yet wired: the scans of each tracked component's
 previous release (`rank: previous`) and the key lists (`--keys`). So today the job

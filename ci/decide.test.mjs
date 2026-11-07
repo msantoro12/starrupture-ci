@@ -950,7 +950,7 @@ test('cli: --other-cl puts the prediction in decision.json in the rig grammar, a
 });
 
 // ------------------------------------------------------------ the refusals declared to a rig come from the DLLs it runs
-// The rig runs the Latest released plugins and the pinned third-party ones, not the gss/plugin-work builds the check
+// The rig runs the Latest released plugins and the pinned third-party ones, not the plugin builds the check
 // judged (see rig-plugins.json). The same loader rule, applied to the facts of those very DLLs.
 
 test('rig plugins: expect_refused is predicted from the rig\'s DLLs, not from the plugin builds the check judged', () => {
@@ -1045,4 +1045,20 @@ test('live run 1: the other branch (public, CL-127004) expects the nine the cand
   const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), otherCl: 127004, rigPlugins: ok(liveRig) }));
   assert.deepEqual(r.expectRefused, [...NINE, 'MiniMap'].sort());
   assert.deepEqual(r.expectRefusedOther, NINE);
+});
+
+// The same plugins read by a candidate loader built on the released line (AlienX main), which accepts [70, 75]: the
+// scanner no longer refuses the nine v75 releases, so only the loader's own off-build rule is left, and that rule
+// refuses MiniMap v1.2.0 (v70, built on CL-127004) off CL-127004 and nothing else.
+const releasedLineRig = {
+  ...liveRig,
+  plugins: liveRig.plugins.map((p) => (NINE.includes(p.name) ? { ...p, verdict: 'PASS', note: '' } : p)),
+};
+
+test('released line: with a loader that accepts [70, 75] the nine v75 plugins are not refused, and MiniMap is refused only off CL-127004', () => {
+  assert.deepEqual(expectedRefusals(releasedLineRig.plugins, 129402), ['MiniMap']);
+  assert.deepEqual(expectedRefusals(releasedLineRig.plugins, 127004), [], 'on its own build nothing is refused');
+  const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), otherCl: 127004, rigPlugins: ok(releasedLineRig) }));
+  assert.deepEqual(r.expectRefused, ['MiniMap']);
+  assert.deepEqual(r.expectRefusedOther, []);
 });
