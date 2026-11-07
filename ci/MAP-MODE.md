@@ -569,7 +569,10 @@ The signed feed's home is this repository's `vmap-feed` release, as the asset
 - It uploads to Latest only if the feed verifies and its `seq` is higher than the newest
   `seq` on any release.
 - The first publish needs a manual run with `first_publish` set; until then every scheduled
-  run fails with "No release carries a feed".
+  run fails with "No release carries a feed". The loader repository's `vmap-publish.yml`
+  schedule is disabled until then, and it is re-enabled with
+  `gh workflow enable vmap-publish.yml --repo AlienXAXS/StarRupture-ModLoader` once that
+  first publish is verified.
 - The loader repository holds no signing secrets; only the signed file moves.
 - The feed sits on Latest because the loader's `prune_releases.yml` deletes the other
   releases.
