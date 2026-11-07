@@ -401,6 +401,12 @@ function runCli(files, extra = []) {
   try { out = JSON.parse(r.stdout); } catch { /* leave null */ }
   return { status: r.status, out, dir };
 }
+// A rig-plugins.json (the check's facts of the DLLs the rig runs) with these rows; its path.
+const rigFile = (plugins) => {
+  const f = join(mkdtempSync(join(tmpdir(), 'decide-rig-')), 'rig-plugins.json');
+  writeFileSync(f, JSON.stringify({ branch: 'public', tags: '', plugins }));
+  return f;
+};
 const cliFiles = (over = {}) => {
   const b = base();
   const f = {};
@@ -717,9 +723,12 @@ test('M: a key gone on the new build is a note naming the plugin', () => {
 
 const run3 = (name) => JSON.parse(readFileSync(join(here, 'fixtures', 'map-run3', name), 'utf8'));
 const run3Plugin = (name) => run3('plugins.json').plugins.find((p) => p.name === name);
+// The facts of the DLLs the rig runs (the check's rig-plugins.json); by default the rows the run-3 scans gave.
+const rigOf = (plugins) => ok({ branch: 'public_test_branch', tags: '', plugins });
 const run3Inputs = (over = {}) => base({
   g3: ok({ ok: true, cl: '129402', previousCl: '127004' }),
   plugins: ok({ status: 'fail', plugins: [run3Plugin('BetterCheats'), run3Plugin('MiniMap')] }),
+  rigPlugins: rigOf([run3Plugin('BetterCheats'), run3Plugin('MiniMap')]),
   fields: ok(run3('field-rows.json')),
   ...over,
 });
@@ -804,12 +813,14 @@ test('run 3: the plugins the loader refuses on the build are listed for the rig 
   assert.deepEqual(onPublic.expectRefused, []);
   assert.notEqual(entry(onPublic, 'MiniMap').status, 'held');
   // BetterCheats alone: nothing refused.
-  assert.deepEqual(decide(run3Inputs({ plugins: ok({ status: 'fail', plugins: [run3Plugin('BetterCheats')] }) })).expectRefused, []);
+  assert.deepEqual(decide(run3Inputs({ plugins: ok({ status: 'fail', plugins: [run3Plugin('BetterCheats')] }), rigPlugins: rigOf([run3Plugin('BetterCheats')]) })).expectRefused, []);
   // Held for another reason is not a loader refusal.
-  const held = decide(base({ plugins: ok({ status: 'fail', plugins: [{ name: 'WAILA', verdict: 'CRASH' }, { name: 'Codex', verdict: 'PASS' }] }) }));
+  const heldRows = [{ name: 'WAILA', verdict: 'CRASH' }, { name: 'Codex', verdict: 'PASS' }];
+  const held = decide(base({ plugins: ok({ status: 'fail', plugins: heldRows }), rigPlugins: rigOf(heldRows) }));
   assert.deepEqual(held.expectRefused, []);
   // The scanner's own REFUSED verdict (interface outside the loader's range) is a loader refusal too.
-  const refused = decide(base({ plugins: ok({ status: 'fail', plugins: [{ name: 'WAILA', verdict: 'REFUSED' }, { name: 'Codex', verdict: 'PASS' }] }) }));
+  const refusedRows = [{ name: 'WAILA', verdict: 'REFUSED' }, { name: 'Codex', verdict: 'PASS' }];
+  const refused = decide(base({ plugins: ok({ status: 'fail', plugins: refusedRows }), rigPlugins: rigOf(refusedRows) }));
   assert.deepEqual(refused.expectRefused, ['WAILA']);
 });
 
@@ -821,7 +832,7 @@ test('the refusal follows the loader rule, not the plugin name', () => {
   assert.match(r(plugin(71, 'CL-129402')), /^plugin interface v71/);
   assert.equal(r(plugin(70, 'CL-127004 (none declared)'), 127004), null);
   // A PASS with every pattern OK is refused all the same: the loader refuses before it scans.
-  const e = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), plugins: ok({ status: 'pass', plugins: [plugin(70, 'CL-127004 (none declared)')] }) }));
+  const e = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), plugins: ok({ status: 'pass', plugins: [plugin(70, 'CL-127004 (none declared)')] }), rigPlugins: rigOf([plugin(70, 'CL-127004 (none declared)')]) }));
   assert.equal(entry(e, 'Anything').status, 'held');
   assert.deepEqual(e.expectRefused, ['Anything']);
   // v72 and newer: a plugin made for the running build loads...
@@ -844,7 +855,8 @@ test('the refusal follows the loader rule, not the plugin name', () => {
 test("cli: the decision names the plugins the rig must expect refused, in the rig's input grammar", () => {
   const fieldsFile = join(mkdtempSync(join(tmpdir(), 'decide-fields-')), 'fields.json');
   writeFileSync(fieldsFile, JSON.stringify(run3('field-rows.json')));
-  const r = runCli(cliFiles({ g3: { ok: true, cl: '129402', previousCl: '127004' }, plugins: { status: 'fail', plugins: [run3Plugin('BetterCheats'), run3Plugin('MiniMap')] } }), ['--fields', fieldsFile]);
+  const rows = [run3Plugin('BetterCheats'), run3Plugin('MiniMap')];
+  const r = runCli(cliFiles({ g3: { ok: true, cl: '129402', previousCl: '127004' }, plugins: { status: 'fail', plugins: rows } }), ['--fields', fieldsFile, '--rig-plugins', rigFile(rows)]);
   assert.deepEqual(r.out.expectRefused, ['MiniMap']);
   // client-rig-set.ps1 Read-Names: tokens of [A-Za-z0-9_.-] separated by space, comma or semicolon.
   assert.ok(r.out.expectRefused.every((n) => /^[A-Za-z0-9_.-]+$/.test(n)));
@@ -887,7 +899,8 @@ test('other branch: the same CL on both branches gives the same list as the chec
   const r = decide(run3Inputs({ otherCl: 129402 }));
   assert.deepEqual(r.expectRefusedOther, r.expectRefused);
   // The scanner's own REFUSED verdict counts there, as it does for the check's CL.
-  const refused = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), otherCl: 129402, plugins: ok({ status: 'fail', plugins: [{ name: 'WAILA', verdict: 'REFUSED' }, { name: 'Codex', verdict: 'PASS' }] }) }));
+  const refusedRows = [{ name: 'WAILA', verdict: 'REFUSED' }, { name: 'Codex', verdict: 'PASS' }];
+  const refused = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), otherCl: 129402, plugins: ok({ status: 'fail', plugins: refusedRows }), rigPlugins: rigOf(refusedRows) }));
   assert.deepEqual(refused.expectRefusedOther, ['WAILA']);
 });
 
@@ -924,11 +937,82 @@ test('other branch: an early HOLD with no plugin picture still gives a list, nev
 test('cli: --other-cl puts the prediction in decision.json in the rig grammar, and a bad value is a usage error', () => {
   const fieldsFile = join(mkdtempSync(join(tmpdir(), 'decide-fields-')), 'fields.json');
   writeFileSync(fieldsFile, JSON.stringify(run3('field-rows.json')));
-  const files = cliFiles({ g3: { ok: true, cl: '127004', previousCl: '126000' }, plugins: { status: 'fail', plugins: [run3Plugin('BetterCheats'), run3Plugin('MiniMap')] } });
-  const r = runCli(files, ['--fields', fieldsFile, '--other-cl', '129402']);
+  const rows = [run3Plugin('BetterCheats'), run3Plugin('MiniMap')];
+  const files = cliFiles({ g3: { ok: true, cl: '127004', previousCl: '126000' }, plugins: { status: 'fail', plugins: rows } });
+  const r = runCli(files, ['--fields', fieldsFile, '--other-cl', '129402', '--rig-plugins', rigFile(rows)]);
   assert.deepEqual(r.out.expectRefusedOther, ['MiniMap']);
   assert.equal(r.out.otherCl, 129402);
   assert.ok(r.out.expectRefusedOther.every((n) => /^[A-Za-z0-9_.-]+$/.test(n)));
-  assert.equal(runCli(files, ['--fields', fieldsFile]).out.expectRefusedOther, undefined);
+  assert.equal(runCli(files, ['--fields', fieldsFile, '--rig-plugins', rigFile(rows)]).out.expectRefusedOther, undefined);
   for (const bad of ['abc', '0', '-1', '12.5', '']) assert.equal(runCli(files, ['--other-cl', bad]).status, 2, `--other-cl ${JSON.stringify(bad)}`);
+});
+
+// ------------------------------------------------------------ the refusals declared to a rig come from the DLLs it runs
+// The rig runs the Latest released plugins and the pinned third-party ones, not the gss/plugin-work builds the check
+// judged (see rig-plugins.json). The same loader rule, applied to the facts of those very DLLs.
+
+test('rig plugins: expect_refused is predicted from the rig\'s DLLs, not from the plugin builds the check judged', () => {
+  // The work build of BetterDrone is v74 and loads; the released one the rig runs is still v70 and is refused on CL-129402.
+  const work = [v('BetterDrone', 74, 'CL-129402', { rule3: { migrated: true } }), v('MiniMap', 70, 'CL-127004 (none declared)')];
+  const released = [v('BetterDrone', 70, 'CL-127004 (none declared)'), v('MiniMap', 70, 'CL-127004 (none declared)')];
+  const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), plugins: ok({ status: 'pass', plugins: work }), rigPlugins: rigOf(released), otherCl: 129402 }));
+  assert.deepEqual(r.expectRefused, ['BetterDrone', 'MiniMap']);
+  assert.deepEqual(r.expectRefusedOther, ['BetterDrone', 'MiniMap']);
+  // The other way round: the work build is refused (old), the rig's release is made for the build and loads.
+  const r2 = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), plugins: ok({ status: 'pass', plugins: [v('Codex', 70, 'CL-127004')] }), rigPlugins: rigOf([v('Codex', 74, 'CL-129402')]), otherCl: 127004 }));
+  assert.deepEqual(r2.expectRefused, [], 'the released DLL loads: nothing declared');
+  assert.deepEqual(r2.expectRefusedOther, []);
+  assert.equal(entry(r2, 'Codex').status, 'held', 'the verdict on the work build is untouched');
+});
+
+test('rig plugins: the facts of one branch\'s DLLs give both rigs their lists, by the same rule on each CL', () => {
+  const rows = [v('Old', 70, 'CL-127004 (none declared)'), v('Mapped', 74, 'CL-127004', { rule3: { migrated: true } }), v('Plain', 74, 'CL-127004', { rule3: { migrated: false } })];
+  const onTest = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), rigPlugins: rigOf(rows), otherCl: 127004 }));
+  assert.deepEqual(onTest.expectRefused, ['Old', 'Plain']);
+  assert.deepEqual(onTest.expectRefusedOther, [], 'public: everything built for it loads');
+  const onPublic = decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '126000' }), rigPlugins: rigOf(rows), otherCl: 129402 }));
+  assert.deepEqual(onPublic.expectRefused, []);
+  assert.deepEqual(onPublic.expectRefusedOther, ['Old', 'Plain']);
+});
+
+test('rig plugins: without the facts nothing is declared, and the decision says why', () => {
+  const none = decide(run3Inputs({ rigPlugins: undefined, otherCl: 127004 }));
+  assert.deepEqual(none.expectRefused, [], 'MiniMap is refused in the scan, but the rig\'s DLLs are unknown: never a guess');
+  assert.deepEqual(none.expectRefusedOther, []);
+  assert.match(none.notes.join(' '), /rig plugins: the facts of the DLLs the rig runs were not read \(no file given\)/);
+  const unreadable = decide(run3Inputs({ rigPlugins: { ok: false, error: 'cannot read rig-plugins.json: ENOENT' } }));
+  assert.deepEqual(unreadable.expectRefused, []);
+  assert.match(unreadable.notes.join(' '), /cannot read rig-plugins\.json: ENOENT/);
+  assert.deepEqual(decide(run3Inputs({ rigPlugins: ok({ plugins: 'x' }) })).expectRefused, []);
+  // An early HOLD still carries the empty list.
+  assert.deepEqual(decide(base({ g1: { ok: false } })).expectRefused, []);
+});
+
+test('rig plugins: a DLL whose facts could not be read is not declared, the others are', () => {
+  const rows = [v('Old', 70, 'CL-127004'), { name: 'Broken', tag: 'v1', error: 'sr-aobscan could not read its plugin facts (exit 2)' }, { name: 'NoBlock', tag: 'v1' }];
+  const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), rigPlugins: rigOf(rows) }));
+  assert.deepEqual(r.expectRefused, ['Old']);
+  assert.match(r.notes.join(' '), /rig plugins: no facts for Broken, NoBlock; no refusal is declared for them, so a refusal fails the rig/);
+});
+
+test('rig plugins: the scanner\'s REFUSED verdict counts on the scanned build only', () => {
+  const rows = [{ name: 'Far', verdict: 'REFUSED', plugin: { interfaceVersion: 99, gameBuild: 'CL-129402' } }];
+  const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), rigPlugins: rigOf(rows), otherCl: 127004 }));
+  assert.deepEqual(r.expectRefused, ['Far']);
+  assert.deepEqual(r.expectRefusedOther, []);
+});
+
+test('cli: --rig-plugins feeds the lists, and a missing or broken file declares nothing', () => {
+  const rows = [v('Old', 70, 'CL-127004')];
+  const files = cliFiles({ g3: { ok: true, cl: '129402', previousCl: '127004' } });
+  const good = runCli(files, ['--rig-plugins', rigFile(rows), '--other-cl', '127004']);
+  assert.deepEqual(good.out.expectRefused, ['Old']);
+  assert.deepEqual(good.out.expectRefusedOther, []);
+  const missing = runCli(files, ['--rig-plugins', join(good.dir, 'nope.json')]);
+  assert.deepEqual(missing.out.expectRefused, []);
+  assert.match(missing.out.notes.join(' '), /cannot read/);
+  const broken = join(good.dir, 'broken.json');
+  writeFileSync(broken, '{ not json');
+  assert.deepEqual(runCli(files, ['--rig-plugins', broken]).out.expectRefused, []);
+  assert.deepEqual(runCli(files).out.expectRefused, [], 'no flag: no file given');
 });

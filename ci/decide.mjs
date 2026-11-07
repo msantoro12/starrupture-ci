@@ -4,7 +4,7 @@
 //   node ci/decide.mjs --repo ModLoader --autopilot state/autopilot.json \
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json \
 //       [--fields field-rows.json] --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
-//       [--other-cl 129402]
+//       [--other-cl 129402] [--rig-plugins rig-plugins.json]
 //
 // Prints the decision as JSON on stdout. Exit codes: 0 = path M (map-only update: the
 // rows go into the loader's map and ship as a signed feed), 10 = path B (auto-fix of
@@ -16,12 +16,18 @@
 //   a gate result missing, unreadable, malformed, or reporting an error -> HOLD
 //   G1 compile or G2 interface not ok                    -> HOLD
 //   a plugin that is unverified or the loader would refuse -> that plugin is held alone, the rest proceed
-//     (judged against the candidate map; the decision lists the plugins the loader refuses on
-//     this build as `expectRefused`, the client rig's expect_refused input; see checkPlugins)
+//     (judged against the candidate map)
+//   --rig-plugins f, the facts of the DLLs the client rig will run (the check's rig-plugins.json:
+//     the released plugins and the reviewed ones of other authors, not the builds judged above): the
+//     decision lists the plugins the loader refuses on this build as `expectRefused`, the rig's
+//     expect_refused input for the branch this check is for. Computed from those DLLs only, by the
+//     same loader rule (see loaderRefusal). Without the file, or for a DLL whose facts could not be
+//     read, nothing is declared, so a refusal of it fails the rig loudly.
 //   --other-cl N, the CL the OTHER Steam branch runs: the decision also lists `expectRefusedOther`,
-//     the plugins the loader's own rule predicts refused on that CL (the other branch's rig input;
-//     see expectedRefusals). Nothing else reads it: a CL the pipeline cannot name is not passed,
-//     and the list is then empty, so every refusal on that branch is unexpected and fails the rig.
+//     the plugins the loader's own rule predicts refused on that CL for the same DLLs (the other
+//     branch's rig input; see expectedRefusals). Nothing else reads it: a CL the pipeline cannot name
+//     is not passed, and the list is then empty, so every refusal on that branch is unexpected and
+//     fails the rig.
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
 //   GObjects, GNames, AppendString or GWorld not resolved (G4 scan) -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty) and the field rows do not
@@ -281,9 +287,11 @@ function refusalFromFields(p, running) {
 // scanner's REFUSED verdict, a probe note about another CL) says nothing here: loaderRefusal
 // reads a note only for the CL it names. A plugin whose fields cannot say is not listed, so a
 // refusal the rule does not predict stays unexpected and fails the rig.
-export function expectedRefusals(rows, cl) {
+// `scanned`: cl is the CL the rows were scanned on, so the scanner's own REFUSED verdict (interface
+// outside the loader's range) is a refusal there too.
+export function expectedRefusals(rows, cl, scanned = false) {
   if (!Array.isArray(rows)) return [];
-  const names = rows.filter((p) => isObj(p) && typeof p.name === 'string' && p.name !== '' && loaderRefusal(p, cl)).map((p) => p.name);
+  const names = rows.filter((p) => isObj(p) && typeof p.name === 'string' && p.name !== '' && (loaderRefusal(p, cl) || (scanned && p.verdict === 'REFUSED'))).map((p) => p.name);
   return [...new Set(names)].sort();
 }
 
@@ -451,7 +459,7 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
   return reasons;
 }
 
-// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, plugins, fields?, history }, each a loadJson()
+// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, plugins, fields?, rigPlugins?, history }, each a loadJson()
 // result, testAutopilot (a dispatched test run: the decision is still HOLD while autopilot is disabled,
 // and `wouldBe` says what it would be with autopilot on) and candidate (the unattended chain: the same,
 // without the `test` mark).
@@ -461,19 +469,27 @@ export function decide(inputs) {
   let disabled = false;
   let perPlugin = [];
   const fail = (msg) => reasons.push(msg);
+  // The facts of the DLLs the rig will run. Anything but a list of rows means none were read.
+  const rigRows = inputs.rigPlugins?.ok === true && Array.isArray(inputs.rigPlugins.value?.plugins) ? inputs.rigPlugins.value.plugins : null;
   const out = (decision, path, cl) => {
+    if (rigRows === null) notes.push(`rig plugins: the facts of the DLLs the rig runs were not read (${inputs.rigPlugins === undefined ? 'no file given' : inputs.rigPlugins.error ?? 'no plugins list'}); no refusal is declared for the rig`);
+    else {
+      const unread = rigRows.filter((p) => !isObj(p) || !isObj(p.plugin) || !Number.isInteger(p.plugin.interfaceVersion)).map((p) => (isObj(p) && typeof p.name === 'string' ? p.name : '?'));
+      if (unread.length) notes.push(`rig plugins: no facts for ${unread.join(', ')}; no refusal is declared for ${unread.length === 1 ? 'it' : 'them'}, so a refusal fails the rig`);
+    }
     const r = {
       decision, path, cl: cl ?? null, repo: inputs.repo ?? null, ship: decision === 'M' || decision === 'B',
       reasons, notes, plugins: perPlugin,
       pluginsOk: perPlugin.length > 0 && perPlugin.every((p) => p.status === 'updated' || p.heldAlone === true),
-      // The plugins the loader refuses on this build, sorted: the client rig's expect_refused input.
-      expectRefused: perPlugin.filter((p) => p.refusedByLoader === true).map((p) => p.name).sort(),
+      // The DLLs the rig runs that the loader refuses on this build, sorted: the client rig's expect_refused
+      // input. From the rig's own DLLs (--rig-plugins), never from the plugin builds judged in perPlugin.
+      expectRefused: rigRows === null ? [] : expectedRefusals(rigRows, cl, true),
     };
     // The other branch's build: the same rule on that CL (--other-cl). On the very CL this check
     // scanned, the scanned verdicts apply too, so the two lists are then the same.
     if (inputs.otherCl !== undefined && inputs.otherCl !== null) {
       r.otherCl = Number(inputs.otherCl);
-      r.expectRefusedOther = r.otherCl === Number(cl) ? r.expectRefused : expectedRefusals(inputs.plugins?.value?.plugins, r.otherCl);
+      r.expectRefusedOther = r.otherCl === Number(cl) ? r.expectRefused : rigRows === null ? [] : expectedRefusals(rigRows, r.otherCl);
     }
     if (inputs.testAutopilot || inputs.candidate) {
       if (inputs.testAutopilot) r.test = true;
@@ -596,7 +612,7 @@ function main() {
     args.candidate = argv.includes('--candidate');
     if (args['other-cl'] !== undefined) args.otherCl = otherClOf(args['other-cl']);
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n] [--test-autopilot | --candidate]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n] [--rig-plugins f] [--test-autopilot | --candidate]`);
     process.exit(2);
   }
   let result;
@@ -608,6 +624,7 @@ function main() {
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
       g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),
       ...(args.fields === undefined ? {} : { fields: loadJson(args.fields) }),
+      ...(args['rig-plugins'] === undefined ? {} : { rigPlugins: loadJson(args['rig-plugins']) }),
       ...(args.otherCl === undefined ? {} : { otherCl: args.otherCl }),
     });
   } catch (e) {
