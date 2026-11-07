@@ -1,0 +1,54 @@
+{
+  "dwmapi.dll": {
+    "before": "d22da7f0e26747ead95577046cd008611e68856ef98ae41ffa507ffa438c34bd",
+    "after": "d22da7f0e26747ead95577046cd008611e68856ef98ae41ffa507ffa438c34bd"
+  },
+  "ModLoader/StarRupture-ModLoader-Core.dll": {
+    "before": "5acd509b30c8ebaf028a086f028bdd28cba72ee0d0d786f371a1650e5fa9f6e8",
+    "after": "5acd509b30c8ebaf028a086f028bdd28cba72ee0d0d786f371a1650e5fa9f6e8"
+  },
+  "ModLoader/StarRupture-ImGui.dll": {
+    "before": "705a1d314bf2bc0a5799269d2fef43d5b86d7059c8e52be4e93b9151f9344178",
+    "after": "705a1d314bf2bc0a5799269d2fef43d5b86d7059c8e52be4e93b9151f9344178"
+  },
+  "ModLoader/StarRupture-ModLoader-Updater.exe": {
+    "before": "adac0c91c90b70c7d651659455e9d4be4bcc887b367d7b620e503efb9c33d572",
+    "after": "adac0c91c90b70c7d651659455e9d4be4bcc887b367d7b620e503efb9c33d572"
+  },
+  "ModLoader/Plugins/BetterCheats.dll": {
+    "before": "8d025f68a65fbfb51d52aa9cffa6e8d57b2ca994af2635fcf1790b6f38b3b54f",
+    "after": "8d025f68a65fbfb51d52aa9cffa6e8d57b2ca994af2635fcf1790b6f38b3b54f"
+  },
+  "ModLoader/Plugins/BetterDrone.dll": {
+    "before": "fe36caaada89c90e44155f522de13520f59cbacaa438bb0f199502b5eef5d69f",
+    "after": "fe36caaada89c90e44155f522de13520f59cbacaa438bb0f199502b5eef5d69f"
+  },
+  "ModLoader/Plugins/CameraControls.dll": {
+    "before": "88ff3f05cd4d7df1bdb4406228474866c6b3a8b755989eca469acf6278690ab8",
+    "after": "88ff3f05cd4d7df1bdb4406228474866c6b3a8b755989eca469acf6278690ab8"
+  },
+  "ModLoader/Plugins/Codex.dll": {
+    "before": "5a8fcb396c1e64523777a8a83e5253b19a91bef6a57cdba8fd7fe3a8c7fc14aa",
+    "after": "5a8fcb396c1e64523777a8a83e5253b19a91bef6a57cdba8fd7fe3a8c7fc14aa"
+  },
+  "ModLoader/Plugins/Compass_Plugin.dll": {
+    "before": "72c19e92a9cc3e248a42eaf814b3a0006e1bb50abe090a1a072219e9e1ebf4b6",
+    "after": "72c19e92a9cc3e248a42eaf814b3a0006e1bb50abe090a1a072219e9e1ebf4b6"
+  },
+  "ModLoader/Plugins/ProductionViewer.dll": {
+    "before": "517a5b21a644f2ea1f9a92d028a603538424859100d860af9ce4a227d419105b",
+    "after": "517a5b21a644f2ea1f9a92d028a603538424859100d860af9ce4a227d419105b"
+  },
+  "ModLoader/Plugins/RuptureTimer.dll": {
+    "before": "c658681777d1418c761404296658061521fe0479caf4ff1b3f3287fc2fde0801",
+    "after": "c658681777d1418c761404296658061521fe0479caf4ff1b3f3287fc2fde0801"
+  },
+  "ModLoader/Plugins/Waila.dll": {
+    "before": "02a39149280a52ee5c480003eedb1605b3f3e55332dcbba2e67bbe670ced6954",
+    "after": "02a39149280a52ee5c480003eedb1605b3f3e55332dcbba2e67bbe670ced6954"
+  },
+  "ModLoader/Plugins/WaveOptimiser.dll": {
+    "before": "26d8a900b66732a6c48413105494d3c0fee55186a8913ca5019faa43cf375b7b",
+    "after": "26d8a900b66732a6c48413105494d3c0fee55186a8913ca5019faa43cf375b7b"
+  }
+}
