@@ -1,0 +1,650 @@
+{
+ "status": "fail",
+ "plugins": [
+  {
+   "name": "BetterCheats",
+   "source": "build",
+   "repo": "msantoro12/StarRupture-Plugin-BetterCheats",
+   "ref": "gss/plugin-work",
+   "sha": "c7423f8dc80a60cc00c0217582ebc3269a0f8bc5",
+   "release": "",
+   "exitCode": 1,
+   "plugin": {
+    "file": "BetterCheats.dll",
+    "name": "BetterCheats",
+    "version": "0.21.0-gss.68",
+    "interfaceVersion": 74,
+    "gameBuild": "CL-127004",
+    "hasLoadHooks": true
+   },
+   "verdict": "FAIL",
+   "summary": {
+    "total": 17,
+    "ok": 17,
+    "missing": 0,
+    "ambiguous": 0,
+    "other": 0,
+    "reported": 0,
+    "failing": 1,
+    "raw": 10,
+    "ownPattern": 0
+   },
+   "note": "PluginInit took the Game-SDK globals; the probe ended PluginInit there, as planned, when it reached for a hook the probe does not provide (0xC0000005); second run, scan cache warm: 27/27 rows the same",
+   "patterns": [
+    {
+     "name": "UCrUW_HealthHud::SetupProgressBar",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "UCrBuildingComponent::GetPlacementResourceConditionResult",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "ACrTechnologyKeeper::CheckAvailableBuildings",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "ACrCraftingRecipeOwner::IsRecipeUnlocked",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "(raw) 40 53 57 48 81 EC ?? ?? ?? ?? 48 8B DA 48 8B F9 48 85 D2 75 ?? 32 C0",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "MISSING"
+    },
+    {
+     "name": "(raw) 40 53 55 56 48 81 EC ?? ?? ?? ?? 48 8B DA 48 8B F1",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "OK"
+    },
+    {
+     "name": "ACrAPHelperActorCustom::CheckStability",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "(raw) 40 56 48 83 EC ?? 48 83 B9 ?? ?? ?? ?? ?? 48 8B F1 75 ?? 32 C0",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "MISSING"
+    },
+    {
+     "name": "(raw) 48 89 74 24 18 57 48 83 EC 60 48 8B F1 E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 48 83 BE ?? ?? ?? ?? 00",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "OK"
+    },
+    {
+     "name": "ACrAPHelperDynamicPillar::CheckStability",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "(raw) 48 8B C4 55 53 56 57 41 55 41 56 41 57 48 8D A8 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? 0F 29 70 ?? 4C 8B FA 44 0F 29 48 ?? 4C 8B F1 44 0F 29 90 ?? ?? ?? ?? 33 F6 48 8B 01 FF 90 D8 07 00 00 84 C0 0F",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "OK"
+    },
+    {
+     "name": "(raw) 0F 2F 30 0F 82 ?? ?? ?? ?? 48 8B 9D ?? ?? ?? ?? E8 ?? ?? ?? ?? 4C 8B C0 48 8B D3 48 8B CE E8 ?? ?? ?? ?? 48 85 C0 74 05 0F 2F 30 72 ?? 48 8B 07 48 8B CF FF 90 00 08 00 00",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "OK"
+    },
+    {
+     "name": "(raw) 40 55 53 56 57 41 55 48 8D AC 24 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? 48 83 B9 ?? ?? ?? ?? 00 4C 8B E9 48 8B 01 0F 84 ?? ?? ?? ?? 33 FF 48 89 7D ?? 48 89 7D ??",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "MISSING"
+    },
+    {
+     "name": "(raw) 48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 ?? ?? ?? ?? 48 8B 01 45 33 E4 48 8B B5 ?? ?? ?? ?? 4D 8B F1 4C 89 4C 24 ?? 49 8B D8 48 8B FA 48 89 4D ?? 4C 8B E9",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "OK"
+    },
+    {
+     "name": "(raw) 4C 89 4C 24 20 48 89 54 24 10 48 89 4C 24 08 55 53 57 41 55 41 57 48 8D AC 24 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? 48 8B 85 ?? ?? ?? ?? 33 FF 49 8B D9 4D 8B E8 4C 8B FA C6 40 08 00",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "OK"
+    },
+    {
+     "name": "(raw) 4C 89 44 24 18 55 53 56 57 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? ?? ?? 4C 8B FA 48 8B F1 E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 33 FF 4C 8B F0",
+     "call": "FindAllPatternsInMainModule",
+     "kind": "raw",
+     "required": false,
+     "recorded": false,
+     "result": "MISSING"
+    },
+    {
+     "name": "UCrMiningToolComponent::GetMiningDamage",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "UAuItemsComponent::AddNewItem",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "UCrUW_InventoryContainer::InitInventorySlots",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "FMassEntityConfig::DestroyEntityTemplate",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "FMassEntityConfig::GetOrCreateEntityTemplate",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "UWorld::GetSubsystem<UMassEntitySubsystem>",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "TSharedFragmentsContainer<FConstSharedStruct>::FindOrAdd",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "UE::StructUtils::GetStructInstanceCrc32",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "FWeakObjectPtr::operator=(FObjectPtr)",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "UMassActorSubsystem::GetEntityHandleFromActor",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "FMassEntityManager::InternalGetFragmentDataPtr",
+     "call": "Resolve",
+     "kind": "function",
+     "required": false,
+     "recorded": true,
+     "result": "OK"
+    }
+   ],
+   "failures": [
+    {
+     "name": "UCrGameInstance::ServerSessionName",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "ACrTechnologyKeeper::bUnlockAllBuildings",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::NextWaveTimer",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::bWaitingForNextWave",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::bPause",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::bStopWaves",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrUW_InventoryContainer::InventoryComponent",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "FMassEnemyHealthFragment::HP",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UMassEntitySubsystem::EntityManager",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrGameInstance::ServerSessionName",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "ACrTechnologyKeeper::bUnlockAllBuildings",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::NextWaveTimer",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::bWaitingForNextWave",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::bPause",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrEnviroWaveTimerSubsystem::bStopWaves",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UCrUW_InventoryContainer::InventoryComponent",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "FMassEnemyHealthFragment::HP",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    },
+    {
+     "name": "UMassEntitySubsystem::EntityManager",
+     "detail": "refused: no row for CL-129402, and a native member has no other source; the loader map, CL-127004 row cannot be checked on this build, so it is not used",
+     "required": true
+    }
+   ],
+   "rule3": {
+    "status": "clean",
+    "findings": 0,
+    "migrated": true
+   }
+  },
+  {
+   "name": "MiniMap",
+   "source": "release",
+   "repo": "LetMeInside/StarRupture-Plugin-MiniMap",
+   "ref": "v1.2.0",
+   "sha": "dd9b4410b44b07d0c2ddf940be11834044a6e9db",
+   "release": "v1.2.0",
+   "exitCode": 1,
+   "plugin": {
+    "file": "MiniMap-Client.dll",
+    "name": "MiniMap",
+    "version": "1.2.0",
+    "interfaceVersion": 70,
+    "gameBuild": "CL-127004 (none declared)",
+    "hasLoadHooks": true
+   },
+   "verdict": "FAIL",
+   "summary": {
+    "total": 31,
+    "ok": 30,
+    "missing": 1,
+    "ambiguous": 0,
+    "other": 0,
+    "reported": 0,
+    "failing": 1,
+    "raw": 0,
+    "ownPattern": 0
+   },
+   "note": "Needs an update to run on CL-129402: it was built for plugin interface v70, before the version map, so it would read this game's data where CL-127004 had it. It loads on CL-127004.; second run, scan cache warm: 31/31 rows the same",
+   "patterns": [
+    {
+     "name": "MiniMap::UCommonActivatableWidget::NativeOnActivated",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UCommonActivatableWidget::NativeOnDeactivated",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::FSoftObjectPtr::LoadSynchronous",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UWidgetBlueprintLibrary::GetBrushResourceAsTexture2D",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UStreamableRenderAsset::SetForceMipLevelsToBeResident",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UStreamableRenderAsset::WaitForStreaming",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UTexture2D::GetNumResidentMips",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UTexture2D::GetNumMipsAllowed",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UTexture2D::GetNumMips",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UTexture2D::StreamIn",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UStreamableRenderAsset::WaitForPendingInitOrStreaming",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UWorld::GetFirstPlayerController",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::USceneComponent::K2_GetComponentLocation",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UTexture2D::GetPlatformData",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::FBulkData::GetBulkDataSize",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::FBulkData::CanLoadFromDisk",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::FBulkData::GetCopy",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::FMemory::Free",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::ACrCharacterPlayerBase::IsPlayerInForgottenEngine",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::AController::GetControlRotation",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UGameplayStatics::GetAllActorsOfClass",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::ACrPointOfInterestMarkerActor::StaticClass",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UCrMapMenuDevSettings::FindPOIMarkerCategoryData",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UCrPlayerMapMenuDataComponent::GetMapMenuMarkerFiltersOnOffStatus",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::FCrAbandonBaseData::IsCompleted",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::UCrMapMenuDevSettings::FindFoundableMarkerCateroryData",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::Retain",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::Release",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::FName::EqualsWide",
+     "call": "Resolve",
+     "kind": "code",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::GameThread",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "OK"
+    },
+    {
+     "name": "MiniMap::SplinePayload::GetSplineActorData",
+     "call": "Resolve",
+     "kind": "function",
+     "required": true,
+     "recorded": true,
+     "result": "MISSING",
+     "suggest": {
+      "located": "reference",
+      "confidence": "high",
+      "rva": "0x6695430",
+      "symbolRva": "0x6695430",
+      "referenceRva": "0x668DEA0",
+      "hookNameMatches": false,
+      "proposals": [
+       {
+        "pattern": "48 8B D0 48 8D 8D ?? 02 00 00 E8 ?? ?? ?? ?? 48 8B 9D ?? 02 00 00",
+        "followRel32At": 10,
+        "followRipDispAt": -1,
+        "resultOffset": 0,
+        "uniqueOnTarget": true,
+        "uniqueOnReference": true
+       }
+      ],
+      "referenceKeepsCurrent": true
+     }
+    }
+   ],
+   "failures": null
+  }
+ ]
+}
