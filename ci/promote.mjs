@@ -4,7 +4,7 @@
 //
 //   node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json>
 //        --history <history.json> --last-seq <N> --now <ISO time> [--verify <verify.json>]
-//        [--roll-forward] [--out <plan.json>]
+//        [--roll-forward] [--seq <N>] [--out <plan.json>]
 //
 // <public.json>: { buildid, exeSha256, cl }, the public build that just flipped
 // and its exe's CL. <verify.json>: { ok }, the result of the re-scan or re-verify
@@ -25,7 +25,10 @@
 // publishes of the loader repo). A superseded staged CL is listed and skipped,
 // never published. A staged CL that is not the public build stays staged.
 //
-// seq is max(now, last + 1) in UTC seconds, as the signer writes it. A publish
+// seq is max(now, last + 1) in UTC seconds, as the signer writes it. --seq <N> plans
+// with a seq computed once elsewhere (vmap-sign.mjs next-seq), the one the signer and
+// the history entry get too; it must rise above --last-seq and be at most a day ahead
+// of --now, or the plan is refused. A publish
 // counts against the daily cap and the gap; only an owner-dispatched
 // roll-forward (--roll-forward: a newer seq replacing a bad publish of the same
 // CL) is exempt from the one-publish-per-CL limit.
@@ -43,6 +46,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { checkAutopilot, checkRateLimits } from './decide.mjs';
 import { LOADER_REPO } from './staging.mjs';
+import { MAX_SEQ_AHEAD } from './vmap-sign.mjs';
 
 export class PromoteError extends Error {}
 
@@ -69,8 +73,8 @@ export function gate({ autopilot, history, cl, now, rollForward = false, test = 
 
 // Returns { action, kind, cl, seq, lines, hold }; kind is how the public build
 // matched the index: different-cl, same or same-cl.
-export function plan({ index, pub, autopilot, history, lastSeq, now, verify = null, rollForward = false, test = false }) {
-  const r = planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollForward, test });
+export function plan({ index, pub, autopilot, history, lastSeq, now, verify = null, rollForward = false, test = false, seq = undefined }) {
+  const r = planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollForward, test, seq });
   if (!test) return r;
   r.lines.push('test run: the autopilot switch was not read as on; this plan is never published');
   return { ...r, test: true };
@@ -86,11 +90,15 @@ export function isPublishable(p, { testRun, branch }) {
   return p.action === 'promote' || (p.action === 'normal-flow' && p.kind === 'different-cl' && branch === 'public');
 }
 
-function planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollForward, test }) {
+function planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollForward, test, seq: given }) {
   need(isObj(index), 'staged index is not an object');
   need(isObj(pub) && Number.isInteger(pub.cl) && /^\d+$/.test(String(pub.buildid)) && /^[0-9a-f]{64}$/.test(String(pub.exeSha256 ?? '')), 'public build needs cl, buildid and exeSha256');
   need(Number.isInteger(lastSeq) && lastSeq >= 0, 'last seq is not a non-negative integer');
   need(Number.isFinite(now), 'now is not a time');
+  if (given !== undefined) {
+    need(Number.isSafeInteger(given) && given > lastSeq, `the given seq ${given} does not rise above the last seq ${lastSeq}`);
+    need(given <= Math.floor(now / 1000) + MAX_SEQ_AHEAD, `the given seq ${given} is more than a day ahead of the clock`);
+  }
   const lines = [];
   const staged = Object.entries(index).sort((a, b) => Number(a[0]) - Number(b[0]));
   for (const [cl, e] of staged) if (e.superseded) lines.push(`skip CL-${cl}: superseded, never published`);
@@ -127,7 +135,7 @@ function planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollFo
   const hold = gate({ autopilot, history, cl: pub.cl, now, rollForward, test });
   if (!isObj(verify) || verify.ok !== true) hold.push(`no passing ${check} result on the public exe`);
   // The signer's rule: the UTC second of signing, and never back.
-  const seq = Math.max(Math.floor(now / 1000), lastSeq + 1);
+  const seq = given ?? Math.max(Math.floor(now / 1000), lastSeq + 1);
   if (hold.length) {
     for (const h of hold) lines.push(`HOLD: ${h}`);
     lines.push(`would NOT sign and publish seq ${seq}`);
@@ -159,7 +167,7 @@ export function main(argv) {
     o[rest[i].slice(2)] = FLAGS.includes(rest[i]) ? true : rest[i + 1];
   }
   if (cmd !== 'plan' || !o.index || !o.public || !o.autopilot || !o.history || o['last-seq'] === undefined || !o.now) {
-    process.stderr.write('usage: promote.mjs plan --index <f> --public <f> --autopilot <f> --history <f> --last-seq <N> --now <ISO> [--verify <f>] [--roll-forward] [--test-autopilot] [--out <f>]\n');
+    process.stderr.write('usage: promote.mjs plan --index <f> --public <f> --autopilot <f> --history <f> --last-seq <N> --now <ISO> [--verify <f>] [--roll-forward] [--test-autopilot] [--seq <N>] [--out <f>]\n');
     return 2;
   }
   try {
@@ -168,7 +176,8 @@ export function main(argv) {
     const result = promote({
       index: readJson(o.index), pub: readJson(o.public), autopilot: loadOr(o.autopilot), history: loadOr(o.history),
       lastSeq: /^\d+$/.test(o['last-seq']) ? Number(o['last-seq']) : NaN, now,
-      verify: o.verify ? loadOr(o.verify) : null, rollForward: o['roll-forward'] === true, test: o['test-autopilot'] === true,
+      verify: o.verify ? loadOr(o.verify) : null,
+      seq: o.seq === undefined ? undefined : (/^[1-9][0-9]*$/.test(o.seq) ? Number(o.seq) : NaN), rollForward: o['roll-forward'] === true, test: o['test-autopilot'] === true,
     }, { dryRun: !o.live });
     process.stdout.write(`dry run: nothing is signed, published or released\n${result.lines.join('\n')}\n`);
     if (o.out) writeFileSync(o.out, JSON.stringify(result, null, 2) + '\n');
