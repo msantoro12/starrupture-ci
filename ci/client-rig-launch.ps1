@@ -20,6 +20,14 @@
 # that, kills the game and launches it again, at most -MaxRelaunch times; every attempt is
 # recorded in boot.json. Any other failure is left as it is for the verdict.
 #
+# -PayloadScript <ps1> (the data-extract workflow): launch a clean install with no loader and
+# no plugin, and run that script as a background job once the game process exists, with the
+# game's process id, its Win64 folder and -OutDir as arguments. The attempt ends when the
+# script ends (settled if it completed, else 'payload failed: <reason>') or after
+# -AttemptCapSec, which then bounds the whole payload. Everything else is as above. The script must
+# be a .ps1 file inside the checked-out repository ($env:GITHUB_WORKSPACE): a URL, a path outside
+# it or a link is refused before anything is installed or launched.
+#
 # The login arrives in STEAM_USER and STEAM_CACHE and is cleared from the environment
 # before the game starts. Everything printed or written goes through Scrub. Steam's own
 # logs and config files, the game's files and its engine logs never reach -OutDir.
@@ -39,6 +47,7 @@ param(
     [int]$AttemptCapSec = 300,
     [int]$SettleSec = 60,
     [int]$MaxRelaunch = 2,
+    [string]$PayloadScript = '',
     [switch]$Check
 )
 
@@ -76,6 +85,32 @@ public static class RigWin {
 '@
 
 # ---- helpers (also run by -Check) -----------------------------------------------------
+
+# The one payload script a run may execute: a .ps1 file that exists inside $Root (the checked-out
+# repository, $env:GITHUB_WORKSPACE), given as a path relative to $Cwd or absolute. A URL, a UNC or
+# device path, a path outside $Root (.. included), a link, or another file type is refused.
+function Resolve-PayloadScript([string]$Path, [string]$Root, [string]$Cwd) {
+    if (-not $Root) { throw '-PayloadScript is only accepted inside a workflow run (GITHUB_WORKSPACE is not set)' }
+    if ($Path -match '^[A-Za-z][A-Za-z0-9+.-]+:' -or $Path -match '^(\\\\|//)' -or $Path -match '[*?<>|"]') {
+        throw "-PayloadScript must be a path inside the repository, not a URL or a special path: $Path"
+    }
+    $base = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $full = [IO.Path]::GetFullPath([IO.Path]::Combine($Cwd, $Path))
+    if (-not $full.StartsWith($base + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "-PayloadScript must be inside the checked-out repository ($base): $Path"
+    }
+    if ([IO.Path]::GetExtension($full) -ne '.ps1') { throw "-PayloadScript must be a .ps1 file: $Path" }
+    $item = Get-Item -LiteralPath $full -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer) { throw "-PayloadScript is not a file: $Path" }
+    if ($item.LinkType) { throw "-PayloadScript must not be a link: $Path" }
+    # No link on the way either: a junction or symlink in a parent directory could lead outside.
+    $cur = $base
+    foreach ($part in $full.Substring($base.Length + 1).Split([char[]]@('\', '/'))) {
+        $cur = Join-Path $cur $part
+        if ((Get-Item -LiteralPath $cur -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "-PayloadScript must not go through a link ($cur): $Path" }
+    }
+    $full
+}
 
 # The first dialog among the snapshot's windows that means a failed launch. 'load-error' is
 # the known first-launch Steam error (any owner: Steam may raise it); 'dialog' is a visible
@@ -202,6 +237,29 @@ if ($Check) {
     if ($p.Known) { throw 'a persona under 3 characters was taken as checkable' }
     $p = Get-Personas '' $mine '' $id
     if ($p.Known -or $p.Names.Count) { throw 'a missing loginusers.vdf was taken as a persona' }
+    # -PayloadScript: a .ps1 file inside the repository and nothing else.
+    $ws = Join-Path ([IO.Path]::GetTempPath()) ("rig-check-" + [guid]::NewGuid())
+    $wsLeaf = Split-Path $ws -Leaf
+    New-Item -ItemType Directory -Force (Join-Path $ws 'ci') | Out-Null
+    New-Item -ItemType Directory -Force "$ws-other" | Out-Null
+    'x' | Set-Content (Join-Path $ws 'ci\p.ps1'); 'x' | Set-Content (Join-Path $ws 'ci\p.txt'); 'x' | Set-Content "$ws-other\p.ps1"
+    try {
+        if ((Resolve-PayloadScript './ci/p.ps1' $ws $ws) -ne (Join-Path $ws 'ci\p.ps1')) { throw 'a script inside the repository was refused' }
+        if ((Resolve-PayloadScript (Join-Path $ws 'ci\p.ps1') $ws $ws) -ne (Join-Path $ws 'ci\p.ps1')) { throw 'an absolute path inside the repository was refused' }
+        foreach ($bad in 'https://example.com/p.ps1', 'http://example.com/p.ps1', 'file:///C:/p.ps1', '\\host\share\p.ps1', '//host/share/p.ps1', "../$wsLeaf-other/p.ps1", "$ws-other\p.ps1", 'ci/../../p.ps1', 'ci/p.txt', 'ci/missing.ps1', 'ci', 'C:\Windows\System32\x.ps1') {
+            $refused = $false
+            try { [void](Resolve-PayloadScript $bad $ws $ws) } catch { $refused = $true }
+            if (-not $refused) { throw "the payload path '$bad' was accepted" }
+        }
+        # A junction in a parent directory that leads outside the repository.
+        New-Item -ItemType Junction -Path (Join-Path $ws 'ci\jl') -Target "$ws-other" | Out-Null
+        $refused = $false
+        try { [void](Resolve-PayloadScript './ci/jl/p.ps1' $ws $ws) } catch { $refused = $true }
+        if (-not $refused) { throw 'a path through a junction was accepted' }
+        $refused = $false
+        try { [void](Resolve-PayloadScript './ci/p.ps1' '' $ws) } catch { $refused = $true }
+        if (-not $refused) { throw 'a payload path was accepted with no workspace' }
+    } finally { Remove-Item -LiteralPath $ws, "$ws-other" -Recurse -Force -ErrorAction SilentlyContinue }
     'Check passed.'
     exit 0
 }
@@ -214,6 +272,12 @@ function Set-Reason([string]$msg) {
     if (-not (Test-Path -LiteralPath $f)) { Set-Content -LiteralPath $f -Value (($msg -replace '\s+', ' ').Trim()) -Encoding utf8 }
 }
 function Stop-WithReason([string]$msg) { Set-Reason $msg; throw $msg }
+# A Steam sign-in that failed (rejected, rate-limited, Guard asked, never signed in) is a
+# different failure from a game that did not run: the marker lets a caller tell them apart.
+function Stop-WithLogin([string]$msg) {
+    Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-login-failed.txt') -Value 'login' -Encoding ascii
+    Stop-WithReason $msg
+}
 
 # ---- the login: read once, cleared from the environment ------------------------------
 $user = "$env:STEAM_USER".Trim()
@@ -319,8 +383,8 @@ function Install-Client {
     }
     if (-not $installed) {
         if (-not $loginOk) {
-            if ($all -match 'Rate Limit') { throw 'Steam rate-limited the CI login; run the rig again later' }
-            throw 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew'
+            if ($all -match 'Rate Limit') { Stop-WithLogin 'Steam rate-limited the CI login; run the rig again later' }
+            Stop-WithLogin 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew'
         }
         if ($all -match 'No subscription|missing license|No license') { throw "The CI Steam account does not own StarRupture (app $appId)" }
         throw 'The game client did not install'
@@ -472,7 +536,7 @@ function Invoke-Attempt([int]$Number) {
         n = $Number; started_utc = $started.ToString('o'); process_found = $false; process_found_s = $null; exited_early = $false; exit_code = $null
         alive_at_end = $false; boot_finished_s = $null; peak_working_set_mb = 0; dialog = $null; load_error = $false; end = ''; seconds = 0
     }
-    $doneAt = $null; $dialogAt = $null; $crashAt = $null; $peak = 0.0
+    $doneAt = $null; $dialogAt = $null; $crashAt = $null; $peak = 0.0; $job = $null
     while ($true) {
         Start-Sleep -Seconds 2
         $t = [int]$sw.Elapsed.TotalSeconds
@@ -480,6 +544,11 @@ function Invoke-Attempt([int]$Number) {
         if (-not $a.process_found -and (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)) { $a.process_found = $true; $a.process_found_s = $t }
         if ($proc.HasExited) { $a.exited_early = $true; $a.exit_code = $proc.ExitCode; $a.end = "the game exited with code $($proc.ExitCode)"; break }
         try { $peak = [math]::Max($peak, $proc.WorkingSet64 / 1MB) } catch { }
+        if ($PayloadScript -and -not $job -and $a.process_found) {
+            $job = Start-Job -FilePath $PayloadScript -ArgumentList $proc.Id, $script:bin, (Resolve-Path -LiteralPath $OutDir).Path
+            Say "Payload started at $t s"
+        }
+        if ($job) { foreach ($l in @(Receive-Job -Job $job -ErrorAction SilentlyContinue)) { Say "payload: $l" } }
 
         $pids = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like 'StarRupture*' } | ForEach-Object { $_.Id })
         $dlg = Find-GameDialog @([RigWin]::Snapshot()) $pids
@@ -488,6 +557,15 @@ function Invoke-Attempt([int]$Number) {
         # The dialog holds the process open; give the loader's log a moment, then stop.
         if ($dialogAt -and ($t - $dialogAt) -ge 5) { $a.end = "dialog '$($a.dialog)'"; break }
 
+        if ($PayloadScript) {
+            if ($job -and $job.State -notin 'Running', 'NotStarted') {
+                foreach ($l in @(Receive-Job -Job $job -ErrorAction SilentlyContinue)) { Say "payload: $l" }
+                $a.end = if ($job.State -eq 'Completed') { 'settled' } else { "payload failed: $($job.ChildJobs[0].JobStateInfo.Reason.Message)" }
+                break
+            }
+            if ($t -ge $AttemptCapSec) { $a.end = "the payload did not finish in $AttemptCapSec s"; break }
+            continue
+        }
         $text = if (Test-Path -LiteralPath $ml) { try { Read-Shared $ml } catch { '' } } else { '' }
         if (-not $crashAt -and $text -match 'FATAL ENGINE CRASH') { $crashAt = $t; Say "Fatal crash in the log at $t s" }
         if ($crashAt -and ($t - $crashAt) -ge 15) { $a.end = 'fatal crash in the log'; break }
@@ -496,6 +574,7 @@ function Invoke-Attempt([int]$Number) {
         # The cap bounds the boot only.
         if (-not $doneAt -and $t -ge $AttemptCapSec) { $a.end = "no 'Boot sequence finished' in $AttemptCapSec s"; break }
     }
+    if ($job) { Stop-Job -Job $job -ErrorAction SilentlyContinue; Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
     if (-not $a.exited_early) { $a.alive_at_end = $true }
     $a.peak_working_set_mb = [int]$peak
     $a.seconds = [int]$sw.Elapsed.TotalSeconds
@@ -511,9 +590,11 @@ function Invoke-Launch {
     $script:mlDir = Join-Path $script:bin 'ModLoader'
     $script:mlLogs = Join-Path $script:mlDir 'Logs'
     $script:updater = Join-Path $script:mlDir 'StarRupture-ModLoader-Updater.exe'
+    # With a payload there is no loader and no updater: the program check below covers the game only.
+    if ($PayloadScript) { $script:updater = $script:exe }
     $gameRoot = (Get-Item $script:bin).Parent.Parent.FullName
     $script:crashDirs = @((Join-Path $gameRoot 'Saved\Crashes'), (Join-Path $env:LOCALAPPDATA 'StarRupture\Saved\Crashes'))
-    if (-not (Test-Path -LiteralPath (Join-Path $script:bin 'dwmapi.dll'))) { throw 'The loader is not installed (no dwmapi.dll)' }
+    if (-not $PayloadScript -and -not (Test-Path -LiteralPath (Join-Path $script:bin 'dwmapi.dll'))) { throw 'The loader is not installed (no dwmapi.dll)' }
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     $OutDir = (Resolve-Path $OutDir).Path
 
@@ -535,7 +616,7 @@ function Invoke-Launch {
         if ($exes -notcontains $must) { throw "$(Split-Path $must -Leaf) is not among the install's programs; the firewall rules would miss it" }
     }
     Enable-Firewall $exes
-    Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value (New-IniText) -Encoding ascii -NoNewline
+    if (-not $PayloadScript) { Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value (New-IniText) -Encoding ascii -NoNewline }
     Set-Content -LiteralPath (Join-Path $script:bin 'steam_appid.txt') -Value $appId -Encoding ascii -NoNewline
     $hashes = Get-DllHashes $script:bin
     Say "$(@($hashes.Keys).Count) loader and plugin binaries hashed"
@@ -546,9 +627,9 @@ function Invoke-Launch {
     Write-ClientLogin
     Start-Steam
     $login = Wait-ClientLogin
-    if ($login -eq 'denied') { throw 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew' }
-    if ($login -eq 'guard') { throw 'Steam asked for a Guard code; the saved CI login is not accepted' }
-    if ($login -ne 'live') { throw "The Steam client did not sign in from the saved login ($login)" }
+    if ($login -eq 'denied') { Stop-WithLogin 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew' }
+    if ($login -eq 'guard') { Stop-WithLogin 'Steam asked for a Guard code; the saved CI login is not accepted' }
+    if ($login -ne 'live') { Stop-WithLogin "The Steam client did not sign in from the saved login ($login)" }
 
     $attempts = @()
     $last = $null
@@ -601,6 +682,8 @@ function Invoke-Launch {
 
 $failed = $false
 try {
+    # Before anything is installed or launched: only a .ps1 inside the checked-out repository runs.
+    if ($PayloadScript) { $PayloadScript = Resolve-PayloadScript $PayloadScript $env:GITHUB_WORKSPACE (Get-Location).ProviderPath }
     switch ($Phase) {
         'Install' { Install-Client }
         'Launch' { Invoke-Launch }

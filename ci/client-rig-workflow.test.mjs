@@ -8,7 +8,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -20,6 +20,9 @@ const wf = read('.github', 'workflows', 'sr-client-rig.yml');
 const launch = read('ci', 'client-rig-launch.ps1');
 const setup = read('ci', 'client-rig-set.ps1');
 const verdictPs = read('ci', 'verdict.ps1');
+// The leak gate and the cleanup are scripts shared with sr-data-extract.yml.
+const leakGate = read('ci', 'leak-gate.ps1');
+const cleanupPs = read('ci', 'steam-cleanup.ps1');
 
 // The steps of the one job, split at "      - " (six spaces), keyed by name or uses.
 const jobText = wf.slice(wf.indexOf('\n    steps:\n') + 1);
@@ -263,9 +266,9 @@ test('persona: read from what Steam wrote, and a run that cannot tell holds back
   assert.match(launch, /rig-hold\.txt/);
   assert.match(launch, /Add-Secret \$n -Gate/);
   // The gate refuses to pass on a hold, the upload needs the gate, the last step says why.
-  const gate = step('Leak gate');
-  assert.match(gate, /\$hold = Join-Path \$env:RUNNER_TEMP 'rig-hold\.txt'\n\s+if \(Test-Path -LiteralPath \$hold\) \{[^\n]*exit 1 \}/);
-  assert.ok(gate.indexOf('rig-hold.txt') < gate.indexOf('$user ='), 'checked before anything else');
+  assert.match(step('Leak gate'), /\.\/ci\/leak-gate\.ps1 -Path out -AllowMissing\n\s+exit \$LASTEXITCODE$/);
+  assert.match(leakGate, /\$hold = Join-Path \$env:RUNNER_TEMP 'rig-hold\.txt'\nif \(Test-Path -LiteralPath \$hold\) \{[^\n]*exit 1 \}/);
+  assert.ok(leakGate.indexOf('rig-hold.txt') < leakGate.indexOf('$user ='), 'checked before anything else');
   assert.match(steps[indexOfStep('upload')], /if: always\(\) && steps\.leak\.outcome == 'success'/);
   const final = step('Outputs and result');
   assert.match(final, /\$hold = Join-Path \$env:RUNNER_TEMP 'rig-hold\.txt'/);
@@ -326,16 +329,20 @@ test('order: verdict before upload, leak gate before upload, upload only when th
   assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:')).replace('out/compat-report-*.json', '')), 'named files, no other wildcard');
   // The gate scans what would be uploaded, for the account name, the login values and the IDs.
   const gate = step('Leak gate');
-  assert.match(gate, /Get-ChildItem out -Recurse -File/);
-  assert.match(gate, /7656119\\d\{10\}\|\\\[U:1:\\d\+\\\]/);
-  assert.match(gate, /rig-gate-terms\.txt/);
-  assert.match(gate, /if \(\$bad\) \{ exit 1 \}/);
-  assert.match(gate, /if: always\(\) && steps\.gate\.outcome == 'success'|\n {8}if: always\(\) && steps\.gate\.outcome == 'success'/);
+  assert.match(gate, /\.\/ci\/leak-gate\.ps1 -Path out -AllowMissing\n\s+exit \$LASTEXITCODE$/);
+  assert.match(leakGate, /Get-ChildItem -LiteralPath \$Path -Recurse -File/);
+  assert.match(leakGate, /7656119\\d\{10\}\|\\\[U:1:\\d\+\\\]/);
+  assert.match(leakGate, /rig-gate-terms\.txt/);
+  assert.match(leakGate, /if \(\$bad\) \{ exit 1 \}/);
+  assert.match(gate, /\n {8}if: always\(\) && steps\.gate\.outcome == 'success'/);
 });
 
 test('cleanup: runs always, removes steamcmd, the Steam folder and the Steam profile, ahead of the verdict', () => {
-  const c = step('Remove Steam and the login from the runner');
-  assert.match(c, /\n {8}if: always\(\)\n/);
+  const cleanupStep = step('Remove Steam and the login from the runner');
+  assert.match(cleanupStep, /\n {8}if: always\(\)\n/);
+  assert.match(cleanupStep, /\.\/ci\/steam-cleanup\.ps1 -InstallDir \$env:INSTALL_DIR\n\s+exit \$LASTEXITCODE/);
+  assert.ok(!/Stop-Service|Remove-Item/.test(cleanupStep), 'the cleanup is the shared script, not an inline copy');
+  const c = cleanupPs;
   assert.match(c, /C:\\steamcmd/);
   assert.match(c, /Join-Path \$\{env:ProgramFiles\(x86\)\} 'Steam'/);
   assert.match(c, /Join-Path \$env:LOCALAPPDATA 'Steam'/);
@@ -346,7 +353,7 @@ test('cleanup: runs always, removes steamcmd, the Steam folder and the Steam pro
   assert.match(c, /Filter steam_appid\.txt/);
   assert.ok(indexOfStep('cleanup') > indexOfStep('launch') && indexOfStep('cleanup') < indexOfStep('verdict'));
   // The verdict only reads out/, which cleanup leaves alone.
-  assert.ok(!/out\b/.test(c));
+  assert.ok(!/out\b/.test(c.replace(/#.*$/gm, '')));
 });
 
 test('result: job fails on a failed verdict after the logs are uploaded, outputs always set', () => {
@@ -563,4 +570,85 @@ test('rig artifact: its name carries the branch, the candidate and the run, so t
   assert.match(wf, /\n {6}ARTIFACT_NAME: sr-client-rig-\$\{\{ inputs\.branch \}\}-\$\{\{ inputs\.candidate_artifact \|\| 'release' \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\n/);
   assert.match(step('Upload the scrubbed logs'), /name: \$\{\{ env\.ARTIFACT_NAME \}\}/);
   assert.equal(wf.match(/ARTIFACT_NAME:/g)?.length, 1, 'one definition, read by the upload and the final step');
+});
+
+// ---- the leak gate and the cleanup are shared scripts: run the gate for real ----------------------
+
+// Runs ci/leak-gate.ps1 the way a workflow step does: the login in the environment, RUNNER_TEMP
+// holding the hold and terms files. `files` maps a name under the scanned folder to its content.
+function runGate(args, { files = null, hold = '', terms = '' } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'rig-gate-'));
+  try {
+    const out = join(dir, 'out');
+    if (files) {
+      mkdirSync(out);
+      for (const [n, c] of Object.entries(files)) writeFileSync(join(out, n), c);
+    }
+    if (hold) writeFileSync(join(dir, 'rig-hold.txt'), hold);
+    if (terms) writeFileSync(join(dir, 'rig-gate-terms.txt'), terms);
+    const vdf = '"Accounts"\n{\n\t"acct1"\n\t{\n\t\t"Token"\t\t"LONGSECRETTOKEN1234567890"\n\t}\n}\n';
+    const env = { ...process.env, RUNNER_TEMP: dir, STEAM_USER: 'acct1', STEAM_CACHE: Buffer.from(vdf).toString('base64') };
+    for (const exe of ['pwsh', 'powershell']) {
+      const r = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-File', join(here, 'leak-gate.ps1'), '-Path', out, ...args], { encoding: 'utf8', env, windowsHide: true });
+      if (!r.error) return { ...r, termsLeft: existsSync(join(dir, 'rig-gate-terms.txt')) };
+    }
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('leak gate, the rig\'s call: clean output passes; a missing folder passes only with -AllowMissing', (t) => {
+  const ok = runGate(['-AllowMissing'], { files: { 'boot.json': '{"process_found":true}' } });
+  if (!ok) return t.skip('no PowerShell on this machine');
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, /No account data in 1 file/);
+  assert.equal(runGate(['-AllowMissing']).status, 0, 'no output folder is not a leak');
+  assert.equal(runGate([]).status, 1, 'without -AllowMissing a missing folder fails');
+});
+
+test('leak gate, the rig\'s call: the name, a login value, an id and a recorded term each fail it', (t) => {
+  if (!runGate(['-AllowMissing'])) return t.skip('no PowerShell on this machine');
+  for (const [what, content] of [
+    ['the account name', 'user ACCT1 signed in'],
+    ['a long login value', 'x longsecrettoken1234567890 y'],
+    ['a SteamID64', 'id 76561198000000001'],
+    ['a SteamID3', 'id [U:1:39734273]'],
+  ]) {
+    const r = runGate(['-AllowMissing'], { files: { 'modloader.log': content } });
+    assert.equal(r.status, 1, `${what} fails the gate`);
+    assert.match(r.stdout, /::error::Account data found in modloader\.log/);
+  }
+  const term = runGate(['-AllowMissing'], { files: { 'a.log': 'persona Gamer One here' }, terms: 'Gamer One\n' });
+  assert.equal(term.status, 1);
+  assert.equal(term.termsLeft, false, 'the terms file is removed once read');
+});
+
+test('leak gate, the rig\'s call: a hold from the launch fails it before anything is read', (t) => {
+  const r = runGate(['-AllowMissing'], { files: { 'a.log': 'fine' }, hold: 'The Steam persona name could not be determined.' });
+  if (!r) return t.skip('no PowerShell on this machine');
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /::error::The Steam persona name could not be determined\./);
+  assert.ok(!/No account data/.test(r.stdout));
+});
+
+test('leak gate, -Strict (the data extract): bytes, login-file names, and digit-bounded numeric terms', (t) => {
+  if (!runGate(['-Strict'], { files: { 'x.json': '{}' } })) return t.skip('no PowerShell on this machine');
+  // Binary content is scanned byte for byte.
+  const bin = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0xff, 0xfe]), Buffer.from('76561198000000001'), Buffer.from([0, 1, 2])]);
+  assert.equal(runGate(['-Strict'], { files: { 'icon.png': bin } }).status, 1, 'a SteamID64 inside a binary file');
+  // A login-file name fails even with harmless content.
+  for (const n of ['config.vdf', 'loginusers.vdf', 'ssfn1234567890', 'steam_appid.txt']) {
+    assert.equal(runGate(['-Strict'], { files: { [n]: 'ok' } }).status, 1, `${n} is refused by name`);
+  }
+  // A digits-only term (an id32) matches on its own, not inside a longer number.
+  const inside = runGate(['-Strict'], { files: { 'n.json': '{"v":91234567891}' }, terms: '123456789\n' });
+  assert.equal(inside.status, 0, inside.stdout);
+  const alone = runGate(['-Strict'], { files: { 'n.json': '{"v":123456789}' }, terms: '123456789\n' });
+  assert.equal(alone.status, 1);
+  // The same long number is a hit without -Strict: the rig's matching is unchanged.
+  assert.equal(runGate(['-AllowMissing'], { files: { 'n.json': '{"v":91234567891}' }, terms: '123456789\n' }).status, 1);
+  // The name and a clean file still behave as in the rig.
+  assert.equal(runGate(['-Strict'], { files: { 'n.json': 'ACCT1' } }).status, 1);
+  assert.equal(runGate(['-Strict'], { files: { 'n.json': '{"ok":true}' } }).status, 0);
 });
