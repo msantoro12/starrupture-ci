@@ -540,3 +540,9 @@ test('a known CL with another build id, stamp or size holds; an unparseable labe
   known.build = { ...same, source: 'steam_build' };
   assert.match(mapMode(header(), known).problems[0], /no Steam build id/);
 });
+
+test('an OK row without a pattern refuses the write and the message names the key, the CL and why', () => {
+  const input = base();
+  input.components[1].releases[0].rows.push(ok(`${SF}`, 'function', 0x123000, { pattern: undefined }));
+  assert.throws(() => mapMode(header(), input), (e) => e.message.includes(JSON.stringify(SF)) && e.message.includes('CL-130000') && /gives no pattern/.test(e.message));
+});

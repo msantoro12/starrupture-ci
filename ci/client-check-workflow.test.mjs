@@ -218,3 +218,22 @@ test('new build: the PR comment and the alert name it "new build, measured by ma
   assert.ok(alert.includes('measured by map mode: the loader does not run on it yet'));
   assert.ok(alert.includes('this is not a failure'));
 });
+
+test('map step: plugins that report another name than their repo (Waila, AxRuptureTimer) are tracked', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const script = wf.match(/node -e '\n(\s+const fs = require\("fs"\);\n[\s\S]*?)\n\s+' "\$buildid"/)[1];
+  const dir = mkdtempSync(join(tmpdir(), 'map-step-'));
+  mkdirSync(join(dir, 'res'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
+  writeFileSync(join(dir, 'res', 'scanner.json'), '{}');
+  for (const n of ['Waila', 'AxRuptureTimer', 'BetterCheats', 'MiniMap']) writeFileSync(join(dir, 'res', `plugin-${n}.json`), JSON.stringify({ plugin: { name: n } }));
+  const plugins = ['WAILA', 'RuptureTimer', 'BetterCheats'].map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`).join(' ')
+    + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release';
+  const r = spawnSync(process.execPath, ['-e', script, '1'], { cwd: dir, env: { ...process.env, PLUGINS: plugins, LOADER_REF: 'v1' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const scans = JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans;
+  const tracked = Object.fromEntries(scans.map((s) => [s.owner, s.tracked]));
+  assert.deepEqual(tracked, { ModLoader: true, AxRuptureTimer: true, BetterCheats: true, MiniMap: true, Waila: true });
+});

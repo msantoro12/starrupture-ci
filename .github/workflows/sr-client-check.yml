@@ -1711,11 +1711,15 @@ jobs:
             const fs = require("fs");
             const scans = [{ owner: "ModLoader", tracked: true, tag: process.env.LOADER_REF, rank: "current", file: "res/scanner.json" }];
             // PLUGINS is "owner/repo@ref ..."; the repo names the built plugins.
-            const built = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop());
+            // A plugin reports the name in plugin-names.json (Waila for WAILA,
+            // AxRuptureTimer for RuptureTimer), else its repo name.
+            const table = JSON.parse(fs.readFileSync("tool/ci/plugin-names.json", "utf8"));
+            const built = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop())
+              .map((repo) => table.find((t) => t.Repo === repo)?.LogName ?? repo.replace(/^StarRupture-Plugin-/, ""));
             for (const f of fs.readdirSync("res").filter((n) => /^plugin-.*\.json$/.test(n)).sort()) {
               const name = JSON.parse(fs.readFileSync("res/" + f, "utf8")).plugin?.name;
               if (!name) continue;
-              const tracked = built.includes("StarRupture-Plugin-" + name);
+              const tracked = built.includes(name);
               scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
             }
             fs.writeFileSync("scans.json", JSON.stringify({ source: "steam_build " + process.argv[1], scans }));

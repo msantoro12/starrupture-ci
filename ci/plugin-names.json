@@ -1,0 +1,11 @@
+[
+  {"Name": "BetterCheats", "Repo": "StarRupture-Plugin-BetterCheats", "LogName": "BetterCheats", "Asset": "BetterCheats"},
+  {"Name": "BetterDrone", "Repo": "StarRupture-Plugin-BetterDrone", "LogName": "BetterDrone", "Asset": "BetterDrone"},
+  {"Name": "CameraControls", "Repo": "StarRupture-Plugin-CameraControls", "LogName": "CameraControls", "Asset": "CameraControls"},
+  {"Name": "Codex", "Repo": "StarRupture-Plugin-Codex", "LogName": "Codex", "Asset": "Codex"},
+  {"Name": "Compass", "Repo": "StarRupture-Plugin-Compass", "LogName": "Compass", "Asset": "Compass_Plugin"},
+  {"Name": "ProductionViewer", "Repo": "StarRupture-Plugin-ProductionViewer", "LogName": "ProductionViewer", "Asset": "ProductionViewer"},
+  {"Name": "RuptureTimer", "Repo": "StarRupture-Plugin-RuptureTimer", "LogName": "AxRuptureTimer", "Asset": "RuptureTimer"},
+  {"Name": "WAILA", "Repo": "StarRupture-Plugin-WAILA", "LogName": "Waila", "Asset": "Waila"},
+  {"Name": "WaveOptimiser", "Repo": "StarRupture-Plugin-WaveOptimiser", "LogName": "WaveOptimiser", "Asset": "WaveOptimiser"}
+]
