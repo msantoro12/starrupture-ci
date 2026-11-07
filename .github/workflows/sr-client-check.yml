@@ -1,5 +1,10 @@
 name: SR client check
 
+# REPLAY BRANCH test/replay-update2: the client check exactly as on main,
+# pointed at the pre-Update-2 loader (fork branch test/replay-update2) and
+# run under its own environment, steam-client-replay, whose Steam login only
+# this branch can read. Nothing on this branch can release.
+
 # Offline check of a new StarRupture client build (Steam app 1631270): logs in
 # to Steam with the saved CI login, downloads the build, and checks it without
 # running it:
@@ -8,9 +13,8 @@ name: SR client check
 #     globals) against the exe and resolves their RVAs
 #   - the resolved SDK globals are compared with the Game SDK's Offsets::
 #   - each plugin's own OnPluginLoadHooks resolves its patterns against the
-#     exe (sr-aobscan --plugin); a plugin in `plugins` is built from source
-#     (owner/repo@ref) or is the released DLL players get
-#     (owner/repo@latest-release)
+#     exe (sr-aobscan --plugin); plugins in `plugins` are built from source,
+#     those in `plugin_manifests` are the released DLL players get
 #   - auto-apply: a plugin's failing patterns are patched with the proposals
 #     at or above apply_confidence (high unless a replay says otherwise), the
 #     plugin is rebuilt and scanned again on this build and the public one,
@@ -21,22 +25,13 @@ name: SR client check
 # Trust: the scanner and plugin code run in the job that held the Steam
 # login, after the login cache is deleted from disk. Deleting it does not
 # clear it from the runner's memory, so that code only ever comes from the
-# owners the inputs allow (msantoro12 and AlienXAXS; for a latest release also
+# owners the inputs allow (msantoro12 and AlienXAXS; for released DLLs also
 # LetMeInside, MiniMap's author), the same trust as scanner_ref. The fork
 # deploy keys are only in the auto-apply job (environment fork-push), which
 # runs no plugin code and no action but actions/checkout, and checks every
 # field of its work list: the commit must be the one plugin-plan resolved
 # from the inputs, before any plugin code ran. Each key can write only
 # auto/** branches on its fork, and no tags.
-#
-# Validation only for another author's plugin (anything not owned by
-# msantoro12): nothing here publishes, tags, releases or uploads it. The
-# check job fetches or builds it itself, after the login cache is deleted;
-# it never goes through the plugins job's artifact, and the files die with
-# the runner. This workflow has no release, tag, Nexus or upload-to-the-world
-# step, the fork keys exist only for the owner's own forks (the auto-apply
-# job checks the repository), and the result artifact holds reports, never a
-# plugin binary.
 #
 # Login: a separate Steam account that owns the game, never the owner's main
 # account. Its steamcmd login cache (config.vdf) is the secret
@@ -67,47 +62,26 @@ on:
         default: 'msantoro12/StarRupture-ModLoader'
       loader_ref:
         type: string
-        default: 'gss/loader-work'
+        default: 'test/replay-update2'
       scanner_ref:
         type: string
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
-      plugin_sdk_repo:
-        type: string
-        default: 'msantoro12/StarRupture-Plugin-SDK'
-      plugin_sdk_ref:
-        type: string
-        default: 'gss/sdk-work'
-      game_sdk_repo:
-        type: string
-        default: 'AlienXAXS/StarRupture-Game-SDK'
-      game_sdk_ref:
-        type: string
-        default: 'main'
-      plugin_exclude:
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@test/replay-update2 msantoro12/StarRupture-Plugin-BetterDrone@test/replay-update2 msantoro12/StarRupture-Plugin-WAILA@test/replay-update2 msantoro12/StarRupture-Plugin-Codex@test/replay-update2'
+      plugin_manifests:
         type: string
         default: ''
+      plugin_sdk_ref:
+        type: string
+        default: '4196e1fe3a83c120133daad824cbaff94780898b'
+      game_sdk_ref:
+        type: string
+        default: '4ab6473c15a0c1975a7e89b867e321e28b2645e8'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
         type: string
         default: 'high'
-      map_mode:
-        description: 'Write the update into the loader version map (ci/map-mode.mjs) and upload the header'
-        type: boolean
-        default: false
-      publish:
-        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
-        type: boolean
-        default: false
-    # A caller passes only this one; the Steam login, the fork deploy keys and
-    # the release key are environment secrets (steam-client, fork-push,
-    # vmap-sign), read by the one job in that environment.
-    secrets:
-      VMAP_SIGN_KEY_TEST:
-        description: 'TEST signing key (k1) for the map-mode dry run'
-        required: false
   workflow_dispatch:
     inputs:
       branch:
@@ -115,10 +89,6 @@ on:
         type: choice
         options: [public, public_test_branch, expiry-only]
         default: public
-      buildid:
-        description: 'Build id the watcher saw (blank: what Steam installs); map mode names the build row with it'
-        type: string
-        default: ''
       pr:
         description: 'Pull request number to post the result on (blank: no comment)'
         type: string
@@ -130,7 +100,7 @@ on:
       loader_ref:
         description: 'Loader branch the patterns come from'
         type: string
-        default: 'gss/loader-work'
+        default: 'test/replay-update2'
       scanner_ref:
         description: 'Branch of the loader repository holding tools/AobScan'
         type: string
@@ -138,48 +108,24 @@ on:
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
-      plugin_sdk_repo:
-        description: 'Plugin SDK repository the plugins build against (msantoro12 or AlienXAXS)'
-        type: string
-        default: 'msantoro12/StarRupture-Plugin-SDK'
-      plugin_sdk_ref:
-        description: 'Plugin SDK ref the plugins build against'
-        type: string
-        default: 'gss/sdk-work'
-      game_sdk_repo:
-        description: 'Game SDK repository the plugins build against (msantoro12 or AlienXAXS)'
-        type: string
-        default: 'AlienXAXS/StarRupture-Game-SDK'
-      game_sdk_ref:
-        description: 'Game SDK ref the plugins build against'
-        type: string
-        default: 'main'
-      plugin_exclude:
-        description: 'Plugin names left out of this run (from plugins), space-separated, e.g. MiniMap'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@test/replay-update2 msantoro12/StarRupture-Plugin-BetterDrone@test/replay-update2 msantoro12/StarRupture-Plugin-WAILA@test/replay-update2 msantoro12/StarRupture-Plugin-Codex@test/replay-update2'
+      plugin_manifests:
+        description: 'Released plugins, checked as players get them: the update-manifest URL from each one''s sidecar .json, space-separated'
         type: string
         default: ''
+      plugin_sdk_ref:
+        description: 'AlienXAXS/StarRupture-Plugin-SDK ref the plugins build against'
+        type: string
+        default: '4196e1fe3a83c120133daad824cbaff94780898b'
+      game_sdk_ref:
+        description: 'AlienXAXS/StarRupture-Game-SDK ref the plugins build against'
+        type: string
+        default: '4ab6473c15a0c1975a7e89b867e321e28b2645e8'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied (medium only for a replay)'
         type: choice
         options: [high, medium]
         default: high
-      map_mode:
-        description: 'Write the update into the loader version map (ci/map-mode.mjs) and upload the header'
-        type: boolean
-        default: false
-      publish:
-        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
-        type: boolean
-        default: false
-      # Dispatch only: sr-watch calls this workflow and cannot pass it. With
-      # state/autopilot.json still disabled, decide reports what it would
-      # choose and, when that is M, the chain runs on (export, TEST-key sign,
-      # promote plan) with nothing publishable. Refused with publish on.
-      test_autopilot:
-        description: 'Test run: carry on past a disabled autopilot as far as the promote plan; never publishes (needs map_mode, publish off)'
-        type: boolean
-        default: false
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -245,12 +191,10 @@ jobs:
           # checks what that branch would ship.
           Copy-Item -Recurse -Force scanner-src\tools\AobScan loader\tools\
 
-          # A loader with one required CL names it here. A loader that runs on
-          # every build in its version map has no such line; the scanner then
-          # reports that loader's own gate verdict (exe.supported).
           $f = 'loader\StarRupture-ModLoader-Core\core\version_check.cpp'
           $m = Select-String -Path $f -Pattern 'kRequiredVersionSuffix\[\]\s*=\s*L"([^"]+)"'
-          $cl = if ($m) { $m.Matches[0].Groups[1].Value } else { '' }
+          if (-not $m) { throw 'required CL not found in version_check.cpp' }
+          $cl = $m.Matches[0].Groups[1].Value
 
           $basic = 'loader\StarRupture SDK\Client\SDK\Basic.hpp'
           $offsets = [ordered]@{}
@@ -259,7 +203,7 @@ jobs:
             $offsets[$k] = if ($o) { $o.Matches[0].Groups[1].Value } else { '' }
           }
           $json = $offsets | ConvertTo-Json -Compress
-          "Required CL: $(if ($cl) { $cl } else { 'none (the loader''s version map decides)' })"
+          "Required CL: $cl"
           "SDK Offsets: $json"
           "required_cl=$cl" >> $env:GITHUB_OUTPUT
           "sdk_offsets=$json" >> $env:GITHUB_OUTPUT
@@ -296,11 +240,10 @@ jobs:
   # ---- The plugins whose patterns are checked too -------------------------
   # Each plugin's own OnPluginLoadHooks is run by sr-aobscan --plugin against
   # the downloaded exe, so the patterns checked are the ones that DLL
-  # registers. A plugin entered as owner/repo@ref is built from source;
-  # owner/repo@latest-release is the repository's latest GitHub release,
-  # checked as players get it (its DLL asset; built from the tag's source when
-  # the release has no single DLL asset). A plugin that fails fails only
-  # itself: the loader's verdict stays what the loader's patterns say.
+  # registers. A plugin in `plugins` is built from source; one in
+  # `plugin_manifests` is the released DLL its update manifest names, fetched
+  # the way the loader's auto-updater fetches it. A plugin that fails fails
+  # only itself: the loader's verdict stays what the loader's patterns say.
   plugin-plan:
     name: plugin-plan
     if: inputs.branch && inputs.branch != 'expiry-only'
@@ -309,81 +252,30 @@ jobs:
     permissions: {}
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
-      hosted: ${{ steps.plan.outputs.hosted }}
       any: ${{ steps.plan.outputs.any }}
-      anyHosted: ${{ steps.plan.outputs.anyHosted }}
     steps:
       - name: Check the plugin list
         id: plan
         shell: pwsh
         env:
           PLUGINS: ${{ inputs.plugins }}
-          # Authenticates the read-only releases lookup (unauthenticated calls share the runner address's limit); the job has no permissions.
-          GH_TOKEN: ${{ github.token }}
-          PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
-          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
-          EXCLUDE: ${{ inputs.plugin_exclude }}
-          TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
-          PUBLISH: ${{ inputs.publish }}
-          MAP_MODE: ${{ inputs.map_mode }}
+          MANIFESTS: ${{ inputs.plugin_manifests }}
         run: |
           # Plugin code runs in the job that downloaded the client (after the
-          # login cache is removed), so it only comes from known owners. The
-          # Plugin SDK and the Game SDK are compiled into every plugin, so they
-          # do too.
-          if ($env:PLUGIN_SDK_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Plugin-SDK$') { throw "plugin_sdk_repo '$($env:PLUGIN_SDK_REPO)' is not allowed" }
-          if ($env:GAME_SDK_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Game-SDK$') { throw "game_sdk_repo '$($env:GAME_SDK_REPO)' is not allowed" }
-          if ($env:TEST_AUTOPILOT -eq 'true' -and ($env:PUBLISH -eq 'true' -or $env:MAP_MODE -ne 'true')) { throw 'test_autopilot needs map_mode on and publish off: a test run never publishes' }
-          # owner/repo@latest-release is resolved here, through GitHub's
-          # releases/latest (never a draft or a pre-release), to its tag and
-          # that tag's commit. A release with exactly one DLL asset is checked
-          # as that DLL (source 'release'); otherwise the tag's source is
-          # built (source 'build'). A plugin that is not hosted (not
-          # msantoro12's, or a release DLL) is fetched or built by the check
-          # job itself and never becomes an artifact. A latest release that
-          # cannot be resolved costs only that plugin (FETCH-FAILED), never
-          # the plan.
+          # login cache is removed), so it only comes from known owners.
           $list = [Collections.Generic.List[object]]::new()
-          $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
-            if ($p -notmatch '^(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
-            $owner = $Matches[1]; $repo = "$($Matches[1])/$($Matches[2])"; $ref = $Matches[3]
-            $e = [ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
-                             release = ''; dll = ''; asset = ''; assetSha256 = ''; error = ''; hosted = ($owner -eq 'msantoro12') }
-            if ($ref -eq 'latest-release') { try {
-              $e.source = 'release'; $e.hosted = $false
-              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers $api -TimeoutSec 60 }
-              catch { throw "$repo has no latest release ($($_.Exception.Message))" }
-              $tag = [string]$rel.tag_name
-              if ($tag -notmatch '^[A-Za-z0-9._-]+$') { throw "$repo's latest release tag '$tag' is not a plain tag name" }
-              $tagRefs = @(git ls-remote "https://github.com/$repo" "refs/tags/$tag" "refs/tags/$tag^{}")
-              if ($LASTEXITCODE -ne 0) { throw "git ls-remote $repo failed (exit $LASTEXITCODE)" }
-              # An annotated tag's commit is on its peeled line.
-              $line = @(@($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag^{}" }) + @($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag" })) | Select-Object -First 1
-              if (-not $line) { throw "$repo has no tag '$tag'" }
-              $e.ref = $tag; $e.release = $tag; $e.sha = ($line -split '\s+')[0]
-              $dlls = @($rel.assets | Where-Object { $_.name -match '\.dll$' -and $_.state -eq 'uploaded' })
-              if ($dlls.Count -eq 1 -and $dlls[0].browser_download_url -match ('^https://github\.com/' + [regex]::Escape($repo) + '/releases/download/' + [regex]::Escape($tag) + '/[A-Za-z0-9._-]+\.dll$')) {
-                # The URL pattern above is what later steps rely on for the asset name.
-                $e.dll = [string]$dlls[0].name; $e.asset = [string]$dlls[0].browser_download_url
-                # GitHub records each asset's SHA-256 at upload; the fetch checks the download against it.
-                if ($dlls[0].PSObject.Properties['digest'] -and "$($dlls[0].digest)" -match '^sha256:([0-9a-f]{64})$') { $e.assetSha256 = $Matches[1] }
-                else { Write-Host "::notice title=Plugin $($e.name)::GitHub recorded no SHA-256 for $($e.dll), so the download is not compared with one" }
-                Write-Host "::notice title=Plugin $($e.name)::latest release $tag, checking its DLL $($e.dll)"
-              } else {
-                $e.source = 'build'; $e.hosted = ($owner -eq 'msantoro12')
-                Write-Host "::notice title=Plugin $($e.name)::latest release $tag has $($dlls.Count) usable DLL assets (exactly one is needed), so its source at the tag is built"
-              }
-            } catch {
-              $e.error = $_.Exception.Message
-              Write-Host "::warning title=Plugin $($e.name)::$($e.error)"
-            } } elseif ($owner -eq 'LetMeInside') { throw "plugin '$p': LetMeInside is allowed only as owner/repo@latest-release" }
-            $list.Add($e)
+            if ($p -notmatch '^(msantoro12|AlienXAXS)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = "$($Matches[1])/$($Matches[2])"; ref = $Matches[3]; sha = ''; manifest = '' })
+          }
+          foreach ($u in ("$env:MANIFESTS" -split '\s+' | Where-Object { $_ })) {
+            if ($u -notmatch '^https://github\.com/(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)/releases/latest/download/[A-Za-z0-9._-]+\.json$') { throw "manifest '$u' is not a latest-release asset of an allowed owner's plugin repository" }
+            $list.Add([ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'release'; repo = "$($Matches[1])/$($Matches[2])"; ref = 'latest release'; sha = ''; manifest = $u })
           }
           # Each ref is resolved to its commit here, before any plugin code
           # runs: the plugins job builds exactly that commit, and auto-apply
           # pushes only on top of it.
-          foreach ($e in @($list | Where-Object { $_.source -eq 'build' -and -not $_.sha })) {
+          foreach ($e in @($list | Where-Object { $_.source -eq 'build' })) {
             if ($e.ref -match '^[0-9a-f]{40}$') { $e.sha = $e.ref; continue }
             $refs = @(git ls-remote "https://github.com/$($e.repo)" "refs/heads/$($e.ref)" "refs/tags/$($e.ref)" "refs/tags/$($e.ref)^{}")
             if ($LASTEXITCODE -ne 0) { throw "git ls-remote $($e.repo) failed (exit $LASTEXITCODE)" }
@@ -394,29 +286,17 @@ jobs:
             if ("$hit" -notmatch '^[0-9a-f]{40}$') { throw "$($e.repo) has no branch or tag '$($e.ref)'" }
             $e.sha = "$hit"
           }
-          # A plugin is left out of a run by name.
-          $exclude = @("$env:EXCLUDE" -split '\s+' | Where-Object { $_ })
-          foreach ($x in $exclude) {
-            if ($x -notmatch '^[A-Za-z0-9_-]+$') { throw "plugin_exclude '$x' is not a plugin name" }
-            if (-not @($list | Where-Object { $_.name -eq $x }).Count) { throw "plugin_exclude names '$x', which is not in plugins" }
-          }
-          $list = [Collections.Generic.List[object]]@($list | Where-Object { $_.name -notin $exclude })
-          if ($exclude.Count) { "left out: $($exclude -join ', ')" }
           $twice = @($list | Group-Object { $_.name } | Where-Object Count -gt 1 | ForEach-Object Name)
           if ($twice.Count) { throw "listed more than once: $($twice -join ', ')" }
-          $hosted = @($list | Where-Object { $_.hosted })
           $json = ConvertTo-Json -InputObject @($list) -Compress
           "matrix=$json" >> $env:GITHUB_OUTPUT
-          "hosted=$(ConvertTo-Json -InputObject @($hosted) -Compress)" >> $env:GITHUB_OUTPUT
           "any=$(if ($list.Count) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
-          "anyHosted=$(if ($hosted.Count) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
           $json
 
   plugins:
     name: plugin ${{ matrix.name }}
     needs: plugin-plan
-    # Only msantoro12's plugins: another author's never go through this job or an artifact.
-    if: needs.plugin-plan.outputs.anyHosted == 'true'
+    if: needs.plugin-plan.outputs.any == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -424,14 +304,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plugin-plan.outputs.hosted) }}
-    # One plugin's failure (a checkout or the build) never fails this job: the
-    # failing steps below are continue-on-error, so the other legs and the jobs that
-    # need this one go on. A plugin with no plugin.json gets no artifact, and the
-    # check job grades it BUILD-FAILED or FETCH-FAILED, which holds that plugin alone.
+        include: ${{ fromJSON(needs.plugin-plan.outputs.matrix) }}
     steps:
+      - name: Fetch the released plugin
+        if: matrix.source == 'release'
+        shell: pwsh
+        env:
+          NAME: ${{ matrix.name }}
+          REPO: ${{ matrix.repo }}
+          MANIFEST: ${{ matrix.manifest }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # What a player's loader installs: the plugin's sidecar .json points
+          # at this manifest, and the manifest names the DLL.
+          $m = Invoke-RestMethod -Uri $env:MANIFEST -TimeoutSec 60
+          $url = [string]$m.download_url
+          if ($url -notmatch ('^https://github\.com/' + [regex]::Escape($env:REPO) + '/releases/download/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+\.dll)$')) {
+            throw "download_url '$url' is not a release asset of $($env:REPO)"
+          }
+          $tag = $Matches[1]; $file = $Matches[2]
+          New-Item -ItemType Directory -Force out | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "out\$file" -TimeoutSec 120
+          [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $tag; sha = ''; version = [string]$m.version; dll = $file
+                      sha256 = (Get-FileHash "out\$file" -Algorithm SHA256).Hash.ToLowerInvariant() } |
+            ConvertTo-Json | Set-Content out\plugin.json -Encoding utf8
+          Get-Content out\plugin.json
+
       - name: Check out the plugin
-        continue-on-error: true
+        if: matrix.source == 'build'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ matrix.repo }}
@@ -440,25 +340,25 @@ jobs:
           persist-credentials: false
 
       - name: Check out the Plugin SDK
-        continue-on-error: true
+        if: matrix.source == 'build'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.plugin_sdk_repo }}
+          repository: AlienXAXS/StarRupture-Plugin-SDK
           ref: ${{ inputs.plugin_sdk_ref }}
           path: plugin-sdk
           persist-credentials: false
 
       - name: Check out the Game SDK
-        continue-on-error: true
+        if: matrix.source == 'build'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.game_sdk_repo }}
+          repository: AlienXAXS/StarRupture-Game-SDK
           ref: ${{ inputs.game_sdk_ref }}
           path: game-sdk
           persist-credentials: false
 
       - name: Check out the loader's plugin interface
-        continue-on-error: true
+        if: matrix.source == 'build'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.loader_repo }}
@@ -469,10 +369,11 @@ jobs:
           persist-credentials: false
 
       - name: Add MSBuild to PATH
+        if: matrix.source == 'build'
         uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
 
       - name: Build the plugin (Client Release)
-        continue-on-error: true
+        if: matrix.source == 'build'
         shell: pwsh
         working-directory: plugin
         env:
@@ -480,8 +381,6 @@ jobs:
           REPO: ${{ matrix.repo }}
           REF: ${{ matrix.ref }}
           LOADER_REPO: ${{ inputs.loader_repo }}
-          PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
-          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
         run: |
           $ErrorActionPreference = 'Stop'
           # Built against the interface of the loader being checked, as it is in game.
@@ -493,7 +392,6 @@ jobs:
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
             /p:PostBuildEventUseInBuild=false `
-            /p:Rule3Check=false `
             /p:ModLoaderBuildTag="$tag" `
             /p:GameSDKRoot="$env:GITHUB_WORKSPACE\game-sdk" `
             /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
@@ -506,40 +404,13 @@ jobs:
           # What it was built from, so the check job can rebuild it with a fix
           # applied from exactly the same sources.
           [ordered]@{ name = $env:NAME; repo = $env:REPO; ref = $env:REF; sha = (git rev-parse HEAD); dll = $dll[0].Name; tag = $tag
-                      pluginSdkRepo = $env:PLUGIN_SDK_REPO; pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdkRepo = $env:GAME_SDK_REPO; gameSdk = (git -C ..\game-sdk rev-parse HEAD)
+                      pluginSdk = (git -C ..\plugin-sdk rev-parse HEAD); gameSdk = (git -C ..\game-sdk rev-parse HEAD)
                       loaderRepo = $env:LOADER_REPO; loaderInterface = (git -C ..\loader-interface rev-parse HEAD)
                       sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
             ConvertTo-Json | Set-Content ..\out\plugin.json -Encoding utf8
           Get-Content ..\out\plugin.json
 
-      # Rule 3, this plugin only: no direct reads of game-class members. The build ran with
-      # Rule3Check=false so a finding cannot fail it; the result is out/rule3.json, and the check
-      # job holds this plugin alone when it declares PLUGIN_MAP_MIGRATED and still reads
-      # members directly. continue-on-error: it never fails the job, and the jobs of the other
-      # plugins are separate matrix legs.
-      - name: Check rule 3 (direct reads of game members)
-        if: hashFiles('out/plugin.json') != ''
-        continue-on-error: true
-        shell: pwsh
-        env:
-          NAME: ${{ matrix.name }}
-        run: |
-          $tool = 'plugin-sdk\tools\rule3-check.mjs'
-          if (-not (Test-Path $tool)) { Write-Host "::notice title=Plugin $($env:NAME)::the Plugin SDK at this ref has no rule 3 check"; exit 0 }
-          New-Item -ItemType Directory -Force out | Out-Null
-          node $tool --plugin $env:NAME --sdk game-sdk\Client\SDK --source plugin --mode auto --json out\rule3.json
-          exit $LASTEXITCODE
-
-      - name: Note a plugin that did not build
-        if: hashFiles('out/plugin.json') == ''
-        shell: pwsh
-        env:
-          NAME: ${{ matrix.name }}
-        run: |
-          Write-Host "::error title=Plugin $($env:NAME)::it did not build; the check job holds it alone on its last release and the other plugins go on"
-
       - name: Upload the plugin
-        if: hashFiles('out/plugin.json') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plugin-${{ inputs.branch }}-${{ matrix.name }}
@@ -558,7 +429,7 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
     timeout-minutes: 120
-    environment: steam-client
+    environment: steam-client-replay
     permissions:
       contents: read
     concurrency:
@@ -843,8 +714,10 @@ jobs:
             Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
           if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
           $pv = [string]$exe.VersionInfo.ProductVersion
+          $clOk = [bool]($pv -and $env:REQUIRED_CL -and $pv.EndsWith($env:REQUIRED_CL))
           $sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           "exe: $($exe.FullName.Substring($env:INSTALL_DIR.Length))"
+          "ProductVersion=$pv required=$($env:REQUIRED_CL) match=$clOk"
           "SHA-256=$sha"
 
           # Proposals for failing patterns use the public build (when this is
@@ -870,26 +743,7 @@ jobs:
           $scanCode = $LASTEXITCODE
           Get-Content out\scanner.txt | Write-Host
           $scan = Get-Content out\scanner.json -Raw | ConvertFrom-Json
-
-          # The loader's version gate. A required CL (kRequiredVersionSuffix)
-          # must end the ProductVersion; a scanner built from a loader with a
-          # version map reports that loader's own verdict. Every gate the
-          # loader has must pass, and at least one must be there.
-          $gates = [Collections.Generic.List[bool]]::new()
-          $required = [Collections.Generic.List[string]]::new()
-          if ($env:REQUIRED_CL) {
-            $gates.Add([bool]($pv -and $pv.EndsWith($env:REQUIRED_CL)))
-            $required.Add($env:REQUIRED_CL)
-          }
-          if ($scan.PSObject.Properties['exe'] -and $scan.exe.PSObject.Properties['supported']) {
-            $gates.Add($scan.exe.supported -is [bool] -and $scan.exe.supported)
-            $required.Add((@($scan.exe.supportedBuilds) | ForEach-Object { "CL-$_" }) -join ' or ')
-          }
-          $clOk = $gates.Count -gt 0 -and -not ($gates -contains $false)
-          $requiredCl = if ($required.Count) { $required -join ' and ' } else { 'no gate found' }
-          "ProductVersion=$pv required=$requiredCl match=$clOk"
-
-          $notOk =@($scan.patterns | Where-Object { $_.result -ne 'OK' } |
+          $notOk = @($scan.patterns | Where-Object { $_.result -ne 'OK' } |
             ForEach-Object {
               $o = [ordered]@{ name = $_.name; required = $_.required; result = $_.result }
               if ($_.PSObject.Properties['suggest']) { $o.suggest = $_.suggest }
@@ -919,7 +773,7 @@ jobs:
 
           $fail = (-not $clOk) -or ($scanCode -ne 0)
           [ordered]@{
-            exe = [ordered]@{ productVersion = $pv; cl = $(if ($pv -match 'CL-(\d+)$') { $Matches[1] } else { '' }); requiredCl = $requiredCl; clOk = $clOk; sha256 = $sha }
+            exe = [ordered]@{ productVersion = $pv; cl = $(if ($pv -match 'CL-(\d+)$') { $Matches[1] } else { '' }); requiredCl = $env:REQUIRED_CL; clOk = $clOk; sha256 = $sha }
             reference = $(if ($refExe) { [ordered]@{ productVersion = $refPv; cl = $(if ($refPv -match 'CL-(\d+)$') { $Matches[1] } else { '' }) } } else { $null })
             scan = [ordered]@{ exitCode = $scanCode; summary = $scan.summary; notOk = $notOk
                      suggest = $(if ($scan.PSObject.Properties['suggest']) { $scan.suggest } else { $null }) }
@@ -928,7 +782,7 @@ jobs:
             fail = $fail
           } | ConvertTo-Json -Depth 12 | Set-Content out\checks.json -Encoding utf8
           foreach ($w in $warnings) { Write-Host "::warning::$w" }
-          if (-not $clOk) { Write-Host "::error::ProductVersion '$pv' is not a build the loader runs on ($requiredCl)" }
+          if (-not $clOk) { Write-Host "::error::ProductVersion '$pv' does not end with the loader's required '$($env:REQUIRED_CL)'" }
           if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code $scanCode ($($scan.summary.requiredFailing) required patterns failing)" }
           if ($fail) { exit 1 }
 
@@ -940,95 +794,6 @@ jobs:
         with:
           pattern: plugin-${{ inputs.branch }}-*
           path: plugins
-
-      # A plugin that is not hosted in the plan (another author's, or a release
-      # DLL) is never built or stored by the plugins job: it is fetched or
-      # built here, after the login cache is gone, into the runner's disk only
-      # (not an artifact).
-      # The files land where the download above puts the others, so the
-      # check below treats them alike.
-      - name: Get the other authors' plugins
-        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && needs.plugin-plan.outputs.any == 'true'
-        continue-on-error: true
-        timeout-minutes: 30
-        shell: pwsh
-        env:
-          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
-          PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
-          PLUGIN_SDK_REF: ${{ inputs.plugin_sdk_ref }}
-          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
-          GAME_SDK_REF: ${{ inputs.game_sdk_ref }}
-          LOADER_REPO: ${{ inputs.loader_repo }}
-          LOADER_REF: ${{ inputs.loader_ref }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # The token only reads public repositories' commit ids; the build below never sees it.
-          $token = $env:GH_TOKEN
-          Remove-Item Env:GH_TOKEN
-          function Invoke-Native([string]$what) {
-            if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" }
-          }
-          # Source at an exact revision, bytes as committed.
-          function Get-Source([string]$repo, [string]$rev, [string]$dir) {
-            git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
-            git -C $dir config core.autocrlf false
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
-            git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
-            (git -C $dir rev-parse HEAD)
-          }
-          $msbuild = $null
-          foreach ($p in @($env:PLAN | ConvertFrom-Json | Where-Object { -not $_.hosted })) {
-            # One plugin's problem never stops the others; a plugin left without plugin.json is reported as not fetched or not built.
-            try {
-              $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
-              New-Item -ItemType Directory -Force $dir | Out-Null
-              if ($p.source -eq 'release') {
-                if (-not $p.asset) { throw "the latest release was not resolved: $($p.error)" }
-                # The release's DLL asset, as players download it.
-                Invoke-WebRequest -Uri $p.asset -OutFile "$dir\$($p.dll)" -TimeoutSec 120
-                $hash = (Get-FileHash "$dir\$($p.dll)" -Algorithm SHA256).Hash.ToLowerInvariant()
-                if ($p.assetSha256 -and $hash -ne $p.assetSha256) { throw "$($p.dll) does not match the SHA-256 GitHub recorded for the asset" }
-                [ordered]@{ name = $p.name; repo = $p.repo; ref = $p.ref; sha = $p.sha; dll = $p.dll; sha256 = $hash } |
-                  ConvertTo-Json | Set-Content "$dir\plugin.json" -Encoding utf8
-                continue
-              }
-              # Built the way the plugins job builds one, from the planned commit.
-              $work = Join-Path $env:RUNNER_TEMP "third\$($p.name)"
-              $sha = Get-Source $p.repo $p.sha "$work\src"
-              if ($sha -ne $p.sha) { throw "checked out $sha, not the planned commit $($p.sha)" }
-              $psdk = Get-Source $env:PLUGIN_SDK_REPO $env:PLUGIN_SDK_REF "$work\plugin-sdk"
-              $gsdk = Get-Source $env:GAME_SDK_REPO $env:GAME_SDK_REF "$work\game-sdk"
-              $loader = (Invoke-RestMethod -Uri "https://api.github.com/repos/$($env:LOADER_REPO)/commits/$($env:LOADER_REF)" -TimeoutSec 60 -Headers @{ Authorization = "Bearer $token" }).sha
-              if ($loader -notmatch '^[0-9a-f]{40}$') { throw "no commit for $($env:LOADER_REPO)@$($env:LOADER_REF)" }
-              Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($env:LOADER_REPO)/$loader/StarRupture-ModLoader-Core/plugins/plugin_interface.h" `
-                -OutFile "$work\plugin-sdk\include\plugin_interface.h" -TimeoutSec 60
-              $sln = @(Get-ChildItem "$work\src" -File -Filter *.sln)
-              if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
-              if (-not $msbuild) { $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1 }
-              $tag = if (Test-Path "$work\src\version") { (Get-Content "$work\src\version" -Raw).Trim() } else { 'dev' }
-              & $msbuild $sln[0].FullName `
-                /p:Configuration="Client Release" `
-                /p:Platform=x64 `
-                /p:PostBuildEventUseInBuild=false `
-                /p:Rule3Check=false `
-                /p:ModLoaderBuildTag="$tag" `
-                /p:GameSDKRoot="$work\game-sdk" `
-                /p:PluginSDKInclude="$work\plugin-sdk\include" `
-                /m /p:CL_MP=true /nodeReuse:false /v:minimal | Out-Host
-              Invoke-Native 'msbuild'
-              $dll = @(Get-ChildItem "$work\src\build\Client Release\Plugins" -File -Filter *.dll)
-              if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
-              Copy-Item $dll[0].FullName $dir
-              [ordered]@{ name = $p.name; repo = $p.repo; ref = $p.ref; sha = $sha; dll = $dll[0].Name; tag = $tag
-                          pluginSdkRepo = $env:PLUGIN_SDK_REPO; pluginSdk = $psdk; gameSdkRepo = $env:GAME_SDK_REPO; gameSdk = $gsdk; loaderRepo = $env:LOADER_REPO; loaderInterface = $loader
-                          sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
-                ConvertTo-Json | Set-Content "$dir\plugin.json" -Encoding utf8
-            } catch {
-              Write-Host "::error title=Plugin $($p.name)::$($_.Exception.Message)"
-              Remove-Item "plugins\plugin-$($env:BRANCH)-$($p.name)\plugin.json" -ErrorAction SilentlyContinue
-            }
-          }
 
       - name: Check the plugins' patterns
         id: plugins
@@ -1047,8 +812,7 @@ jobs:
           # first call into game code, which cannot run offline and was stopped; FAIL when any pattern it resolves
           # does not (the loader refuses a plugin on any recorded failure);
           # CRASH; REFUSED (interface version outside the loader's range); NONE
-          # (no OnPluginLoadHooks); RULE3 (it declares PLUGIN_MAP_MIGRATED and still reads game
-          # members directly: held alone, like REFUSED); BUILD-FAILED or FETCH-FAILED; ERROR. Only the
+          # (no OnPluginLoadHooks); BUILD-FAILED or FETCH-FAILED; ERROR. Only the
           # plugin fails; the loader's status does not change.
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
@@ -1064,7 +828,7 @@ jobs:
           $scanner = 'scanner\sr-aobscan-client.exe'
           if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
           $results = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
-            $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; ref = $p.ref; sha = ''; release = $p.release }
+            $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; ref = $p.ref; sha = '' }
             # One plugin's problem never stops the others.
             try {
               $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
@@ -1094,37 +858,9 @@ jobs:
                 $o = [ordered]@{ name = $(if ($_.name) { $_.name } else { "(raw) $($_.pattern)" }); call = $_.call; kind = $_.kind
                                  required = $_.required; recorded = $_.recorded; result = $_.result }
                 if ($_.PSObject.Properties['suggest']) { $o.suggest = $_.suggest }
-                if ($_.PSObject.Properties['ownPattern']) { $o.ownPattern = $_.ownPattern }
                 $o })
-              # The refused requests (the scanner's "[Map] <plugin>: <key>: refused: <why>" lines),
-              # unless the scanner lists them itself. decide names them instead of the probe note.
-              $r.failures = if ($scan.PSObject.Properties['failures']) { @($scan.failures) } else {
-                @(Get-Content "$stem.txt" | ForEach-Object {
-                  if ($_ -match ('^\[Map\] ' + [regex]::Escape($p.name) + ': (.+?): (refused: .+)$')) { [ordered]@{ name = $Matches[1]; detail = $Matches[2]; required = $true } }
-                })
-              }
               foreach ($row in @($scan.patterns | Where-Object { $_.recorded -and $_.result -ne 'OK' })) {
                 Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.result)$(if ($row.required) { '' } else { ' (declared optional; the loader still refuses the plugin)' })"
-              }
-              # Rule 3 (rule3.json, from the plugin's build job). Only a plugin that declares
-              # PLUGIN_MAP_MIGRATED fails; the others are reported.
-              if (Test-Path "$dir\rule3.json") {
-                $r3 = Get-Content "$dir\rule3.json" -Raw | ConvertFrom-Json
-                $n3 = @($r3.findings).Count
-                $r.rule3 = [ordered]@{ status = $r3.status; findings = $n3; migrated = $r3.migrated }
-                if ($r3.status -eq 'fail' -and $r.verdict -in 'PASS', 'NONE', 'GAME-CALL', 'FAIL') {
-                  $first = @($r3.findings)[0]
-                  $r.scanVerdict = $r.verdict
-                  $r.verdict = 'RULE3'
-                  $r.note = "$n3 direct reads of game members, first $($first.file)($($first.line))"
-                  Write-Host "::error title=Plugin $($p.name)::$($r.note)"
-                } elseif ($r3.status -eq 'findings') {
-                  Write-Host "::warning title=Plugin $($p.name)::$n3 direct reads of game members (rule 3; reported until the plugin sets PLUGIN_MAP_MIGRATED)"
-                }
-              }
-              # A request that resolved (the map may have carried it) whose own pattern is not unique here.
-              foreach ($row in @($scan.patterns | Where-Object { $_.PSObject.Properties['ownPattern'] })) {
-                Write-Host "::error title=Plugin $($p.name)::$($row.name): $($row.ownPattern), its own pattern matches $(if ($row.PSObject.Properties['matches']) { $row.matches } else { $row.candidates[0].matches }) times on this build"
               }
               switch ($r.verdict) {
                 'CRASH'     { Write-Host "::error title=Plugin $($p.name)::OnPluginLoadHooks crashed ($($scan.crash))" }
@@ -1155,206 +891,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ci-tool
-          sparse-checkout: |
-            ci/apply-proposals.mjs
-            ci/layout-table.mjs
-            ci/layout-diff.mjs
-            ci/used-classes.mjs
-            ci/native-keys.txt
+          sparse-checkout: ci/apply-proposals.mjs
           sparse-checkout-cone-mode: false
           persist-credentials: false
-
-      # ---- Layouts from the PDBs: what each component reads, on both builds --
-      - name: Read the used layouts from the PDBs
-        id: layout
-        if: always() && steps.tool.outcome == 'success'
-        # A report only: a failure here costs only the layout report.
-        continue-on-error: true
-        timeout-minutes: 30
-        shell: pwsh
-        env:
-          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
-          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
-          PLAN: ${{ needs.plugin-plan.outputs.matrix }}
-          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
-        run: |
-          # The keys each component reads: the loader's own layout table, each
-          # built plugin's used Game-SDK classes (ci/layout-table.mjs gen over
-          # its source) and its native members (ci/native-keys.txt). One
-          # sr-aobscan --layout pass per build reads them all from that build's
-          # PDB; pdb-diff then counts, per component, what moved between the
-          # public build and this one. Keys and numbers only: no PDB names.
-          $ErrorActionPreference = 'Stop'
-          Set-StrictMode -Version Latest
-          $lt = 'ci-tool\ci\layout-table.mjs'
-          $scanner = 'scanner\sr-aobscan-client.exe'
-          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
-          function Find-Exe([string]$dir) {
-            if ($dir) { Get-ChildItem -Path $dir -Recurse -File -Filter '*-Win64-Shipping.exe' | Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
-          }
-          function Get-Cl($e) { if ([string]$e.VersionInfo.ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' } }
-          function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
-          function Get-Source([string]$repo, [string]$rev, [string]$dir) {
-            git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
-            git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
-          }
-          $exe = Find-Exe $env:INSTALL_DIR
-          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
-          $refExe = Find-Exe $env:REFERENCE_DIR
-          $cl = Get-Cl $exe
-          $refCl = if ($refExe) { Get-Cl $refExe } else { '' }
-          $work = Join-Path $env:RUNNER_TEMP 'layout'
-          New-Item -ItemType Directory -Force $work | Out-Null
-
-          $native = @{}
-          foreach ($line in Get-Content 'ci-tool\ci\native-keys.txt') {
-            if ($line -match '^\s*(#|$)') { continue }
-            if ($line -notmatch '^(\S+)\s+(\S+::\S+)(\s+\S.*)?$') { throw "native-keys.txt: malformed line '$line'" }
-            if (-not $native.ContainsKey($Matches[1])) { $native[$Matches[1]] = [Collections.Generic.List[string]]::new() }
-            if (-not $native[$Matches[1]].Contains($Matches[2])) { $native[$Matches[1]].Add($Matches[2]) }
-          }
-          $components = [Collections.Generic.List[object]]::new()
-          $metas = @($env:PLAN | ConvertFrom-Json | Where-Object { $_.source -eq 'build' } | ForEach-Object {
-            $m = "plugins\plugin-$($env:BRANCH)-$($_.name)\plugin.json"
-            if (Test-Path $m) { Get-Content $m -Raw | ConvertFrom-Json }
-          })
-          if (-not $metas.Count) { throw 'no built plugin: nothing names the Game-SDK and loader commits to read' }
-          # Every plugin was built against the same loader and Game-SDK commits.
-          $sdk = Join-Path $work 'game-sdk'
-          if ($metas[0].gameSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Game-SDK$') { throw 'plugin.json does not name an allowed Game SDK repository' }
-          Get-Source $metas[0].gameSdkRepo $metas[0].gameSdk $sdk
-          $loaderTable = Join-Path $work 'loader-table.h'
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core/core/layout_table.generated.h" -OutFile $loaderTable -TimeoutSec 60
-          node $lt keys $loaderTable --out "$work\keys-ModLoader.txt" --uses-out "$work\uses-ModLoader.txt"; Invoke-Native 'keys (loader)'
-          $components.Add('ModLoader')
-          foreach ($m in $metas) {
-            Get-Source $m.repo $m.sha "$work\src-$($m.name)"
-            node $lt gen "$sdk\Client\Assertions.inl" --cl $(if ($cl) { $cl } else { 1 }) --src "$work\src-$($m.name)" --sdk "$sdk\Client\SDK" --granularity 2 --out "$work\table-$($m.name).h" --uses-out "$work\uses-$($m.name).txt"; Invoke-Native "gen ($($m.name))"
-            node $lt keys "$work\table-$($m.name).h" --out "$work\keys-$($m.name).txt"; Invoke-Native "keys ($($m.name))"
-            if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
-            $components.Add($m.name)
-          }
-          # A plugin of the plan that is not built here (MiniMap: its author's release DLL, and its
-          # project needs the Unreal Engine headers, which a hosted runner does not have) has no source
-          # to read keys from, but ci/native-keys.txt still names the fixed-offset members it reads.
-          # Their rows belong in the map, so those lines join the key list as a component of their own.
-          foreach ($p in @($env:PLAN | ConvertFrom-Json | Where-Object { $_.source -ne 'build' } | ForEach-Object { $_.name })) {
-            if (-not $native.ContainsKey($p) -or $components.Contains($p)) { continue }
-            Set-Content "$work\keys-$p.txt" $native[$p] -Encoding ascii
-            Set-Content "$work\uses-$p.txt" '' -Encoding ascii
-            $components.Add($p)
-          }
-          $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
-          Set-Content "$work\keys-all.txt" $all -Encoding ascii
-          Copy-Item "$work\keys-all.txt" out\layout-keys.txt
-          # Per component: its keys, requests, lazy lookups and size uses
-          # (field-rows.mjs --uses), so the gate is per plugin.
-          $uses = foreach ($c in $components) {
-            Get-Content "$work\keys-$c.txt" | Where-Object { $_ } | ForEach-Object { "$c key $_" }
-            Get-Content "$work\uses-$c.txt" | Where-Object { $_ } | ForEach-Object { "$c $_" }
-          }
-          Set-Content out\layout-uses.txt $uses -Encoding ascii
-
-          $reports = @{}
-          foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
-            $out = "out\layout-$($b.key).json"
-            $ErrorActionPreference = 'Continue'
-            & $scanner $b.exe.FullName --layout "$work\keys-all.txt" --json > $out
-            $code = $LASTEXITCODE
-            $ErrorActionPreference = 'Stop'
-            if ($code -gt 1) { throw "sr-aobscan --layout on the $($b.key) build failed (exit $code)" }
-            $reports[$b.key] = $out
-            "$($b.key) (CL-$(Get-Cl $b.exe)): $(((Get-Content $out -Raw | ConvertFrom-Json).summary | ConvertTo-Json -Compress))"
-          }
-          $result = [ordered]@{ cl = $cl; referenceCl = $refCl; components = [ordered]@{} }
-          if ($reports.ContainsKey('reference')) {
-            foreach ($c in $components) {
-              node $lt pdb-diff $reports.reference $reports.target --keys "$work\keys-$c.txt" --json "$work\diff-$c.json" | Out-Host
-              if ($LASTEXITCODE -notin 0, 3) { throw "pdb-diff ($c) failed (exit $LASTEXITCODE)" }
-              $result.components[$c] = Get-Content "$work\diff-$c.json" -Raw | ConvertFrom-Json
-              "${c}: $($result.components[$c].counts | ConvertTo-Json -Compress)"
-            }
-          } else { Write-Host '::notice title=Layouts::No public build to compare with: the keys were read from this build only.' }
-          $result | ConvertTo-Json -Depth 8 | Set-Content out\layout.json -Encoding utf8
-
-      # ---- Fixed offsets: what each plugin reads at a raw offset ---------------
-      - name: Check the fixed offsets
-        id: offsets
-        if: always() && steps.plugins.outcome == 'success' && steps.tool.outcome == 'success'
-        # A plugin whose offsets could not be checked fails (OFFSETS-UNCHECKED); it never passes by default.
-        continue-on-error: true
-        timeout-minutes: 15
-        shell: pwsh
-        run: |
-          # Per built plugin with anchored lines in ci/native-keys.txt: read its
-          # source at the commit that was built, and compare every fixed offset
-          # it reads with the PDB layout of this build and of the public one
-          # (ci/apply-proposals.mjs offsets). Anything but ok fails the plugin
-          # (verdict OFFSETS); a layout report that is missing fails it too
-          # (OFFSETS-UNCHECKED). The fix step rewrites the ones it can.
-          $ErrorActionPreference = 'Stop'
-          Set-StrictMode -Version Latest
-          try {
-            $tool = 'ci-tool\ci\apply-proposals.mjs'
-            $native = 'ci-tool\ci\native-keys.txt'
-            function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
-            $anchored = @(Get-Content $native | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s.*:') { $Matches[1] } } | Sort-Object -Unique)
-            $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
-            $work = Join-Path $env:RUNNER_TEMP 'offsets'
-            New-Item -ItemType Directory -Force $work | Out-Null
-            foreach ($p in @($pj.plugins | Where-Object { $_.source -eq 'build' -and $_.sha -and $_.name -in $anchored })) {
-              $json = "out\offsets-$($p.name).json"
-              try {
-                $src = Join-Path $work $p.name
-                git -c init.defaultBranch=main init -q $src; Invoke-Native "git init $src"
-                git -C $src fetch -q --depth 1 "https://github.com/$($p.repo)" $p.sha; Invoke-Native "fetching $($p.repo) $($p.sha)"
-                git -C $src checkout -q FETCH_HEAD; Invoke-Native "checking out $($p.repo)"
-                $a = @('offsets', '--native', $native, '--plugin', $p.name, '--source', $src, '--target-public', $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }))
-                if (Test-Path out\layout-target.json) { $a += @('--target', 'out\layout-target.json') }
-                if (Test-Path out\layout-reference.json) { $a += @('--reference', 'out\layout-reference.json') }
-                node $tool @a > $json
-                Invoke-Native "offsets ($($p.name))"
-              } catch {
-                [ordered]@{ plugin = $p.name; status = 'unchecked'; reason = $_.Exception.Message; counts = @{}; results = @(); plan = @(); blocked = @() } |
-                  ConvertTo-Json -Depth 6 | Set-Content $json -Encoding utf8
-              }
-              $o = Get-Content $json -Raw | ConvertFrom-Json
-              $p | Add-Member -NotePropertyName offsets -NotePropertyValue ([ordered]@{
-                status = $o.status
-                reason = $(if ($o.PSObject.Properties['reason']) { $o.reason } else { '' })
-                counts = $o.counts
-                results = @($o.results | ForEach-Object { $_ | Select-Object key, state, file, line, source, target, reference, reason })
-              }) -Force
-              "$($p.name): offsets $($o.status) $($o.counts | ConvertTo-Json -Compress)"
-              if ($o.status -in 'fail', 'unchecked') {
-                $bad = @($o.results | Where-Object { $_.state -ne 'ok' } | ForEach-Object { "$($_.key.Split('::')[-1]) ($($_.state))" })
-                $why = if ($o.status -eq 'unchecked') { $o.reason } else { "$($bad.Count) of $(@($o.results).Count) fixed offsets do not match this build: $($bad -join ', ')" }
-                Write-Host "::error title=Plugin $($p.name)::$why"
-                $p | Add-Member -NotePropertyName note -NotePropertyValue $(if ($p.PSObject.Properties['note'] -and $p.note) { "$($p.note); $why" } else { $why }) -Force
-                if ($p.verdict -in 'PASS', 'NONE', 'GAME-CALL') {
-                  $p | Add-Member -NotePropertyName patternVerdict -NotePropertyValue $p.verdict -Force
-                  $p.verdict = $(if ($o.status -eq 'unchecked') { 'OFFSETS-UNCHECKED' } else { 'OFFSETS' })
-                }
-              }
-            }
-            $pj.status = $(if (@($pj.plugins | Where-Object { $_.verdict -notin 'PASS', 'NONE', 'GAME-CALL' }).Count) { 'fail' } else { 'pass' })
-            $pj | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
-          } catch {
-            # The step itself crashed: no plugin passes on offsets nobody checked.
-            Write-Host "::error title=Fixed offsets::$($_.Exception.Message)"
-            $why = "fixed offsets not checked: $($_.Exception.Message)"
-            $anchored = @(Get-Content 'ci-tool\ci\native-keys.txt' | ForEach-Object { if ($_ -match '^(\S+)\s+\S+::\S+\s.*:') { $Matches[1] } } | Sort-Object -Unique)
-            $pj = Get-Content out\plugins.json -Raw | ConvertFrom-Json
-            foreach ($p in @($pj.plugins | Where-Object { $_.source -eq 'build' -and $_.name -in $anchored -and $_.verdict -in 'PASS', 'NONE', 'GAME-CALL' })) {
-              $p | Add-Member -NotePropertyName patternVerdict -NotePropertyValue $p.verdict -Force
-              $p | Add-Member -NotePropertyName note -NotePropertyValue $why -Force
-              $p.verdict = 'OFFSETS-UNCHECKED'
-            }
-            $pj.status = 'fail'
-            $pj | ConvertTo-Json -Depth 12 | Set-Content out\plugins.json -Encoding utf8
-          }
-          exit 0
 
       - name: Build the proposed fixes
         id: fix
@@ -1418,20 +957,13 @@ jobs:
             $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; sha = ''; verdict = 'NO-FIX'; reasons = @()
                              applied = @(); skipped = @(); tree = ''; patch = '' }
             try {
-              $isPublic = $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' })
-              # The plugin's fixed-offset check (offsets step) rides in the plan.
-              $offs = "out\offsets-$($p.name).json"
-              $sel = @('select', '--scan', $scan, '--min-confidence', $env:APPLY_CONFIDENCE, '--target-public', $isPublic)
-              if (Test-Path $offs) { $sel += @('--offsets', $offs) }
-              node $tool @sel > "$d\plan.json"
+              node $tool select --scan $scan --min-confidence $env:APPLY_CONFIDENCE --target-public $(if ($env:BRANCH -eq 'public') { 'true' } else { 'false' }) > "$d\plan.json"
               Invoke-Native 'select'
               $plan = Get-Content "$d\plan.json" -Raw | ConvertFrom-Json
-              $planOffsets = @(if ($plan.PSObject.Properties['offsets']) { $plan.offsets })
-              $blockedRows = @(if ($plan.PSObject.Properties['blockedOffsets']) { $plan.blockedOffsets | ForEach-Object { [pscustomobject]@{ name = $_.key; reason = "$($_.state): $($_.reason)" } } })
               # Nothing failing, nothing to do.
-              if (-not @($plan.rows).Count -and -not @($plan.skipped).Count -and -not $planOffsets.Count -and -not $blockedRows.Count) { continue }
-              $r.skipped = @(@($plan.skipped) + $blockedRows)
-              if (-not @($plan.rows).Count -and -not $planOffsets.Count) { $r.reasons = @('no proposal was selected'); $results.Add($r); continue }
+              if (-not @($plan.rows).Count -and -not @($plan.skipped).Count) { continue }
+              $r.skipped = @($plan.skipped)
+              if (-not @($plan.rows).Count) { $r.reasons = @('no proposal was selected'); $results.Add($r); continue }
               $meta = Get-Content "plugins\plugin-$($env:BRANCH)-$($p.name)\plugin.json" -Raw | ConvertFrom-Json
               if ($p.source -eq 'release') { Get-Source $p.repo "refs/tags/$($meta.ref)" "$d\src" }
               else {
@@ -1443,10 +975,8 @@ jobs:
               node $tool apply --source "$d\src" --plan "$d\plan.json" > "$d\applied.json"
               Invoke-Native 'apply'
               $applied = Get-Content "$d\applied.json" -Raw | ConvertFrom-Json
-              $offApplied = @($applied.offsets | Where-Object { $_.status -eq 'applied' } | ForEach-Object { [pscustomobject]@{ name = $_.key; kind = 'offset'; old = $_.old; new = $_.new } })
-              $offSkipped = @($applied.offsets | Where-Object { $_.status -ne 'applied' } | ForEach-Object { [pscustomobject]@{ name = $_.key; reason = $_.reason } })
-              $r.applied = @(@($applied.rows | Where-Object { $_.status -eq 'applied' }) + $offApplied)
-              $r.skipped = @(@($plan.skipped) + @($applied.rows | Where-Object { $_.status -ne 'applied' }) + $offSkipped + $blockedRows)
+              $r.applied = @($applied.rows | Where-Object { $_.status -eq 'applied' })
+              $r.skipped = @(@($plan.skipped) + @($applied.rows | Where-Object { $_.status -ne 'applied' }))
               if (-not $r.applied.Count) { $r.reasons = @('no proposal could be applied to the source'); $results.Add($r); continue }
               # The tree is taken before the build, which only adds ignored files.
               git -C "$d\src" add -A; Invoke-Native 'git add'
@@ -1457,10 +987,8 @@ jobs:
 
               # Rebuilt exactly as the plugins job built the scanned DLL.
               if ($meta.loaderRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$' -or $meta.loaderInterface -notmatch '^[0-9a-f]{40}$') { throw 'plugin.json does not name the loader interface it was built against' }
-              if ($meta.pluginSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Plugin-SDK$') { throw 'plugin.json does not name an allowed Plugin SDK repository' }
-              Get-Source $meta.pluginSdkRepo $meta.pluginSdk "$d\plugin-sdk"
-              if ($meta.gameSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Game-SDK$') { throw 'plugin.json does not name an allowed Game SDK repository' }
-              Get-Source $meta.gameSdkRepo $meta.gameSdk "$d\game-sdk"
+              Get-Source 'AlienXAXS/StarRupture-Plugin-SDK' $meta.pluginSdk "$d\plugin-sdk"
+              Get-Source 'AlienXAXS/StarRupture-Game-SDK' $meta.gameSdk "$d\game-sdk"
               Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($meta.loaderRepo)/$($meta.loaderInterface)/StarRupture-ModLoader-Core/plugins/plugin_interface.h" `
                 -OutFile "$d\plugin-sdk\include\plugin_interface.h" -TimeoutSec 60
               $sln = @(Get-ChildItem "$d\src" -File -Filter *.sln)
@@ -1469,7 +997,6 @@ jobs:
                 /p:Configuration="Client Release" `
                 /p:Platform=x64 `
                 /p:PostBuildEventUseInBuild=false `
-                /p:Rule3Check=false `
                 /p:ModLoaderBuildTag="$($meta.tag)" `
                 /p:GameSDKRoot="$d\game-sdk" `
                 /p:PluginSDKInclude="$d\plugin-sdk\include" `
@@ -1490,24 +1017,14 @@ jobs:
                 $scans[$b.key] = "$stem.json"
               }
               $vArgs = @('--applied', "$d\applied.json", '--target', $scans.target)
-              # The patched source read against the same layouts: every rewritten offset must now be ok.
-              if (Test-Path $offs) {
-                $oa = @('offsets', '--native', 'ci-tool\ci\native-keys.txt', '--plugin', $p.name, '--source', "$d\src", '--target-public', $isPublic)
-                if (Test-Path out\layout-target.json) { $oa += @('--target', 'out\layout-target.json') }
-                if (Test-Path out\layout-reference.json) { $oa += @('--reference', 'out\layout-reference.json') }
-                node $tool @oa > "$d\offsets-after.json"
-                Invoke-Native 'offsets (fixed source)'
-                $vArgs += @('--offsets-after', "$d\offsets-after.json")
-              }
               if ($scans.ContainsKey('reference')) { $vArgs += @('--reference', $scans.reference) }
               $v = node $tool verdict @vArgs | Out-String | ConvertFrom-Json
               Invoke-Native 'verdict'
               $r.verdict = $v.verdict
               $r.reasons = @($v.reasons)
               $r.rows = @($v.rows)
-              $r.offsets = @($v.offsets)
               # Only the owner's forks are pushed to, and only a verified fix.
-              if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^msantoro12/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$') {
+              if ($r.verdict -in 'FIXED', 'PARTIAL' -and $p.source -eq 'build' -and $p.repo -match '^msantoro12/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex)$') {
                 $push.Add([ordered]@{ name = $p.name; sha = $r.sha; tree = $r.tree; cl = $cl; referenceCl = $refCl; verdict = $r.verdict; plan = $plan })
               }
             } catch {
@@ -1573,462 +1090,8 @@ jobs:
             out/plugin-*.json
             out/plugin-*.txt
             out/autofix-*
-            out/layout*.json
-            out/layout-keys.txt
-            out/layout-uses.txt
-            out/offsets-*.json
           if-no-files-found: warn
           retention-days: 14
-
-  # ---- Map mode: the update as rows in the loader's version map -----------
-  # The unattended path M chain, on the scans the check job uploaded and the
-  # loader's header: map-mode assemble and write, field rows from the PDB
-  # layouts, decide (ci/decide.mjs, every gate and rate limit), and on path M
-  # export the feed, sign it with the TEST key (k1, VMAP_SIGN_KEY_TEST) and
-  # verify it, stage a beta build, and plan the promotion (ci/promote.mjs, a
-  # dry run). The client check alone decides: no dedicated-server scan is read.
-  # Reads only artifacts, the header and the vmap-feed release: no Steam login,
-  # no plugin code, no game files. The release key signs only in the publish
-  # job below, and only when the publish input says so.
-  # TODO(step 26, needs the owner): pushing the header to the loader fork's
-  # auto/update-<CL> needs the fork deploy key and the auto/** ruleset (checklist
-  # in ci/MAP-MODE.md). Until then the header is an artifact only, the staging
-  # record names the loader commit the header was read from, and the staged
-  # index is not kept between runs (a plan only).
-  # TODO: the scans of the previous release of each tracked component
-  # (rank previous) are not run yet, so a changed fp adds its set only once a
-  # release carrying it is the current one. With current scans only, map-mode
-  # prunes nothing: the sets the previous release still reads are kept.
-  map-mode:
-    name: map mode
-    needs: [build, plugins, check]
-    if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    # One chain at a time reads the vmap-feed history.
-    concurrency:
-      group: vmap-map-mode
-      cancel-in-progress: false
-    outputs:
-      decision: ${{ steps.chain.outputs.decision }}
-      action: ${{ steps.chain.outputs.action }}
-      publishable: ${{ steps.chain.outputs.publishable }}
-      # 'false' only for a run that is explicitly not a test; the publish job needs exactly that.
-      test: ${{ steps.chain.outputs.test }}
-    env:
-      BRANCH: ${{ inputs.branch }}
-      BUILDID: ${{ inputs.buildid }}
-      PLUGINS: ${{ inputs.plugins }}
-      LOADER_REF: ${{ inputs.loader_ref }}
-      BUILD_RESULT: ${{ needs.build.result }}
-      RUN_ID: ${{ github.run_id }}
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      # A dispatched test run only (never a call from sr-watch): see the input.
-      TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && inputs.publish != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
-      # The raw dispatch input: a test run for the publish gate, however TEST_AUTOPILOT came out.
-      TEST_INPUT: ${{ inputs.test_autopilot == true }}
-    steps:
-      - name: Check out the map tool
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: tool
-          sparse-checkout: |
-            ci
-            state
-          persist-credentials: false
-
-      - name: Check out the loader's header
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ inputs.loader_repo }}
-          ref: ${{ inputs.loader_ref }}
-          path: loader
-          sparse-checkout: StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-
-      - name: Download the scans
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: client-check-${{ inputs.branch }}
-          path: res
-
-      - name: Write the update into the header
-        id: write
-        run: |
-          set -euo pipefail
-          # The build Steam installed names the build row; the watcher's id is
-          # only the fallback.
-          buildid="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).download?.buildid || ''")"
-          [ -n "$buildid" ] || buildid="$BUILDID"
-          [ -n "$buildid" ] || { echo "::error::no build id: neither the download nor the buildid input names one"; exit 2; }
-          # The build row's label is "steam_build <build id>": it names the
-          # build and never the Steam branch it was found on.
-          # The loader's registry scan, then each plugin scan. A plugin is
-          # tracked when it is one of the built `plugins`; otherwise (MiniMap)
-          # its failing rows go to the pattern path.
-          node -e '
-            const fs = require("fs");
-            const scans = [{ owner: "ModLoader", tracked: true, tag: process.env.LOADER_REF, rank: "current", file: "res/scanner.json" }];
-            // PLUGINS is "owner/repo@ref ..."; the repo names the built plugins.
-            const built = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop());
-            for (const f of fs.readdirSync("res").filter((n) => /^plugin-.*\.json$/.test(n)).sort()) {
-              const name = JSON.parse(fs.readFileSync("res/" + f, "utf8")).plugin?.name;
-              if (!name) continue;
-              const tracked = built.includes("StarRupture-Plugin-" + name);
-              scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
-            }
-            fs.writeFileSync("scans.json", JSON.stringify({ source: "steam_build " + process.argv[1], scans }));
-          ' "$buildid"
-          node tool/ci/map-mode.mjs assemble scans.json --out observations.json
-          echo "loader_sha=$(git -C loader rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "loader_tree=$(git -C loader rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
-          header=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
-          # G3 compares the new CL with the one the header was built for.
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { parse } from "./tool/ci/version-map.mjs";
-            process.stdout.write("previous_cl=" + parse(readFileSync(process.argv[1], "utf8"), "the header").builtCL + "\n");
-          ' "$header" >> "$GITHUB_OUTPUT"
-          status=0
-          # A test run measures a CL already in the table again; any other run refuses it.
-          node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json --remeasure "$TEST_AUTOPILOT" || status=$?
-          cp "$header" version_map.generated.h
-          if [ "$status" -ne 0 ]; then echo "::error::map mode refused the update (exit $status); see the log and map-mode-report.json"; fi
-          exit "$status"
-
-      - name: Decide, export, sign, stage and plan the promotion
-        id: chain
-        env:
-          PREVIOUS_CL: ${{ steps.write.outputs.previous_cl }}
-          LOADER_SHA: ${{ steps.write.outputs.loader_sha }}
-          LOADER_TREE: ${{ steps.write.outputs.loader_tree }}
-          VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
-        run: |
-          set -euo pipefail
-          header=version_map.generated.h
-          cl="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks.exe.cl")"
-          # Field rows: the native members on the new CL, the reflected ones
-          # that moved, absent rows for what is gone. A refusal (exit 3) is not
-          # fatal here: it writes the report and decide holds. Anything else
-          # (exit 2: a missing or malformed input, no report) fails the job, so a
-          # feed is never built without its member rows.
-          # The check writes layout-reference.json only when it has an older build
-          # to compare with: the public branch is itself the reference and has
-          # none, and a test branch has none when the public download failed or
-          # is the same build. Without --base, field-rows refuses while any
-          # reflected key is listed (it cannot find what moved), so decide holds
-          # with that reason; the file is never named when it does not exist.
-          base=()
-          if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json); else echo "field-rows: no reference layout in the check's artifact (branch $BRANCH); running without --base"; fi
-          fr=0
-          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" \
-            --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --report field-rows.json || fr=$?
-          echo "field-rows: exit $fr"
-          if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr): no member rows were written and no report exists; failing the job"; exit "$fr"; fi
-          # The gate inputs, from what this run checked.
-          node -e '
-            const fs = require("fs");
-            const read = (f) => JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, ""));
-            const put = (f, v) => fs.writeFileSync(f, JSON.stringify(v, null, 2) + "\n");
-            const [cl, previousCl] = process.argv.slice(1);
-            const r = read("res/result.json");
-            put("g1.json", { ok: process.env.BUILD_RESULT === "success" });
-            put("g2.json", { ok: r.checks?.fail === false });
-            put("g3.json", { ok: true, cl, previousCl });
-            // The plugin verdicts: decide holds on any plugin the loader would refuse.
-            put("plugins.json", r.plugins ?? { error: "the client check wrote no plugin verdicts" });
-            // G4: the client scan, with the SDK value of each global the check compared.
-            const scan = read("res/scanner.json");
-            const sdk = new Map((r.checks?.sdkGlobals ?? []).map((g) => [g.name.toLowerCase(), g.sdk]));
-            for (const p of scan.patterns ?? []) {
-              const v = sdk.get(String(p.name).replace(/ \(.*\)$/, "").replace(/^.*::/, "").toLowerCase());
-              if (v) p.sdkRva = v;
-            }
-            put("g4.json", scan);
-            // G5: every class of the layout keys that moved, changed or is gone.
-            let g5;
-            try {
-              const l = read("res/layout.json");
-              const classes = new Set();
-              for (const c of Object.values(l.components ?? {})) for (const m of [...(c.moved ?? []), ...(c.changed ?? []), ...(c.missing ?? [])]) classes.add(m.key.split("::")[0]);
-              const used = [...classes].sort();
-              g5 = { changedUsedClasses: used.length, changedUsed: used.map((c) => ({ class: c })) };
-            } catch (e) { g5 = { error: "no layout report: " + e.message }; }
-            put("g5.json", g5);
-          ' "$cl" "$PREVIOUS_CL"
-          # Rate limits and seq: the history and the feed on the vmap-feed
-          # release. No release yet is an empty history and seq 0; any other
-          # failure to read it stops the chain.
-          if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > release.json 2> release.err; then
-            gh release download vmap-feed --pattern vmap-history.json --dir published || true
-            gh release download vmap-feed --pattern version-map-client.v1.txt --dir published || true
-          elif grep -q 'HTTP 404' release.err; then
-            echo "no vmap-feed release yet"
-          else
-            cat release.err; echo "::error::cannot read the vmap-feed release"; exit 2
-          fi
-          if [ -f published/vmap-history.json ]; then cp published/vmap-history.json history.json; else echo '{"releases":[],"attempts":{}}' > history.json; fi
-          last_seq=0
-          if [ -f published/version-map-client.v1.txt ]; then
-            last_seq="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
-            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
-          fi
-          echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
-          test_flag=()
-          [ "$TEST_AUTOPILOT" = true ] && test_flag=(--test-autopilot)
-          d=0
-          node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
-            --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json --fields field-rows.json \
-            --history history.json --out decision.json "${test_flag[@]}" || d=$?
-          decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
-          would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
-          echo "decision=$decision" >> "$GITHUB_OUTPUT"
-          echo "publishable=false" >> "$GITHUB_OUTPUT"
-          # A test run by the dispatch input, the chain's own flag or the decision itself.
-          is_test="$(node -p "String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || JSON.parse(require('fs').readFileSync('decision.json','utf8')).test === true)")"
-          echo "test=$is_test" >> "$GITHUB_OUTPUT"
-          # Each plugin: updated, updated and degraded (what turns off), or held.
-          node -e '
-            const d = JSON.parse(require("fs").readFileSync("decision.json", "utf8"));
-            const md = [`### Map mode: ${d.decision}${d.test ? ` (test run; would be ${d.wouldBe})` : ""}`, "", "| Plugin | Status | Off on this CL | Why |", "|---|---|---|---|"];
-            for (const p of d.plugins ?? []) {
-              const off = p.degraded.map((x) => `${x.key}${x.severity === "high" ? " **(high)**" : ""}`).join(", ");
-              const status = p.status === "updated" && p.degraded.length ? "updated, degraded" : p.status;
-              md.push(`| ${p.name} | ${status} | ${off} | ${[...p.reasons, ...p.degraded.map((x) => x.why)].join("; ").replace(/[|]/g, "/")} |`);
-            }
-            md.push("", ...d.reasons.map((r) => `- HOLD: ${r}`), ...d.notes.map((n) => `- ${n}`));
-            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
-          '
-          if [ "$TEST_AUTOPILOT" = true ] && [ "$decision" = HOLD ] && [ "$would" = M ]; then
-            echo "decide: HOLD (autopilot disabled); test run: it would be M, so the chain runs on with nothing publishable"
-          elif [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
-
-          # Path M: the feed, signed with the TEST key and verified.
-          node tool/ci/version-map.mjs export-feed "$header" --out feed.txt
-          [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
-          node tool/ci/vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq"
-          node tool/ci/vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq"
-
-          # Stage a beta build; plan the promotion. For a beta build the plan is
-          # for the day public flips to this exact build; for public, it is the
-          # real plan.
-          node --input-type=module -e '
-            import { readFileSync, writeFileSync } from "node:fs";
-            import { parse } from "./tool/ci/version-map.mjs";
-            const r = JSON.parse(readFileSync("res/result.json", "utf8").replace(/^﻿/, ""));
-            const cl = Number(r.checks.exe.cl);
-            const row = parse(readFileSync("version_map.generated.h", "utf8"), "the header").builds.find((b) => b.cl === cl);
-            const hex = (n) => "0x" + n.toString(16).toUpperCase().padStart(8, "0");
-            const buildid = String(r.download?.buildid || process.env.BUILDID);
-            const scans = [{ exe: process.env.BRANCH, buildid, ok: true }];
-            if (r.reference?.status === "used") scans.push({ exe: "public", buildid: String(r.reference.buildid), ok: true });
-            const build = { cl, branch: process.env.BRANCH, buildid, productVersion: r.checks.exe.productVersion, exeSha256: r.checks.exe.sha256,
-              imageStamp: hex(row.stamp), size: row.size, run: Number(process.env.RUN_ID), scans,
-              repo: { sha: process.env.LOADER_SHA, tree: process.env.LOADER_TREE, verdict: "FIXED" } };
-            writeFileSync("build.json", JSON.stringify(build, null, 1));
-            writeFileSync("public.json", JSON.stringify({ buildid: Number(buildid), exeSha256: build.exeSha256, cl }));
-            // This run scanned this exe: the loader registry (checks) and every
-            // plugin. That is the re-scan promote asks for; it fails when either did.
-            // Per plugin: a held or degraded plugin does not fail the re-scan;
-            // pluginsOk (decide) is false only for a verdict nothing can turn off.
-            const d = JSON.parse(readFileSync("decision.json", "utf8"));
-            writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && d.pluginsOk === true, exe: process.env.BRANCH, buildid }));
-          '
-          if [ -f tool/state/staged.json ]; then cp tool/state/staged.json staged.json; else echo '{}' > staged.json; fi
-          if [ "$BRANCH" != public ]; then
-            node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json
-            node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("stage-plan.json","utf8")); if (p.index) fs.writeFileSync("staged.json", JSON.stringify(p.index, null, 1));'
-          fi
-          p=0
-          node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
-            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${test_flag[@]}" || p=$?
-          IS_TEST="$is_test" node --input-type=module -e '
-            import { appendFileSync, readFileSync } from "node:fs";
-            import { isPublishable } from "./tool/ci/promote.mjs";
-            const p = JSON.parse(readFileSync("promote-plan.json", "utf8"));
-            for (const l of p.lines ?? []) console.log("promote: " + l);
-            // Publishable: a promotion, or the build of public on a new CL with
-            // nothing staged (normal flow; decide M of this run is the map).
-            // A test run is never publishable (ci/promote.mjs isPublishable).
-            const ok = isPublishable(p, { testRun: process.env.IS_TEST === "false" ? false : true, branch: process.env.BRANCH });
-            appendFileSync(process.env.GITHUB_OUTPUT, "action=" + (p.action ?? "") + "\npublishable=" + ok + "\n");
-          '
-          echo "promote: exit $p (a plan only; the publish job signs with the release key)"
-
-      - name: Upload the header and the chain
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: map-mode-${{ inputs.branch }}
-          path: |
-            version_map.generated.h
-            map-mode-report.json
-            observations.json
-            field-rows.json
-            g?.json
-            history.json
-            decision.json
-            feed.txt
-            feed.test-signed.txt
-            build.json
-            stage-plan.json
-            staged.json
-            promote-plan.json
-            plugins.json
-            verify.json
-          if-no-files-found: warn
-          retention-days: 14
-
-  # ---- Publish: the feed signed with the release key ---------------------
-  # Only with the publish input (default off; the owner turns it on), only for
-  # public, and only when decide chose M and the chain marked it publishable
-  # (a promotion, or public's own new CL with nothing staged). The only job
-  # that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
-  # environment, deployments from main only). Reads the live feed's seq again
-  # right before signing (one publish at a time), signs above it, verifies
-  # with no TEST key allowed, and uploads it with the updated history to the
-  # vmap-feed release.
-  publish:
-    name: publish the feed
-    needs: [check, map-mode]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: vmap-sign
-    concurrency:
-      group: vmap-publish
-      cancel-in-progress: false
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      TEST_INPUT: ${{ inputs.test_autopilot == true }}
-    steps:
-      - name: Check out the sign tool
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: tool
-          sparse-checkout: ci
-          persist-credentials: false
-
-      - name: Download the chain
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: map-mode-${{ inputs.branch }}
-          path: chain
-
-      - name: Refuse a test run
-        # Second lock behind the job condition: nothing a test run produced is
-        # ever signed with the release key, whatever state/autopilot.json says.
-        run: |
-          set -euo pipefail
-          [ "$TEST_INPUT" = false ] || { echo "::error::a test run never publishes"; exit 2; }
-          node -e '
-            const read = (f) => JSON.parse(require("fs").readFileSync("chain/" + f, "utf8"));
-            const d = read("decision.json"), p = read("promote-plan.json");
-            if (d.test !== undefined || d.wouldBe !== undefined || p.test !== undefined) { console.error("::error::the chain is marked a test run; refusing to sign it"); process.exit(2); }
-          '
-
-      - name: Sign with the release key, verify, publish
-        env:
-          VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
-        run: |
-          set -euo pipefail
-          [ -n "$VMAP_SIGN_KEY" ] || { echo "::error::the VMAP_SIGN_KEY secret is not set"; exit 2; }
-          # The live seq, read again now: another publish may have landed since
-          # the chain ran. No release yet is seq 0; a feed that does not verify stops.
-          last_seq=0
-          if gh release download vmap-feed --pattern version-map-client.v1.txt --dir live 2>/dev/null; then
-            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
-            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
-          fi
-          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq"
-          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq"
-          node -e '
-            const fs = require("fs");
-            const h = JSON.parse(fs.readFileSync("chain/history.json", "utf8"));
-            const d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8"));
-            h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString() });
-            fs.writeFileSync("vmap-history.json", JSON.stringify(h, null, 1) + "\n");
-          '
-          gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
-          gh release upload vmap-feed version-map-client.v1.txt vmap-history.json --clobber
-
-  # ---- Alert: a failed or held run is visible without opening Actions ----
-  # One issue per branch, opened on the first problem and commented on for every
-  # later one (the same mechanism as vmap-watchdog.yml). Alerts: a job of this
-  # run that failed, and a map-mode decision of HOLD for any reason but
-  # "nothing new" (the CL is not newer than the one the header was built for).
-  # A test run's expected HOLD (autopilot disabled, it would be M) is not an alert.
-  alert:
-    name: alert
-    needs: [build, plugin-plan, check, map-mode, publish]
-    if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      BRANCH: ${{ inputs.branch }}
-      BUILDID: ${{ inputs.buildid }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      BUILD_RESULT: ${{ needs.build.result }}
-      PLAN_RESULT: ${{ needs.plugin-plan.result }}
-      CHECK_RESULT: ${{ needs.check.result }}
-      MAP_MODE_RESULT: ${{ needs.map-mode.result }}
-      PUBLISH_RESULT: ${{ needs.publish.result }}
-    steps:
-      - name: Download the map-mode chain
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        continue-on-error: true
-        with:
-          name: map-mode-${{ inputs.branch }}
-          path: chain
-
-      - name: Work out what needs attention
-        id: what
-        run: |
-          set -euo pipefail
-          node -e '
-            const fs = require("fs");
-            const e = process.env;
-            const lines = [];
-            const jobs = { "build-scanner": e.BUILD_RESULT, "plugin-plan": e.PLAN_RESULT, "check": e.CHECK_RESULT, "map mode": e.MAP_MODE_RESULT, "publish the feed": e.PUBLISH_RESULT };
-            for (const [name, result] of Object.entries(jobs)) if (result === "failure") lines.push("- job **" + name + "** failed");
-            let d = null;
-            try { d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8")); } catch {}
-            if (!d && e.MAP_MODE_RESULT === "success") lines.push("- map mode finished without a decision");
-            if (d && d.decision === "HOLD") {
-              const reasons = d.reasons ?? [];
-              const nothingNew = reasons.some((r) => /^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/.test(r));
-              const expectedTest = d.test === true && d.wouldBe === "M";
-              if (!nothingNew && !expectedTest) lines.push("- decide: **HOLD** on CL-" + (d.cl ?? "?"), ...reasons.map((r) => "  - " + r));
-            }
-            if (!lines.length) { console.log("Nothing to alert on."); process.exit(0); }
-            const md = ["Branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, "", "Details are in the run summary and the map-mode artifact."];
-            fs.writeFileSync("alert.md", md.join("\n") + "\n");
-            fs.appendFileSync(e.GITHUB_OUTPUT, "alert=true\n");
-          '
-
-      - name: Open or update the issue
-        if: steps.what.outputs.alert == 'true'
-        run: |
-          set -euo pipefail
-          title="SR map mode: $BRANCH needs attention"
-          number="$(gh issue list --state open --search "$title in:title" --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
-          if [ -n "$number" ]; then
-            gh issue comment "$number" --body-file alert.md
-          else
-            gh issue create --title "$title" --body-file alert.md
-          fi
 
   # ---- Auto-apply, part 2: push the verified fixes to the owner's forks ----
   # The only job that can read the fork deploy keys (environment fork-push),
@@ -2065,7 +1128,7 @@ jobs:
           # field that picks a repository, a key or a ref is checked here. The
           # commit must be the one plugin-plan resolved before plugin code ran;
           # any commit in the fork network can be fetched by id.
-          [[ "$NAME" =~ ^(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$ ]] || { echo "::error::'$NAME' is not a fork this job pushes to"; exit 1; }
+          [[ "$NAME" =~ ^(BetterCheats|BetterDrone|WAILA|Codex)$ ]] || { echo "::error::'$NAME' is not a fork this job pushes to"; exit 1; }
           [[ "$SHA" =~ ^[0-9a-f]{40}$ && "$TREE" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::bad commit or tree id'; exit 1; }
           [[ "$CL" =~ ^[0-9]+$ && "$REFERENCE_CL" =~ ^[0-9]*$ ]] || { echo '::error::bad CL'; exit 1; }
           [[ "$VERDICT" =~ ^(FIXED|PARTIAL)$ ]] || { echo '::error::bad verdict'; exit 1; }
@@ -2117,7 +1180,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           # This fork's key only.
-          DEPLOY_KEY: ${{ matrix.name == 'BetterCheats' && secrets.SR_DEPLOYKEY_BETTERCHEATS || matrix.name == 'BetterDrone' && secrets.SR_DEPLOYKEY_BETTERDRONE || matrix.name == 'WAILA' && secrets.SR_DEPLOYKEY_WAILA || matrix.name == 'Codex' && secrets.SR_DEPLOYKEY_CODEX || matrix.name == 'Compass' && secrets.SR_DEPLOYKEY_COMPASS || matrix.name == 'ProductionViewer' && secrets.SR_DEPLOYKEY_PRODUCTIONVIEWER || matrix.name == 'RuptureTimer' && secrets.SR_DEPLOYKEY_RUPTURETIMER || matrix.name == 'WaveOptimiser' && secrets.SR_DEPLOYKEY_WAVEOPTIMISER || matrix.name == 'CameraControls' && secrets.SR_DEPLOYKEY_CAMERACONTROLS || '' }}
+          DEPLOY_KEY: ${{ matrix.name == 'BetterCheats' && secrets.SR_DEPLOYKEY_BETTERCHEATS || matrix.name == 'BetterDrone' && secrets.SR_DEPLOYKEY_BETTERDRONE || matrix.name == 'WAILA' && secrets.SR_DEPLOYKEY_WAILA || matrix.name == 'Codex' && secrets.SR_DEPLOYKEY_CODEX || '' }}
         run: |
           set -euo pipefail
           if [ -z "$DEPLOY_KEY" ]; then echo "::error::no deploy key for $NAME in environment fork-push"; exit 1; fi
@@ -2237,14 +1300,14 @@ jobs:
             $partial = @($r.plugins.plugins | Where-Object { $_.verdict -eq 'GAME-CALL' } | ForEach-Object { $_.name })
             $md.Add("#### Plugins: $($r.plugins.status.ToUpperInvariant())$(if ($partial.Count) { ' (partial: ' + ($partial -join ', ') + ' not fully exercised)' })")
             $md.Add('')
-            $md.Add('The loader refuses a plugin that fails here. A failing plugin does not change the loader verdict above. OFFSETS and OFFSETS-UNCHECKED: a fixed offset the plugin reads does not match this build, or could not be checked (below).')
+            $md.Add('The loader refuses a plugin that fails here. A failing plugin does not change the loader verdict above.')
             $md.Add('')
             $md.Add('| Plugin | Ref | Verdict | OK | MISSING | AMBIGUOUS | Other | Note |')
             $md.Add('|---|---|---|---|---|---|---|---|')
             foreach ($p in @($r.plugins.plugins)) {
               $s = if ($p.PSObject.Properties['summary']) { $p.summary } else { $null }
-              # A latest-release plugin shows its tag; a built one its ref and commit.
-              $ref = if ($p.source -eq 'release') { "``$($p.ref)`` (latest release)" } elseif ($p.release) { "``$($p.ref)`` (latest release, built from source$(if ($p.sha) { ', ' + $p.sha.Substring(0, 7) }))" } elseif ($p.sha) { "``$($p.ref)`` ($($p.sha.Substring(0, 7)))" } else { "``$($p.ref)``" }
+              # A released plugin shows its tag; a built one its ref and commit.
+              $ref = if ($p.source -eq 'release') { "``$($p.ref)`` (release)" } elseif ($p.sha) { "``$($p.ref)`` ($($p.sha.Substring(0, 7)))" } else { "``$($p.ref)``" }
               $note = foreach ($k in 'note', 'crash', 'error') { if ($p.PSObject.Properties[$k] -and $p.$k) { $p.$k } }
               $md.Add("| $($p.name) | $ref | **$($p.verdict)$(if ($p.verdict -eq 'GAME-CALL') { ' (partial)' })** | $(if ($s) { $s.ok }) | $(if ($s) { $s.missing }) | $(if ($s) { $s.ambiguous }) | $(if ($s) { $s.other + $s.reported }) | $((@($note) -join '; ') -replace '\|', '\|') |")
             }
@@ -2256,37 +1319,11 @@ jobs:
               $md.Add('|---|---|---|---|')
               foreach ($row in @($p.patterns)) {
                 $req = if (-not $row.recorded) { 'raw scan' } elseif ($row.required) { 'yes' } else { 'no' }
-                $shown = if ($row.PSObject.Properties['ownPattern']) { $row.ownPattern } else { $row.result }
-                $md.Add("| $shown | ``$($row.name -replace '\|', '\|')`` | $($row.kind) | $req |")
+                $md.Add("| $($row.result) | ``$($row.name -replace '\|', '\|')`` | $($row.kind) | $req |")
               }
               $md.Add('')
               $md.Add('</details>')
             }
-          }
-
-          # The fixed offsets the plugins read, against this build's PDB.
-          $withOffsets = @($(if ($r -and $r.PSObject.Properties['plugins'] -and $r.plugins) { $r.plugins.plugins }) | Where-Object { $_.PSObject.Properties['offsets'] -and $_.offsets -and @($_.offsets.results).Count })
-          if ($withOffsets.Count) {
-            $md.Add('')
-            $md.Add('**Fixed offsets** (members a plugin reads at a raw offset, compared with the PDB; any state but ok fails the plugin as OFFSETS):')
-          }
-          foreach ($p in $withOffsets) {
-            $res = @($p.offsets.results)
-            $bad = @($res | Where-Object { $_.state -ne 'ok' })
-            $md.Add('')
-            $md.Add("<details$(if ($bad.Count) { ' open' })><summary>$($p.name): $($res.Count) fixed offsets, $($bad.Count) failing</summary>")
-            $md.Add('')
-            $md.Add('| State | Member | Source reads | This build | Public build | Note |')
-            $md.Add('|---|---|---|---|---|---|')
-            foreach ($x in $res) {
-              $s = if ($x.PSObject.Properties['source'] -and $null -ne $x.source) { '0x{0:X}' -f [int]$x.source } else { '-' }
-              $t = if ($x.PSObject.Properties['target'] -and $x.target -and $x.target.PSObject.Properties['offset']) { '0x{0:X}' -f [int]$x.target.offset } else { '-' }
-              $f = if ($x.PSObject.Properties['reference'] -and $x.reference -and $x.reference.PSObject.Properties['offset']) { '0x{0:X}' -f [int]$x.reference.offset } else { '-' }
-              $why = if ($x.PSObject.Properties['reason'] -and $x.reason) { $x.reason -replace '\|', '\|' } else { '' }
-              $md.Add("| $($x.state) | ``$($x.key)`` | $s | $t | $f | $why |")
-            }
-            $md.Add('')
-            $md.Add('</details>')
           }
 
           # Proposed replacements for failing patterns (sr-aobscan --suggest).
@@ -2327,7 +1364,7 @@ jobs:
             $md.Add('')
             $md.Add("#### Auto-apply (proposals at confidence $($af.minConfidence) and up)")
             $md.Add('')
-            $md.Add("Each fix is rebuilt and scanned on this build (CL-$($af.cl))$(if ($af.referenceCl) { " and on the public build (CL-$($af.referenceCl))" }). FIXED: every failing pattern resolves uniquely to the function the suggester located. PARTIAL: the same for the applied ones, and the rest were skipped. Only FIXED and PARTIAL fixes of the owner's forks are pushed.")
+            $md.Add("Each fix is rebuilt and scanned on this build (CL-$($af.cl))$(if ($af.referenceCl) { " and on the public build (CL-$($af.referenceCl))" }). FIXED: every failing pattern resolves to the function it resolved to before. PARTIAL: the same for the applied ones, and the rest were skipped. Only FIXED and PARTIAL fixes of the owner's forks are pushed.")
             $md.Add('')
             $md.Add('| Plugin | Verdict | Applied | Skipped | Branch | Note |')
             $md.Add('|---|---|---|---|---|---|')
@@ -2336,10 +1373,8 @@ jobs:
               if ($p.verdict -eq 'PATCH') { $where = "patch only: ``$($p.patch)`` in the run's artifact" }
               elseif ($p.verdict -in 'FIXED', 'PARTIAL' -and $p.repo -match '^msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+$') {
                 $where = 'not pushed (see the auto-apply job)'
-                # The fallback name carries the attempt that pushed it, which may be an earlier one.
-                foreach ($line in @(git ls-remote "https://github.com/$($p.repo)" "refs/heads/auto/update-$($af.cl)" "refs/heads/auto/update-$($af.cl)-$($env:RUN_ID)-*" 2>$null)) {
-                  $sha, $b = "$line" -split "`t"
-                  $b = "$b" -replace '^refs/heads/', ''
+                foreach ($b in "auto/update-$($af.cl)", "auto/update-$($af.cl)-$($env:RUN_ID)") {
+                  $sha = "$(git ls-remote "https://github.com/$($p.repo)" "refs/heads/$b" 2>$null)".Split("`t")[0]
                   if ($sha -match '^[0-9a-f]{40}$' -and (gh api "repos/$($p.repo)/git/commits/$sha" --jq .tree.sha 2>$null) -eq $p.tree) { $where = "``$b`` ($($sha.Substring(0, 7)))"; break }
                 }
               }

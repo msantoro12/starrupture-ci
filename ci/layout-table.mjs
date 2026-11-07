@@ -5,22 +5,15 @@
 //
 //   node ci/layout-table.mjs gen <Client/Assertions.inl> --cl <build> \
 //        [--used used-classes.txt]... [--src <source-dir>]... \
-//        [--sdk <Client/SDK dir>] [--granularity 0|1] [--namespace SrLayoutTable] [--out layout_table.generated.h]
+//        [--sdk <Client/SDK dir>] [--namespace SrLayoutTable] [--out layout_table.generated.h]
 //   node ci/layout-table.mjs compare <old.h> <new.h> [--json report.json]
-//   node ci/layout-table.mjs keys <table.h> [--out keys.txt]
-//   node ci/layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]
 //
 // gen
 //   Selects the classes to embed: the names in each --used list plus whatever
 //   used-classes.mjs finds in each --src directory, all resolved against the
 //   Assertions.inl (a used name also selects namespace-qualified and nested
 //   classes, as layout-diff.mjs does). Every member of a selected class goes in
-//   (class granularity). With --granularity 1 (needs --src), a UClass or
-//   Blueprint class keeps only the rows whose member name the sources use
-//   (`.X`, `->X`, `::X`, `offsetof(T, X)`): code reaches such classes through
-//   pointers, so only the members it reads matter, and its size is written as
-//   0 (not compared) unless the sources take `sizeof` or `alignof` of it.
-//   Script structs and parameter blocks are held by value and keep every row. --sdk adds member sizes and bool masks from the
+//   (class granularity). --sdk adds member sizes and bool masks from the
 //   Dumper-7 *_classes.hpp, *_structs.hpp and *_parameters.hpp next to it;
 //   without it those columns are 0.
 //   The output is deterministic: classes sorted by name, rows by offset then
@@ -32,28 +25,12 @@
 //   data. Exit codes: 0 nothing broken, 3 at least one row or class broken,
 //   2 usage or parse error.
 //
-// keys
-//   Lists a table as the keys `sr-aobscan --layout` reads from a game PDB: each
-//   class (its size), then each of its rows as `Class::Member`. Blueprint
-//   classes are left out: they are assets, not C++ types, so no PDB has them.
-//
-// pdb-diff
-//   Compares two `sr-aobscan --layout --json` reports of the same key list, one
-//   per build, key by key: same, moved (another offset), changed (same offset,
-//   another size or bool mask), missing (resolved on the base build only:
-//   removed, or renamed), added (resolved on the next build only) and
-//   unresolved (on neither). The PDB lookup is by name, so a renamed member
-//   counts as missing. --keys compares only the keys in that list (one per
-//   line, '#' comments), so one report per build can serve several
-//   components. Exit codes: 0 nothing moved, changed or missing; 3 otherwise;
-//   2 usage or parse error.
-//
 // The table format is documented in ci/LAYOUT-TABLE.md.
 
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ALIGN, EXIT_ERROR, EXIT_USED_CHANGED, SIZE, isMain, loadLayout, matchUsed, parseUsedList, ParseError } from './layout-diff.mjs';
-import { collectLazyMembers, collectMemberNames, collectRequests, collectSizedNames, collectSizeUses, collectUsed, knownFilter } from './used-classes.mjs';
+import { collectUsed, knownFilter } from './used-classes.mjs';
 
 export const FORMAT_VERSION = 1;
 const DEFAULT_NAMESPACE = 'SrLayoutTable';
@@ -132,15 +109,7 @@ export function parseSdkHeaders(dir) {
 // predefined FField, FName, ...) and a member the headers mark as predefined cannot be found through
 // reflection, so they are left out and counted in `skipped`.
 // Returns { cl, detail, classes: [{ name, sizeOf, alignOf, kind, path, rows: [{ member, offset, size, mask }] }], skipped }.
-// usedMembers: optional Set of member names (granularity 1): a UClass or Blueprint class keeps only those rows,
-// and its sizeOf and alignOf are written as 0 (not compared) unless its name is in sizedClasses, the types the
-// sources take sizeof or alignof of.
-// sizeUses: optional Map (granularity 2, from collectSizeUses): structs are narrowed to usedMembers too, and a
-// class or struct keeps its sizeOf and alignOf only when its name is in sizeUses and not for a live-only use (SR_SIZE:
-// the plugin reads the size from the running game, so it has no compiled size to compare); a function's parameter block
-// always keeps them.
-export function buildTable(layout, selected, { cl, sdk = null, usedMembers = null, sizedClasses = new Set(), sizeUses = null } = {}) {
-  if (sizeUses && !usedMembers) throw new Error('sizeUses (granularity 2) needs usedMembers');
+export function buildTable(layout, selected, { cl, sdk = null } = {}) {
   if (!Number.isInteger(cl) || cl <= 0) throw new Error('a build number (--cl) is required');
   const classes = [];
   const skipped = { classes: [], members: 0, unmatched: 0 };
@@ -176,17 +145,11 @@ export function buildTable(layout, selected, { cl, sdk = null, usedMembers = nul
     for (const [member, d] of cls?.members ?? []) {
       if (d.bits && d.reflected && !rows.has(member)) rows.set(member, { member, offset: d.offset, size: d.size, mask: d.mask });
     }
-    const kind = cls?.kind ?? KIND.unknown;
-    const narrowed = usedMembers && (kind === KIND.class || kind === KIND.blueprint || (sizeUses && kind === KIND.struct));
-    if (narrowed) {
-      for (const member of [...rows.keys()]) if (!usedMembers.has(member)) rows.delete(member);
-    }
-    const sized = !narrowed || (sizeUses ? sizeUses.has(name) && sizeUses.get(name) !== 'live' : sizedClasses.has(name));
     classes.push({
       name,
-      sizeOf: sized ? members.get(SIZE) : 0,
-      alignOf: sized ? members.get(ALIGN) ?? 0 : 0,
-      kind,
+      sizeOf: members.get(SIZE),
+      alignOf: members.get(ALIGN) ?? 0,
+      kind: cls?.kind ?? KIND.unknown,
       path: cls?.path ?? '',
       rows: [...rows.values()].sort((a, b) => a.offset - b.offset || cmp(a.member, b.member)),
     });
@@ -194,7 +157,7 @@ export function buildTable(layout, selected, { cl, sdk = null, usedMembers = nul
   // A wrong --sdk directory, or a Dumper-7 line format this parser no longer reads, must not pass for a table.
   if (classes.length === 0) throw new Error('no classes to write' + (sdk ? ': the --sdk directory has none of the selected classes' : ''));
   if (skipped.classes.length * 4 > wanted.size) throw new Error(`${skipped.classes.length} of ${wanted.size} selected classes have no declaration in the --sdk headers (${skipped.classes.slice(0, 8).join(', ')}...); wrong directory or unreadable format`);
-  return { cl, detail: sdk ? 1 : 0, granularity: sizeUses ? 2 : usedMembers ? 1 : 0, classes, skipped };
+  return { cl, detail: sdk ? 1 : 0, classes, skipped };
 }
 
 const NAME_RE = /^[A-Za-z0-9_:.]+$/;
@@ -225,12 +188,12 @@ export function renderHeader(table, { namespace = DEFAULT_NAMESPACE } = {}) {
   out.push(`inline constexpr uint32_t kFormatVersion = ${FORMAT_VERSION};`);
   out.push(`inline constexpr uint32_t kBuiltCL = ${table.cl};`);
   out.push(`inline constexpr uint32_t kDetail = ${table.detail};  // 0: offsets only; 1: Row::size and Row::boolMask are filled`);
-  out.push(`inline constexpr uint32_t kGranularity = ${table.granularity ?? 0};  // 0: every member of each class is listed; 1: a UClass lists only the members the sources use; 2: a struct too, and a size only where the sources depend on it`);
+  out.push('inline constexpr uint32_t kGranularity = 0;  // 0: every member of each class is listed; 1: only chosen members');
   out.push(`inline constexpr uint32_t kNameCount = ${names.length};`);
   out.push(`inline constexpr uint32_t kClassCount = ${table.classes.length};`);
   out.push(`inline constexpr uint32_t kRowCount = ${rowCount};`);
   out.push('');
-  out.push('// name: index into kNames. sizeOf/alignOf: sizeof/alignof of the class (0 = not compared). The class owns kRows[firstRow .. firstRow + rowCount).');
+  out.push('// name: index into kNames. sizeOf/alignOf: sizeof/alignof of the class. The class owns kRows[firstRow .. firstRow + rowCount).');
   out.push('// kind: 0 unknown, 1 UClass, 2 UScriptStruct, 3 UFunction parameters, 4 Blueprint-generated class. path: index into kNames of the reflection path');
   out.push('// (`Package.Name`, or `Package.Class.Function` for kind 3), or 0xFFFFFFFF when kDetail is 0.');
   out.push('struct Class { uint32_t name; uint32_t sizeOf; uint32_t alignOf; uint32_t firstRow; uint32_t rowCount; uint32_t kind; uint32_t path; };');
@@ -263,8 +226,6 @@ export function renderHeader(table, { namespace = DEFAULT_NAMESPACE } = {}) {
 
 // Read a header written by renderHeader back into a table.
 export function parseHeader(text, label = 'input') {
-  // A Windows checkout (core.autocrlf) has CRLF line ends.
-  text = text.replace(/\r\n/g, '\n');
   const num = (s) => Number(s);
   const grab = (re, what) => {
     const m = re.exec(text);
@@ -309,7 +270,7 @@ export function parseHeader(text, label = 'input') {
 // ---- compare ------------------------------------------------------------------
 
 // What `next` breaks in `base`: each class and row of `base` must exist in `next` with the same
-// values. Rows only in `next` are reported separately and break nothing. A class or member size of 0 means
+// values. Rows only in `next` are reported separately and break nothing. A member size of 0 means
 // unknown and is not compared; size and mask are only compared when both tables have kDetail 1.
 export function compareTables(base, next) {
   const nextByName = new Map(next.classes.map((c) => [c.name, c]));
@@ -322,7 +283,7 @@ export function compareTables(base, next) {
       broken.push({ cls: c.name, member: null, kind: 'class-missing', old: null, new: null });
       continue;
     }
-    if (c.sizeOf !== 0 && n.sizeOf !== 0 && c.sizeOf !== n.sizeOf) broken.push({ cls: c.name, member: SIZE, kind: 'sizeof', old: c.sizeOf, new: n.sizeOf });
+    if (c.sizeOf !== n.sizeOf) broken.push({ cls: c.name, member: SIZE, kind: 'sizeof', old: c.sizeOf, new: n.sizeOf });
     if (c.alignOf !== 0 && n.alignOf !== 0 && c.alignOf !== n.alignOf) broken.push({ cls: c.name, member: ALIGN, kind: 'alignof', old: c.alignOf, new: n.alignOf });
     const nr = new Map(n.rows.map((r) => [r.member, r]));
     for (const r of c.rows) {
@@ -366,93 +327,6 @@ function formatCompare(r) {
 
 // ---- CLI ----------------------------------------------------------------------
 
-// ---- keys and pdb-diff ----------------------------------------------------------
-
-// The table's classes and rows as `sr-aobscan --layout` keys, one per line.
-// The uses file next to a key list (`gen --uses-out`, `keys --uses-out`), read by field-rows.mjs --uses:
-//   size <Class> check|compiled|live   the code depends on the whole size of Class, or reads it live (see collectSizeUses)
-//   request <Class::Member>       a field request in the code (SR_FIELD and its wrappers)
-//   lazy <Member>                 a PluginLazyField looks Member up by name: optional
-// Only classes and keys in the table are listed: a use of something no key names never gates.
-export function usesLines(sizeUses, lazy, table, requests = []) {
-  const inTable = new Set(table.classes.filter((c) => c.kind !== KIND.blueprint).map((c) => c.name));
-  const keys = new Set(tableKeys(table));
-  const lines = [];
-  for (const k of [...new Set(requests)].sort(cmp)) if (keys.has(k)) lines.push(`request ${k}`);
-  for (const [name, how] of [...(sizeUses ?? [])].sort((a, b) => cmp(a[0], b[0]))) if (inTable.has(name)) lines.push(`size ${name} ${how}`);
-  for (const m of [...new Set(lazy)].sort(cmp)) lines.push(`lazy ${m}`);
-  return lines;
-}
-
-export function tableKeys(table) {
-  const keys = [];
-  for (const c of table.classes) {
-    if (c.kind === KIND.blueprint) continue;
-    keys.push(c.name);
-    for (const r of c.rows) keys.push(`${c.name}::${r.member}`);
-  }
-  return keys;
-}
-
-// Read a `sr-aobscan --layout --json` report: [{ key, result, offset?, size?, boolMask? }].
-export function parseLayoutReport(text, label = 'input') {
-  let doc;
-  try {
-    doc = JSON.parse(text.replace(/^\uFEFF/, ''));
-  } catch (e) {
-    throw new ParseError(`${label}: not JSON (${e.message})`);
-  }
-  if (!doc || !Array.isArray(doc.keys)) throw new ParseError(`${label}: no keys array (not an sr-aobscan --layout report?)`);
-  for (const k of doc.keys) {
-    if (typeof k?.key !== 'string' || typeof k.result !== 'string') throw new ParseError(`${label}: malformed key entry`);
-    if (k.result === 'OK' && !Number.isInteger(k.size)) throw new ParseError(`${label}: ${k.key}: OK without a size`);
-  }
-  return doc.keys;
-}
-
-const PDB_CLASSES = ['same', 'moved', 'changed', 'missing', 'added', 'unresolved'];
-
-// The entries of a report for the given keys, in that order; every key must be in the report.
-export function selectKeys(report, keys, label = 'input') {
-  const byKey = new Map(report.map((k) => [k.key, k]));
-  return keys.map((key) => {
-    const k = byKey.get(key);
-    if (!k) throw new ParseError(`${label}: no entry for ${key}`);
-    return k;
-  });
-}
-
-// Key-by-key comparison of two reports of the same key list (see pdb-diff above).
-// Returns { keys, counts: { same, moved, ... }, moved: [...], changed, missing, added, unresolved }.
-export function diffLayoutReports(base, next) {
-  if (base.length !== next.length || base.some((k, i) => k.key !== next[i].key)) throw new ParseError('the two reports are not of the same key list');
-  const out = Object.fromEntries(PDB_CLASSES.map((c) => [c, []]));
-  const fields = (k) => ({ offset: k.offset ?? null, size: k.size, boolMask: k.boolMask ?? null });
-  base.forEach((b, i) => {
-    const n = next[i];
-    const okB = b.result === 'OK';
-    const okN = n.result === 'OK';
-    if (okB && okN) {
-      if ((b.offset ?? null) !== (n.offset ?? null)) out.moved.push({ key: b.key, base: fields(b), next: fields(n) });
-      else if (b.size !== n.size || (b.boolMask ?? null) !== (n.boolMask ?? null)) out.changed.push({ key: b.key, base: fields(b), next: fields(n) });
-      else out.same.push(b.key);
-    } else if (okB) out.missing.push({ key: b.key, base: fields(b), next: n.result });
-    else if (okN) out.added.push({ key: b.key, base: b.result, next: fields(n) });
-    else out.unresolved.push({ key: b.key, base: b.result, next: n.result });
-  });
-  const { same, ...listed } = out;
-  return { keys: base.length, counts: Object.fromEntries(PDB_CLASSES.map((c) => [c, out[c].length])), ...listed };
-}
-
-function formatPdbDiff(r) {
-  const h = (f) => (typeof f === 'string' ? f : `${f.offset === null ? '-' : hex(f.offset)}/${hex(f.size)}${f.boolMask ? `/${hex(f.boolMask)}` : ''}`);
-  const lines = [`${r.keys} keys: ` + PDB_CLASSES.map((c) => `${r.counts[c]} ${c}`).join(', ')];
-  for (const c of PDB_CLASSES.slice(1)) {
-    for (const e of r[c]) lines.push(`${c.toUpperCase().padEnd(10)} ${e.key}: ${h(e.base)} -> ${h(e.next)}`);
-  }
-  return lines.join('\n') + '\n';
-}
-
 function parseArgs(argv, valued, repeated = []) {
   const opt = Object.fromEntries(repeated.map((k) => [k, []]));
   const pos = [];
@@ -472,26 +346,18 @@ function parseArgs(argv, valued, repeated = []) {
 function main(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'gen') {
-    const { opt, pos } = parseArgs(rest, ['cl', 'sdk', 'namespace', 'out', 'granularity', 'uses-out'], ['used', 'src']);
-    if (pos.length !== 1) throw new Error('usage: layout-table.mjs gen <Assertions.inl> --cl <build> [--used f]... [--src dir]... [--sdk dir] [--granularity 0|1|2] [--out f] [--uses-out f]');
+    const { opt, pos } = parseArgs(rest, ['cl', 'sdk', 'namespace', 'out'], ['used', 'src']);
+    if (pos.length !== 1) throw new Error('usage: layout-table.mjs gen <Assertions.inl> --cl <build> [--used f]... [--src dir]... [--sdk dir] [--out f]');
     if (opt.used.length + opt.src.length === 0) throw new Error('give at least one --used list or --src directory');
-    const granularity = opt.granularity ?? '0';
-    if (!['0', '1', '2'].includes(granularity)) throw new Error('--granularity is 0, 1 or 2');
-    if (granularity !== '0' && !opt.src.length) throw new Error(`--granularity ${granularity} reads the member names from --src`);
-    if (opt['uses-out'] && !opt.src.length) throw new Error('--uses-out reads the sources from --src');
     const cl = Number(opt.cl);
     const layout = loadLayout(pos[0]);
     const used = new Set();
     for (const f of opt.used) for (const n of parseUsedList(readFileSync(f, 'utf8'))) used.add(n);
     if (opt.src.length) for (const n of collectUsed(opt.src, knownFilter([layout])).names.keys()) used.add(n);
     const { matched, unmatched } = matchUsed(used, layout.keys());
-    const usedMembers = granularity !== '0' ? collectMemberNames(opt.src) : null;
-    const sizedClasses = granularity === '1' ? collectSizedNames(opt.src) : undefined;
-    const sizeUses = granularity === '2' || opt['uses-out'] ? collectSizeUses(opt.src) : null;
-    const table = buildTable(layout, matched.keys(), { cl, sdk: opt.sdk ? parseSdkHeaders(opt.sdk) : null, usedMembers, sizedClasses, sizeUses: granularity === '2' ? sizeUses : null });
+    const table = buildTable(layout, matched.keys(), { cl, sdk: opt.sdk ? parseSdkHeaders(opt.sdk) : null });
     const text = renderHeader(table, { namespace: opt.namespace });
     if (opt.out) writeFileSync(opt.out, text);
-    if (opt['uses-out']) writeFileSync(opt['uses-out'], usesLines(sizeUses, collectLazyMembers(opt.src), table, collectRequests(opt.src)).join('\n') + '\n');
     else process.stdout.write(text);
     const rows = table.classes.reduce((s, c) => s + c.rows.length, 0);
     process.stderr.write(`layout-table: ${table.classes.length} classes, ${rows} rows, ${text.length} bytes; ${unmatched.length} used names not in the layout${unmatched.length ? ` (${unmatched.join(', ')})` : ''}\n`);
@@ -509,30 +375,8 @@ function main(argv) {
     process.stdout.write(formatCompare(r));
     if (opt.json) writeFileSync(opt.json, JSON.stringify(r, null, 2) + '\n');
     if (r.broken.length > 0) process.exitCode = EXIT_USED_CHANGED;
-  } else if (cmd === 'keys') {
-    const { opt, pos } = parseArgs(rest, ['out', 'uses-out']);
-    if (pos.length !== 1) throw new Error('usage: layout-table.mjs keys <table.h> [--out keys.txt] [--uses-out uses.txt]');
-    const table = parseHeader(readFileSync(pos[0], 'utf8'), pos[0]);
-    const text = tableKeys(table).join('\n') + '\n';
-    if (opt.out) writeFileSync(opt.out, text);
-    else process.stdout.write(text);
-    // A committed table carries no source scan: a class it keeps a size for is one the code depends on.
-    if (opt['uses-out']) writeFileSync(opt['uses-out'], usesLines(new Map(table.classes.filter((c) => c.sizeOf).map((c) => [c.name, 'compiled'])), [], table).join('\n') + '\n');
-  } else if (cmd === 'pdb-diff') {
-    const { opt, pos } = parseArgs(rest, ['json', 'keys']);
-    if (pos.length !== 2) throw new Error('usage: layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]');
-    let [a, b] = pos.map((p) => parseLayoutReport(readFileSync(p, 'utf8'), p));
-    if (opt.keys) {
-      const keys = [...parseUsedList(readFileSync(opt.keys, 'utf8'))];
-      if (!keys.length) throw new Error(`${opt.keys}: no keys`);
-      [a, b] = [selectKeys(a, keys, pos[0]), selectKeys(b, keys, pos[1])];
-    }
-    const r = diffLayoutReports(a, b);
-    process.stdout.write(formatPdbDiff(r));
-    if (opt.json) writeFileSync(opt.json, JSON.stringify(r, null, 2) + '\n');
-    if (r.counts.moved + r.counts.changed + r.counts.missing > 0) process.exitCode = EXIT_USED_CHANGED;
   } else {
-    throw new Error('usage: layout-table.mjs gen|compare|keys|pdb-diff ...');
+    throw new Error('usage: layout-table.mjs gen|compare ...');
   }
 }
 

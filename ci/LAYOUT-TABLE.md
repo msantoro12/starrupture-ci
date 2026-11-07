@@ -58,7 +58,7 @@ namespace SrLayoutTable {                       // --namespace
 inline constexpr uint32_t kFormatVersion = 1;   // bumped on any change below
 inline constexpr uint32_t kBuiltCL   = 127004;
 inline constexpr uint32_t kDetail    = 1;       // 1: Row::size and Row::boolMask are filled, kind/path are set
-inline constexpr uint32_t kGranularity = 0;     // 0: every member of each listed class has a row; 1: see below
+inline constexpr uint32_t kGranularity = 0;     // 0: every member of each listed class has a row
 inline constexpr uint32_t kNameCount, kClassCount, kRowCount;
 
 struct Class { uint32_t name, sizeOf, alignOf, firstRow, rowCount, kind, path; };
@@ -119,15 +119,9 @@ mismatch, only an unchecked class.
   exist only as Dumper predefines (`FName`, `FField`, `FProperty`, ...) have no
   entry.
 - Bit-fields share one offset; each has its own row with its own `boolMask`.
-- `kGranularity` 0: every member. `gen --granularity 1` (needs `--src`) keeps,
-  for a UClass or Blueprint class, only the rows whose member name the sources
-  use (`.X`, `->X`, `::X`, `offsetof(T, X)`; by name, so it over-approximates).
-  Script structs and parameter blocks keep every row. Same format. When it is 1,
-  a consumer must never assume a class's rows are complete. Code reaches a
-  UClass through pointers, so only the members it reads matter, and the
-  generator writes its `sizeOf` and `alignOf` as 0 (not compared), unless the
-  sources take `sizeof` or `alignof` of it (an allocation or a copy by value,
-  such as the loader's `UFunction` clone).
+- `kGranularity` is 0 now (every member). A later generator that lists only the
+  members a project touches sets it to 1, in the same format. A consumer must
+  never assume a class's rows are complete when it is 1.
 - `kDetail` is 1 for anything embedded. A consumer starts with
   `static_assert(SrLayoutTable::kDetail == 1)`.
 
@@ -144,8 +138,8 @@ For every class in `kClasses`, at startup (Blueprint classes: when they load):
    `alignOf`. For kind 3 (function parameters) the alignment is not compared:
    the SDK's `alignOf` is the alignment of the parameter block, but a native
    `UFunction` reflects `MinAlignment` 1, so the two are not comparable at
-   runtime and the consumer skips the check. A `sizeOf` or `alignOf` of 0
-   means unknown or not compared (granularity 1): do not compare it.
+   runtime and the consumer skips the check. An `alignOf` of 0 also means
+   unknown: do not compare it.
 3. For each row, find the `FProperty` named `name` in the struct's own
    `ChildProperties` (not its super). Not found is a mismatch. Otherwise:
    - `Offset_Internal == offset`;
@@ -175,41 +169,6 @@ Measured at CL 127004 with the full used list, with `--sdk`:
 
 The design estimated 300-600 KB; the real figure is two to four times smaller
 (about 3,700 rows for all modules together).
-
-## Reading the used layouts from the PDBs
-
-The game ships a PDB with every build, so the layouts a component reads can be
-checked against the build itself, not only against a Dumper-7 dump:
-
-    node ci/layout-table.mjs keys <table.h> [--out keys.txt]
-    sr-aobscan <game.exe> --layout keys.txt --json > layout.json
-    node ci/layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]
-
-`keys` lists a table as `--layout` keys: each class (its size), then each row
-as `Class::Member`. Blueprint classes are left out (no PDB has them).
-`ci/native-keys.txt` adds, per plugin, the members it reads at a fixed offset
-because the Game-SDK has no name for them. `pdb-diff` compares two reports of
-the same key list, one per build, key by key: same, moved, changed (size or
-bool mask), missing, added, unresolved. A renamed member counts as missing.
-It exits 3 when anything moved, changed or went missing, 0 otherwise.
-
-A `native-keys.txt` line may also carry an anchor, `<plugin> <Class::Member>
-<file-suffix>:<regex>`, where `@` stands for the number the plugin source holds
-(hex or decimal) and `~` for `\s*`. `apply-proposals.mjs offsets` finds the
-number with the anchor and compares it with the PDB of the checked build. States:
-ok; patch (one new constant is right for every build that matters, and
-`apply-proposals.mjs apply` rewrites it); split (the offset moved between the
-builds and the source reads the public one: a person decides); wrong (matches
-neither build); changed (size or bool mask differs); missing (gone from the
-build); unanchored (the anchor matches nothing); unchecked (no layout report, or the
-step crashed). Only ok passes.
-
-`sr-client-check` runs this once the scan tool has built: one `--layout` pass
-per build over the keys of the loader and of each built plugin, then one
-`pdb-diff` per component, written to `out/layout.json` (counts and the keys
-that moved). It is a report: it does not change the check's verdict. If the
-step fails (no plugin built, or the loader's table could not be fetched),
-there is no report for any component.
 
 ## Tests
 

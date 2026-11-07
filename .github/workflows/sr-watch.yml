@@ -9,9 +9,8 @@ name: SR Steam watch
 # per changed branch, which comments its own result. Merging the PR means
 # "handled" and advances the baseline on main.
 #
-# Only writes: the first baseline commit to main, and game-update/* branches,
-# plus the alert issue the client check opens when a run fails or holds.
-# No tags, no releases.
+# Only writes: the first baseline commit to main, and game-update/* branches.
+# No issues, no tags, no releases.
 
 on:
   schedule:
@@ -139,24 +138,13 @@ jobs:
       max-parallel: 1    # one Steam login on the CI account at a time
       matrix:
         include: ${{ fromJSON(needs.poll.outputs.client_matrix) }}
-    # The Steam login, the fork deploy keys and the release key are environment
-    # secrets, read only by the one called job in that environment. The only
-    # secret passed is the TEST key the map-mode chain signs its dry-run feed
-    # with. publish is not passed, so it stays off: no feed is published from
-    # here.
-    # These permissions are a ceiling, not a grant: GitHub checks every called
-    # job against them when it parses the call, before any if. Each called job
-    # sets its own, and only publish (vmap-sign environment, main only, publish
-    # input on) asks for contents: write.
+    # No secrets are passed: only sr-client-check's own check job reads the
+    # Steam login, from the steam-client environment.
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
-      issues: write    # the alert job of the called workflow
     uses: ./.github/workflows/sr-client-check.yml
     with:
       branch: ${{ matrix.branch }}
       buildid: ${{ matrix.buildid }}
       pr: ${{ needs.poll.outputs.pr }}
-      map_mode: true
-    secrets:
-      VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
