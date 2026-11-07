@@ -2834,7 +2834,8 @@ jobs:
 
       - name: Open or update the issue
         if: steps.what.outputs.alert == 'true'
-        run: node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"
+        run: |
+          node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"
 
       # The PR carries what the chain concluded: chain-passed-<branch> only after a
       # run with no alert line (sr-watch reads it), and one line when the only thing
