@@ -8,30 +8,48 @@ Map mode puts what a game update changes into the loader's version map
 plugin's source. A plugin repo gets no commit for a game update; the loader
 fork's `auto/update-<CL>` branch gets one.
 
-## Step 26: the loader fork's deploy key and ruleset (a gate, not done here)
+## Step 26: the loader fork's deploy key and ruleset (the owner sets it up once)
 
-The push of `auto/update-<CL>` to the loader fork needs a credential. That is
-repo-admin setup with the owner's `gh` auth, so it is a checklist, not code. It
-follows the procedure the plugin forks use (`drafts/ci-auto-apply-detail.md`,
-"Deploy keys"):
+The `push-loader` job of `sr-client-check.yml` pushes `auto/update-<CL>` to the
+loader fork (msantoro12/StarRupture-ModLoader). It needs a credential, and the
+credential is repo-admin setup with the owner's `gh` auth, so the owner runs it
+himself, once. It follows the procedure the plugin forks use
+(`drafts/ci-auto-apply-detail.md`, "Deploy keys"):
 
-1. Make an ed25519 key pair. Never print or log the private half.
+1. Make an ed25519 key pair in a temporary directory. Never print or log the
+   private half.
 2. Add the public half to the loader fork as a write deploy key titled
    `starrupture-ci auto-apply`.
-3. Store the private half as an environment secret in `fork-push` on
-   msantoro12/starrupture-ci (for example `SR_DEPLOYKEY_MODLOADER`), from stdin,
-   and in the Bitwarden Secrets Manager project `dev`.
-4. Add two rulesets to the loader fork, as on the plugin forks:
+3. Store the private half as the environment secret `SR_DEPLOYKEY_MODLOADER` in
+   `fork-push` on msantoro12/starrupture-ci, from the file, and delete the key
+   from the machine. (The Bitwarden Secrets Manager copy, project `dev`, is by
+   hand.)
+4. Add two rulesets to the loader fork, mirrored from a plugin fork:
    "auto-apply deploy keys: auto/** only" (a deploy key may write `auto/**`
    only) and "auto-apply deploy keys: no tags". The admin role bypasses them.
-5. Name the secret in the workflow's push job (the job holds the key and no game
-   files, as on the plugin forks).
+5. The workflow side is in this repo: `sr-watch.yml` passes
+   `SR_DEPLOYKEY_MODLOADER` by name, `sr-client-check.yml` declares it
+   (`required: false`), and only the `push-loader` job reads it (environment
+   `fork-push`; the job holds the key and no game files, as on the plugin
+   forks).
 
 Accept: a push to `auto/test` with the key succeeds, and a push to any other ref
 is rejected. Delete `auto/test` afterwards.
 
-Nothing in this repo refers to the key yet. Until step 5 is done, map mode runs
-and writes the header on the runner, and the push job has nothing to push with.
+What the job does. It reads the stage plan and `build.json` from the
+`map-mode-<branch>` artifact and checks the repository (only
+msantoro12/StarRupture-ModLoader) and the branch name (only `auto/update-<CL>`,
+optionally with `-<run id>-<attempt>`) against the allowlist in `ci/staging.mjs`.
+It checks out the loader commit the header was read from (the head of
+`loader_ref` that run used), adds one commit that changes only
+`version_map.generated.h`, and pushes it. It never pushes a tag and never forces.
+A branch that already holds the same tree is left alone; one that holds another
+tree stays as it is, and the push goes to `auto/update-<CL>-<run id>-<attempt>`.
+The job outputs `branch` and `sha` for the next steps (a candidate loader build,
+the client rig). A missing key fails the job with "Loader deploy key missing",
+naming the secret and the environment; it is never skipped quietly. The job runs
+for a staged build only: a beta branch, not a `test_autopilot` run, and the
+loader repository must be the fork.
 
 ## Step 27: `map-mode.mjs write`
 
@@ -152,10 +170,10 @@ rows are `required`. A scan whose `plugin.name` is not the `owner` is refused.
 `sr-client-check.yml` runs both commands in its `map-mode` job when the input
 `map_mode` is true: it takes the check job's scans and the loader's header at
 `loader_ref`, and uploads the rewritten header and the report as the artifact
-`map-mode-<branch>`. Not yet wired: the scans of each tracked component's
-previous release (`rank: previous`), the key lists (`--keys`), and the push of the
-header to the loader fork (step 26). So today the job feeds the current releases
-only, and prunes nothing.
+`map-mode-<branch>`; the `push-loader` job then pushes the staged header to the
+loader fork (step 26). Not yet wired: the scans of each tracked component's
+previous release (`rank: previous`) and the key lists (`--keys`). So today the job
+feeds the current releases only, and prunes nothing.
 
 A build the loader does not run on yet is the case this job exists for. With
 `map_mode` on, the check records a failed loader version gate as a new build
@@ -278,6 +296,19 @@ or for another CL) holds whatever moved, on every path: the native members get t
 rows from the same run. `state/autopilot.json` ships with `enabled: false`: until it
 is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
 
+The autopilot gates publishing only, not the candidate. `--candidate` (the
+unattended chain: `map_mode` on, `publish` off, not a `test_autopilot` run, which
+is what `sr-watch.yml` calls) keeps that `HOLD` and its reason, and adds `wouldBe`
+and `candidate: true`. When `wouldBe` is `M`, the only thing that held it was the
+autopilot, and the chain runs on: export, TEST-key signing and verify, staging (and
+the push of the staged branch), and `promote.mjs plan --test-autopilot`, which plans
+past the switch and marks the plan `test`. Every other `HOLD` reason (a gate, a
+plugin verdict, the field rows, the path list, a rate limit, an unreadable
+autopilot file) leaves `wouldBe` at `HOLD` and stops the chain before the export.
+The decision stays `HOLD` while the autopilot is off, and the map-mode `test` output
+is `true` for it, so the publish job cannot run. With the autopilot on, `--candidate`
+changes nothing.
+
 `--test-autopilot` (the client check's dispatch-only `test_autopilot` input, refused
 with `publish` on, absent from sr-watch's calls) keeps that `HOLD` and adds `wouldBe`,
 the decision with autopilot on. When it is `M` the chain runs on: export, TEST-key
@@ -342,6 +373,8 @@ from them. The staged index is not kept between runs, so a plan is all they prod
 ```
 node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
 node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
+node ci/staging.mjs target --repo <owner/name> --plan <stage-plan.json>
+node ci/staging.mjs push --repo <owner/name> --plan <stage-plan.json> --build <build.json> --header <file> --checkout <dir> --run-id <n> --run-attempt <n>
 node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json> --history <history.json> --last-seq <N> --now <ISO time> [--verify <verify.json>] [--roll-forward] [--out <plan.json>]
 ```
 
@@ -350,8 +383,10 @@ node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilo
   message carries the record, and `state/staged.json` is the readable index of those
   branches. The index holds pointers; the rows live in the header. `stage` is handed
   only a branch push and an index write, so it cannot reach signing, the feed or a
-  release. The push itself waits for the deploy key above, so the command line records
-  it in the plan and writes only the index.
+  release. `stage` only plans the push (`done: false`, in the map-mode job, which holds
+  no key). The real push is `staging.mjs push`, run by the `push-loader` job that holds
+  the deploy key (step 26): one commit on the loader commit the header was read from,
+  changing only the header.
 - **Promotion** matches the public build against the index by build id, exe SHA-256
   and CL. The same build is re-scanned and promoted. The same CL on another exe is
   re-verified key by key. Either needs a passing result (`--verify`, `{ ok: true }`)
@@ -399,8 +434,10 @@ no plugin code, no game file.
    client check alone decides; no dedicated-server scan is read), G5 the classes
    the layout diff moved, changed or lost, the plugin verdicts (`plugins.json`), then
    the field rows, and the history on the `vmap-feed` release for the rate limits.
-4. On path M only: `export-feed`, sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and
-   verify it, `staging.mjs stage` for a beta build, and `promote.mjs plan`. All dry runs.
+4. On path M, or on the HOLD that only the autopilot caused (the candidate chain, above):
+   `export-feed`, sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and verify it,
+   `staging.mjs stage` for a beta build, and `promote.mjs plan`. All dry runs. Then, for
+   a staged build, the `push-loader` job pushes `auto/update-<CL>` to the loader fork.
    The chain writes `verify.json` from this run's re-scan and marks the run publishable
    for a promotion, or for `public`'s own build on a new CL with nothing staged (the
    normal flow).
@@ -414,14 +451,16 @@ no plugin code, no game file.
    release key k2 above it, verifies it without the TEST key, and uploads it with the
    history to the `vmap-feed` release. `sr-watch.yml` does not pass `publish`, and passes
    only the Steam login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, by name, so the called
-   `check` job reads them from `steam-client`) and `VMAP_SIGN_KEY_TEST` (no `secrets: inherit`,
-   no release key, no deploy key). Its `client-check` job grants
+   `check` job reads them from `steam-client`), `VMAP_SIGN_KEY_TEST` and the loader fork's
+   deploy key `SR_DEPLOYKEY_MODLOADER` (no `secrets: inherit`, no release key, no plugin
+   fork key). Its `client-check` job grants
    `contents: write` as a ceiling: GitHub checks every called job against the caller's
    permissions when it parses the call, so `publish` could not be called otherwise; each
    called job still sets its own, and only `publish` asks for write.
 
-Until the loader fork's deploy key exists (step 26), the header is an artifact only and
-the staging record names the loader commit the header was read from.
+The header is always an artifact too. Until the loader fork's deploy key exists
+(step 26), the `push-loader` job fails with its cause, and the staging record in
+the artifact still names the loader commit the header was read from.
 
 Offline replay (2026-11-01, run 41272795133, CL-128786, a throwaway key): the loader's
 header pruned to CL-127004 gives 102 rows written, 557 field rows with 5 absent,
