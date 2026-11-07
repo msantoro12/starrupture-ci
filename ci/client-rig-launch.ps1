@@ -5,9 +5,9 @@
 #
 #   -Phase Install  steamcmd installs the game client for -Branch (verified against the
 #                   install's own manifest) and prints install_dir for the workflow.
-#   -Phase Launch   firewall, modloader.ini, SHA-256 of every DLL, Steam client sign-in,
-#                   the game launch (one relaunch rule, below), then the files the verdict
-#                   reads.
+#   -Phase Launch   firewall (outbound blocked for every exe in the install), modloader.ini,
+#                   SHA-256 of every DLL, Steam client sign-in, the game launch (one relaunch
+#                   rule, below), then the files the verdict reads.
 #   -Check          exercises the helpers with no login, to catch a script bug before one.
 #
 # Written to -OutDir (set.json is the set script's):
@@ -23,6 +23,11 @@
 # The login arrives in STEAM_USER and STEAM_CACHE and is cleared from the environment
 # before the game starts. Everything printed or written goes through Scrub. Steam's own
 # logs and config files, the game's files and its engine logs never reach -OutDir.
+#
+# The persona name is read from what the Steam client wrote after the sign-in, once the game
+# is stopped and Steam has shut down. If that cannot be determined the scrub and the leak
+# gate cannot cover it, so the launch writes rig-hold.txt (in RUNNER_TEMP) saying why, and
+# the workflow uploads and publishes nothing taken from the logs.
 [CmdletBinding()]
 param(
     [ValidateSet('Install', 'Launch')][string]$Phase,
@@ -115,6 +120,35 @@ function Get-DllHashes([string]$Bin) {
     return $h
 }
 
+# Every exe under the install: the game, the loader's updater, UE's crash reporter and
+# anything else the game or a plugin could start from there.
+function Get-InstallExes([string]$Dir) {
+    @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Force -Filter *.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Sort-Object)
+}
+
+# The persona names Steam wrote after the sign-in. loginusers.vdf is first written by the rig
+# with the account name as the persona; it counts only when Steam rewrote it. localconfig.vdf
+# (userdata\<id>\config) is Steam's own. Known is false when neither gives a name Steam wrote,
+# or when a name is under 3 characters, which the scrub cannot match safely.
+function Get-Personas([string]$LoginUsers, [string]$Written, [string]$LocalConfig, [string]$Id64) {
+    $names = [Collections.Generic.List[string]]::new()
+    $short = $false; $known = $false
+    $norm = { param($t) ("$t" -replace '\s+', ' ').Trim() }
+    $rewritten = ($LoginUsers -ne '') -and ((& $norm $LoginUsers) -cne (& $norm $Written))
+    $own = if ($LoginUsers -match ('"' + [regex]::Escape($Id64) + '"\s*\{([^{}]*)\}')) { $Matches[1] } else { '' }
+    $fromLogin = $own -match '"PersonaName"\s+"([^"\r\n]*)"'
+    if ($fromLogin) { $v = $Matches[1]; if ($v.Length -ge 3) { $names.Add($v) } elseif ($v) { $short = $true }; if ($rewritten) { $known = $true } }
+    $fromConfig = $false
+    foreach ($m in [regex]::Matches($LocalConfig, '"PersonaName"\s+"([^"\r\n]*)"')) {
+        $fromConfig = $true; $known = $true
+        $v = $m.Groups[1].Value
+        if ($v.Length -ge 3) { $names.Add($v) } elseif ($v) { $short = $true }
+    }
+    if ($short -or $names.Count -eq 0) { $known = $false }
+    $why = "loginusers.vdf rewritten by Steam: $(if ($rewritten) { 'yes' } else { 'no' }), persona in it: $(if ($fromLogin) { 'yes' } else { 'no' }); localconfig.vdf persona: $(if ($fromConfig) { 'yes' } else { 'no' })$(if ($short) { '; a name under 3 characters cannot be checked' })"
+    return [pscustomobject]@{ Names = @($names | Select-Object -Unique); Known = $known; Why = $why }
+}
+
 function Read-Shared([string]$path) {
     $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite,Delete')
     try { (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
@@ -141,22 +175,56 @@ if ($Check) {
     $hs = Get-DllHashes $tmp
     Remove-Item -LiteralPath $tmp -Recurse -Force
     if (@($hs.Keys).Count -ne 2 -or -not $hs.Contains('ModLoader/Plugins/X.dll') -or $hs['dwmapi.dll'].Length -ne 64) { throw 'the DLL hashes are wrong' }
+
+    # The exes to firewall come from the install, nested ones and the crash reporter included.
+    $inst = Join-Path ([IO.Path]::GetTempPath()) ("rig-check-" + [guid]::NewGuid())
+    foreach ($e in 'Game\Binaries\Win64\Game-Shipping.exe', 'Game\Binaries\Win64\ModLoader\Updater.exe', 'Engine\Binaries\Win64\CrashReportClient.exe', 'Engine\Extras\Redist\en-us\Prereq.exe') {
+        New-Item -ItemType Directory -Force (Split-Path (Join-Path $inst $e)) | Out-Null
+        'MZ' | Set-Content (Join-Path $inst $e)
+    }
+    'x' | Set-Content (Join-Path $inst 'Engine\Binaries\Win64\notes.txt'); 'MZ' | Set-Content (Join-Path $inst 'Engine\Binaries\Win64\Loader.dll')
+    $exes = Get-InstallExes $inst
+    Remove-Item -LiteralPath $inst -Recurse -Force
+    if ($exes.Count -ne 4 -or @($exes | Where-Object { $_ -like '*\CrashReportClient.exe' }).Count -ne 1 -or @($exes | Where-Object { $_ -notlike '*.exe' }).Count) { throw 'the install exes are wrong' }
+
+    # The persona comes only from what Steam wrote.
+    $id = '76561198000000001'
+    $mine = Build-LoginUsers $id 'acct1' 1
+    $steam = "`"users`"`n{`n`"$id`"`n{`n`"AccountName`" `"acct1`"`n`"PersonaName`" `"Real Name`"`n`"Timestamp`" `"9`"`n}`n}`n"
+    $cfg = "`"UserLocalConfigStore`"`n{`n`"friends`"`n{`n`"PersonaName`" `"Cfg Name`"`n}`n}`n"
+    $p = Get-Personas $mine $mine '' $id
+    if ($p.Known -or $p.Names -notcontains 'acct1') { throw 'an unrewritten loginusers.vdf was taken as the persona' }
+    $p = Get-Personas $steam $mine '' $id
+    if (-not $p.Known -or $p.Names -notcontains 'Real Name') { throw 'a persona Steam wrote to loginusers.vdf was not found' }
+    $p = Get-Personas $mine $mine $cfg $id
+    if (-not $p.Known -or $p.Names -notcontains 'Cfg Name') { throw 'the persona in localconfig.vdf was not found' }
+    $p = Get-Personas ($steam -replace 'Real Name', 'Al') $mine '' $id
+    if ($p.Known) { throw 'a persona under 3 characters was taken as checkable' }
+    $p = Get-Personas '' $mine '' $id
+    if ($p.Known -or $p.Names.Count) { throw 'a missing loginusers.vdf was taken as a persona' }
     'Check passed.'
     exit 0
 }
 
 if (-not $Phase) { throw '-Phase Install or Launch is required' }
 
+# The job's outputs name this when the rig stops before the verdict.
+function Set-Reason([string]$msg) {
+    $f = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
+    if (-not (Test-Path -LiteralPath $f)) { Set-Content -LiteralPath $f -Value (($msg -replace '\s+', ' ').Trim()) -Encoding utf8 }
+}
+function Stop-WithReason([string]$msg) { Set-Reason $msg; throw $msg }
+
 # ---- the login: read once, cleared from the environment ------------------------------
 $user = "$env:STEAM_USER".Trim()
 $cacheB64 = "$env:STEAM_CACHE".Trim()
 Remove-Item Env:STEAM_USER, Env:STEAM_CACHE -ErrorAction SilentlyContinue
-if ($user -notmatch '^[A-Za-z0-9_]{3,64}$') { throw 'STEAM_CI_USERNAME is not a valid Steam account name' }
+if ($user -notmatch '^[A-Za-z0-9_]{3,64}$') { Stop-WithReason 'STEAM_CI_USERNAME is not a valid Steam account name' }
 Write-Host "::add-mask::$user"
-try { $cacheBytes = [Convert]::FromBase64String($cacheB64) } catch { throw 'STEAM_CI_LOGIN_CACHE is not base64' }
+try { $cacheBytes = [Convert]::FromBase64String($cacheB64) } catch { Stop-WithReason 'STEAM_CI_LOGIN_CACHE is not base64' }
 $cacheB64 = $null
 $cacheText = [Text.Encoding]::UTF8.GetString($cacheBytes)
-if ($cacheText -notmatch '"ConnectCache"') { throw 'STEAM_CI_LOGIN_CACHE is not a steamcmd config.vdf with a ConnectCache entry' }
+if ($cacheText -notmatch '"ConnectCache"') { Stop-WithReason 'STEAM_CI_LOGIN_CACHE is not a steamcmd config.vdf with a ConnectCache entry' }
 $script:secrets = [Collections.Generic.List[string]]::new()
 $gateFile = Join-Path $env:RUNNER_TEMP 'rig-gate-terms.txt'
 
@@ -176,10 +244,9 @@ function Scrub([string]$s) {
 }
 function Say([string]$s) { Write-Host (Scrub ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $s)) }
 
-# The job's outputs name this when the rig stops before the verdict.
-function Set-Reason([string]$msg) {
-    $f = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
-    if (-not (Test-Path -LiteralPath $f)) { Set-Content -LiteralPath $f -Value (($msg -replace '\s+', ' ').Trim()) -Encoding utf8 }
+# The logs cannot be made safe to publish: the workflow reads this file and withholds them.
+function Set-Hold([string]$msg) {
+    Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-hold.txt') -Value (($msg -replace '\s+', ' ').Trim()) -Encoding utf8
 }
 
 $appId = '1631270'
@@ -319,7 +386,8 @@ function Write-ClientLogin {
     if (-not (Test-Path 'HKCU:\Software\Valve\Steam')) { New-Item -Path 'HKCU:\Software\Valve\Steam' -Force | Out-Null }
     Set-ItemProperty 'HKCU:\Software\Valve\Steam' -Name AutoLoginUser -Value $user -Type String
     Set-ItemProperty 'HKCU:\Software\Valve\Steam' -Name RememberPassword -Value 1 -Type DWord
-    Set-Content -LiteralPath (Join-Path $cfgDir 'loginusers.vdf') -Value (Build-LoginUsers $script:id64 $user ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) -Encoding ascii -NoNewline
+    $script:loginUsersWritten = Build-LoginUsers $script:id64 $user ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+    Set-Content -LiteralPath (Join-Path $cfgDir 'loginusers.vdf') -Value $script:loginUsersWritten -Encoding ascii -NoNewline
 }
 
 function Read-ConnectionLines {
@@ -349,27 +417,33 @@ function Wait-ClientLogin([int]$cap = 180) {
     return $result
 }
 
-# Persona names are known only after the client ran; the gate and the scrub need them.
-function Note-Persona {
-    $p = Join-Path $steamDir 'config\loginusers.vdf'
-    if (Test-Path -LiteralPath $p) {
-        foreach ($m in [regex]::Matches((Read-Shared $p), '"PersonaName"\s+"([^"\r\n]{3,})"')) { Add-Secret $m.Groups[1].Value -Gate }
-    }
+# The persona names are known only after the client ran, and Steam writes them out as it
+# shuts down; the gate and the scrub need them. Returns the Get-Personas result.
+function Read-Personas {
+    $read = { param($p) if (Test-Path -LiteralPath $p) { Read-Shared $p } else { '' } }
+    $login = & $read (Join-Path $steamDir 'config\loginusers.vdf')
+    $local = & $read (Join-Path $steamDir "userdata\$script:id32\config\localconfig.vdf")
+    return (Get-Personas $login $script:loginUsersWritten $local $script:id64)
 }
 
 # ---- Phase Launch: the game -----------------------------------------------------------------
-function Enable-Firewall {
+function Enable-Firewall([string[]]$Programs) {
     Set-NetFirewallProfile -Profile Domain, Private, Public -Enabled True
     $off = @(Get-NetFirewallProfile | Where-Object { -not $_.Enabled })
     if ($off.Count) { throw 'The Windows firewall could not be switched on' }
-    # The game's own traffic (and a plugin's) and the loader's updater get no way out.
-    foreach ($prog in $script:exe, $script:updater) {
-        $name = "sr-client-rig-block-$(Split-Path $prog -Leaf)"
+    # Nothing in the install gets a way out: the game and the plugins in it, the loader's
+    # updater and UE's crash reporter. The rule is per program, not a sandbox: a plugin can
+    # still start a program from elsewhere on the runner.
+    $n = 0
+    foreach ($prog in $Programs) {
+        $n++
+        $name = 'sr-client-rig-block-{0:D3}-{1}' -f $n, (Split-Path $prog -Leaf)
         New-NetFirewallRule -DisplayName $name -Direction Outbound -Action Block -Program $prog -Profile Any -Enabled True | Out-Null
         $rule = Get-NetFirewallRule -DisplayName $name
-        if ($rule.Enabled -ne 'True' -or $rule.Action -ne 'Block' -or $rule.Direction -ne 'Outbound') { throw "Firewall rule $name is not in force" }
+        $filter = $rule | Get-NetFirewallApplicationFilter
+        if ($rule.Enabled -ne 'True' -or $rule.Action -ne 'Block' -or $rule.Direction -ne 'Outbound' -or $filter.Program -ne $prog) { throw "Firewall rule $name is not in force" }
     }
-    Say 'Firewall on; outbound blocked for the game and the updater'
+    Say "Firewall on; outbound blocked for $n program(s) in the install"
 }
 
 function Reset-GameState {
@@ -403,7 +477,7 @@ function Invoke-Attempt([int]$Number) {
         Start-Sleep -Seconds 2
         $t = [int]$sw.Elapsed.TotalSeconds
         $proc.Refresh()
-        if (-not $a.process_found) { $a.process_found = $true; $a.process_found_s = $t }
+        if (-not $a.process_found -and (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)) { $a.process_found = $true; $a.process_found_s = $t }
         if ($proc.HasExited) { $a.exited_early = $true; $a.exit_code = $proc.ExitCode; $a.end = "the game exited with code $($proc.ExitCode)"; break }
         try { $peak = [math]::Max($peak, $proc.WorkingSet64 / 1MB) } catch { }
 
@@ -448,13 +522,19 @@ function Invoke-Launch {
     $id32 = if ((Test-Path -LiteralPath $console) -and ((Read-Shared $console) -match '\[U:1:(\d+)\]')) { $Matches[1] } else { '' }
     $script:id64 = if ($cacheText -match '"SteamID"\s+"(7656119\d{10})"') { $Matches[1] } elseif ($id32) { "$(76561197960265728L + [long]$id32)" } else { '' }
     if (-not $id32 -and $script:id64) { $id32 = "$([long]$script:id64 - 76561197960265728L)" }
+    $script:id32 = $id32
     if (-not $script:id64) { throw 'The CI account SteamID could not be read from the saved login' }
     Add-Secret $id32 -Gate
     Add-Secret $script:id64
     Get-Process steamcmd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $root 'config') -Recurse -Force -ErrorAction SilentlyContinue
 
-    Enable-Firewall
+    # The rule set comes from the install itself; the game and the updater must be in it.
+    $exes = Get-InstallExes $InstallDir
+    foreach ($must in $script:exe, $script:updater) {
+        if ($exes -notcontains $must) { throw "$(Split-Path $must -Leaf) is not among the install's programs; the firewall rules would miss it" }
+    }
+    Enable-Firewall $exes
     Set-Content -LiteralPath (Join-Path $script:mlDir 'modloader.ini') -Value (New-IniText) -Encoding ascii -NoNewline
     Set-Content -LiteralPath (Join-Path $script:bin 'steam_appid.txt') -Value $appId -Encoding ascii -NoNewline
     $hashes = Get-DllHashes $script:bin
@@ -466,12 +546,9 @@ function Invoke-Launch {
     Write-ClientLogin
     Start-Steam
     $login = Wait-ClientLogin
-    switch ($login) {
-        'live' { Note-Persona }
-        'denied' { throw 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew' }
-        'guard' { throw 'Steam asked for a Guard code; the saved CI login is not accepted' }
-        default { throw "The Steam client did not sign in from the saved login ($login)" }
-    }
+    if ($login -eq 'denied') { throw 'Steam rejected the saved CI login: run steam-ci-login.ps1 -Renew' }
+    if ($login -eq 'guard') { throw 'Steam asked for a Guard code; the saved CI login is not accepted' }
+    if ($login -ne 'live') { throw "The Steam client did not sign in from the saved login ($login)" }
 
     $attempts = @()
     $last = $null
@@ -487,6 +564,8 @@ function Invoke-Launch {
     $dialogTitle = if ($last.dialog) { Scrub $last.dialog } else { $null }
     $aliveAtEnd = [bool]$last.alive_at_end
     Stop-Game
+    # Steam writes the persona out as it shuts down; the game is stopped, so nothing needs it now.
+    Stop-Steam
     $after = Get-DllHashes $script:bin
     $dll = [ordered]@{}
     foreach ($k in @($hashes.Keys) + @($after.Keys | Where-Object { -not $hashes.Contains($_) })) {
@@ -496,7 +575,9 @@ function Invoke-Launch {
     foreach ($d in $script:crashDirs) { if (Test-Path -LiteralPath $d) { $crashFiles += @(Get-ChildItem -LiteralPath $d -Recurse -File | ForEach-Object { $_.Name }) } }
     $compat = @(Get-ChildItem -LiteralPath $script:mlDir -Filter 'compat-report-*.json' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
 
-    Note-Persona
+    $persona = Read-Personas
+    foreach ($n in $persona.Names) { Add-Secret $n -Gate }
+    if (-not $persona.Known) { Set-Hold "The Steam persona name could not be determined ($($persona.Why)), so the logs were not uploaded and nothing from them was published." }
     foreach ($f in @(@('ModLoader.log', 'modloader.log'), @('Proxy.log', 'proxy.log'), @('AutoUpdate.log', 'autoupdate.log'))) {
         $p = Join-Path $script:mlLogs $f[0]
         if (Test-Path -LiteralPath $p) { [IO.File]::WriteAllText((Join-Path $OutDir $f[1]), (Scrub (Read-Shared $p)), (New-Object Text.UTF8Encoding $false)) }

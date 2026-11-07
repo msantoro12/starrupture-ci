@@ -18,9 +18,12 @@
 # Names are the loader, or a plugin by repo name, log name or asset name, in any case.
 # A name in -Expect that is not one of the nine is an extra plugin to expect.
 #
-# -CandidateDir is a downloaded build artifact laid over the release set. Its layout is
-# the game folder's: dwmapi.dll, ModLoader/..., ModLoader/Plugins/*.dll. Every DLL it
-# replaces needs an -Expect entry.
+# -CandidateDir is a downloaded build artifact laid over the release set. Two layouts:
+#   the game folder's   dwmapi.dll, ModLoader/..., ModLoader/Plugins/*.dll
+#   the pipeline's own  files at the artifact root: dwmapi.dll and the loader's own files
+#                       (Core, ImGui, Updater) go where the loader build puts them, and any
+#                       other <Name>.dll is a plugin, installed as ModLoader/Plugins/<Name>.dll
+# Every DLL it replaces needs an -Expect entry.
 
 [CmdletBinding()]
 param(
@@ -59,6 +62,8 @@ $Plugins = @(
     [pscustomobject]@{ Name = 'WaveOptimiser'; Repo = 'StarRupture-Plugin-WaveOptimiser'; LogName = 'WaveOptimiser'; Asset = 'WaveOptimiser' }
 )
 $LoaderRepo = 'StarRupture-ModLoader'
+# The loader's own files besides dwmapi.dll, which a candidate may carry at its root.
+$LoaderFiles = @('StarRupture-ModLoader-Core.dll', 'StarRupture-ImGui.dll', 'StarRupture-ModLoader-Updater.exe')
 
 # A failed step leaves its one-line reason for the job's outputs.
 function Stop-Rig([string]$Message) {
@@ -117,7 +122,47 @@ function Select-Asset($Release, [string]$Label, [string]$Prefix) {
         $hit = @($assets | Where-Object { $_.name -match '^StarRupture-ModLoader-Client-[^/\\]+\.zip$' })
     }
     if ($hit.Count -ne 1) { throw "$Label $($Release.tag_name): expected one client asset, found $($hit.Count) ($((@($assets | ForEach-Object { $_.name }) -join ', ')))" }
-    return [pscustomobject]@{ name = [string]$hit[0].name; url = [string]$hit[0].browser_download_url }
+    # The id and the digest (or, without one, the upload time) say which upload this is: an
+    # asset replaced under the same tag is a different file.
+    $digest = ''
+    if ($hit[0].PSObject.Properties['digest'] -and $hit[0].digest) {
+        $digest = [string]$hit[0].digest
+        if ($digest -notmatch '^sha256:[0-9a-fA-F]{64}$') { throw "$Label $($Release.tag_name): the release API gives the digest '$digest', which is not sha256" }
+        $digest = $digest.Substring(7).ToLowerInvariant()
+    }
+    return [pscustomobject]@{ name = [string]$hit[0].name; url = [string]$hit[0].browser_download_url; id = [string]$hit[0].id; digest = $digest; updated = [string]$hit[0].updated_at }
+}
+
+# What the candidate artifact holds, each file with where it goes in the game's Win64
+# folder: dwmapi.dll and the loader's files, the plugins, anything else as it is.
+# Kind: loader | plugin | other. Base is a plugin's file name without .dll.
+function Get-CandidateFiles([string]$Dir) {
+    $root = (Resolve-Path -LiteralPath $Dir).Path.TrimEnd('\', '/')
+    $items = @()
+    $taken = @{}
+    foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File -Force) {
+        if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "candidate holds a link: $($f.Name)" }
+        $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/') -replace '\\', '/'
+        $kind = 'other'; $base = ''; $dest = $rel
+        if ($rel -notmatch '/') {
+            # The pipeline's own builds: one file at the artifact root.
+            if ($rel -ieq 'dwmapi.dll') { $kind = 'loader' }
+            elseif ($rel -iin $LoaderFiles) { $kind = 'loader'; $dest = "ModLoader/$rel" }
+            elseif ($rel -imatch '^(.+)\.dll$') { $kind = 'plugin'; $base = $Matches[1]; $dest = "ModLoader/Plugins/$rel" }
+            else { throw "candidate holds '$rel' at its root; a root file must be dwmapi.dll, one of the loader's files or a plugin DLL" }
+        } elseif ($rel -imatch '^ModLoader/Plugins/') {
+            if ($rel -match '^ModLoader/Plugins/([^/]+)\.dll$') { $kind = 'plugin'; $base = $Matches[1] }
+            elseif ($rel -notmatch '^ModLoader/Plugins/[^/]+$') { throw "candidate holds '$rel', below ModLoader/Plugins" }   # else a pdb or readme next to a plugin
+        } elseif ($rel -imatch '^ModLoader/') {
+            if ($rel -imatch '\.(dll|exe)$') { $kind = 'loader' }
+        } else {
+            throw "candidate holds '$rel', outside dwmapi.dll and ModLoader/"
+        }
+        if ($taken.ContainsKey($dest.ToLowerInvariant())) { throw "candidate holds '$dest' twice ($($taken[$dest.ToLowerInvariant()]) and $rel)" }
+        $taken[$dest.ToLowerInvariant()] = $rel
+        $items += [pscustomobject]@{ Source = $f.FullName; Rel = $rel; Dest = $dest; Kind = $kind; Base = $base }
+    }
+    return , $items
 }
 
 function Resolve-Plan {
@@ -155,32 +200,17 @@ function Resolve-Plan {
     $extraDll = @{}       # extra plugin name -> file
     if ($CandidateDir) {
         if (-not (Test-Path -LiteralPath $CandidateDir -PathType Container)) { throw "candidate folder '$CandidateDir' does not exist" }
-        $root = (Resolve-Path -LiteralPath $CandidateDir).Path.TrimEnd('\', '/')
-        $count = 0
-        foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File -Force) {
-            if ($f.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "candidate holds a link: $($f.Name)" }
-            $count++
-            $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/') -replace '\\', '/'
-            if ($rel -ieq 'dwmapi.dll') { $overLoader = $true; continue }
-            if ($rel -imatch '^ModLoader/Plugins/') {
-                if ($rel -notmatch '^ModLoader/Plugins/([^/]+)\.dll$') {
-                    if ($rel -imatch '^ModLoader/Plugins/[^/]+$') { continue }   # a pdb or readme next to a plugin
-                    throw "candidate holds '$rel', below ModLoader/Plugins"
-                }
-                $base = $Matches[1]
-                $own = @($Plugins | Where-Object { $_.Asset -ieq $base }) | Select-Object -First 1
-                if ($own) { $overPlugin[$own.Name] = $rel; continue }
-                if (Find-Entry $base) { throw "candidate holds '$rel', but plugin $base is installed as <asset>.dll (see the plugin table)" }
-                $extraDll[$base] = $rel
-                continue
+        $files = Get-CandidateFiles $CandidateDir
+        if ($files.Count -eq 0) { throw 'the candidate artifact is empty' }
+        foreach ($c in $files) {
+            if ($c.Kind -eq 'loader') { $overLoader = $true }
+            elseif ($c.Kind -eq 'plugin') {
+                $own = @($Plugins | Where-Object { $_.Asset -ieq $c.Base }) | Select-Object -First 1
+                if ($own) { $overPlugin[$own.Name] = $c.Rel; continue }
+                if (Find-Entry $c.Base) { throw "candidate holds '$($c.Rel)', but plugin $($c.Base) is installed as <asset>.dll (see the plugin table)" }
+                $extraDll[$c.Base] = $c.Rel
             }
-            if ($rel -imatch '^ModLoader/') {
-                if ($rel -imatch '\.(dll|exe)$') { $overLoader = $true }
-                continue
-            }
-            throw "candidate holds '$rel', outside dwmapi.dll and ModLoader/"
         }
-        if ($count -eq 0) { throw 'the candidate artifact is empty' }
     }
 
     # Every DLL the candidate supplies needs a version to expect.
@@ -232,9 +262,11 @@ function Resolve-Plan {
 
     # What is fetched, and the cache key over it.
     $downloads = @()
-    $downloads += [ordered]@{ repo = $LoaderRepo; tag = $loader.tag; name = $loaderAsset.name; url = $loaderAsset.url }
-    foreach ($e in $entries) { if ($e.asset) { $downloads += [ordered]@{ repo = $e.repo; tag = $e.tag; name = $e.asset.name; url = $e.asset.url } } }
-    $ids = @($downloads | ForEach-Object { "$($_.repo)@$($_.tag)/$($_.name)" } | Sort-Object)
+    $downloads += [ordered]@{ repo = $LoaderRepo; tag = $loader.tag; name = $loaderAsset.name; url = $loaderAsset.url; id = $loaderAsset.id; digest = $loaderAsset.digest; updated = $loaderAsset.updated }
+    foreach ($e in $entries) { if ($e.asset) { $downloads += [ordered]@{ repo = $e.repo; tag = $e.tag; name = $e.asset.name; url = $e.asset.url; id = $e.asset.id; digest = $e.asset.digest; updated = $e.asset.updated } } }
+    # The key follows the upload, not only the tag: re-uploading an asset under the same tag
+    # changes its id and its digest or time, so the cache cannot serve the old bytes.
+    $ids = @($downloads | ForEach-Object { "$($_.repo)@$($_.tag)/$($_.name)#$($_.id):$(if ($_.digest) { $_.digest } else { $_.updated })" } | Sort-Object)
     $key = (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($ids -join ',')) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16)
 
     [ordered]@{ branch = $Branch; owner = $Owner; loader = $loader; plugins = @($entries); downloads = @($downloads); cacheKey = $key } |
@@ -253,18 +285,28 @@ function Read-Plan {
     return (Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json)
 }
 
-function Get-AssetPath($Item) { Join-Path $DownloadDir (Join-Path "$($Item.repo)\$($Item.tag)" ([IO.Path]::GetFileName($Item.name))) }
+# The asset's id is in the path, so a file cached for another upload is never read for this one.
+function Get-AssetPath($Item) { Join-Path $DownloadDir (Join-Path "$($Item.repo)\$($Item.tag)\$($Item.id)" ([IO.Path]::GetFileName($Item.name))) }
 
 function Get-Assets {
     $plan = Read-Plan
     $fetched = 0
     foreach ($d in $plan.downloads) {
         $file = Get-AssetPath $d
+        # The API's digest is checked on a cached file and on a fresh download alike.
+        if ($d.digest -and (Test-Path -LiteralPath $file) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $d.digest) {
+            Write-Host "Cached $($d.name) does not match the release's digest; downloading it again"
+            Remove-Item -LiteralPath $file -Force
+        }
         if (-not (Test-Path -LiteralPath $file)) {
             New-Item -ItemType Directory -Force (Split-Path $file) | Out-Null
             Invoke-WebRequest -Uri $d.url -OutFile $file -TimeoutSec 120
             Write-Host "Downloaded $($d.repo) $($d.tag) $($d.name)"
             $fetched++
+            if ($d.digest -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $d.digest) {
+                Remove-Item -LiteralPath $file -Force
+                throw "$($d.name) does not match the digest the release gives (sha256:$($d.digest))"
+            }
         }
         $magic = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($file), 0, 2)
         $want = if ($d.name -match '\.zip$') { 'PK' } else { 'MZ' }
@@ -295,19 +337,17 @@ function Install-Set {
     $bin = $exe.DirectoryName
     $plugDir = Join-Path $bin 'ModLoader\Plugins'
 
-    $loaderZip = Get-AssetPath ([pscustomobject]@{ repo = $plan.loader.repo; tag = $plan.loader.tag; name = $plan.loader.asset.name })
+    $loaderZip = Get-AssetPath ([pscustomobject]@{ repo = $plan.loader.repo; tag = $plan.loader.tag; id = $plan.loader.asset.id; name = $plan.loader.asset.name })
     Expand-Archive -LiteralPath $loaderZip -DestinationPath $bin -Force
     New-Item -ItemType Directory -Force $plugDir | Out-Null
     foreach ($e in $plan.plugins) {
-        if ($e.asset) { Copy-Item -LiteralPath (Get-AssetPath ([pscustomobject]@{ repo = $e.repo; tag = $e.tag; name = $e.asset.name })) -Destination (Join-Path $plugDir $e.dll) -Force }
+        if ($e.asset) { Copy-Item -LiteralPath (Get-AssetPath ([pscustomobject]@{ repo = $e.repo; tag = $e.tag; id = $e.asset.id; name = $e.asset.name })) -Destination (Join-Path $plugDir $e.dll) -Force }
     }
     if ($CandidateDir) {
-        $root = (Resolve-Path -LiteralPath $CandidateDir).Path.TrimEnd('\', '/')
-        foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File -Force) {
-            $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/')
-            $dest = Join-Path $bin $rel
+        foreach ($c in (Get-CandidateFiles $CandidateDir)) {
+            $dest = Join-Path $bin ($c.Dest -replace '/', '\')
             New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
-            Copy-Item -LiteralPath $f.FullName -Destination $dest -Force
+            Copy-Item -LiteralPath $c.Source -Destination $dest -Force
         }
     }
     foreach ($e in $plan.plugins) {

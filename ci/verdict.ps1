@@ -66,7 +66,10 @@
 #   { "verdict": "PASS"|"FAIL", "reason": "<one sentence naming the first failures>",
 #     "loader": { "expected", "logVersion", "state" },
 #     "plugins": [ { "name", "expected", "logVersion", "state", "note" } ] }
-# and puts a per-plugin table first in GITHUB_STEP_SUMMARY.
+# and summary.md, the job summary with the per-plugin table first. The evidence in all
+# of these quotes the logs, so client mode puts none of it on the console or in
+# GITHUB_STEP_SUMMARY: the console gets check names and PASS or FAIL only, and the caller
+# publishes summary.md and verdict.txt once its leak gate has passed.
 
 [CmdletBinding(DefaultParameterSetName = 'Server')]
 param(
@@ -121,10 +124,14 @@ function Read-Json([string]$Path) {
 # the error scan skip them. Empty in server mode.
 $accounted = New-Object 'System.Collections.Generic.HashSet[string]'
 
+# True when boot.json carries the field at all. Null or an empty value is a record that
+# nothing was found; a missing field is no record.
+function Test-BootField($Boot, [string]$Name) { return ($null -ne $Boot) -and ($null -ne $Boot.PSObject.Properties[$Name]) }
+
 # Fail when the loader wrote a compatibility report (the game's layout changed under
 # the plugins) or switched plugins off. Both mean the handoff to a new build is not
 # clean, in either mode.
-function Add-HandoffChecks($Ml, $Boot) {
+function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField) {
     $haveLog = ($null -ne $Ml) -and $Ml.Count -gt 0
     $compat = $null; $off = $null
     if ($Ml) {
@@ -135,36 +142,39 @@ function Add-HandoffChecks($Ml, $Boot) {
         }
     }
     $listed = @(@(Get-Prop $Boot 'compat_reports' @()) | Where-Object { $_ })
-    Add-Check 'no_compat_report' ($haveLog -and $null -eq $compat -and $listed.Count -eq 0) $(
-        if ($compat) { "FOUND: $compat" } elseif ($listed.Count -gt 0) { 'boot.json lists: ' + ($listed -join '; ') } elseif ($haveLog) { 'no report line, none listed in boot.json' } else { '' })
+    $fieldOk = (-not $RequireBootField) -or (Test-BootField $Boot 'compat_reports')
+    Add-Check 'no_compat_report' ($haveLog -and $fieldOk -and $null -eq $compat -and $listed.Count -eq 0) $(
+        if ($compat) { "FOUND: $compat" } elseif ($listed.Count -gt 0) { 'boot.json lists: ' + ($listed -join '; ') } elseif (-not $fieldOk) { 'boot.json has no compat_reports field' } elseif ($haveLog) { 'no report line, none listed in boot.json' } else { '' })
     Add-Check 'plugins_not_switched_off' ($haveLog -and $null -eq $off) $(
         if ($off) { "FOUND: $off" } elseif ($haveLog) { 'no "switched off" line' } else { '' })
 }
 
 # Check lines, verdict.txt and the job summary. Client mode sets $script:LeadMd (the
 # per-plugin table, printed first) and $script:VerdictJson (written as verdict.json).
+# Server mode prints the evidence and appends the summary to GITHUB_STEP_SUMMARY. Client
+# mode quotes launch logs there, so it prints names only and writes summary.md instead.
 $script:LeadMd = $null
 $script:VerdictJson = $null
 function Publish-Verdict([string]$Title) {
     $failed = @($results | Where-Object { -not $_.Pass })
     $lines = foreach ($r in $results) { '{0,-26} {1,-4} {2}' -f $r.Name, $(if ($r.Pass) { 'PASS' } else { 'FAIL' }), $r.Evidence }
-    $lines | ForEach-Object { Write-Host $_ }
+    if ($Client) { foreach ($r in $results) { Write-Host ('{0,-26} {1}' -f $r.Name, $(if ($r.Pass) { 'PASS' } else { 'FAIL' })) } }
+    else { $lines | ForEach-Object { Write-Host $_ } }
     $overall = if ($failed.Count -eq 0) { 'PASS' } else { "FAIL ($($failed.Count) of $($results.Count) checks)" }
     Write-Host "VERDICT: $overall"
 
-    if ($env:GITHUB_STEP_SUMMARY) {
-        $md = New-Object System.Collections.Generic.List[string]
-        $md.Add("### ${Title}: $overall")
-        $md.Add('')
-        if ($script:LeadMd) { foreach ($m in $script:LeadMd) { $md.Add($m) }; $md.Add('') }
-        $md.Add('| Check | Result | Evidence |')
-        $md.Add('|---|---|---|')
-        foreach ($r in $results) {
-            $ev = ($r.Evidence -replace '\|', '\|') -replace '`', "'"
-            $md.Add(('| {0} | {1} | `{2}` |' -f $r.Name, $(if ($r.Pass) { 'PASS' } else { 'FAIL' }), $ev))
-        }
-        $md -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+    $md = New-Object System.Collections.Generic.List[string]
+    $md.Add("### ${Title}: $overall")
+    $md.Add('')
+    if ($script:LeadMd) { foreach ($m in $script:LeadMd) { $md.Add($m) }; $md.Add('') }
+    $md.Add('| Check | Result | Evidence |')
+    $md.Add('|---|---|---|')
+    foreach ($r in $results) {
+        $ev = ($r.Evidence -replace '\|', '\|') -replace '`', "'"
+        $md.Add(('| {0} | {1} | `{2}` |' -f $r.Name, $(if ($r.Pass) { 'PASS' } else { 'FAIL' }), $ev))
     }
+    if ($Client) { [System.IO.File]::WriteAllText((Join-Path $OutDir 'summary.md'), (($md -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false)) }
+    elseif ($env:GITHUB_STEP_SUMMARY) { $md -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
     Set-Content -LiteralPath (Join-Path $OutDir 'verdict.txt') -Value (@($lines) + "VERDICT: $overall") -Encoding utf8
     if ($script:VerdictJson) {
         [System.IO.File]::WriteAllText((Join-Path $OutDir 'verdict.json'), ($script:VerdictJson | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding $false))
@@ -271,10 +281,14 @@ function Invoke-ClientVerdict {
         $exited = [bool](Get-Prop $boot 'exited_early' $false)
         $alive = [bool](Get-Prop $boot 'alive_at_end' $false) -and -not $exited
         Add-Check 'client_alive_at_end' $alive "alive_at_end=$(Get-Prop $boot 'alive_at_end' 'n/a') exited_early=$exited exit_code=$(Get-Prop $boot 'exit_code' 'n/a')"
+        # A field the launch did not write is no evidence of a clean run: only an explicit
+        # empty list, null or empty string passes.
         $crashes = @(@(Get-Prop $boot 'crash_files' @()) | Where-Object { $_ })
-        Add-Check 'no_crash_files' ($crashes.Count -eq 0) $(if ($crashes.Count -eq 0) { 'no crash files' } else { 'FOUND: ' + ($crashes -join '; ') })
+        $haveFiles = Test-BootField $boot 'crash_files'
+        Add-Check 'no_crash_files' ($haveFiles -and $crashes.Count -eq 0) $(if ($crashes.Count -gt 0) { 'FOUND: ' + ($crashes -join '; ') } elseif (-not $haveFiles) { 'boot.json has no crash_files field' } else { 'no crash files' })
         $dialog = [string](Get-Prop $boot 'crash_dialog' '')
-        Add-Check 'no_crash_dialog' ($dialog -eq '') $(if ($dialog -eq '') { 'no crash dialog recorded' } else { "FOUND dialog: $dialog" })
+        $haveDialog = Test-BootField $boot 'crash_dialog'
+        Add-Check 'no_crash_dialog' ($haveDialog -and $dialog -eq '') $(if ($dialog -ne '') { "FOUND dialog: $dialog" } elseif (-not $haveDialog) { 'boot.json has no crash_dialog field' } else { 'no crash dialog recorded' })
     } else {
         foreach ($n in 'client_process_started', 'client_alive_at_end', 'no_crash_files', 'no_crash_dialog') { Add-Check $n $false '' }
     }
@@ -347,8 +361,10 @@ function Invoke-ClientVerdict {
 
     # ---- plugins ----
     $found = Get-PluginLines $ml $specs
+    # A declared refusal accounts for that plugin's refusal lines only: a fault or crash
+    # line of the same plugin still fails the crash, error and fault checks.
     foreach ($s in $specs) {
-        if ($s.Refused) { foreach ($i in $found) { if ($i.Name -ceq $s.LogName) { [void]$accounted.Add($i.Line) } } }
+        if ($s.Refused) { foreach ($i in $found) { if ($i.Kind -eq 'refused' -and $i.Name -ceq $s.LogName) { [void]$accounted.Add($i.Line) } } }
     }
     $rows = @()
     foreach ($s in $specs) {
@@ -368,8 +384,11 @@ function Invoke-ClientVerdict {
             Add-Check "plugin_not_loaded_$($s.Repo)" ($haveLog -and $null -eq $loaded) $(if ($loaded) { "FOUND, declared refused: $loaded" } elseif ($haveLog) { "no load line for $($s.LogName)" } else { '' })
             $refLine = if ($refusals.Count -gt 0) { $refusals[0].Line } else { $null }
             Add-Check "plugin_refusal_line_$($s.Repo)" ($null -ne $refLine) $(if ($refLine) { $refLine } else { "no refusal line for $($s.LogName)" })
-            $state = if ($loaded) { 'loaded (declared refused)' } elseif ($refLine) { 'refused (as declared)' } else { 'not refused (no refusal line)' }
+            Add-Check "plugin_no_fault_$($s.Repo)" ($haveLog -and $crashLines.Count -eq 0) $(
+                if ($crashLines.Count -gt 0) { "FOUND: $($crashLines[0].Line)" } elseif ($haveLog) { "no crash or init-failure line for $($s.LogName)" } else { '' })
+            $state = if ($loaded) { 'loaded (declared refused)' } elseif ($crashLines.Count -gt 0) { 'crashed' } elseif ($refLine) { 'refused (as declared)' } else { 'not refused (no refusal line)' }
             if ($refLine) { $note += (Short (Bare $refLine) 120) }
+            if ($crashLines.Count -gt 0) { $note += (Short (Bare $crashLines[0].Line) 120) }
         } else {
             $hasLoad = ($null -ne $info) -and ($null -ne $loaded)
             $loadEv = if ($hasLoad) { $loaded } else {
@@ -402,6 +421,19 @@ function Invoke-ClientVerdict {
 
     # InitAllLoadedPlugins: the first line is logged early with 0 plugins; the real one
     # follows. No line may report a failure, and one must show every expected plugin.
+    # Every plugin the loader read must be one the set names: a "Plugin info" or
+    # "Successfully loaded" line for any other name is code nobody declared.
+    $strangers = @()
+    if ($ml) {
+        foreach ($l in $ml) {
+            if ($l -cmatch 'Plugin info - Name: ([^,]+),' -or $l -cmatch 'Successfully loaded plugin DLL: (\S+) ') {
+                if ($Matches[1] -cnotin $names -and $Matches[1] -cnotin $strangers) { $strangers += $Matches[1] }
+            }
+        }
+    }
+    Add-Check 'no_unexpected_plugin' ($haveLog -and $strangers.Count -eq 0) $(
+        if ($strangers.Count -gt 0) { 'FOUND a plugin outside the set: ' + ($strangers -join ', ') } elseif ($haveLog) { 'every plugin the loader read is in the set' } else { '' })
+
     $wantInit = @($specs | Where-Object { -not $_.Refused }).Count
     $sums = @(); if ($ml) { $sums = @($ml | Where-Object { $_ -match 'InitAllLoadedPlugins: (\d+) initialized, (\d+) failed' }) }
     $sumOk = $false; $sumEv = ''
@@ -413,8 +445,8 @@ function Invoke-ClientVerdict {
                 if ([int]$Matches[2] -gt 0) { $anyFail = $true }
             }
         }
-        $sumOk = (-not $anyFail) -and ($maxInit -ge $wantInit)
-        $sumEv = "$($sums[-1])  (max initialized $maxInit, expected at least $wantInit)"
+        $sumOk = (-not $anyFail) -and ($maxInit -eq $wantInit)
+        $sumEv = "$($sums[-1])  (max initialized $maxInit, expected $wantInit)"
     }
     Add-Check 'plugins_initialized' $sumOk $sumEv
     $startup = First-Match $ml 'Plugin startup phase complete'
@@ -432,7 +464,7 @@ function Invoke-ClientVerdict {
     $scanOk = First-Match $ml '\[HookScan\] .*pattern\(s\) resolved, no failures'
     Add-Check 'hookscan_clean' ($haveLog -and $null -eq $scanBad -and $null -ne $scanOk) $(if ($scanBad) { "FOUND: $scanBad" } elseif ($scanOk) { $scanOk } else { '' })
 
-    Add-HandoffChecks $ml $boot
+    Add-HandoffChecks $ml $boot -RequireBootField
 
     # ---- crashes and errors ----
     $crashRe = 'CRASHED|FATAL ENGINE CRASH|\[PluginGuard\]'
