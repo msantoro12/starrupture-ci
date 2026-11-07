@@ -22,7 +22,8 @@
 #   the game folder's   dwmapi.dll, ModLoader/..., ModLoader/Plugins/*.dll
 #   the pipeline's own  files at the artifact root: dwmapi.dll and the loader's own files
 #                       (Core, ImGui, Updater) go where the loader build puts them, and any
-#                       other <Name>.dll is a plugin, installed as ModLoader/Plugins/<Name>.dll
+#                       other <Name>.dll is a plugin, installed as ModLoader/Plugins/<Name>.dll;
+#                       root .json, .pdb, .txt and .md files are build metadata: ignored, listed in the log
 # Every DLL it replaces needs an -Expect entry.
 
 [CmdletBinding()]
@@ -149,7 +150,8 @@ function Get-CandidateFiles([string]$Dir) {
             if ($rel -ieq 'dwmapi.dll') { $kind = 'loader' }
             elseif ($rel -iin $LoaderFiles) { $kind = 'loader'; $dest = "ModLoader/$rel" }
             elseif ($rel -imatch '^(.+)\.dll$') { $kind = 'plugin'; $base = $Matches[1]; $dest = "ModLoader/Plugins/$rel" }
-            else { throw "candidate holds '$rel' at its root; a root file must be dwmapi.dll, one of the loader's files or a plugin DLL" }
+            elseif ($rel -imatch '\.(json|pdb|txt|md)$') { Write-Host "Candidate metadata ignored: $rel"; continue }
+            else { throw "candidate holds '$rel' at its root; a root file must be dwmapi.dll, one of the loader's files, a plugin DLL or build metadata (.json, .pdb, .txt, .md)" }
         } elseif ($rel -imatch '^ModLoader/Plugins/') {
             if ($rel -match '^ModLoader/Plugins/([^/]+)\.dll$') { $kind = 'plugin'; $base = $Matches[1] }
             elseif ($rel -notmatch '^ModLoader/Plugins/[^/]+$') { throw "candidate holds '$rel', below ModLoader/Plugins" }   # else a pdb or readme next to a plugin
