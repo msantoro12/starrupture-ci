@@ -130,7 +130,7 @@ export function readObservations(input) {
           symbolRva: r.symbolRva === undefined || r.symbolRva === null ? null : numberOf(r.symbolRva, `${where}: symbolRva`),
           proposal: proposalOf(r),
         };
-        if (row.ok && (row.rva === null || row.pattern === null)) throw new MapError(`${where}: an OK row needs its pattern and rva`);
+        if (row.ok && (row.rva === null || row.pattern === null)) throw new MapError(`${where}: CL-${cl} reports the row OK but gives no ${row.pattern === null ? 'pattern' : 'rva'}${row.pattern === null && row.rva === null ? ' and no rva' : ''}; the scanner found the address without a signature, so the map cannot carry it and the whole write is refused`);
         if (!row.tracked) { if (!row.ok) patches.push({ owner: c.owner, tag: rel.tag, key: r.key, result: r.result }); continue; }
         rows.push(row);
       }

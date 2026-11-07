@@ -48,20 +48,10 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $PlanPath) { $PlanPath = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }) 'rig-plan.json' }
 
-# The nine plugins. Name is the repo's short name (and the key of the inputs), LogName the
+# The nine plugins, read from plugin-names.json (also read by the client check's map step). Name is the repo's short name (and the key of the inputs), LogName the
 # name in the loader's "Plugin info" line, Asset the release asset's prefix: <Asset>-Client.dll
 # is installed as <Asset>.dll.
-$Plugins = @(
-    [pscustomobject]@{ Name = 'BetterCheats'; Repo = 'StarRupture-Plugin-BetterCheats'; LogName = 'BetterCheats'; Asset = 'BetterCheats' }
-    [pscustomobject]@{ Name = 'BetterDrone'; Repo = 'StarRupture-Plugin-BetterDrone'; LogName = 'BetterDrone'; Asset = 'BetterDrone' }
-    [pscustomobject]@{ Name = 'CameraControls'; Repo = 'StarRupture-Plugin-CameraControls'; LogName = 'CameraControls'; Asset = 'CameraControls' }
-    [pscustomobject]@{ Name = 'Codex'; Repo = 'StarRupture-Plugin-Codex'; LogName = 'Codex'; Asset = 'Codex' }
-    [pscustomobject]@{ Name = 'Compass'; Repo = 'StarRupture-Plugin-Compass'; LogName = 'Compass'; Asset = 'Compass_Plugin' }
-    [pscustomobject]@{ Name = 'ProductionViewer'; Repo = 'StarRupture-Plugin-ProductionViewer'; LogName = 'ProductionViewer'; Asset = 'ProductionViewer' }
-    [pscustomobject]@{ Name = 'RuptureTimer'; Repo = 'StarRupture-Plugin-RuptureTimer'; LogName = 'AxRuptureTimer'; Asset = 'RuptureTimer' }
-    [pscustomobject]@{ Name = 'WAILA'; Repo = 'StarRupture-Plugin-WAILA'; LogName = 'Waila'; Asset = 'Waila' }
-    [pscustomobject]@{ Name = 'WaveOptimiser'; Repo = 'StarRupture-Plugin-WaveOptimiser'; LogName = 'WaveOptimiser'; Asset = 'WaveOptimiser' }
-)
+$Plugins = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-names.json') -Raw | ConvertFrom-Json | ForEach-Object { $_ })
 $LoaderRepo = 'StarRupture-ModLoader'
 # The loader's own files besides dwmapi.dll, which a candidate may carry at its root.
 $LoaderFiles = @('StarRupture-ModLoader-Core.dll', 'StarRupture-ImGui.dll', 'StarRupture-ModLoader-Updater.exe')
@@ -284,7 +274,7 @@ function Resolve-Plan {
 
 function Read-Plan {
     if (-not (Test-Path -LiteralPath $PlanPath)) { throw 'no plan: the Resolve step did not run' }
-    return (Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json)
+    return (Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json | ForEach-Object { $_ })
 }
 
 # The asset's id is in the path, so a file cached for another upload is never read for this one.
