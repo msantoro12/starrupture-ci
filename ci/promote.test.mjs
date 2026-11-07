@@ -1,0 +1,194 @@
+// Tests for promote.mjs (version-map step 46).
+//
+//   node --test ci/promote.test.mjs
+//
+// All values are made up; the build ids are the ones state/steam.json records today.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { LOADER_REPO, stage } from './staging.mjs';
+import { PromoteError, gate, isPublishable, plan, promote } from './promote.mjs';
+
+const TOOL = join(dirname(fileURLToPath(import.meta.url)), 'promote.mjs');
+const NOW = Date.parse('2026-11-05T12:00:00Z');
+const SHA = 'ab'.repeat(32);
+const SEQ = NOW / 1000; // seq is the UTC second of signing
+
+const build = (over = {}) => ({
+  cl: 128786, branch: 'public_test_branch', buildid: '26271156', productVersion: 'x', exeSha256: SHA, imageStamp: '0x6b000001', size: 1000, run: 7,
+  scans: [{ exe: 'public_test_branch', buildid: '26271156', ok: true }, { exe: 'public', buildid: '25646882', ok: true }],
+  repo: { sha: 'c0ffee'.repeat(6) + 'c0ff', tree: 'decade'.repeat(6) + 'dead', verdict: 'FIXED' }, ...over,
+});
+const stagedIndex = (...builds) => builds.reduce((index, b) => stage(b, { index, effects: { pushBranch() {}, writeIndex() {} } }).index, {});
+
+const autopilot = { schema: 1, enabled: true, paths: ['M'], max_releases_per_day: 2 };
+const history = { releases: [] };
+const flip = (over = {}) => ({ buildid: '26271156', exeSha256: SHA, cl: 128786, ...over });
+const inputs = (over = {}) => ({ index: stagedIndex(build()), pub: flip(), autopilot, history, lastSeq: 41, now: NOW, verify: { ok: true }, ...over });
+
+test('a synthetic public flip prints the PR plan and "would sign and publish seq N"', () => {
+  const r = plan(inputs());
+  assert.equal(r.action, 'promote');
+  assert.equal(r.seq, SEQ);
+  const text = r.lines.join('\n');
+  assert.match(text, /public 26271156 matches staged CL-128786 \(same build and exe\)/);
+  assert.match(text, /re-scan every DLL on the public exe/);
+  assert.match(text, /rebase auto\/update-128786 \(c0ffeec0\) onto the StarRupture-ModLoader fork's current tip/);
+  assert.match(text, /open a PR from the fork into StarRupture-ModLoader main for CL-128786; merge once CI passes/);
+  assert.equal(r.lines.at(-1), `would sign and publish seq ${SEQ}`);
+});
+
+test('the same CL on a different exe re-verifies every key first, rva check off', () => {
+  const r = plan(inputs({ pub: flip({ exeSha256: 'cd'.repeat(32) }) }));
+  assert.equal(r.action, 'promote');
+  assert.match(r.lines.join('\n'), /same CL, different exe/);
+  assert.match(r.lines.join('\n'), /rva check is off, the image stamp differs/);
+  assert.match(r.lines.join('\n'), /staged exe \(abababab\) as a second reference/);
+});
+
+test('a different CL runs the normal flow with the staged exe as a second reference and promotes nothing', () => {
+  const r = plan(inputs({ pub: flip({ cl: 130000, buildid: '26999999' }) }));
+  assert.equal(r.action, 'normal-flow');
+  assert.equal(r.seq, null);
+  const text = r.lines.join('\n');
+  assert.match(text, /no staged CL matches/);
+  assert.match(text, /normal new-CL flow .* for CL-130000 with the staged exe \(abababab\) as a second reference/);
+  assert.doesNotMatch(text, /would sign/);
+});
+
+test('a superseded staged CL is listed and skipped, a newer PTR CL stays staged', () => {
+  const index = stagedIndex(build(), build({ cl: 128900, buildid: '26300000', run: 9 }), build({ cl: 128950, branch: 'beta_two', buildid: '26400000', run: 11, scans: [{ exe: 'beta_two', buildid: '26400000', ok: true }, { exe: 'public', buildid: '25646882', ok: true }] }));
+  const r = plan(inputs({ index, pub: flip({ cl: 128900, buildid: '26300000' }) }));
+  const text = r.lines.join('\n');
+  assert.match(text, /skip CL-128786: superseded, never published/);
+  assert.match(text, /keep CL-128950 staged/);
+  assert.equal(r.action, 'promote');
+  assert.equal(plan(inputs({ index, pub: flip({ cl: 128786 }) })).action, 'normal-flow', 'a superseded CL is never promoted');
+});
+
+test('the autopilot fails closed: missing, disabled, no path M, or over the cap prints a HOLD, never "would sign"', () => {
+  for (const [name, over, re] of [
+    ['missing file', { autopilot: null }, /autopilot/],
+    ['disabled', { autopilot: { ...autopilot, enabled: false } }, /autopilot is disabled/],
+    ['no path M', { autopilot: { ...autopilot, paths: ['B'] } }, /path M .* not enabled/],
+    ['malformed cap', { autopilot: { ...autopilot, max_releases_per_day: -1 } }, /max_releases_per_day/],
+    ['two this day', { history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T01:00:00Z' }, { repo: LOADER_REPO, cl: '2', at: '2026-11-05T05:00:00Z' }] } }, /2 StarRupture-ModLoader releases in the last 24 h/],
+    ['too soon', { history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T11:50:00Z' }] } }, /less than 30 minutes/],
+    ['already published', { history: { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-10-01T00:00:00Z' }] } }, /already released for CL-128786/],
+  ]) {
+    const r = plan(inputs(over));
+    assert.equal(r.action, 'hold', name);
+    assert.match(r.hold.join('\n'), re, name);
+    assert.ok(r.lines.includes(`would NOT sign and publish seq ${SEQ}`), name);
+    assert.ok(!r.lines.some((l) => l.startsWith('would sign')), name);
+  }
+});
+
+test('seq is max(now, last + 1): never back, never behind the clock', () => {
+  assert.equal(plan(inputs({ lastSeq: SEQ + 5 })).seq, SEQ + 6);
+  assert.equal(plan(inputs({ lastSeq: SEQ })).seq, SEQ + 1);
+  assert.equal(plan(inputs({ lastSeq: 0 })).seq, SEQ);
+});
+
+test('no publish without a passing re-scan or re-verify on the public exe', () => {
+  for (const pub of [flip(), flip({ exeSha256: 'cd'.repeat(32) })]) {
+    for (const verify of [undefined, null, {}, { ok: 'true' }]) {
+      const r = plan(inputs({ pub, verify }));
+      assert.equal(r.action, 'hold');
+      assert.match(r.hold.join('\n'), /no passing re-(scan|verify) result on the public exe/);
+      assert.ok(!r.lines.some((l) => l.startsWith('would sign')));
+    }
+    const failed = plan(inputs({ pub, verify: { ok: false } }));
+    assert.equal(failed.action, 'normal-flow');
+    assert.equal(failed.seq, null);
+    assert.match(failed.lines.join('\n'), /on the public exe failed: run the normal check\/suggest\/apply flow for CL-128786 with the staged exe \(abababab\)/);
+    assert.ok(!failed.lines.some((l) => l.startsWith('would sign') || l.startsWith('rebase') || l.startsWith('open a PR')));
+  }
+});
+
+test('an owner-dispatched roll-forward may re-publish a CL; the cap and the gap still apply', () => {
+  const once = { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T09:00:00Z' }] };
+  assert.equal(plan(inputs({ history: once })).action, 'hold');
+  const r = plan(inputs({ history: once, rollForward: true }));
+  assert.equal(r.action, 'promote');
+  assert.ok(r.lines.some((l) => l.startsWith('roll-forward: an owner-dispatched re-publish of CL-128786')));
+  const soon = { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T11:50:00Z' }] };
+  assert.match(plan(inputs({ history: soon, rollForward: true })).hold.join('\n'), /less than 30 minutes/);
+  const two = { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T01:00:00Z' }, { repo: LOADER_REPO, cl: '128786', at: '2026-11-05T05:00:00Z' }] };
+  assert.match(plan(inputs({ history: two, rollForward: true })).hold.join('\n'), /2 StarRupture-ModLoader releases in the last 24 h/);
+});
+
+test('the cap counts the loader repo only, and the file can only lower the limit', () => {
+  const other = { releases: [{ repo: 'StarRupture-Plugin-BetterCheats', cl: '1', at: '2026-11-04T20:00:00Z' }, { repo: 'StarRupture-Plugin-WAILA', cl: '1', at: '2026-11-04T21:00:00Z' }] };
+  assert.equal(plan(inputs({ history: other })).action, 'promote');
+  assert.deepEqual(gate({ autopilot: { ...autopilot, max_releases_per_day: 99 }, history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-04T20:00:00Z' }, { repo: LOADER_REPO, cl: '2', at: '2026-11-05T08:00:00Z' }] }, cl: 3, now: NOW }).length, 1);
+});
+
+test('dry run calls no effect, and a live run is refused', () => {
+  const trap = new Proxy({}, { get: (_, k) => () => { throw new Error(`${String(k)} must not run`); } });
+  assert.equal(promote(inputs(), { effects: trap }).action, 'promote');
+  assert.throws(() => promote(inputs(), { dryRun: false, effects: trap }), PromoteError);
+});
+
+test('bad inputs are refused', () => {
+  assert.throws(() => plan(inputs({ lastSeq: -1 })), /last seq/);
+  assert.throws(() => plan(inputs({ pub: { buildid: 'x', cl: 1 } })), /public build needs/);
+  assert.throws(() => plan(inputs({ index: null })), /not an object/);
+});
+
+test('the command line prints the plan, writes the report, and refuses --live', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'promote-'));
+  const w = (n, d) => { writeFileSync(join(dir, n), JSON.stringify(d)); return join(dir, n); };
+  const args = ['plan', '--index', w('i.json', stagedIndex(build())), '--public', w('p.json', flip()), '--autopilot', w('a.json', autopilot), '--history', w('h.json', history), '--last-seq', '41', '--now', '2026-11-05T12:00:00Z', '--verify', w('v.json', { ok: true })];
+  const ok = spawnSync(process.execPath, [TOOL, ...args, '--out', join(dir, 'plan.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /^dry run: nothing is signed, published or released/);
+  assert.match(ok.stdout, new RegExp(`would sign and publish seq ${SEQ}\\n$`));
+  assert.equal(JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8')).seq, SEQ);
+  const rf = spawnSync(process.execPath, [TOOL, ...args, '--roll-forward'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(rf.status, 0, rf.stderr);
+  assert.match(rf.stdout, /roll-forward: an owner-dispatched re-publish/);
+  const noVerify = spawnSync(process.execPath, [TOOL, ...args.slice(0, -2)], { encoding: 'utf8', windowsHide: true });
+  assert.equal(noVerify.status, 0);
+  assert.match(noVerify.stdout, /HOLD: no passing re-scan result/);
+  const live = spawnSync(process.execPath, [TOOL, ...args, '--live'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(live.status, 3);
+  assert.match(live.stderr, /live promotion is not built/);
+  const noAp = spawnSync(process.execPath, [TOOL, ...args.map((a) => (a.endsWith('a.json') ? join(dir, 'missing.json') : a))], { encoding: 'utf8', windowsHide: true });
+  assert.equal(noAp.status, 0);
+  assert.match(noAp.stdout, /HOLD: autopilot: /);
+});
+
+test('test autopilot: a disabled switch plans past it, every other gate stays, and the plan is never live', () => {
+  const off = { ...autopilot, enabled: false };
+  const r = plan(inputs({ autopilot: off, test: true }));
+  assert.equal(r.action, 'promote');
+  assert.equal(r.test, true);
+  assert.match(r.lines.join('\n'), /test run: .* never published/);
+  assert.equal(plan(inputs({ autopilot: off })).action, 'hold', 'without the test flag the switch still holds');
+  assert.notEqual(plan(inputs({ autopilot: off, test: true, verify: { ok: false } })).action, 'promote', 'the re-verify still gates');
+  assert.equal(plan(inputs({ autopilot: { ...off, paths: [] }, test: true })).action, 'hold', 'path M must still be enabled');
+  assert.throws(() => promote(inputs({ autopilot: off, test: true }), { dryRun: false }), /never live/);
+});
+
+test('isPublishable: a test run is never publishable, whatever the autopilot file says', () => {
+  for (const enabled of [true, false]) {
+    const planned = plan(inputs({ autopilot: { ...autopilot, enabled }, test: true }));
+    assert.equal(planned.action, 'promote', 'the plan itself can go through');
+    assert.equal(isPublishable(planned, { testRun: false, branch: 'public' }), false, 'a plan marked a test is not publishable');
+    assert.equal(isPublishable({ ...planned, test: undefined }, { testRun: true, branch: 'public' }), false, 'a chain marked a test is not publishable');
+  }
+  const real = plan(inputs());
+  assert.equal(isPublishable(real, { testRun: false, branch: 'public' }), true);
+  for (const testRun of [true, undefined, null, 'false', 'true', 0]) assert.equal(isPublishable(real, { testRun, branch: 'public' }), false, 'the run must say, as the boolean false, that it is not a test: ' + String(testRun));
+  assert.equal(isPublishable(null, { testRun: false, branch: 'public' }), false);
+  const normal = { action: 'normal-flow', kind: 'different-cl' };
+  assert.equal(isPublishable(normal, { testRun: false, branch: 'public' }), true);
+  assert.equal(isPublishable(normal, { testRun: false, branch: 'public_test_branch' }), false, 'normal flow publishes public only');
+  assert.equal(isPublishable({ action: 'hold' }, { testRun: false, branch: 'public' }), false);
+});

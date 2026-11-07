@@ -1,0 +1,17 @@
+{
+  "label": "client",
+  "started_utc": "2026-11-07T07:13:46.0000000Z",
+  "launched_args": "-nullrhi -unattended -nosound -log",
+  "process_found": true,
+  "process_found_s": 2,
+  "ready_s": null,
+  "ready_line": null,
+  "exited_early": false,
+  "exit_code": null,
+  "alive_at_end": true,
+  "peak_working_set_mb": 3023,
+  "crash_files": [],
+  "crash_dialog": null,
+  "compat_reports": [],
+  "shipping_exe": "StarRupture/Binaries/Win64/StarRuptureGameSteam-Win64-Shipping.exe"
+}

@@ -1,0 +1,19 @@
+format	1
+build	127004	0x68F0A1B2	0x0A3F2000	public 25646882
+build	128786	0x6A1B2C3D	0x0A412000	public_test_branch 26271156
+function	BetterCheats/AActor::ProcessEvent caller	0x2D1AC6AE	127004	0x68F0A1B2	0x0A3F2000	2	48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ??	0	-1	-1	0x00C01230
+function	BetterCheats/AActor::ProcessEvent caller	0x2D1AC6AE	128786	0x6A1B2C3D	0x0A412000	2	48 8B 05 ?? ?? ?? ?? 48 85 C0 74 ??	0	-1	-1	0x00C02240
+function	BetterCheats/AActor::ProcessEvent caller	0xB3405899	127004	0x68F0A1B2	0x0A3F2000	2	?? ?? ?? ?? 48 85 C0 74	-4	-1	-1	0x00C01230
+absent	BetterCheats/AActor::ProcessEvent caller	0xB3405899	128786	0x6A1B2C3D	0x0A412000	2	-
+function	GWorld	0x00000000	127004	0x68F0A1B2	0x0A3F2000	4	48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01	0	-1	0	0x0E1A2B30
+function	GWorld	0x00000000	128786	0x6A1B2C3D	0x0A412000	4	48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01	0	-1	0	0x0E2B3C40
+function	ModLoader/GObjects (GUObjectArray.ObjObjects)	0x1C4D2E3F	127004	0x68F0A1B2	0x0A3F2000	6	48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 04 D1	0	-1	0	0x08E1C2A0
+function	ModLoader/GObjects (GUObjectArray.ObjObjects)	0x1C4D2E3F	128786	0x6A1B2C3D	0x0A412000	6	48 8B 05 ?? ?? ?? ?? 48 8B 0C C8 48 8D 04 D1	0	-1	0	0x08E2D3B0
+function	UCrBuildingComponent::GetPlacementResourceConditionResult	0x00000000	127004	0x68F0A1B2	0x0A3F2000	1	48 89 5C 24 ?? 55 56 57 48 8D AC 24	0	-1	-1	0x01A2A100
+function	UCrBuildingComponent::GetPlacementResourceConditionResult	0x00000000	128786	0x6A1B2C3D	0x0A412000	1	-	0	-1	-1	0x01A2B3C0
+function	UCrSomething::Function	0x00000000	127004	0x68F0A1B2	0x0A3F2000	1	40 53 48 83 EC 20 48 8B D9	0	-1	-1	0x01B00010
+absent	UCrSomething::Function	0x00000000	128786	0x6A1B2C3D	0x0A412000	1	BetterCheats,WAILA
+field	ACrCharacterPlayerBase::ADSMoveSpeed	128786	0x13C8	0x4	0x00	ADSMoveSpeedScale
+field	ACrCrafter::CraftComponent	127004	0x6D8	0x8	0x00	-
+field	ACrCrafter::CraftComponent	128786	0x6E0	0x8	0x00	-
+field	UCrSomething::bFlag	128786	0x565	0x1	0x10	-
