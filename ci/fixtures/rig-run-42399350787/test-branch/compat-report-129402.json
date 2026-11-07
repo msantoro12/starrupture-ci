@@ -1,0 +1,18 @@
+{
+  "format": 3,
+  "productVersion": "++Earth20+Kobalt-PTR2-CL-129402",
+  "exe": { "name": "StarRuptureGameSteam-Win64-Shipping.exe", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" },
+  "sdkCL": 127004,
+  "outcome": "partial",
+  "layout": { "classes": 159, "checked": 159, "mismatched": 1, "missing": 0, "deferred": 0 },
+  "patternMisses": [],
+  "globals": [
+    { "name": "GObjects", "resolved": true, "rva": 239500992, "sdkOffset": 238391872, "rejected": false },
+    { "name": "GNames", "resolved": true, "rva": 238566080, "sdkOffset": 237091840, "rejected": false },
+    { "name": "AppendString", "resolved": true, "rva": 21736240, "sdkOffset": 21711216, "rejected": false },
+    { "name": "GWorld", "resolved": true, "rva": 241192504, "sdkOffset": 235026128, "rejected": false }
+  ],
+  "changes": [
+    { "class": "UCrEnviroWaveTimerSubsystem", "member": "TimerActor", "field": "offset", "sdk": 144, "game": 152 }
+  ]
+}

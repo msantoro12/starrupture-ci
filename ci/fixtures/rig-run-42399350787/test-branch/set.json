@@ -1,0 +1,111 @@
+{
+  "branch": "public_test_branch",
+  "buildId": "26461198",
+  "loader": {
+    "expect": "cand-42399350787-556ce13",
+    "tag": "v1.23.1",
+    "overlaid": true
+  },
+  "plugins": [
+    {
+      "repo": "BetterCheats",
+      "logName": "BetterCheats",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "BetterCheats.dll",
+      "tag": "v0.23.0",
+      "overlaid": false,
+      "expect": "v0.23.0"
+    },
+    {
+      "repo": "BetterDrone",
+      "logName": "BetterDrone",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "BetterDrone.dll",
+      "tag": "v0.23.0",
+      "overlaid": false,
+      "expect": "v0.23.0"
+    },
+    {
+      "repo": "CameraControls",
+      "logName": "CameraControls",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "CameraControls.dll",
+      "tag": "v0.2.0",
+      "overlaid": false,
+      "expect": "v0.2.0"
+    },
+    {
+      "repo": "Codex",
+      "logName": "Codex",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "Codex.dll",
+      "tag": "v1.0.0",
+      "overlaid": false,
+      "expect": "v1.0.0"
+    },
+    {
+      "repo": "Compass",
+      "logName": "Compass",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "Compass_Plugin.dll",
+      "tag": "v0.21.0",
+      "overlaid": false,
+      "expect": "v0.21.0"
+    },
+    {
+      "repo": "MiniMap",
+      "logName": "MiniMap",
+      "expectRefused": true,
+      "removed": false,
+      "dll": "MiniMap.dll",
+      "tag": "v1.2.0",
+      "overlaid": false,
+      "expect": "1.2.0"
+    },
+    {
+      "repo": "ProductionViewer",
+      "logName": "ProductionViewer",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "ProductionViewer.dll",
+      "tag": "v0.17.0",
+      "overlaid": false,
+      "expect": "v0.17.0"
+    },
+    {
+      "repo": "RuptureTimer",
+      "logName": "AxRuptureTimer",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "RuptureTimer.dll",
+      "tag": "v0.11.0",
+      "overlaid": false,
+      "expect": "v0.11.0"
+    },
+    {
+      "repo": "WAILA",
+      "logName": "Waila",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "Waila.dll",
+      "tag": "v0.20.0",
+      "overlaid": false,
+      "expect": "v0.20.0"
+    },
+    {
+      "repo": "WaveOptimiser",
+      "logName": "WaveOptimiser",
+      "expectRefused": false,
+      "removed": false,
+      "dll": "WaveOptimiser.dll",
+      "tag": "v0.13.0",
+      "overlaid": false,
+      "expect": "v0.13.0"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+[2026-11-07 19:00:02.744] [INFO ] Proxy: launching updater and waiting for it to finish
+[2026-11-07 19:00:02.792] [INFO ] Updater: started (game dir: D:\sr-client\StarRupture\Binaries\Win64)
+[2026-11-07 19:00:02.793] [INFO ] Auto-update disabled via modloader.ini [AutoUpdate] Enabled=0 -- skipping
+[2026-11-07 19:00:02.807] [INFO ] Updater: exiting with code 0
+[2026-11-07 19:00:02.825] [INFO ] Proxy: updater finished -- no update installed

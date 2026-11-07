@@ -573,7 +573,8 @@ function Invoke-Launch {
     }
     $crashFiles = @()
     foreach ($d in $script:crashDirs) { if (Test-Path -LiteralPath $d) { $crashFiles += @(Get-ChildItem -LiteralPath $d -Recurse -File | ForEach-Object { $_.Name }) } }
-    $compat = @(Get-ChildItem -LiteralPath $script:mlDir -Filter 'compat-report-*.json' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $compatFiles = @(Get-ChildItem -LiteralPath $script:mlDir -Filter 'compat-report-*.json' -File -Recurse -ErrorAction SilentlyContinue)
+    $compat = @($compatFiles | ForEach-Object { $_.Name })
 
     $persona = Read-Personas
     foreach ($n in $persona.Names) { Add-Secret $n -Gate }
@@ -582,6 +583,8 @@ function Invoke-Launch {
         $p = Join-Path $script:mlLogs $f[0]
         if (Test-Path -LiteralPath $p) { [IO.File]::WriteAllText((Join-Path $OutDir $f[1]), (Scrub (Read-Shared $p)), (New-Object Text.UTF8Encoding $false)) }
     }
+    # The verdict judges a compatibility report by what it says, so it needs the file itself.
+    foreach ($f in $compatFiles) { [IO.File]::WriteAllText((Join-Path $OutDir $f.Name), (Scrub (Read-Shared $f.FullName)), (New-Object Text.UTF8Encoding $false)) }
     $boot = [ordered]@{
         label = 'client'; started_utc = $last.started_utc; launched_args = $GameArgs
         process_found = [bool]$last.process_found; process_found_s = $last.process_found_s

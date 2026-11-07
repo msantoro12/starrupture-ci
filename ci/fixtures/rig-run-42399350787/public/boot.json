@@ -1,0 +1,30 @@
+{
+  "label": "client",
+  "started_utc": "2026-11-07T19:00:02.4123634Z",
+  "launched_args": "-nullrhi -unattended -nosound -log",
+  "process_found": true,
+  "process_found_s": 2,
+  "exited_early": false,
+  "exit_code": null,
+  "alive_at_end": true,
+  "boot_finished_s": 48,
+  "peak_working_set_mb": 2964,
+  "crash_files": [],
+  "crash_dialog": null,
+  "compat_reports": [],
+  "relaunches": 1,
+  "attempts": [
+    {
+      "n": 1,
+      "seconds": 16,
+      "end": "Steam Error dialog (Application load error)",
+      "steam_load_error": true
+    },
+    {
+      "n": 2,
+      "seconds": 108,
+      "end": "settled",
+      "steam_load_error": false
+    }
+  ]
+}
