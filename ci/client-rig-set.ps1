@@ -57,6 +57,8 @@ if (-not $PlanPath) { $PlanPath = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNE
 # neither msantoro12 nor AlienXAXS: such a plugin runs beside the live Steam login only at that tag,
 # and only when the release API's digest for its client DLL is that sha256. A plugin of a third
 # party without a Pin is refused, and a newer Latest release is reported (never run) for review.
+# UiOffInitFailure, when present, is the one ERROR text of a plugin whose init needs the UI layer the rig
+# turns off ([UI] Enabled=0); set.json carries it as uiOffInitFailure and the verdict excuses that line only.
 $Plugins = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-names.json') -Raw | ConvertFrom-Json | ForEach-Object { $_ })
 $LoaderRepo = 'StarRupture-ModLoader'
 # The owners whose releases the rig runs at Latest; any other owner needs a reviewed Pin.
@@ -280,6 +282,7 @@ function Resolve-Plan {
             name = $p.Name; logName = $p.LogName; repo = $p.Repo; assetPrefix = $p.Asset; dll = "$($p.Asset).dll"; extra = $false
             tag = $tag; expect = $(if ($expMap.ContainsKey($p.Name)) { $expMap[$p.Name] } elseif ($p.PSObject.Properties['StripV'] -and $p.StripV) { $tag -replace '^v', '' } else { $tag })
             expectRefused = $refused.ContainsKey($p.Name); removed = $removed.ContainsKey($p.Name); overlaid = $over; asset = $asset
+            uiOffInitFailure = $(if ($p.PSObject.Properties['UiOffInitFailure']) { [string]$p.UiOffInitFailure } else { '' })
         }
     }
     $extras = @(@($expMap.Keys) + @($extraDll.Keys) + @($refused.Keys) | Where-Object { -not (Find-Entry $_) } | Sort-Object -Unique)
@@ -288,7 +291,7 @@ function Resolve-Plan {
         $entries += [ordered]@{
             name = $n; logName = $n; repo = ''; assetPrefix = ''; dll = "$n.dll"; extra = $true
             tag = ''; expect = $(if ($expMap.ContainsKey($n)) { $expMap[$n] } else { '' })
-            expectRefused = $refused.ContainsKey($n); removed = $false; overlaid = $extraDll.ContainsKey($n); asset = $null
+            expectRefused = $refused.ContainsKey($n); removed = $false; overlaid = $extraDll.ContainsKey($n); asset = $null; uiOffInitFailure = ''
         }
     }
 
@@ -407,6 +410,7 @@ function Install-Set {
         plugins = @($plan.plugins | ForEach-Object {
             $row = [ordered]@{ repo = $_.name; logName = $_.logName; expectRefused = [bool]$_.expectRefused; removed = [bool]$_.removed; dll = $_.dll; tag = $_.tag; overlaid = [bool]$_.overlaid }
             if ($_.expect) { $row.expect = $_.expect }
+            if ($_.uiOffInitFailure) { $row.uiOffInitFailure = $_.uiOffInitFailure }
             $row
         })
     }

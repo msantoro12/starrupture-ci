@@ -1,0 +1,1111 @@
+[19:00:02.835] [INFO ] [T:07656] ======================================================
+[19:00:02.835] [INFO ] [T:07656]   StarRupture Mod Loader Core loaded
+[19:00:02.835] [INFO ] [T:07656] ======================================================
+[19:00:02.835] [INFO ] [T:07656] [init] Build: cand-42399350787-556ce13 (client), PID 504
+[19:00:02.835] [INFO ] [T:07656] [init] Executable: D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe
+[19:00:02.846] [INFO ] [T:07656] [init] Core_Attach on thread 7656 (main thread is 7656)
+[19:00:02.846] [INFO ] [T:07656] [init] Migrating legacy config/plugin files...
+[19:00:02.846] [INFO ] [T:07656] [init] Legacy file migration done
+[19:00:02.846] [INFO ] [T:07656] [init] ImGui DLL present: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\StarRupture-ImGui.dll
+[19:00:02.847] [INFO ] [T:07656] [init] Sync events created
+[19:00:02.847] [INFO ] [T:07656] Core_Attach on main thread -- deferring init via QueueUserAPC
+[19:00:02.847] [INFO ] [T:07656] [init] Core_Attach complete -- returning to the proxy
+[19:00:02.849] [INFO ] [T:07656] [init] Main-thread APC fired -- starting Stage 1 with the game held
+[19:00:02.849] [INFO ] [T:07656] [init] Init thread started (tid 2032)
+[19:00:02.849] [INFO ] [T:07656] [init] Main thread parked at the Stage 1 gate (timeout 180000 ms)
+[19:00:02.870] [INFO ] [T:02032] [init] ---- Stage 1: hook installation (init thread 2032) ----
+[19:00:02.870] [INFO ] [T:02032] [init] Executable check passed
+[19:00:02.870] [INFO ] [T:02032] [init] Main thread held: parked on the Stage 1 gate
+[19:00:02.870] [INFO ] [T:02032] Process ID: 504
+[19:00:02.870] [INFO ] [T:02032] Executable: D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe
+[19:00:02.870] [INFO ] [T:02032] Working directory: D:\sr-client\StarRupture\Binaries\Win64
+[19:00:02.870] [INFO ] [T:02032] Command line: "D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe" -nullrhi -unattended -nosound -log
+[19:00:02.870] [INFO ] [T:02032] Main module base: 0x7FF785F30000
+[19:00:02.870] [INFO ] [T:02032] Main module size: 0xF35C000 (249200 KB)
+[19:00:02.870] [INFO ] [T:02032] Main module entry: 0x7FF795252310
+[19:00:02.870] [INFO ] [T:02032] OS version: Windows 10 or greater
+[19:00:02.870] [INFO ] [T:02032] OS type: Server
+[19:00:02.870] [INFO ] [T:02032] System RAM: 16378 MB total, 12758 MB available
+[19:00:02.881] [INFO ] [T:02032] [init] Splash window shown
+[19:00:02.882] [INFO ] [T:02032] [ModLoader] Logger initialized (using Log:: backend)
+[19:00:02.882] [INFO ] [T:02032] [ModLoader] [VersionFeed] No feed request (stage 1): [AutoUpdate] Enabled is off
+[19:00:02.883] [INFO ] [T:02032] [ModLoader] Game version OK: ++Earth20+Neon-CL-127004
+[19:00:02.883] [INFO ] [T:02032] [init] Pattern preflight starting...
+[19:00:02.883] [INFO ] [T:02032] [ModLoader] [Preflight] Verifying 65 modloader scan patterns...
+[19:00:02.885] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FText::AsLocalizable_Advanced: loader map, CL-127004 row
+[19:00:02.886] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FTextKey::FTextKey: loader map, CL-127004 row
+[19:00:02.888] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: StaticLoadObject: loader map, CL-127004 row
+[19:00:02.888] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UClass::FindFunctionByName: loader map, CL-127004 row
+[19:00:02.889] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UObject::ProcessEvent: loader map, CL-127004 row
+[19:00:02.891] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FEngineLoop::Init: loader map, CL-127004 row
+[19:00:02.892] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UGameEngine::Init: loader map, CL-127004 row
+[19:00:02.893] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FEngineLoop::Exit: loader map, CL-127004 row
+[19:00:02.895] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UEngine::PreExit: loader map, CL-127004 row
+[19:00:02.896] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AGameModeBase::PostLogin: loader map, CL-127004 row
+[19:00:02.897] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AGameModeBase::Logout: loader map, CL-127004 row
+[19:00:02.898] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UCrMassSaveSubsystem::OnSaveLoaded: loader map, CL-127004 row
+[19:00:02.899] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UCrExperienceManagerComponent::OnExperienceLoadComplete: loader map, CL-127004 row
+[19:00:02.901] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AActor::BeginPlay: loader map, CL-127004 row
+[19:00:02.902] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UWorld::BeginPlay: loader map, CL-127004 row
+[19:00:02.902] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UWorld::EndPlay: loader map, CL-127004 row
+[19:00:02.904] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AAbstractMassEnemySpawner::ActivateSpawner: loader map, CL-127004 row
+[19:00:02.906] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AAbstractMassEnemySpawner::DeactivateSpawner: loader map, CL-127004 row
+[19:00:02.906] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AMassSpawner::DoSpawning: loader map, CL-127004 row
+[19:00:02.908] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: ACrCrafter::NativeOnItemCraftingComplete: loader map, CL-127004 row
+[19:00:02.908] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: StaticFindObject (ByPath): loader map, CL-127004 row
+[19:00:02.910] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: StaticFindObject (ByName): loader map, CL-127004 row
+[19:00:02.910] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: StaticFindObjectSafe (ByPath): loader map, CL-127004 row
+[19:00:02.911] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: StaticFindObjectSafe (ByName): loader map, CL-127004 row
+[19:00:02.913] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: StaticFindObjectFast: loader map, CL-127004 row
+[19:00:02.913] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FindPackage: loader map, CL-127004 row
+[19:00:02.914] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UPackage::FullyLoad: loader map, CL-127004 row
+[19:00:02.915] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: LoadPackage: loader map, CL-127004 row
+[19:00:02.916] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FAssetData::FastGetAsset: loader map, CL-127004 row
+[19:00:02.918] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AActor::InternalGetNetMode: loader map, CL-127004 row
+[19:00:02.918] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UGameEngine::Tick: loader map, CL-127004 row
+[19:00:02.920] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UControlChannel::ReceivedBunch: loader map, CL-127004 row
+[19:00:02.920] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UControlChannel::SendBunch: loader map, CL-127004 row
+[19:00:02.922] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FControlChannelOutBunch::ctor: loader map, CL-127004 row
+[19:00:02.923] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FOutBunch::~FOutBunch: loader map, CL-127004 row
+[19:00:02.924] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FBitWriter::Serialize: loader map, CL-127004 row
+[19:00:02.924] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FBitReader::SerializeBits: loader map, CL-127004 row
+[19:00:02.926] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: AHUD::PostRender: loader map, CL-127004 row
+[19:00:02.927] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UCrMapManuSubsystem::GatherPlayersData: loader map, CL-127004 row
+[19:00:02.928] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UGameViewportClient::InputKey: loader map, CL-127004 row
+[19:00:02.929] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: ReportCrashUsingCrashReportClient: loader map, CL-127004 row
+[19:00:02.930] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: HandleCrashInternal_FatalReportCallSite: loader map, CL-127004 row
+[19:00:02.931] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: APlayerController::ConsoleCommand: loader map, CL-127004 row
+[19:00:02.933] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FLogSuppressionImplementation::ApplyGlobalChanges: loader map, CL-127004 row
+[19:00:02.935] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FLogSuppressionInterface::Get: loader map, CL-127004 row
+[19:00:02.937] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FLogSuppressionImplementation::ProcessConfigAndCommandLine: loader map, CL-127004 row
+[19:00:02.938] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: ULineBatchComponent::DrawLines: loader map, CL-127004 row
+[19:00:02.940] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: ULineBatchComponent::Flush: loader map, CL-127004 row
+[19:00:02.941] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UCrUW_MainMenuWidget::NativeConstruct: loader map, CL-127004 row
+[19:00:02.942] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UCrUW_PauseMenu::NativeConstruct: loader map, CL-127004 row
+[19:00:02.943] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: GObjects (GUObjectArray.ObjObjects): loader map, CL-127004 row
+[19:00:02.944] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: GNames (NamePoolData): loader map, CL-127004 row
+[19:00:02.945] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FName::AppendString: loader map, CL-127004 row
+[19:00:02.946] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: GWorld: loader map, CL-127004 row
+[19:00:02.949] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FSlateRHIRenderer::PresentWindow_RenderThread: no row for CL-127004; own pattern (agreed on an earlier launch)
+[19:00:02.950] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FRHIComputeCommandList::Transition: loader map, CL-127004 row
+[19:00:02.951] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FD3D12DynamicRHI::RHISignalManualFence: no row for CL-127004; own pattern (agreed on an earlier launch)
+[19:00:02.953] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FD3D12DynamicRHI::RHIWaitManualFence: no row for CL-127004; own pattern (agreed on an earlier launch)
+[19:00:02.953] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UGameEngine::Exec: loader map, CL-127004 row
+[19:00:02.955] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FPakFileModule::ShutdownModule: loader map, CL-127004 row
+[19:00:02.955] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FPakPlatformFile::HandleMountPakDelegate: loader map, CL-127004 row
+[19:00:02.957] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FPakPlatformFile::HandleUnmountPakDelegate: loader map, CL-127004 row
+[19:00:02.957] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UGameInstance::Init: loader map, CL-127004 row
+[19:00:02.959] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FMassEntityManager::GetArchetypeForEntity: loader map, CL-127004 row
+[19:00:02.960] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UMassSignalSubsystem::SignalEntity: loader map, CL-127004 row
+[19:00:02.960] [INFO ] [T:02032] [ModLoader] [Preflight] Pattern verification complete: 65/65 usable (0 fatal, 0 non-fatal)
+[19:00:02.960] [INFO ] [T:02032] [init] Pattern preflight passed in 78 ms
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: GObjects (GUObjectArray.ObjObjects): loader map, CL-127004 row
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [SdkGlobals] GObjects     base+0xE359240  SDK Offsets::GObjects base+0xE359240  (same)
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: FName::AppendString: loader map, CL-127004 row
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [SdkGlobals] AppendString base+0x14B4970  SDK Offsets::AppendString base+0x14B4970  (same)
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: GNames (NamePoolData): loader map, CL-127004 row
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [SdkGlobals] GNames       base+0xE274E40  (log only; the SDK does not take it)
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: GWorld: loader map, CL-127004 row
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [SdkGlobals] GWorld       base+0xE4F61B8  (log only; the SDK does not take it)
+[19:00:02.961] [INFO ] [T:02032] [ModLoader] [SdkGlobals] SDK uses the resolved GObjects and the resolved FName::AppendString
+[19:00:02.961] [INFO ] [T:02032] [init] Installing engine hooks...
+[19:00:02.962] [INFO ] [T:02032] [ModLoader] Installing core game hooks...
+[19:00:02.962] [INFO ] [T:02032] [ModLoader] [LogVerbosity] Installing game log verbosity control...
+[19:00:02.964] [INFO ] [T:02032] [ModLoader] [LogVerbosity] [OK] ProcessConfigAndCommandLine hook installed at 0x7FF787300840 (base+0x13D0840)
+[19:00:02.964] [INFO ] [T:02032] [ModLoader] [CrashReporter] Installing hook...
+[19:00:02.966] [INFO ] [T:02032] [ModLoader] [CrashReporter] Hook installed successfully
+[19:00:02.966] [INFO ] [T:02032] [ModLoader] [EngineInit] Installing engine initialization hooks...
+[19:00:02.966] [INFO ] [T:02032] [ModLoader] [EngineInit] Scanning for FEngineLoop::Init...
+[19:00:02.968] [INFO ] [T:02032] [ModLoader] [EngineInit] [OK] FEngineLoop::Init hook installed successfully
+[19:00:02.968] [INFO ] [T:02032] [ModLoader] [EngineInit] Scanning for UGameEngine::Init (fallback)...
+[19:00:02.968] [INFO ] [T:02032] [ModLoader] [EngineInit] [OK] UGameEngine::Init hook installed successfully
+[19:00:02.968] [INFO ] [T:02032] [ModLoader] [EngineInit] At least one engine init hook installed - engine ready detection active
+[19:00:02.968] [INFO ] [T:02032] [ModLoader] [EngineShutdown] Installing engine shutdown hooks...
+[19:00:02.968] [INFO ] [T:02032] [ModLoader] [EngineShutdown] Scanning for FEngineLoop::Exit...
+[19:00:02.970] [INFO ] [T:02032] [ModLoader] [EngineShutdown] [OK] FEngineLoop::Exit hook installed successfully
+[19:00:02.970] [INFO ] [T:02032] [ModLoader] [EngineShutdown] Scanning for UEngine::PreExit (fallback)...
+[19:00:02.971] [INFO ] [T:02032] [ModLoader] [EngineShutdown] [OK] UEngine::PreExit hook installed successfully
+[19:00:02.971] [INFO ] [T:02032] [ModLoader] [EngineInit] Installing spawner hooks...
+[19:00:02.972] [INFO ] [T:02032] [ModLoader] [MassSpawnerActivate] Installing hook...
+[19:00:02.972] [INFO ] [T:02032] [ModLoader] [MassSpawnerActivate] ActivateSpawner resolved to 0x7FF78EB29870 (base+0x8BF9870)
+[19:00:02.972] [INFO ] [T:02032] [ModLoader] [MassSpawnerActivate] Hook installed successfully
+[19:00:02.972] [INFO ] [T:02032] [ModLoader] [MassSpawnerDeactivate] Installing hook...
+[19:00:02.972] [INFO ] [T:02032] [ModLoader] [MassSpawnerDeactivate] Found at 0x7FF78EB29940 (base+0x8BF9940)
+[19:00:02.973] [INFO ] [T:02032] [ModLoader] [MassSpawnerDeactivate] Hook installed successfully
+[19:00:02.973] [INFO ] [T:02032] [ModLoader] [MassDoSpawning] Installing hook...
+[19:00:02.973] [INFO ] [T:02032] [ModLoader] [MassDoSpawning] Found at 0x7FF78C53C800 (base+0x660C800)
+[19:00:02.973] [INFO ] [T:02032] [ModLoader] [MassDoSpawning] Hook installed successfully
+[19:00:02.973] [INFO ] [T:02032] [ModLoader] [ActorBeginPlay] Installing hook...
+[19:00:02.974] [INFO ] [T:02032] [ModLoader] [ActorBeginPlay] Hook installed successfully
+[19:00:02.974] [INFO ] [T:02032] [ModLoader] [TextLocalization] Installing hook...
+[19:00:02.975] [INFO ] [T:02032] [ModLoader] [TextLocalization] Hook installed successfully
+[19:00:02.975] [INFO ] [T:02032] [ModLoader] [TextKey] Installing hook...
+[19:00:02.975] [INFO ] [T:02032] [ModLoader] [TextKey] Hook installed successfully
+[19:00:02.975] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Scanning for object/package lookup functions...
+[19:00:02.975] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved StaticFindObject (ByPath) at 0x7FF7876F2A80
+[19:00:02.975] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved StaticFindObject (ByName) at 0x7FF7876F2880
+[19:00:02.975] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved StaticFindObjectSafe (ByPath) at 0x7FF7876F2D00
+[19:00:02.976] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved StaticFindObjectSafe (ByName) at 0x7FF7876F2C80
+[19:00:02.976] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved StaticFindObjectFast at 0x7FF7876F2B70
+[19:00:02.976] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved FindPackage at 0x7FF7876DC5D0
+[19:00:02.976] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved UPackage::FullyLoad at 0x7FF787626910
+[19:00:02.976] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved LoadPackage at 0x7FF7876E2F40
+[19:00:02.976] [INFO ] [T:02032] [ModLoader] [ObjectLookup] Resolved FAssetData::FastGetAsset at 0x7FF7887919D0
+[19:00:02.977] [INFO ] [T:02032] [ModLoader] [PakMount] [OK] FPlatformFileManager::Get at base+0x1333540, FindPlatformFile at base+0x1331920, HandleMountPakDelegate at base+0x2A305B0, HandleUnmountPakDelegate at base+0x2A30A90 (FPakPlatformFile is looked up on first use, once the engine has built its file chain)
+[19:00:02.977] [INFO ] [T:02032] [ModLoader] [SessionInfo] Scanning for AActor::InternalGetNetMode...
+[19:00:02.977] [INFO ] [T:02032] [ModLoader] [SessionInfo] Resolved AActor::InternalGetNetMode at 0x7FF78A472460
+[19:00:02.977] [INFO ] [T:02032] [ModLoader] [GameInstanceInit] Installing UObject::ProcessEvent hook...
+[19:00:02.978] [INFO ] [T:02032] [ModLoader] [GameInstanceInit] Hook installed -- will init plugins on first ProcessEvent
+[19:00:02.978] [INFO ] [T:02032] [init] Engine hooks installed in 16 ms
+[19:00:02.979] [INFO ] [T:02032] [Preload] No preload plugins found in ModLoader\Preload
+[19:00:02.979] [INFO ] [T:02032] [init] Preload phase finished in 0 ms
+[19:00:02.979] [INFO ] [T:02032] [init] Stage 1 complete in 110 ms -- hooks installed, main thread running
+[19:00:02.979] [INFO ] [T:02032] [init] ---- Stage 2: subsystems + wait for engine ----
+[19:00:02.979] [INFO ] [T:07656] [init] Stage 1 gate released after 125 ms -- main thread resuming game boot
+[19:00:02.980] [INFO ] [T:02032] [init] Initialising subsystems (config, plugin manager)...
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] ======================================
+[19:00:02.980] [INFO ] [T:02032] [ModLoader]   AlienX's Mod Loader Starting
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] ======================================
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] Config manager initialized: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\config
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] Plugin manager initialized
+[19:00:02.980] [INFO ] [T:02032] [init] Subsystems initialised
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] Running client build of modloader
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] [KeybindRegistry] Initialized (101 keys mapped)
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] [InputProcessor] Keybind registry initialised (dispatch via InputKey hook)
+[19:00:02.980] [INFO ] [T:02032] [ModLoader] [InputHook] Installing UGameViewportClient::InputKey hook...
+[19:00:02.981] [INFO ] [T:02032] [ModLoader] [InputHook] UGameViewportClient::InputKey hook installed
+[19:00:02.981] [INFO ] [T:02032] [init] Input hooks installed
+[19:00:02.981] [INFO ] [T:02032] [ModLoader] [WorldBeginPlay] Installing hook...
+[19:00:02.982] [INFO ] [T:02032] [ModLoader] [WorldBeginPlay] Hook installed successfully
+[19:00:02.982] [INFO ] [T:02032] [ModLoader] [EngineTick] Installing UGameEngine::Tick hook...
+[19:00:02.982] [INFO ] [T:02032] [ModLoader] [EngineTick] UGameEngine::Tick found at 0x7FF78A9C2B80 (base+0x4A92B80)
+[19:00:02.982] [INFO ] [T:02032] [ModLoader] [EngineTick] Hook installed successfully
+[19:00:02.982] [INFO ] [T:02032] [init] WorldBeginPlay + EngineTick hooks installed
+[19:00:02.983] [INFO ] [T:02032] [ModLoader] Waiting for engine initialization...
+[19:00:08.213] [INFO ] [T:07656] [ModLoader] [EngineInit] FEngineLoop::Init called (#1)
+[19:00:08.214] [INFO ] [T:07656] [ModLoader] [EngineInit] UGameEngine::Init called (#2)
+[19:00:08.938] [INFO ] [T:07656] [ModLoader] [GameInstanceInit] First ProcessEvent -- GObjects ready, initializing plugins
+[19:00:08.938] [INFO ] [T:07656] [ModLoader] InitAllLoadedPlugins: 0 initialized, 0 failed (of 0 deferred)
+[19:00:10.496] [INFO ] [T:07656] [ModLoader] [EngineInit] *** ENGINE READY *** (via UGameEngine::Init)
+[19:00:10.496] [INFO ] [T:07656] [ModLoader] [EngineAllocator] Resolving FMemory::Malloc and FMemory::Free...
+[19:00:10.712] [INFO ] [T:07656] [ModLoader] [EngineAllocator] Resolved FMemory::Malloc =0x7FF787272EC0 (from ref+17)
+[19:00:10.714] [INFO ] [T:07656] [ModLoader] [EngineAllocator] GMalloc global at0x7FF794198C28
+[19:00:10.727] [INFO ] [T:07656] [ModLoader] [EngineAllocator] Found FMemory::Free at0x7FF787263100 (exact pattern)
+[19:00:10.729] [INFO ] [T:07656] [ModLoader] [EngineAllocator] Smoke test PASSED
+[19:00:10.729] [INFO ] [T:07656] [ModLoader] [EngineAllocator] SUCCESS - FMemory::Malloc=0x7FF787272EC0, FMemory::Free=0x7FF787263100
+[19:00:10.735] [INFO ] [T:07656] [ModLoader] UE log bridge active - messages will also appear in StarRupture.log
+[19:00:10.735] [INFO ] [T:07656] [EngineInit] Main thread sleeping -- waiting for plugins to initialise
+[19:00:10.735] [INFO ] [T:02032] [ModLoader] Engine ready -- proceeding to load plugins
+[19:00:10.736] [INFO ] [T:02032] [init] Stage 2 complete in 7765 ms -- engine ready
+[19:00:10.736] [INFO ] [T:02032] [ModLoader] [PakList] 1 pak file(s) in D:\sr-client\StarRupture\Content\Paks:
+[19:00:10.736] [INFO ] [T:02032] [ModLoader] [PakList]   pakchunk0-Windows.pak  (263.7 MB)
+[19:00:10.736] [INFO ] [T:02032] [ModLoader] [SdkGlobals] GObjects (resolved) looks valid: 64410 objects, 256 of the first 256 checked
+[19:00:10.765] [INFO ] [T:02032] [ModLoader] [Map] Field index: 15896 types from 64410 objects, in the layout check's GObjects pass
+[19:00:10.765] [INFO ] [T:02032] [ModLoader] [LayoutCheck] UObject::ProcessEvent: vtable slot 0x4C holds the function the map resolved (base+0x177FB20)
+[19:00:10.765] [INFO ] [T:02032] [ModLoader] [LayoutCheck] SDK CL 127004 against the game: 159 classes, 159 checked, 0 mismatched, 0 missing, 0 deferred, 6 rows resolved per build -- GObjects pass 27.2 ms (64410 objects, 15896 types), 29.1 ms in all
+[19:00:10.766] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: ACrCrafter::CraftComponent: loader map, CL-127004 row, as reflected (0x6D8/0x8)
+[19:00:10.766] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UWorld::GameState: loader map, CL-127004 row, as reflected (0x1B0/0x8)
+[19:00:10.766] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UWorld::LineBatchers: loader map, CL-127004 row, as reflected (0xF0/0x20)
+[19:00:10.766] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UWorld::NetDriver: loader map, CL-127004 row, as reflected (0x38/0x8)
+[19:00:10.766] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UEngine::GameViewport: reflected (no row for CL-127004) (0xC10/0x8)
+[19:00:10.766] [INFO ] [T:02032] [ModLoader] [Map] ModLoader: UGameViewportClient::World: reflected (no row for CL-127004) (0x78/0x8)
+[19:00:10.766] [INFO ] [T:02032] [init] ---- Stage 3: auto-update + plugins ----
+[19:00:10.767] [INFO ] [T:02032] [ModLoader] [TextInputFocus] SuppressKeybindsWhileTyping=1
+[19:00:10.767] [INFO ] [T:02032] [init] Client UI initialised
+[19:00:10.768] [INFO ] [T:02032] [init] Running plugin auto-update check...
+[19:00:10.768] [INFO ] [T:07652] [AutoUpdate] Starting auto-update check (current version: cand-42399350787-556ce13)
+[19:00:10.768] [INFO ] [T:07652] [AutoUpdate] Disabled via modloader.ini — skipping
+[19:00:10.769] [INFO ] [T:02032] [init] Auto-update check finished in 0 ms
+[19:00:10.769] [INFO ] [T:02032] [init] Loading plugin DLLs...
+[19:00:10.771] [INFO ] [T:02032] [ModLoader] Searching for plugins in ModLoader\Plugins
+[19:00:10.773] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\BetterCheats.dll
+[19:00:10.802] [INFO ] [T:02032] [ModLoader] Plugin info - Name: BetterCheats, Version: v0.23.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.802] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: BetterCheats vv0.23.0 (PluginInit deferred)
+[19:00:10.803] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\BetterDrone.dll
+[19:00:10.817] [INFO ] [T:02032] [ModLoader] Plugin info - Name: BetterDrone, Version: v0.23.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.817] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: BetterDrone vv0.23.0 (PluginInit deferred)
+[19:00:10.819] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\CameraControls.dll
+[19:00:10.836] [INFO ] [T:02032] [ModLoader] Plugin info - Name: CameraControls, Version: v0.2.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.836] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: CameraControls vv0.2.0 (PluginInit deferred)
+[19:00:10.837] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\Codex.dll
+[19:00:10.877] [INFO ] [T:02032] [ModLoader] Plugin info - Name: Codex, Version: v1.0.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.877] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: Codex vv1.0.0 (PluginInit deferred)
+[19:00:10.880] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\Compass_Plugin.dll
+[19:00:10.883] [INFO ] [T:02032] [ModLoader] Plugin info - Name: Compass, Version: v0.21.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.883] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: Compass vv0.21.0 (PluginInit deferred)
+[19:00:10.885] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\MiniMap.dll
+[19:00:10.929] [INFO ] [T:02032] [ModLoader] Plugin info - Name: MiniMap, Version: 1.2.0, Author: Kian369, Interface: 70 (modloader expects [70, 75]), game build CL-127004 (none declared)
+[19:00:10.929] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: MiniMap v1.2.0 (PluginInit deferred)
+[19:00:10.930] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\ProductionViewer.dll
+[19:00:10.948] [INFO ] [T:02032] [ModLoader] Plugin info - Name: ProductionViewer, Version: v0.17.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.948] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: ProductionViewer vv0.17.0 (PluginInit deferred)
+[19:00:10.950] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\RuptureTimer.dll
+[19:00:10.953] [INFO ] [T:02032] [ModLoader] Plugin info - Name: AxRuptureTimer, Version: v0.11.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.953] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: AxRuptureTimer vv0.11.0 (PluginInit deferred)
+[19:00:10.955] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\Waila.dll
+[19:00:10.975] [INFO ] [T:02032] [ModLoader] Plugin info - Name: Waila, Version: v0.20.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.975] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: Waila vv0.20.0 (PluginInit deferred)
+[19:00:10.977] [INFO ] [T:02032] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\WaveOptimiser.dll
+[19:00:10.979] [INFO ] [T:02032] [ModLoader] Plugin info - Name: WaveOptimiser, Version: v0.13.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[19:00:10.980] [INFO ] [T:02032] [ModLoader] Successfully loaded plugin DLL: WaveOptimiser vv0.13.0 (PluginInit deferred)
+[19:00:10.980] [INFO ] [T:02032] [ModLoader] Loaded 10 plugin DLL(s) from Plugins (PluginInit deferred)
+[19:00:10.982] [INFO ] [T:02032] [init] Plugin DLLs loaded in 204 ms
+[19:00:10.982] [INFO ] [T:02032] [init] Installing remaining plugin event hooks...
+[19:00:10.983] [INFO ] [T:02032] [ModLoader] Installing plugin event hooks...
+[19:00:10.983] [INFO ] [T:02032] [ModLoader] [WorldEndPlay] Installing hook...
+[19:00:10.987] [INFO ] [T:02032] [ModLoader] [WorldEndPlay] Hook installed successfully
+[19:00:10.987] [INFO ] [T:02032] [ModLoader] [SaveLoaded] Installing hook...
+[19:00:10.995] [INFO ] [T:02032] [ModLoader] [SaveLoaded] Hook installed successfully
+[19:00:10.995] [INFO ] [T:02032] [ModLoader] [ExperienceLoadComplete] Installing hook...
+[19:00:11.002] [INFO ] [T:02032] [ModLoader] [ExperienceLoadComplete] Hook installed successfully
+[19:00:11.002] [INFO ] [T:02032] [ModLoader] [CraftingFinished] Installing hook...
+[19:00:11.004] [INFO ] [T:02032] [ModLoader] [CraftingFinished] Hook installed successfully
+[19:00:11.004] [INFO ] [T:02032] [ModLoader] [PlayerJoined] Installing hook...
+[19:00:11.010] [INFO ] [T:02032] [ModLoader] [PlayerJoined] Hook installed successfully
+[19:00:11.010] [INFO ] [T:02032] [ModLoader] [PlayerLeft] Installing hook...
+[19:00:11.014] [INFO ] [T:02032] [ModLoader] [PlayerLeft] Hook installed successfully
+[19:00:11.014] [INFO ] [T:02032] [ModLoader] [HUDPostRender] Installing hook...
+[19:00:11.016] [INFO ] [T:02032] [ModLoader] [HUDPostRender] AHUD::PostRender hook installed successfully
+[19:00:11.016] [INFO ] [T:02032] [ModLoader] [GameMenu] Installing menu entry hooks...
+[19:00:11.026] [INFO ] [T:02032] [ModLoader] [GameMenu] Hooked CrUW_MainMenuWidget -- ButtonClicked at 0x7FF78F71A1D0, NativeConstruct at 0x7FF78F730D90
+[19:00:11.035] [INFO ] [T:02032] [ModLoader] [GameMenu] Hooked CrUW_PauseMenu -- ButtonClicked at 0x7FF78F75A080, NativeConstruct at 0x7FF78F773D10
+[19:00:11.035] [INFO ] [T:02032] [ModLoader] [GameMenu] Menu entries enabled (main menu: yes, pause menu: yes)
+[19:00:11.035] [INFO ] [T:02032] [init] Plugin event hooks installed in 62 ms
+[19:00:11.035] [INFO ] [T:02032] [init] Initialising plugins...
+[19:00:11.035] [INFO ] [T:02032] [ModLoader] [NetTimeout] Net timeouts configured: ConnectionTimeout=300.0s InitialConnectTimeout=300.0s (0 = leave engine default). Both ends of a session need this for it to help.
+[19:00:11.035] [INFO ] [T:02032] [ModLoader] [ControlChannel] Resolving native functions...
+[19:00:11.038] [INFO ] [T:02032] [ModLoader] [ControlChannel] Installed. send=1 ctor=1 dtor=1 bw=1 br=1 cls=1
+[19:00:11.038] [INFO ] [T:02032] [ModLoader] [NetworkChannel] Control-channel wire ready
+[19:00:11.045] [INFO ] [T:02032] [ModLoader] [ModLoaderHello] Ready -- will listen for a server to identify itself as running the mod loader when joining a session
+[19:00:11.045] [INFO ] [T:02032] [ModLoader] [init] Calling PluginInit on all loaded plugins
+[19:00:11.046] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: BetterCheats vv0.23.0
+[19:00:12.847] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrUW_HealthHud::SetupProgressBar: loader map, CL-127004 row
+[19:00:13.072] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrBuildingComponent::GetPlacementResourceConditionResult: loader map, CL-127004 row
+[19:00:13.284] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrTechnologyKeeper::CheckAvailableBuildings: loader map, CL-127004 row
+[19:00:13.494] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCraftingRecipeOwner::IsRecipeUnlocked: loader map, CL-127004 row
+[19:00:13.596] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrAPHelperActorCustom::CheckStability: loader map, CL-127004 row
+[19:00:13.699] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrAPHelperDynamicPillar::CheckStability: loader map, CL-127004 row
+[19:00:13.921] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrPlayerControllerBase::FindDeconstructibleTarget: loader map, CL-127004 row
+[19:00:14.082] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrAPHelperActorCustom::CheckMainMeshCollision: loader map, CL-127004 row
+[19:00:14.290] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrAPHelper::GetBoxCollisionResult: loader map, CL-127004 row
+[19:00:14.375] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrSocketSnapPlacementMethod::GetSnappedSocket: loader map, CL-127004 row
+[19:00:14.459] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrBuildingStabilitySubsystem::IsSocketFree: loader map, CL-127004 row
+[19:00:14.511] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMiningToolComponent::GetMiningDamage: loader map, CL-127004 row
+[19:00:14.584] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuItemsComponent::AddNewItem: loader map, CL-127004 row
+[19:00:14.805] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrUW_InventoryContainer::InitInventorySlots: loader map, CL-127004 row
+[19:00:15.028] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FMassEntityConfig::DestroyEntityTemplate: loader map, CL-127004 row
+[19:00:15.082] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FMassEntityConfig::GetOrCreateEntityTemplate: loader map, CL-127004 row
+[19:00:15.141] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UWorld::GetSubsystem<UMassEntitySubsystem>: loader map, CL-127004 row
+[19:00:15.572] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: TSharedFragmentsContainer<FConstSharedStruct>::FindOrAdd: loader map, CL-127004 row
+[19:00:15.784] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UE::StructUtils::GetStructInstanceCrc32: loader map, CL-127004 row
+[19:00:15.839] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FWeakObjectPtr::operator=(FObjectPtr): loader map, CL-127004 row
+[19:00:16.048] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UMassActorSubsystem::GetEntityHandleFromActor: loader map, CL-127004 row
+[19:00:16.137] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FMassEntityManager::InternalGetFragmentDataPtr: loader map, CL-127004 row
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGameInstance::ServerSessionName: loader map, CL-127004 row (0x290/0x10)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrTechnologyKeeper::bUnlockAllBuildings: loader map, CL-127004 row (0x3A8/0x1)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnviroWaveTimerSubsystem::NextWaveTimer: loader map, CL-127004 row (0x7C/0x4)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnviroWaveTimerSubsystem::bWaitingForNextWave: loader map, CL-127004 row (0x80/0x1)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnviroWaveTimerSubsystem::bPause: loader map, CL-127004 row (0x81/0x1)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnviroWaveTimerSubsystem::bStopWaves: loader map, CL-127004 row (0x83/0x1)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrUW_InventoryContainer::InventoryComponent: loader map, CL-127004 row (0x468/0x8)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FMassEnemyHealthFragment::HP: loader map, CL-127004 row (0x0/0x4)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FGameplayEffectSpec::SetByCallerNameMagnitudes: loader map, CL-127004 row (0x1D8/0x50)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FGameplayEffectSpec::SetByCallerTagMagnitudes: loader map, CL-127004 row (0x228/0x50)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FMassEntityManager::ConstSharedFragmentsContainer: loader map, CL-127004 row, unreflected type, no class bound (0x120/0xB0)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FAuAddedItem: reflected (no row for CL-127004) (0x14)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FCrSkillData: reflected (no row for CL-127004) (0xC)
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FCrElectricityParameters: reflected (no row for CL-127004), as compiled (0x10)
+[19:00:16.357] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::ADSMoveSpeed: the loader map, CL-129402 row says 0x13C8/0x4, the game says 0x13B8/0x4; the game wins
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::ADSMoveSpeed: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x13B8/0x4)
+[19:00:16.357] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::AccelerationAndDeceleration: the loader map, CL-129402 row says 0x13C0/0x4, the game says 0x13B0/0x4; the game wins
+[19:00:16.357] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::AccelerationAndDeceleration: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x13B0/0x4)
+[19:00:16.358] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::CrouchedMoveSpeed: the loader map, CL-129402 row says 0x13A8/0x4, the game says 0x1398/0x4; the game wins
+[19:00:16.358] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::CrouchedMoveSpeed: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1398/0x4)
+[19:00:16.358] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::DoubleJumpEnergyUsage: the loader map, CL-129402 row says 0x1400/0x4, the game says 0x13F0/0x4; the game wins
+[19:00:16.358] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::DoubleJumpEnergyUsage: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x13F0/0x4)
+[19:00:16.358] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::DurationOfAccelerationToSprint: the loader map, CL-129402 row says 0x13C4/0x4, the game says 0x13B4/0x4; the game wins
+[19:00:16.358] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::DurationOfAccelerationToSprint: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x13B4/0x4)
+[19:00:16.358] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::EnergyLoweringMultiplierDuringSprint: the loader map, CL-129402 row says 0x13B0/0x4, the game says 0x13A0/0x4; the game wins
+[19:00:16.358] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::EnergyLoweringMultiplierDuringSprint: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x13A0/0x4)
+[19:00:16.358] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::NormalEnergyRestorationRate: the loader map, CL-129402 row says 0x13B4/0x4, the game says 0x13A4/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::NormalEnergyRestorationRate: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x13A4/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::NormalMoveSpeed: the loader map, CL-129402 row says 0x13A4/0x4, the game says 0x1394/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::NormalMoveSpeed: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1394/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::SprintMoveSpeed: the loader map, CL-129402 row says 0x13AC/0x4, the game says 0x139C/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::SprintMoveSpeed: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x139C/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::CoyoteTime: the loader map, CL-129402 row says 0x1150/0x4, the game says 0x1138/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::CoyoteTime: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1138/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DashCooldownSeconds: the loader map, CL-129402 row says 0x11D4/0x4, the game says 0x11BC/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DashCooldownSeconds: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x11BC/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DashDuration: the loader map, CL-129402 row says 0x11C4/0x4, the game says 0x11AC/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DashDuration: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x11AC/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DashEnergyCostBase: the loader map, CL-129402 row says 0x11CC/0x4, the game says 0x11B4/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DashEnergyCostBase: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x11B4/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DefaultZiplineAcceleration: the loader map, CL-129402 row says 0x1228/0x4, the game says 0x1210/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DefaultZiplineAcceleration: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1210/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DefaultZiplineSpeed: the loader map, CL-129402 row says 0x1224/0x4, the game says 0x120C/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::DefaultZiplineSpeed: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x120C/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::JumpEnergyCost: the loader map, CL-129402 row says 0x1148/0x4, the game says 0x1130/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::JumpEnergyCost: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1130/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::MaxDashDistance: the loader map, CL-129402 row says 0x11C0/0x4, the game says 0x11A8/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::MaxDashDistance: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x11A8/0x4)
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::MaxSlideSpeed: reflected (no row for CL-127004) (0x1078/0x4)
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::SlideEnterImpulse: reflected (no row for CL-127004) (0x107C/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::SlideFrictionFactor: the loader map, CL-129402 row says 0x10A0/0x4, the game says 0x108C/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::SlideFrictionFactor: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x108C/0x4)
+[19:00:16.359] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::SlideGravityForce: the loader map, CL-129402 row says 0x1098/0x4, the game says 0x1088/0x4; the game wins
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::SlideGravityForce: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1088/0x4)
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGemAttributeSet::DodgeCostMultiplier: reflected (no row for CL-127004) (0x188/0x10)
+[19:00:16.359] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGemAttributeSet::DoubleJumpCostMultiplier: reflected (no row for CL-127004) (0x178/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGemAttributeSet::FallDamageMultiplier: reflected (no row for CL-127004) (0x1A8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGemAttributeSet::SlideStaminaRegenMultiplier: reflected (no row for CL-127004) (0x198/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGemAttributeSet::StaminaRegenMultiplier: reflected (no row for CL-127004) (0x168/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGemAttributeSet::ZiplineSpeedMultiplier: reflected (no row for CL-127004) (0x1B8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMovementAttributeSet::JumpMultiplier: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMovementAttributeSet::SprintSpeedMultiplier: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMovementSpeedMultiplierAttributeSet::CurrentMovementSpeedMultiplier: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMovementSpeedMultiplierAttributeSet::MaxMovementSpeedMultiplier: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMovementSpeedMultiplierAttributeSet::MinMovementSpeedMultiplier: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::ADS_TransitionSpeedModMultiplier: reflected (no row for CL-127004) (0x2E8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::DamageFallOffModMultiplier: reflected (no row for CL-127004) (0x308/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::DamageModMultiplier: reflected (no row for CL-127004) (0x2F8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::FireRateModMultiplier: reflected (no row for CL-127004) (0x208/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::MaxMagAmmoModOffset: reflected (no row for CL-127004) (0x338/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::PossibleEnemiesHitPerTrace: reflected (no row for CL-127004) (0x348/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::RecoilModMultiplier: reflected (no row for CL-127004) (0x1B8/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::ReloadSpeedModMultiplier: reflected (no row for CL-127004) (0x328/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::SpreadModMultiplier: reflected (no row for CL-127004) (0x278/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::SwayModMultiplier: reflected (no row for CL-127004) (0x228/0x10)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::bIsUsingDamageFalloff: reflected (no row for CL-127004) (0x410/0x1)
+[19:00:16.360] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: AMassEnemyCharacterBase::bIsInPool: reflected (no row for CL-127004) (0x720/0x1)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: AMassEnemyCharacterBase::AllowedAttackDistance: reflected (no row for CL-127004) (0x910/0x4)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: AMassEnemyCharacterBase::AllowedAttackConeHalfAngle: reflected (no row for CL-127004) (0x918/0x4)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: AMassEnemyCharacterBase::AllowedBuildingAttackDistance: reflected (no row for CL-127004) (0x914/0x4)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::InventoryComponent: reflected (no row for CL-127004) (0xAF0/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::HiddenInventoryComponent: reflected (no row for CL-127004) (0xAF8/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::WeaponSystem: reflected (no row for CL-127004) (0x7D8/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::WeaponAttributes: reflected (no row for CL-127004) (0x7A0/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::MiningBoostAttributes: reflected (no row for CL-127004) (0x788/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::GemAttributes: reflected (no row for CL-127004) (0x768/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::MovementAttributes: reflected (no row for CL-127004) (0x6F0/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::MovementSpeedMultiplierAttributes: reflected (no row for CL-127004) (0x7A8/0x8)
+[19:00:16.361] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::EnergyLogicComponent: reflected (no row for CL-127004) (0x830/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::CrCharacterMovementComponent: reflected (no row for CL-127004) (0x6D0/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::GrenadeChargeAttributes: reflected (no row for CL-127004) (0x780/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::HealthAttributes: reflected (no row for CL-127004) (0x6F8/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::EnergyAttributes: reflected (no row for CL-127004) (0x700/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::ShieldAttributes: reflected (no row for CL-127004) (0x708/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::HydrationAttributes: reflected (no row for CL-127004) (0x718/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::CaloriesAttributes: reflected (no row for CL-127004) (0x720/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::OxygenAttributes: reflected (no row for CL-127004) (0x710/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::ToxicityAttributes: reflected (no row for CL-127004) (0x728/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::RadiationAttributes: reflected (no row for CL-127004) (0x730/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::HeatAttributes: reflected (no row for CL-127004) (0x738/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::DrainAttributes: reflected (no row for CL-127004) (0x740/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::CorrosionAttributes: reflected (no row for CL-127004) (0x748/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::InfectionAttributes: reflected (no row for CL-127004) (0x750/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCharacterPlayerBase::TemperatureAttributes: reflected (no row for CL-127004) (0x758/0x8)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnergyAttributeSet::CurrentEnergy: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnergyAttributeSet::MaxEnergy: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrShieldAttributeSet::CurrentShield: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrShieldAttributeSet::MaxShield: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrHydrationAttributeSet::CurrentHydration: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrHydrationAttributeSet::MaxHydration: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCaloriesAttributeSet::CurrentCalories: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCaloriesAttributeSet::MaxCalories: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrOxygenAttributeSet::CurrentOxygen: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrOxygenAttributeSet::MaxOxygen: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.362] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrToxicityAttributeSet::CurrentToxicity: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrToxicityAttributeSet::MaxToxicity: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrToxicityAttributeSet::MinToxicity: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrRadiationAttributeSet::CurrentRadiation: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrRadiationAttributeSet::MaxRadiation: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrRadiationAttributeSet::MinRadiation: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrHeatAttributeSet::CurrentHeat: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrHeatAttributeSet::MaxHeat: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrHeatAttributeSet::MinHeat: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrDrainAttributeSet::CurrentDrain: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrDrainAttributeSet::MaxDrain: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrDrainAttributeSet::MinDrain: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCorrosionAttributeSet::CurrentCorrosion: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCorrosionAttributeSet::MaxCorrosion: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCorrosionAttributeSet::MinCorrosion: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInfectionAttributeSet::CurrentInfection: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInfectionAttributeSet::MaxInfection: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInfectionAttributeSet::MinInfection: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrTemperatureAttributeSet::CurrentTemperature: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrTemperatureAttributeSet::MaxTemperature: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrTemperatureAttributeSet::MinTemperature: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrHealthAttributeSet::CurrentHealth: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrHealthAttributeSet::MaxHealth: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMiningBoostAttributeSet::CurrentBoostMultiplierValue: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrMiningBoostAttributeSet::MaxBoostMultiplierValue: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGrenadeChargeAttributeSet::CurrentGrenadeCharge: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGrenadeChargeAttributeSet::MaxGrenadeCharge: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGrenadeChargeAttributeSet::MinGrenadeCharge: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponAttributeSet::AggroPerShotModMultiplier: reflected (no row for CL-127004) (0x318/0x10)
+[19:00:16.363] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrAIBase::BaseAttributes: reflected (no row for CL-127004) (0x6B8/0x8)
+[19:00:16.364] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::MaxAirDashesToExecute: the loader map, CL-129402 row says 0x11E0/0x4, the game says 0x11C8/0x4; the game wins
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrCharacterMovementComponent::MaxAirDashesToExecute: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x11C8/0x4)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnergyLogicComponent::DelayBeforeEnergyRegeneration: reflected (no row for CL-127004) (0xE8/0x4)
+[19:00:16.364] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponComponent::LastEquippedWeaponData: the loader map, CL-129402 row says 0x1170/0x8, the game says 0x1158/0x8; the game wins
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponComponent::LastEquippedWeaponData: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1158/0x8)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::BaseDamage: reflected (no row for CL-127004) (0x418/0x28)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::BaseRange: reflected (no row for CL-127004) (0x4C8/0x28)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::RoundsPerMinute: reflected (no row for CL-127004) (0x540/0x28)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::BaseMagazine: reflected (no row for CL-127004) (0x4A0/0x28)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::BaseDamageFalloff: reflected (no row for CL-127004) (0x440/0x8)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::ReloadTime: reflected (no row for CL-127004) (0x570/0x28)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::Spread: reflected (no row for CL-127004) (0x688/0x28)
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::AimCameraSpeed: reflected (no row for CL-127004) (0x610/0x28)
+[19:00:16.364] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::RequiredItem: the loader map, CL-129402 row says 0xDD0/0x8, the game says 0xDA0/0x8; the game wins
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuWeaponItemDataBase::RequiredItem: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0xDA0/0x8)
+[19:00:16.364] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::MiningTypeDamage: the loader map, CL-129402 row says 0x12AC/0x4, the game says 0x1274/0x4; the game wins
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::MiningTypeDamage: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1274/0x4)
+[19:00:16.364] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::WeakpointDamageMultiplier: the loader map, CL-129402 row says 0x12B0/0x4, the game says 0x1278/0x4; the game wins
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::WeakpointDamageMultiplier: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1278/0x4)
+[19:00:16.364] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::ShotAggro: the loader map, CL-129402 row says 0x12B4/0x4, the game says 0x127C/0x4; the game wins
+[19:00:16.364] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::ShotAggro: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x127C/0x4)
+[19:00:16.365] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::PossibleEnemiesHitPerTrace: the loader map, CL-129402 row says 0x1320/0x4, the game says 0x12E8/0x4; the game wins
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponItemDataBase::PossibleEnemiesHitPerTrace: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x12E8/0x4)
+[19:00:16.365] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGrenadeWeaponItemDataBase::GrenadeThrowCostOfGrenadeCharge: the loader map, CL-129402 row says 0x13E8/0x4, the game says 0x12F8/0x4; the game wins
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrGrenadeWeaponItemDataBase::GrenadeThrowCostOfGrenadeCharge: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x12F8/0x4)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrWeaponModDataAsset::BaseDamageFalloffCurveOverride: reflected (no row for CL-127004) (0x188/0x8)
+[19:00:16.365] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInventoryComponent::GridColumns: the loader map, CL-129402 row says 0x9E8/0x4, the game says 0x9D0/0x4; the game wins
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInventoryComponent::GridColumns: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x9D0/0x4)
+[19:00:16.365] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInventoryComponent::GridRows: the loader map, CL-129402 row says 0x9EC/0x4, the game says 0x9D4/0x4; the game wins
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInventoryComponent::GridRows: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x9D4/0x4)
+[19:00:16.365] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInventoryComponent::Slots: the loader map, CL-129402 row says 0x9F0/0x10, the game says 0x9D8/0x10; the game wins
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrInventoryComponent::Slots: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x9D8/0x10)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrUW_InventoryContainer::ItemGridPanel: reflected (no row for CL-127004) (0x460/0x8)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuItemDataBase::UniqueItemName: reflected (no row for CL-127004) (0x2F0/0x8)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuItemDataBase::ItemName: reflected (no row for CL-127004) (0x2E0/0x10)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuItemDataBase::MaxStack: reflected (no row for CL-127004) (0x2C/0x4)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuItemDataBase::StackingType: reflected (no row for CL-127004) (0x28/0x1)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuItemDataBase::UIItemType: reflected (no row for CL-127004) (0x329/0x1)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuItemDataBase::ItemIcon: reflected (no row for CL-127004) (0x230/0xB0)
+[19:00:16.365] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrGatherableBaseActor::ResourceCount: reflected (no row for CL-127004) (0x318/0x4)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FAuAddedItem::Amount: reflected (no row for CL-127004) (0x10/0x4)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrElectricityTrait::Parameters: reflected (no row for CL-127004) (0x28/0x10)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FCrElectricityParameters::ElectricityValue: reflected (no row for CL-127004) (0x0/0x4)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FCrElectricityParameters::Type: reflected (no row for CL-127004) (0x9/0x1)
+[19:00:16.366] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UAuActorPlacementData::EntityType: the loader map, CL-129402 row says 0x130/0x38, the game says 0x120/0x38; the game wins
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuActorPlacementData::EntityType: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x120/0x38)
+[19:00:16.366] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UAuActorPlacementData::BuildingID: the loader map, CL-129402 row says 0x180/0x4, the game says 0x170/0x4; the game wins
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UAuActorPlacementData::BuildingID: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x170/0x4)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FAuAPMassSpawnedEntityType::EntityConfig: reflected (no row for CL-127004) (0x0/0x28)
+[19:00:16.366] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: UCrBuildingData::BuildingName: the loader map, CL-129402 row says 0x2C0/0x10, the game says 0x2A0/0x10; the game wins
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrBuildingData::BuildingName: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x2A0/0x10)
+[19:00:16.366] [WARN ] [T:02032] [ModLoader] [Map] BetterCheats: ACrAPHelper::BuildingData: the loader map, CL-129402 row says 0x830/0x8, the game says 0x6D8/0x8; the game wins
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrAPHelper::BuildingData: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x6D8/0x8)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrPlayerControllerBase::PlayerSkills: reflected (no row for CL-127004) (0x798/0x10)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FCrSkillData::Skill: reflected (no row for CL-127004) (0x0/0x1)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FCrSkillData::Level: reflected (no row for CL-127004) (0x4/0x4)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: FCrSkillData::Experience: reflected (no row for CL-127004) (0x8/0x4)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrGameStateBase::CorporationsOwner: reflected (no row for CL-127004) (0x338/0x8)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrGameStateBase::TechnologyKeeper: reflected (no row for CL-127004) (0x320/0x8)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrCorporationsOwner::DataPoints: reflected (no row for CL-127004) (0x5D0/0x4)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UCrEnviroWaveTimerSubsystem::TimerActor: loader map, CL-127004 row, as reflected (0x90/0x8)
+[19:00:16.366] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: ACrWaveTimerActor::bPause: reflected (no row for CL-127004) (0x2B0/0x1)
+[19:00:16.367] [INFO ] [T:02032] [ModLoader] [Map] BetterCheats: UMassEntitySubsystem::EntityManager: loader map, CL-127004 row (0x38/0x10)
+[19:00:16.367] [INFO ] [T:02032] [ModLoader] [HookScan] BetterCheats: 22 pattern(s) resolved, no failures
+[19:00:16.367] [INFO ] [T:02032] [ModLoader] [PakMount] [OK] FPakPlatformFile located at 0x1EB3AC87200
+[19:00:16.367] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: BetterCheats vv0.23.0
+[19:00:16.367] [INFO ] [T:02032] [ModLoader] [SdkGlobals] Handed to plugins on CL-127004: GObjects base+0xE359240, GNames base+0xE274E40, AppendString base+0x14B4970, GWorld base+0xE4F61B8 (0 = not found)
+[19:00:16.367] [INFO ] [T:02032] [Plugin:BetterCheats] BetterCheats initializing...
+[19:00:16.367] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing config...
+[19:00:16.370] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing game context and panels...
+[19:00:16.370] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Attribute panel...
+[19:00:16.370] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Building panel...
+[19:00:16.380] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000001, target=0x7FF78D38C7E0
+[19:00:16.381] [INFO ] [T:02032] [Plugin:BetterCheats] Building: GetPlacementResourceConditionResult hook installed
+[19:00:16.381] [INFO ] [T:02032] [Plugin:BetterCheats] Building: CheckAvailableBuildings resolved
+[19:00:16.388] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000002, target=0x7FF78D707DB0
+[19:00:16.388] [INFO ] [T:02032] [Plugin:BetterCheats] Building: IsRecipeUnlocked hook installed
+[19:00:16.394] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000003, target=0x7FF78D412050
+[19:00:16.394] [INFO ] [T:02032] [Plugin:BetterCheats] Building: CheckStability_Custom hook installed
+[19:00:16.398] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000004, target=0x7FF78D450690
+[19:00:16.398] [INFO ] [T:02032] [Plugin:BetterCheats] Building: CheckStability_DynamicPillar hook installed
+[19:00:16.402] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000005, target=0x7FF78D522930
+[19:00:16.402] [INFO ] [T:02032] [Plugin:BetterCheats] Building: FindDeconstructibleTarget hook installed
+[19:00:16.404] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000006, target=0x7FF78D40EE60
+[19:00:16.407] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000007, target=0x7FF78D41B530
+[19:00:16.407] [INFO ] [T:02032] [Plugin:BetterCheats] Building: CheckMainMeshCollision and GetBoxCollisionResult hooks installed
+[19:00:16.409] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000008, target=0x7FF78D3F0920
+[19:00:16.410] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000009, target=0x7FF78D3951D0
+[19:00:16.410] [INFO ] [T:02032] [Plugin:BetterCheats] Building: GetSnappedSocket and IsSocketFree hooks installed
+[19:00:16.410] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Item Spawner panel...
+[19:00:16.411] [INFO ] [T:02032] [Plugin:BetterCheats] {POSTING_TO_GAME_THREAD} Item Spawner: posting item list refresh to game thread.
+[19:00:16.411] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Inventory panel...
+[19:00:16.412] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=000000000000000A, target=0x7FF78F7269F0
+[19:00:16.412] [INFO ] [T:02032] [Plugin:BetterCheats] Inventory: InitInventorySlots hook installed.
+[19:00:16.413] [INFO ] [T:02032] [ModLoader] [PluginConsole] 'BetterCheats' registered console command 'bc_invsize' (game thread)
+[19:00:16.413] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Movement panel...
+[19:00:16.414] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Weapons panel...
+[19:00:16.414] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Tools panel...
+[19:00:16.416] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=000000000000000B, target=0x7FF78D4E3EC0
+[19:00:16.417] [INFO ] [T:02032] [Plugin:BetterCheats] Tools: GetMiningDamage hook installed
+[19:00:16.417] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Wave panel...
+[19:00:16.417] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Power panel...
+[19:00:16.419] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Corporations panel...
+[19:00:16.419] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing Enemies panel...
+[19:00:16.425] [INFO ] [T:02032] [Plugin:BetterCheats] Initializing saved presets store...
+[19:00:16.426] [INFO ] [T:02032] [Plugin:BetterCheats] BetterCheats initialized — toggle key: F10
+[19:00:16.426] [INFO ] [T:02032] [ModLoader] Plugin initialized: BetterCheats
+[19:00:16.428] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: BetterDrone vv0.23.0
+[19:00:16.640] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::CanBuildingDroneBeActive: loader map, CL-127004 row
+[19:00:16.862] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::CheckIfInInterior: loader map, CL-127004 row
+[19:00:16.916] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::OnInteractableTargetsChanged: loader map, CL-127004 row
+[19:00:16.972] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::NativeOnInputInteractStarted: loader map, CL-127004 row
+[19:00:17.025] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::NativeOnInputInteractCompleted: loader map, CL-127004 row
+[19:00:17.078] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::NativeOnInputInteract: loader map, CL-127004 row
+[19:00:17.288] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::NativeOnInputMapMenu: loader map, CL-127004 row
+[19:00:17.497] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMapManuSubsystem::UncoverFogOfWar: loader map, CL-127004 row
+[19:00:17.551] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::NativeOnWeaponCancelTool: loader map, CL-127004 row
+[19:00:17.763] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_ActivatableWidget::HandleDeactivate: loader map, CL-127004 row
+[19:00:17.848] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMiningComponent::MineResourceRequest(actor): loader map, CL-127004 row
+[19:00:17.902] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMiningComponent::MineResourceRequest(ISM): loader map, CL-127004 row
+[19:00:17.955] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrInventoryComponent::GetAmountCanAdd: loader map, CL-127004 row
+[19:00:17.957] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: USceneComponent::ComponentToWorld: loader map, CL-127004 row (0x1F0/0x60)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::BuildingDrone: reflected (no row for CL-127004) (0xB30/0x8)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::Status: reflected (no row for CL-127004) (0x1180/0x4)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::DroneCamera: reflected (no row for CL-127004) (0xC18/0x8)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::DroneCameraColl: reflected (no row for CL-127004) (0xC20/0x8)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::bDead: reflected (no row for CL-127004) (0xD60/0x1)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::GemAttributes: reflected (no row for CL-127004) (0x768/0x8)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::MiningComponent: reflected (no row for CL-127004) (0x7E0/0x8)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::WeaponSystem: reflected (no row for CL-127004) (0x7D8/0x8)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::WeaponAttributes: reflected (no row for CL-127004) (0x7A0/0x8)
+[19:00:17.958] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterPlayerBase::AbilitySystem: reflected (no row for CL-127004) (0x7B0/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterDroneBase::DroneCamera: reflected (no row for CL-127004) (0x3E8/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterDroneBase::SphereComponent: reflected (no row for CL-127004) (0x3F0/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterDroneBase::PlacementDeveloperSettings: reflected (no row for CL-127004) (0x3E0/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterDroneBase::IdleSound: reflected (no row for CL-127004) (0x4A0/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterDroneBase::MovementSound: reflected (no row for CL-127004) (0x4A8/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrCharacterDroneBase::RotationSound: reflected (no row for CL-127004) (0x4B0/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrBuildingActorBase::StateAudioComponents: reflected (no row for CL-127004) (0x310/0x10)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::CrChar: reflected (no row for CL-127004) (0x780/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::CurrentInteractableActor: reflected (no row for CL-127004) (0xD78/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrPlayerControllerBase::PlayerControlState: loader map, CL-127004 row (0xE88/0x1)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingMenu::Player: reflected (no row for CL-127004) (0x738/0x8)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FTransform::Translation: loader map, CL-127004 row (0x20/0x18)
+[19:00:17.959] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuActorPlacementDeveloperSettings::BuildingDroneSpeedPerSec: reflected (no row for CL-127004) (0xA4/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuActorPlacementDeveloperSettings::BuildingDroneMaxRadius: reflected (no row for CL-127004) (0xA8/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuActorPlacementDeveloperSettings::BuildingDroneWarningRadius: reflected (no row for CL-127004) (0xAC/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuActorPlacementDeveloperSettings::BuildingDroneMaxHeight: reflected (no row for CL-127004) (0xB0/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuActorPlacementDeveloperSettings::BuildingDroneWarningHeight: reflected (no row for CL-127004) (0xB4/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuActorPlacementDeveloperSettings::BuildingDroneSphereRadius: reflected (no row for CL-127004) (0xA0/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMapMenuDevSettings::FogOfWarPlayerUncoverRadius: reflected (no row for CL-127004) (0x78/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMapMenuDevSettings::MinFootstepDistance: reflected (no row for CL-127004) (0x3B8/0x4)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrGemAttributeSet::FogOfWarRadiusMultiplier: reflected (no row for CL-127004) (0x1C8/0x10)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UInteriorOverlapComponent::bIsSafeInterior: reflected (no row for CL-127004) (0x568/0x1)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrInputConfig::NativeInputActionsWithHandlers: reflected (no row for CL-127004) (0x40/0x10)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrNativeInputAction::InputAction: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrNativeInputAction::NativeInputHandler: reflected (no row for CL-127004) (0x10/0x8)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrGemAttributeSet::HarvesterMiningDamageMultiplier: reflected (no row for CL-127004) (0x148/0x10)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrWeaponAttributeSet::FireRateModMultiplier: reflected (no row for CL-127004) (0x208/0x10)
+[19:00:17.960] [WARN ] [T:02032] [ModLoader] [Map] BetterDrone: UCrWeaponComponent::LastEquippedUnarmed: the loader map, CL-129402 row says 0x1178/0x1, the game says 0x1160/0x1; the game wins
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrWeaponComponent::LastEquippedUnarmed: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1160/0x1)
+[19:00:17.960] [WARN ] [T:02032] [ModLoader] [Map] BetterDrone: UAuWeaponComponent::EquippedWeapon: the loader map, CL-129402 row says 0xA78/0x100, the game says 0xA60/0x100; the game wins
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuWeaponComponent::EquippedWeapon: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0xA60/0x100)
+[19:00:17.960] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FAuEquippedWeapon::ItemDataLoaded: reflected (no row for CL-127004) (0xD0/0x8)
+[19:00:17.961] [WARN ] [T:02032] [ModLoader] [Map] BetterDrone: UCrWeaponItemDataBase::MiningTypeDamage: the loader map, CL-129402 row says 0x12AC/0x4, the game says 0x1274/0x4; the game wins
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrWeaponItemDataBase::MiningTypeDamage: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1274/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuWeaponItemDataBase::RoundsPerMinute: reflected (no row for CL-127004) (0x540/0x28)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuWeaponItemDataBase::BaseRange: reflected (no row for CL-127004) (0x4C8/0x28)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UAuItemDataBase::MaxStack: reflected (no row for CL-127004) (0x2C/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMiningComponent::CurrentlyMinedOre: reflected (no row for CL-127004) (0xC8/0x48)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrOreMiningState::OreActor: reflected (no row for CL-127004) (0x18/0x8)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrOreMiningState::InfiniteOrePhysicalMaterial: reflected (no row for CL-127004) (0x30/0x8)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrOreMiningState::InfiniteOreData: reflected (no row for CL-127004) (0x0/0x18)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrInfiniteOreData::Resource: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrInfiniteOreData::GrantingMomentResourceCount: reflected (no row for CL-127004) (0xC/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrOreActor::OreData: reflected (no row for CL-127004) (0x318/0x10)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrOreActor::Resource: reflected (no row for CL-127004) (0x2D8/0x8)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrOreActor::InitMaxCount: reflected (no row for CL-127004) (0x304/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrOreActor::WeakSpotsDataContainer: reflected (no row for CL-127004) (0x328/0x120)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrOreRuntimeData::bIsDepleted: reflected (no row for CL-127004) (0x8/0x1)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrOreRuntimeData::CurrentResourceCount: reflected (no row for CL-127004) (0x0/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrOreRuntimeData::MaxResourceCount: reflected (no row for CL-127004) (0x4/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrWeakSpotsContainer::Items: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrWeakSpotRuntimeData::CurrentMiningHealth: reflected (no row for CL-127004) (0x14/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrWeakSpotRuntimeData::ResourceCount: reflected (no row for CL-127004) (0x28/0x4)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrWeakSpotRuntimeData::Resource: reflected (no row for CL-127004) (0x20/0x8)
+[19:00:17.961] [WARN ] [T:02032] [ModLoader] [Map] BetterDrone: UCrInventoryComponent::Slots: the loader map, CL-129402 row says 0x9F0/0x10, the game says 0x9D8/0x10; the game wins
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrInventoryComponent::Slots: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x9D8/0x10)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrInventorySlot::ItemId: reflected (no row for CL-127004) (0x0/0x10)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FAuItemId::Handle: reflected (no row for CL-127004) (0x0/0x10)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrOreSubsystem::InfiniteOrePhysMatMappingData: reflected (no row for CL-127004) (0x30/0x8)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrInfiniteOrePhysMatData::PhysMatOreDataMap: reflected (no row for CL-127004) (0x30/0x50)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrGameStateBase::MapMenuDataReplicationHelper: reflected (no row for CL-127004) (0x368/0x8)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: ACrMapMenuDataReplicationHelper::BuildingsMarkerDataContainer: reflected (no row for CL-127004) (0x470/0x120)
+[19:00:17.961] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FBuildingsMarkerDataContainer::BuildingsMarkerData: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FBuildingMarkerDataFastArrayItem::BuildingHandle: reflected (no row for CL-127004) (0x10/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FBuildingMarkerDataFastArrayItem::Location: reflected (no row for CL-127004) (0x18/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_MapMenu::MapMenuMapArea: reflected (no row for CL-127004) (0x630/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_MapMenuMapArea::MapMenuMassMarkers: reflected (no row for CL-127004) (0x488/0x50)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_MapMenuMapArea::MapMenuTerrain: reflected (no row for CL-127004) (0x3C8/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_MapMenuMapArea::CanvasPanelMapArea: reflected (no row for CL-127004) (0x3C0/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FEntityMarkerUIRepresentation::Marker: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMapMenuDevSettings::MapAreaPivotPoint: reflected (no row for CL-127004) (0x50/0xC)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMapMenuDevSettings::MarkerStatusesColorData: reflected (no row for CL-127004) (0x300/0x28)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrMapMenuMarkerDefaultColorData::MarkerPlayer: reflected (no row for CL-127004) (0x30/0x10)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::PlayerCharacter: reflected (no row for CL-127004) (0x3A0/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::DistanceValueT: reflected (no row for CL-127004) (0x3D0/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::DistanceValueH: reflected (no row for CL-127004) (0x3D8/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::DistanceValueD: reflected (no row for CL-127004) (0x3E0/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::DistanceValueU: reflected (no row for CL-127004) (0x3E8/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::DistanceValueM: reflected (no row for CL-127004) (0x3F0/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::HeightValueT: reflected (no row for CL-127004) (0x3F8/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::HeightValueH: reflected (no row for CL-127004) (0x400/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::HeightValueD: reflected (no row for CL-127004) (0x408/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::HeightValueU: reflected (no row for CL-127004) (0x410/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: UCrUW_BuildingDroneHud::HeightValueM: reflected (no row for CL-127004) (0x418/0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrNativeInputAction: reflected (no row for CL-127004) (0x18)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrInventorySlot: reflected (no row for CL-127004) (0x24)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrWeakSpotRuntimeData: reflected (no row for CL-127004) (0x38)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FBuildingMarkerDataFastArrayItem: reflected (no row for CL-127004) (0x40)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FEntityMarkerUIRepresentation: reflected (no row for CL-127004), as compiled (0x8)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [Map] BetterDrone: FCrInfiniteOreData: reflected (no row for CL-127004), as compiled (0x18)
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] [HookScan] BetterDrone: 13 pattern(s) resolved, no failures
+[19:00:17.962] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: BetterDrone vv0.23.0
+[19:00:17.989] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=000000000000000C, target=0x7FF78D4976B0
+[19:00:17.989] [INFO ] [T:02032] [Plugin:BetterDrone] WaveShelter: shelter is judged at the parked body while the drone is out
+[19:00:17.989] [INFO ] [T:02032] [Plugin:BetterDrone] WavePatch: CanBuildingDroneBeActive at 0x7FF78D4963F0
+[19:00:17.995] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=000000000000000D, target=0x7FF78D4963F0
+[19:00:17.995] [INFO ] [T:02032] [Plugin:BetterDrone] WavePatch: drone wave restriction removed
+[19:00:17.995] [INFO ] [T:02032] [Plugin:BetterDrone] DroneInteract: OnInteractableTargetsChanged at 0x7FF78D5399C0, NativeOnInputInteract at 0x7FF78D537070
+[19:00:17.999] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=000000000000000E, target=0x7FF78D5399C0
+[19:00:18.001] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=000000000000000F, target=0x7FF78D537D60
+[19:00:18.003] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000010, target=0x7FF78D537640
+[19:00:18.004] [INFO ] [T:02032] [Plugin:BetterDrone] DroneInteract: building interaction enabled in drone mode on 'E'
+[19:00:18.004] [INFO ] [T:02032] [Plugin:BetterDrone] DroneMap: NativeOnInputMapMenu at 0x7FF78D538000, map enabled in drone mode on 'M'
+[19:00:18.004] [INFO ] [T:02032] [Plugin:BetterDrone] DroneFog: UncoverFogOfWar at 0x7FF78F78BA80
+[19:00:18.005] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000011, target=0x7FF78D4B0E40
+[19:00:18.006] [INFO ] [T:02032] [Plugin:BetterDrone] DroneBuildMenu: NativeOnWeaponCancelTool at 0x7FF78D4B0E40, HandleDeactivate at 0x7FF78F7229A0
+[19:00:18.006] [INFO ] [T:02032] [Plugin:BetterDrone] BetterDrone initialised
+[19:00:18.006] [INFO ] [T:02032] [ModLoader] Plugin initialized: BetterDrone
+[19:00:18.008] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: CameraControls vv0.2.0
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: AAuPlayerCameraManager::FOV: loader map, CL-127004 row (0x2998/0x4)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: AAuPlayerCameraManager::AdditionalFOVOffset: loader map, CL-127004 row (0x299C/0x4)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ULocalPlayer::Origin: loader map, CL-127004 row (0x80/0x10)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ULocalPlayer::Size: loader map, CL-127004 row (0x90/0x10)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: APlayerController::bCinematicMode: loader map, CL-127004 row (0x4D0/0x1 mask 0x2)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: APlayerController::bHidePawnInCinematicMode: loader map, CL-127004 row (0x4D0/0x1 mask 0x4)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHeroComponent::ContextualInputBindings: reflected (no row for CL-127004) (0xE0/0x50)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHeroComponent::ExclusiveInputBindings: reflected (no row for CL-127004) (0x130/0x50)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHeroComponent::DefaultInputMappings: reflected (no row for CL-127004) (0xD0/0x10)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: FInputMappingContextAndPriority::InputMapping: reflected (no row for CL-127004) (0x0/0x28)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: FInputMappingContextAndPriority::Priority: reflected (no row for CL-127004) (0x28/0x4)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::HealthAttributes: reflected (no row for CL-127004) (0x6F8/0x8)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::CaloriesAttributes: reflected (no row for CL-127004) (0x720/0x8)
+[19:00:18.010] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::HydrationAttributes: reflected (no row for CL-127004) (0x718/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::OxygenAttributes: reflected (no row for CL-127004) (0x710/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::EnergyAttributes: reflected (no row for CL-127004) (0x700/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::ShieldAttributes: reflected (no row for CL-127004) (0x708/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::ToxicityAttributes: reflected (no row for CL-127004) (0x728/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::RadiationAttributes: reflected (no row for CL-127004) (0x730/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::HeatAttributes: reflected (no row for CL-127004) (0x738/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::DrainAttributes: reflected (no row for CL-127004) (0x740/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::CorrosionAttributes: reflected (no row for CL-127004) (0x748/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::InfectionAttributes: reflected (no row for CL-127004) (0x750/0x8)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHealthAttributeSet::CurrentHealth: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHealthAttributeSet::MaxHealth: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrCaloriesAttributeSet::CurrentCalories: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrCaloriesAttributeSet::MaxCalories: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHydrationAttributeSet::CurrentHydration: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHydrationAttributeSet::MaxHydration: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrOxygenAttributeSet::CurrentOxygen: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrOxygenAttributeSet::MaxOxygen: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrEnergyAttributeSet::CurrentEnergy: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrEnergyAttributeSet::MaxEnergy: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrShieldAttributeSet::CurrentShield: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrShieldAttributeSet::MaxShield: reflected (no row for CL-127004) (0xA8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrToxicityAttributeSet::CurrentToxicity: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrToxicityAttributeSet::MinToxicity: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrRadiationAttributeSet::CurrentRadiation: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrRadiationAttributeSet::MinRadiation: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHeatAttributeSet::CurrentHeat: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrHeatAttributeSet::MinHeat: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrDrainAttributeSet::CurrentDrain: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrDrainAttributeSet::MinDrain: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrCorrosionAttributeSet::CurrentCorrosion: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrCorrosionAttributeSet::MinCorrosion: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrInfectionAttributeSet::CurrentInfection: reflected (no row for CL-127004) (0x98/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: UCrInfectionAttributeSet::MinInfection: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::bIsDisabledPawn: reflected (no row for CL-127004) (0xC4C/0x1)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::InteractionState: reflected (no row for CL-127004) (0xC48/0x4)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::bDead: reflected (no row for CL-127004) (0xD60/0x1)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::bOnLadder: reflected (no row for CL-127004) (0xD62/0x1)
+[19:00:18.011] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::bCharacterSelectedAndInitialized: reflected (no row for CL-127004) (0xD61/0x1)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::BuildingDrone: reflected (no row for CL-127004) (0xB30/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrCharacterPlayerBase::CrPC: reflected (no row for CL-127004) (0x6E8/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::GameMenuBlockers: reflected (no row for CL-127004) (0xF58/0x10)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::bReplInPauseMenu: reflected (no row for CL-127004) (0xC18/0x1)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::PreviousPawn: reflected (no row for CL-127004) (0xF70/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::PlayerMainCharacter: reflected (no row for CL-127004) (0x788/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::CurrentInteractableActor: reflected (no row for CL-127004) (0xD78/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::CurrentInteractableActorWithActiveInteraction: reflected (no row for CL-127004) (0xD88/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::CurrentZipline: reflected (no row for CL-127004) (0xDF8/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: ACrPlayerControllerBase::CurrentBuildingTarget: reflected (no row for CL-127004) (0x1178/0x8)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: APlayerController::bPlayerIsWaiting: loader map, CL-127004 row, as reflected (0x4D0/0x1 mask 0x10)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: FCrEnviroWaveSettings::WaveSpeed: reflected (no row for CL-127004) (0x0/0x4)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: FCrEnviroWaveSettings: reflected (no row for CL-127004), as compiled (0x2C)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: FCrContextualInputBinding: reflected (no row for CL-127004), as compiled (0x10)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] [Map] CameraControls: FInputMappingContextAndPriority: reflected (no row for CL-127004), as compiled (0x30)
+[19:00:18.012] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: CameraControls vv0.2.0
+[19:00:18.012] [INFO ] [T:02032] [Plugin:CameraControls] CameraControls initializing...
+[19:00:18.015] [INFO ] [T:02032] [Plugin:CameraControls] ProjectIO: projects directory is D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\CameraControls\Projects
+[19:00:18.020] [INFO ] [T:02032] [Plugin:CameraControls] Input: registered 26 keybinds
+[19:00:18.020] [INFO ] [T:02032] [Plugin:CameraControls] Editor: widgets registered (timeline=000001EB4560ED30 properties=000001EB4560ECF0 overlay=000001EB4560E5F0 notice=000001EB4560E470)
+[19:00:18.022] [INFO ] [T:02032] [Plugin:CameraControls] CameraControls initialized
+[19:00:18.022] [INFO ] [T:02032] [ModLoader] Plugin initialized: CameraControls
+[19:00:18.024] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: Codex vv1.0.0
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UAuItemDataBase::UIItemType: reflected (no row for CL-127004) (0x329/0x1)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UAuItemDataBase::UniqueItemName: reflected (no row for CL-127004) (0x2F0/0x8)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UAuItemDataBase::ItemName: reflected (no row for CL-127004) (0x2E0/0x10)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UAuItemDataBase::ItemIcon: reflected (no row for CL-127004) (0x230/0xB0)
+[19:00:18.025] [WARN ] [T:02032] [ModLoader] [Map] Codex: UAuActorPlacementData::EntityType: the loader map, CL-129402 row says 0x130/0x38, the game says 0x120/0x38; the game wins
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UAuActorPlacementData::EntityType: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x120/0x38)
+[19:00:18.025] [WARN ] [T:02032] [ModLoader] [Map] Codex: UCrBuildingData::Type: the loader map, CL-129402 row says 0x2E0/0x1, the game says 0x2C0/0x1; the game wins
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UCrBuildingData::Type: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x2C0/0x1)
+[19:00:18.025] [WARN ] [T:02032] [ModLoader] [Map] Codex: UCrBuildingData::BuildingName: the loader map, CL-129402 row says 0x2C0/0x10, the game says 0x2A0/0x10; the game wins
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UCrBuildingData::BuildingName: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x2A0/0x10)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UCrItemRecipeCollectionSubsystem::LinkedCollections: reflected (no row for CL-127004) (0x30/0x50)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UCrItemRecipeCollection::Recipes: reflected (no row for CL-127004) (0x30/0x10)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UAuItemRecipeData::BuildTime: reflected (no row for CL-127004) (0x50/0x4)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UCrItemRecipeData::DisplayText: reflected (no row for CL-127004) (0x110/0x10)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: UCrBuildingCraftingTrait::CraftingParameters: reflected (no row for CL-127004) (0x28/0x20)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: ACrCraftingRecipeOwner::CrafterToRecipeMap: reflected (no row for CL-127004) (0x2F8/0x50)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FAuSimpleItem::Count: reflected (no row for CL-127004) (0x28/0x4)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FAuSimpleItem::ItemDataBase: reflected (no row for CL-127004) (0x20/0x8)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FNestedItemRecipeCollectionArray::Collections: reflected (no row for CL-127004) (0x0/0x10)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FAuAPMassSpawnedEntityType::EntityConfigPtr: reflected (no row for CL-127004) (0x30/0x8)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FAuAPMassSpawnedEntityType::EntityConfig: reflected (no row for CL-127004) (0x0/0x28)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FCrCraftingParameters::RecipeCollection: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FAuSimpleItem: reflected (no row for CL-127004), as compiled (0x30)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FAuAPMassSpawnedEntityType: reflected (no row for CL-127004), as compiled (0x38)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FCrCraftingParameters: reflected (no row for CL-127004), as compiled (0x20)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] [Map] Codex: FNestedItemRecipeCollectionArray: reflected (no row for CL-127004), as compiled (0x10)
+[19:00:18.025] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: Codex vv1.0.0
+[19:00:18.026] [INFO ] [T:02032] [Plugin:Codex] Plugin initializing...
+[19:00:18.027] [WARN ] [T:02032] [Plugin:Codex] CodexIcons: ImGui texture hooks unavailable (server/generic build) - icons disabled.
+[19:00:18.033] [INFO ] [T:02032] [Plugin:Codex] CodexUI: search, detail and pin windows registered
+[19:00:18.037] [INFO ] [T:02032] [Plugin:Codex] Plugin initialized successfully
+[19:00:18.037] [INFO ] [T:02032] [ModLoader] Plugin initialized: Codex
+[19:00:18.039] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: Compass vv0.21.0
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrPlayerControllerBase::bMapMenuOpen: loader map, CL-127004 row (0xF68/0x1)
+[19:00:18.041] [WARN ] [T:02032] [ModLoader] [Map] Compass: ACrBaseCore::UpgradeLevel: the loader map, CL-129402 row says 0x6D2/0x1, the game says 0x6CA/0x1; the game wins
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrBaseCore::UpgradeLevel: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x6CA/0x1)
+[19:00:18.041] [WARN ] [T:02032] [ModLoader] [Map] Compass: ACrBaseCore::bIsAttacked: the loader map, CL-129402 row says 0x6D0/0x1, the game says 0x6C8/0x1; the game wins
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrBaseCore::bIsAttacked: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x6C8/0x1)
+[19:00:18.041] [WARN ] [T:02032] [ModLoader] [Map] Compass: ACrBaseCore::IsInfected: the loader map, CL-129402 row says 0x6D3/0x1, the game says 0x6CB/0x1; the game wins
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrBaseCore::IsInfected: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x6CB/0x1)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: AMassEnemyCharacterBase::Dissolve: reflected (no row for CL-127004) (0x900/0x4)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrGameStateBase::MapMenuDataReplicationHelper: reflected (no row for CL-127004) (0x368/0x8)
+[19:00:18.041] [WARN ] [T:02032] [ModLoader] [Map] Compass: ACrGameStateBase::PlayerPersonalMarkers: the loader map, CL-129402 row says 0x430/0x10, the game says 0x428/0x10; the game wins
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrGameStateBase::PlayerPersonalMarkers: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x428/0x10)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrMapMenuDataReplicationHelper::BuildingsMarkerDataContainer: reflected (no row for CL-127004) (0x470/0x120)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrMapMenuDataReplicationHelper::FoundableMarkerDataContainer: reflected (no row for CL-127004) (0x590/0x120)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: ACrMapMenuDataReplicationHelper::PlayersMarkerDataContainer: reflected (no row for CL-127004) (0x6B0/0x120)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: FBuildingsMarkerDataContainer::BuildingsMarkerData: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: FFoundableMarkerDataContainer::FoundableMarkerData: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: FPlayersMarkerDataContainer::PlayersMarkerData: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:18.041] [INFO ] [T:02032] [ModLoader] [Map] Compass: FBuildingMarkerDataFastArrayItem::Location: reflected (no row for CL-127004) (0x18/0x8)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FBuildingMarkerDataFastArrayItem::BuildingUniqueName: reflected (no row for CL-127004) (0x30/0x8)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FFoundableMarkerDataFastArrayItem::Location: reflected (no row for CL-127004) (0x18/0x8)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FFoundableMarkerDataFastArrayItem::FoundableType: reflected (no row for CL-127004) (0x20/0x1)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FPlayerMarkerDataFastArrayItem::Player: reflected (no row for CL-127004) (0x10/0x10)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FPlayerMarkerDataFastArrayItem::Location: reflected (no row for CL-127004) (0x20/0x8)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FPlayerMarkerDataFastArrayItem::PlayerColor: reflected (no row for CL-127004) (0x28/0x10)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FPlayerMarkerDataFastArrayItem::RotationZ: reflected (no row for CL-127004) (0x38/0x4)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FPlayerMarkerDataFastArrayItem::PlayerMarkerFlags: reflected (no row for CL-127004) (0x3C/0x1)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FCrPlayerPersonalMarkerData::MarkerPosition: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FCrPlayerPersonalMarkerData::PlayerName: reflected (no row for CL-127004) (0x8/0x10)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FCrPlayerPersonalMarkerData::PlayerColor: reflected (no row for CL-127004) (0x18/0x10)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FBuildingMarkerDataFastArrayItem: reflected (no row for CL-127004), as compiled (0x40)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FFoundableMarkerDataFastArrayItem: reflected (no row for CL-127004), as compiled (0x28)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FPlayerMarkerDataFastArrayItem: reflected (no row for CL-127004), as compiled (0x40)
+[19:00:18.042] [INFO ] [T:02032] [ModLoader] [Map] Compass: FCrPlayerPersonalMarkerData: reflected (no row for CL-127004), as compiled (0x28)
+[19:00:18.251] [INFO ] [T:02032] [ModLoader] [Map] Compass: UGameViewportClient::Draw: loader map, CL-127004 row
+[19:00:18.254] [INFO ] [T:02032] [ModLoader] [Map] Compass: UCrMapManuSubsystem::GatherPlayersData: loader map, CL-127004 row
+[19:00:18.256] [INFO ] [T:02032] [ModLoader] [HookScan] Compass: 2 pattern(s) resolved, no failures
+[19:00:18.256] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: Compass vv0.21.0
+[19:00:18.256] [INFO ] [T:02032] [Plugin:Compass] Compass plugin initializing...
+[19:00:18.257] [WARN ] [T:02032] [Plugin:Compass] Compass is disabled in config — skipping hook install
+[19:00:18.257] [INFO ] [T:02032] [ModLoader] Plugin initialized: Compass
+[19:00:18.259] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: MiniMap v1.2.0
+[19:00:25.737] [WARN ] [T:04336] UE4SS load: timed out waiting for detour to unwind (15000 ms) -- loading anyway
+[19:00:25.737] [INFO ] [T:04336] Loading UE4SS from: D:\sr-client\StarRupture\Binaries\Win64\ue4ss\ue4ss.dll
+[19:00:25.738] [WARN ] [T:04336] UE4SS failed to load (error 126): D:\sr-client\StarRupture\Binaries\Win64\ue4ss\ue4ss.dll
+[19:00:31.312] [INFO ] [T:02032] [ModLoader] [HookScan] MiniMap: 100 pattern(s) resolved, no failures
+[19:00:31.312] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: MiniMap v1.2.0
+[19:00:31.320] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000012, target=0x7FF78C66D8E0
+[19:00:31.323] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000013, target=0x7FF78C66DE30
+[19:00:31.326] [ERROR] [T:02032] [Plugin:MiniMap] MiniMap: atlas texture interface initialization failed
+[19:00:31.326] [INFO ] [T:02032] [HookBroker] Last hook removed from 0x7FF78C66D8E0 -- restoring the original prologue
+[19:00:31.326] [INFO ] [T:02032] [ModLoader] [Hooks] Hook::RemoveRaw: restoring 0x7FF78C66D8E0 (16 bytes)
+[19:00:31.327] [INFO ] [T:02032] [ModLoader] [Hooks] Hook::RemoveRaw: prologue at 0x7FF78C66D8E0 restored
+[19:00:31.327] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook removed: handle=0000000000000012
+[19:00:31.327] [INFO ] [T:02032] [HookBroker] Last hook removed from 0x7FF78C66DE30 -- restoring the original prologue
+[19:00:31.327] [INFO ] [T:02032] [ModLoader] [Hooks] Hook::RemoveRaw: restoring 0x7FF78C66DE30 (16 bytes)
+[19:00:31.327] [INFO ] [T:02032] [ModLoader] [Hooks] Hook::RemoveRaw: prologue at 0x7FF78C66DE30 restored
+[19:00:31.327] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook removed: handle=0000000000000013
+[19:00:31.327] [INFO ] [T:02032] [ModLoader] Plugin initialization failed: MiniMap
+[19:00:31.329] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: ProductionViewer vv0.17.0
+[19:00:31.330] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UAuItemDataBase::UniqueItemName: reflected (no row for CL-127004) (0x2F0/0x8)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UAuItemDataBase::ItemName: reflected (no row for CL-127004) (0x2E0/0x10)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UAuItemDataBase::ItemIcon: reflected (no row for CL-127004) (0x230/0xB0)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrCraftingFragment::SelectedRecipe: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrCraftingFragment::CurrentRecipe: reflected (no row for CL-127004) (0x8/0x8)
+[19:00:31.331] [WARN ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrCraftingFragment::CraftingMultiplier: the loader map, CL-129402 row says 0x8C/0x4, the game says 0x70/0x4; the game wins
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrCraftingFragment::CraftingMultiplier: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x70/0x4)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FAuSimpleItem::ItemDataBase: reflected (no row for CL-127004) (0x20/0x8)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FAuSimpleItem::Count: reflected (no row for CL-127004) (0x28/0x4)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FAuSimpleItem: reflected (no row for CL-127004), as compiled (0x30)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrMassEntityReplicationHelper: reflected (no row for CL-127004), as compiled (0x18)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FTransformFragment::Transform: reflected (no row for CL-127004) (0x0/0x60)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrGridEntityHandle: reflected (no row for CL-127004), as compiled (0x18)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UMassSignalSubsystem::CachedWorld: reflected (no row for CL-127004; the loader map, CL-129402 row agrees) (0xB0/0x8)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UMassEntitySubsystem::EntityManager: loader map, CL-127004 row (0x38/0x10)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UCrGameInstance::ServerSessionName: loader map, CL-127004 row (0x290/0x10)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrGridEntityHandle::EntityHandle: loader map, CL-127004 row (0x0/0x8)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrGridEntityHandle::Data: loader map, CL-127004 row (0x8/0x10)
+[19:00:31.331] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FTransform::Translation: loader map, CL-127004 row (0x20/0x18)
+[19:00:31.540] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UCrBaseCoreSubsystem::GetBaseCoresRangedBuilding: loader map, CL-127004 row
+[19:00:31.750] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrMassEntityReplicationHelper::FCrMassEntityReplicationHelper: loader map, CL-127004 row
+[19:00:31.960] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UCrBuildingCustomNameSubsystem::GetBuildingCustomNameByReplicationHelper: loader map, CL-127004 row
+[19:00:31.963] [INFO ] [T:02032] [Plugin:ProductionViewer] ProductionBaseCore: base core resolution ready (names enabled)
+[19:00:31.965] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UWorld::GetSubsystem<UMassEntitySubsystem>: loader map, CL-127004 row
+[19:00:32.186] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FCrCraftingFragment::StaticStruct: loader map, CL-127004 row
+[19:00:32.191] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: FMassEntityManager::InternalGetFragmentDataPtr: loader map, CL-127004 row
+[19:00:32.194] [INFO ] [T:02032] [ModLoader] [Map] ProductionViewer: UMassSignalSubsystem::SignalEntity: loader map, CL-127004 row
+[19:00:32.196] [INFO ] [T:02032] [ModLoader] [HookScan] ProductionViewer: 7 pattern(s) resolved, no failures
+[19:00:32.196] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: ProductionViewer vv0.17.0
+[19:00:32.196] [INFO ] [T:02032] [Plugin:ProductionViewer] Plugin initializing (client build)...
+[19:00:32.202] [INFO ] [T:02032] [Plugin:ProductionViewer] Production Viewer window registered
+[19:00:32.207] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000014, target=0x7FF78C5341E0
+[19:00:32.207] [INFO ] [T:02032] [Plugin:ProductionViewer] ProductionMass: SignalEntity hook installed - Mass-simulated crafting will be tracked
+[19:00:32.207] [INFO ] [T:02032] [Plugin:ProductionViewer] ProductionTracker: initialized
+[19:00:32.207] [WARN ] [T:02032] [Plugin:ProductionViewer] ProductionIcons: ImGui texture hooks unavailable (server/generic build) - icons disabled.
+[19:00:32.211] [INFO ] [T:02032] [Plugin:ProductionViewer] Plugin initialized successfully
+[19:00:32.211] [INFO ] [T:02032] [ModLoader] Plugin initialized: ProductionViewer
+[19:00:32.214] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: AxRuptureTimer vv0.11.0
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: ACrGameStateBase::WaveTimerActor: reflected (no row for CL-127004) (0x318/0x8)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: ACrWaveTimerActor::NextTime: reflected (no row for CL-127004) (0x2A8/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: ACrWaveTimerActor::NextPhase: reflected (no row for CL-127004) (0x2AC/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: ACrWaveTimerActor::bPause: reflected (no row for CL-127004) (0x2B0/0x1)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: UCrEnviroWaveSubsystem::CurrentPreWaveSubstage: reflected (no row for CL-127004) (0x1A0/0x1)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: UCrEnviroWaveSubsystem::CurrentFadeoutSubstage: reflected (no row for CL-127004) (0x160/0x1)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: UCrEnviroWaveSubsystem::CurrentGrowbackSubstage: reflected (no row for CL-127004) (0x180/0x1)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings: reflected (no row for CL-127004), as compiled (0x2C)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveSpeed: reflected (no row for CL-127004) (0x0/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveStartPosition: reflected (no row for CL-127004) (0x4/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveEndPosition: reflected (no row for CL-127004) (0x8/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::PreWaveDuration: reflected (no row for CL-127004) (0xC/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WavePreWaveExplosionDuration: reflected (no row for CL-127004) (0x28/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveFadeoutFireWaveDuration: reflected (no row for CL-127004) (0x10/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveFadeoutBurningDuration: reflected (no row for CL-127004) (0x14/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveFadeoutFadingDuration: reflected (no row for CL-127004) (0x18/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveGrowbackMoonPhaseDuration: reflected (no row for CL-127004) (0x1C/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveGrowbackRegrowthStartDuration: reflected (no row for CL-127004) (0x20/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: FCrEnviroWaveSettings::WaveGrowbackRegrowthDuration: reflected (no row for CL-127004) (0x24/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: UCrEnviroWaveTimerSubsystem::NextWaveTimer: loader map, CL-127004 row (0x7C/0x4)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: UCrEnviroWaveTimerSubsystem::bWaitingForNextWave: loader map, CL-127004 row (0x80/0x1)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: UCrEnviroWaveTimerSubsystem::bStopWaves: loader map, CL-127004 row (0x83/0x1)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] [Map] AxRuptureTimer: UCrEnviroWaveTimerSubsystem::TimerActor: loader map, CL-127004 row (0x90/0x8)
+[19:00:32.215] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: AxRuptureTimer vv0.11.0
+[19:00:32.215] [INFO ] [T:02032] [Plugin:AxRuptureTimer] RuptureTimer v0.11.0 initializing (client build)
+[19:00:32.219] [INFO ] [T:02032] [Plugin:AxRuptureTimer] RuptureTimer initialized
+[19:00:32.219] [INFO ] [T:02032] [ModLoader] Plugin initialized: AxRuptureTimer
+[19:00:32.221] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: Waila vv0.20.0
+[19:00:32.434] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrCraftingComponent::GetCraftingFragment: loader map, CL-127004 row
+[19:00:32.488] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingItemStorageComponent::GetStoredItemsContainerInternal: loader map, CL-127004 row
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrBuildingActorBase::PlacementData: reflected (no row for CL-127004) (0x2D0/0x8)
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrBuildingActorBase::ItemStorage: reflected (no row for CL-127004) (0x308/0x8)
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrBuildingActorBase::InItemStorage: reflected (no row for CL-127004) (0x300/0x8)
+[19:00:32.491] [WARN ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingData::BuildingName: the loader map, CL-129402 row says 0x2C0/0x10, the game says 0x2A0/0x10; the game wins
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingData::BuildingName: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x2A0/0x10)
+[19:00:32.491] [WARN ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingData::BuildingDescription: the loader map, CL-129402 row says 0x2D0/0x10, the game says 0x2B0/0x10; the game wins
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingData::BuildingDescription: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x2B0/0x10)
+[19:00:32.491] [WARN ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingData::Icon: the loader map, CL-129402 row says 0x210/0xB0, the game says 0x1F0/0xB0; the game wins
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingData::Icon: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x1F0/0xB0)
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: UAuItemDataBase::ItemName: reflected (no row for CL-127004) (0x2E0/0x10)
+[19:00:32.491] [INFO ] [T:02032] [ModLoader] [Map] Waila: UAuItemDataBase::UniqueItemName: reflected (no row for CL-127004) (0x2F0/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UAuItemDataBase::ItemIcon: reflected (no row for CL-127004) (0x230/0xB0)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingItemStorageComponent::GridColumns: reflected (no row for CL-127004) (0x240/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrBuildingItemStorageComponent::GridRows: reflected (no row for CL-127004) (0x244/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrItemsStorageContainer::Items: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrStorageItem::bIsDisabled: reflected (no row for CL-127004) (0x60/0x1)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrStorageItem::Item: reflected (no row for CL-127004) (0x10/0x30)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuSimpleItem::Count: reflected (no row for CL-127004) (0x28/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuSimpleItem::ItemDataBase: reflected (no row for CL-127004) (0x20/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrCrafter::CraftComponent: loader map, CL-127004 row, as reflected (0x6D8/0x8)
+[19:00:32.492] [WARN ] [T:02032] [ModLoader] [Map] Waila: ACrCrafter::CraftingSettings: the loader map, CL-129402 row says 0x6EC/0xC, the game says 0x6E4/0xC; the game wins
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrCrafter::CraftingSettings: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x6E4/0xC)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingSettings::CraftingSpeed: reflected (no row for CL-127004) (0x8/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrCraftingComponent::ItemsToCraft: reflected (no row for CL-127004) (0xC0/0x10)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UAuItemRecipeData::NeededResources: reflected (no row for CL-127004) (0x30/0x10)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UAuItemRecipeData::OutputItem: reflected (no row for CL-127004) (0x40/0x10)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UAuItemRecipeData::BuildTime: reflected (no row for CL-127004) (0x50/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrItemRecipeData::Icon: reflected (no row for CL-127004) (0x60/0xB0)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuCraftItem::RecipeData: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuCraftItem::OutputItem: reflected (no row for CL-127004) (0x20/0x30)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuItemRecipeOrder::Item: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuItemRecipeOrder::Count: reflected (no row for CL-127004) (0x8/0x4)
+[19:00:32.492] [WARN ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::CraftingMultiplier: the loader map, CL-129402 row says 0x8C/0x4, the game says 0x70/0x4; the game wins
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::CraftingMultiplier: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x70/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::bIsMissingItems: reflected (no row for CL-127004) (0x38/0x1)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::bOutputFull: reflected (no row for CL-127004) (0x50/0x1)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::SelectedRecipe: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::CraftingSpeed: reflected (no row for CL-127004) (0x20/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrDronePathPoint::SocketsData: reflected (no row for CL-127004) (0x3E8/0x10)
+[19:00:32.492] [WARN ] [T:02032] [ModLoader] [Map] Waila: ACrBuildingSplineActorBase::Spline: the loader map, CL-129402 row says 0x6D0/0x8, the game says 0x6C8/0x8; the game wins
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrBuildingSplineActorBase::Spline: reflected (no row for CL-127004; the loader map, CL-129402 row does not) (0x6C8/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FBuildingSocketData::Socket: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: FBuildingSocketData::WorldTransform: reflected (no row for CL-127004) (0x10/0x60)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrGameStateBase::PackageTransportReplicator: reflected (no row for CL-127004) (0x330/0x8)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrPackageTransportReplicator::SendingTime: loader map, CL-127004 row (0x2C0/0x4)
+[19:00:32.492] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrPackageTransportReplicator::SenderReceiversContainer: reflected (no row for CL-127004) (0x388/0x120)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrSenderReceiversContainer::AllSenderReceiversData: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrPackageTransportReplicator::ConnectionsContainer: reflected (no row for CL-127004) (0x4A8/0x120)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrPackageTransportConnectionsContainer::ConnectionsData: reflected (no row for CL-127004) (0x108/0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrPackageTransportConnectionData::Sender: reflected (no row for CL-127004) (0x10/0x18)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrPackageTransportConnectionData::Receiver: reflected (no row for CL-127004) (0x28/0x18)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrPackageTransportConnectionData::RequestedAmount: reflected (no row for CL-127004) (0x60/0x4)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrPackageTransportConnectionData::Item: reflected (no row for CL-127004) (0x58/0x8)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrPackageTransportConnectionData::StartSendServerTime: reflected (no row for CL-127004) (0x64/0x4)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrMassEntityReplicationHelper::NetID: reflected (no row for CL-127004) (0x0/0x4)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrMassEntityReplicationHelper::Entity: reflected (no row for CL-127004) (0x8/0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: UAuActorPlacementSocketsComponent::Sockets: reflected (no row for CL-127004) (0xB8/0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuActorPlacementSingleSocketData::UseCount: reflected (no row for CL-127004) (0x64/0x4)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrSenderReceiverData::bIsSender: reflected (no row for CL-127004) (0xC/0x1)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrSenderReceiverData::Location: reflected (no row for CL-127004) (0x28/0x18)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrSenderReceiverData::ItemType: reflected (no row for CL-127004) (0x40/0x8)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrSenderReceiverData::Entity: reflected (no row for CL-127004) (0x10/0x18)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrStorageItem: reflected (no row for CL-127004) (0x68)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuCraftItem: reflected (no row for CL-127004) (0x50)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuItemRecipeOrder: reflected (no row for CL-127004) (0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FBuildingSocketData: reflected (no row for CL-127004) (0x70)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuActorPlacementSingleSocketData: reflected (no row for CL-127004) (0x70)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrSenderReceiverData: reflected (no row for CL-127004) (0x50)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrPackageTransportConnectionData: reflected (no row for CL-127004) (0x70)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrMassEntityReplicationHelper: reflected (no row for CL-127004) (0x18)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FMassEntityHandle: reflected (no row for CL-127004) (0x8)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrMassPersistentEntityID: reflected (no row for CL-127004) (0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuSimpleItem: reflected (no row for CL-127004) (0x30)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestData: reflected (no row for CL-127004) (0x78)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsSocketRuntimeData: reflected (no row for CL-127004) (0x50)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: ACrBuildingActorBase::MassActorComponent: reflected (no row for CL-127004) (0x2F8/0x8)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: UCrMassActorComponent::EntityHandle: reflected (no row for CL-127004) (0xC8/0x8)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuSplineConnectionFragment::StartEntity: reflected (no row for CL-127004) (0x50/0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuSplineConnectionFragment::EndEntity: reflected (no row for CL-127004) (0x60/0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsLineParameters::bOneWay: reflected (no row for CL-127004) (0xC/0x1)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsSocketsFragment::Sockets: reflected (no row for CL-127004) (0x0/0x10)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsSocketRuntimeData::ConnectionType: reflected (no row for CL-127004) (0x30/0x1)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsSocketRuntimeData::ConnectionEntity: reflected (no row for CL-127004) (0x38/0x8)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsParameters::LogisticsType: reflected (no row for CL-127004) (0x0/0x1)
+[19:00:32.493] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestContainerFragment::Requests: reflected (no row for CL-127004) (0x0/0x10)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestContainerFragment::PendingRequests: reflected (no row for CL-127004) (0x10/0x10)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestFragment::Data: reflected (no row for CL-127004) (0x0/0x78)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestData::WantedItem: reflected (no row for CL-127004) (0x10/0x30)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FAuSimpleItem::ItemDataBase: reflected (no row for CL-127004) (0x20/0x8)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::SelectedRecipe: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::CurrentRecipe: reflected (no row for CL-127004) (0x8/0x8)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::CraftingSpeed: reflected (no row for CL-127004) (0x20/0x4)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::bIsMissingItems: reflected (no row for CL-127004) (0x38/0x1)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrCraftingFragment::bOutputFull: reflected (no row for CL-127004) (0x50/0x1)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: UMassEntitySubsystem::EntityManager: loader map, CL-127004 row (0x38/0x10)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsLineParameters::MoveSpeed: reflected (no row for CL-127004) (0x0/0x4)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsLineParameters::SlotLength: reflected (no row for CL-127004) (0x8/0x4)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsLineFragment::bIsStartLine: reflected (no row for CL-127004) (0x34/0x1)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: UDronesDeveloperSettings::HalfRailSlotLengthDefault: reflected (no row for CL-127004) (0x11C/0x4)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrBuildingParameters::PlacementData: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsSocketRuntimeData::SocketPairInvisibleConnector: reflected (no row for CL-127004) (0x40/0x10)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrItemsStorageContainer: reflected (no row for CL-127004) (0x120)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrInventoryFragment::InputInventoryContainer: reflected (no row for CL-127004) (0x0/0x120)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrInventoryFragment::MainInventoryContainer: reflected (no row for CL-127004) (0x120/0x120)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestRuntimeData: reflected (no row for CL-127004) (0x68)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestData::Type: reflected (no row for CL-127004) (0x40/0x1)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestData::RuntimeData: reflected (no row for CL-127004) (0x58/0x10)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestRuntimeData::ItemSource: reflected (no row for CL-127004) (0x48/0x10)
+[19:00:32.494] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrLogisticsRequestRuntimeData::ItemDestination: reflected (no row for CL-127004) (0x58/0x10)
+[19:00:32.496] [INFO ] [T:02032] [ModLoader] [Map] Waila: UWorld::GetSubsystem<UMassEntitySubsystem>: loader map, CL-127004 row
+[19:00:32.500] [INFO ] [T:02032] [ModLoader] [Map] Waila: FMassEntityManager::InternalGetFragmentDataPtr: loader map, CL-127004 row
+[19:00:32.501] [INFO ] [T:02032] [ModLoader] [Map] Waila: FMassEntityManager::IsEntityValid: loader map, CL-127004 row
+[19:00:32.505] [INFO ] [T:02032] [ModLoader] [Map] Waila: FMassEntityManager::IsEntityBuilt: loader map, CL-127004 row
+[19:00:32.712] [INFO ] [T:02032] [ModLoader] [Map] Waila: FCrMassPersistentEntityID::GetHandle: loader map, CL-127004 row
+[19:00:32.716] [INFO ] [T:02032] [ModLoader] [Map] Waila: FMassEntityManager::InternalGetConstSharedFragmentPtr: loader map, CL-127004 row
+[19:00:32.718] [INFO ] [T:02032] [ModLoader] [HookScan] Waila: 8 pattern(s) resolved, no failures
+[19:00:32.718] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: Waila vv0.20.0
+[19:00:32.718] [INFO ] [T:02032] [Plugin:Waila] Plugin initializing...
+[19:00:32.718] [INFO ] [T:02032] [Plugin:Waila] WAILA Configuration:
+[19:00:32.718] [INFO ] [T:02032] [Plugin:Waila]   MaxDistance: 650.0 units
+[19:00:32.718] [INFO ] [T:02032] [Plugin:Waila] Plugin initialized successfully
+[19:00:32.719] [INFO ] [T:02032] [ModLoader] Plugin initialized: Waila
+[19:00:32.720] [INFO ] [T:02032] [ModLoader] [HookScan] Resolving patterns for: WaveOptimiser vv0.13.0
+[19:00:32.721] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UMassEntitySubsystem::EntityManager: loader map, CL-127004 row (0x38/0x10)
+[19:00:32.721] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UMassActorSubsystem::ActorManager: loader map, CL-127004 row (0x38/0x10)
+[19:00:32.722] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FCrMassTemperatureFragment::CurrentHeat: reflected (no row for CL-127004) (0x0/0x4)
+[19:00:32.722] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FCrMassTemperatureFragment::LastUpdateTime: reflected (no row for CL-127004; the loader map, CL-129402 row agrees) (0x78/0x4)
+[19:00:32.722] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FMassActorFragment::Actor: reflected (no row for CL-127004) (0x0/0x8)
+[19:00:32.722] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FCrMassActorReplicationHelper::Actor: reflected (no row for CL-127004; the loader map, CL-129402 row agrees) (0xC/0x8)
+[19:00:32.722] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FCrMassActorReplicationHelper: reflected (no row for CL-127004), as compiled (0x18)
+[19:00:32.930] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UCrMassEnviroWaveSubsystem::AddEntitiesToWave: loader map, CL-127004 row
+[19:00:33.139] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave: loader map, CL-127004 row
+[19:00:33.144] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UWorld::GetSubsystem<UMassEntitySubsystem>: loader map, CL-127004 row
+[19:00:33.561] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UCrBuildingFunctionLibrary::AddTemperatureToEntity: loader map, CL-127004 row
+[19:00:33.564] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FMassEntityManager::InternalGetFragmentDataPtr: loader map, CL-127004 row
+[19:00:33.773] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FMassEntityManager::IsEntityValid: loader map, CL-127004 row
+[19:00:34.204] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UMassSignalSubsystem::SignalEntities: loader map, CL-127004 row
+[19:00:34.414] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FCrMassActorReplicationHelper::FCrMassActorReplicationHelper: loader map, CL-127004 row
+[19:00:34.499] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: FMassActorManager::GetEntityHandleFromActor: loader map, CL-127004 row
+[19:00:34.502] [INFO ] [T:02032] [ModLoader] [Map] WaveOptimiser: UMassSignalSubsystem::SignalEntities: loader map, CL-127004 row
+[19:00:34.503] [INFO ] [T:02032] [ModLoader] [HookScan] WaveOptimiser: 10 pattern(s) resolved, no failures
+[19:00:34.503] [INFO ] [T:02032] [ModLoader] Calling PluginInit for: WaveOptimiser vv0.13.0
+[19:00:34.503] [INFO ] [T:02032] [Plugin:WaveOptimiser] Plugin initializing...
+[19:00:34.508] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000015, target=0x7FF78D563020
+[19:00:34.513] [INFO ] [T:02032] [ModLoader] [HooksInterface] Hook installed successfully: handle=0000000000000016, target=0x7FF78D57F540
+[19:00:34.573] [INFO ] [T:02032] [Plugin:WaveOptimiser] WaveOptimiser: all 10 heat-excluded classes resolved
+[19:00:34.573] [INFO ] [T:02032] [Plugin:WaveOptimiser] WaveOptimiser: AddEntitiesToWave hooked at 0x7FF78D563020, RemoveEntitiesFromWave hooked at 0x7FF78D57F540
+[19:00:34.573] [INFO ] [T:02032] [Plugin:WaveOptimiser] Plugin initialized successfully
+[19:00:34.573] [INFO ] [T:02032] [ModLoader] Plugin initialized: WaveOptimiser
+[19:00:34.575] [INFO ] [T:02032] [ModLoader] InitAllLoadedPlugins: 9 initialized, 1 failed (of 10 deferred)
+[19:00:34.575] [INFO ] [T:02032] [ModLoader] Plugin startup phase complete
+[19:00:34.575] [INFO ] [T:02032] [init] Plugins initialised in 23531 ms
+[19:00:34.575] [INFO ] [T:02032] [init] Stage 3 complete in 23812 ms -- releasing main thread
+[19:00:34.575] [INFO ] [T:07656] [EngineInit] Plugins ready -- main thread resuming
+[19:00:34.576] [INFO ] [T:02032] [ModLoader] Mod loader initialised successfully.
+[19:00:34.576] [INFO ] [T:02032] [init] Waiting for plugin splash holds to be released (30 s timeout)...
+[19:00:36.095] [INFO ] [T:07656] [ModLoader] [PlayerJoined] AGameModeBase::PostLogin called (#1)
+[19:00:47.305] [WARN ] [T:07656] [ModLoader] [WorldBeginPlay] Map_MainMenu detected -- triggering engine-ready fallback
+[19:00:47.305] [INFO ] [T:07656] [EngineInit] Main thread sleeping -- waiting for plugins to initialise
+[19:00:47.305] [INFO ] [T:07656] [EngineInit] Plugins ready -- main thread resuming
+[19:00:47.305] [INFO ] [T:07656] [ModLoader] [WorldBeginPlay]   Not ChimeraMain world - skipping ChimeraMain callbacks
+[19:00:48.037] [INFO ] [T:07656] [EngineInit] Main thread sleeping -- waiting for plugins to initialise
+[19:00:48.037] [INFO ] [T:07656] [EngineInit] Plugins ready -- main thread resuming
+[19:00:48.095] [INFO ] [T:07656] [Plugin:BetterCheats] Item Spawner: refreshing item list from the asset registry...
+[19:00:48.141] [INFO ] [T:07656] [Plugin:BetterCheats] Item Spawner: asset registry reports 557 AuItemBlueprint asset(s).
+[19:00:48.901] [INFO ] [T:07656] [Plugin:BetterCheats] Item Spawner: 6 item(s) have no icon resource.
+[19:00:48.901] [INFO ] [T:07656] [Plugin:BetterCheats] Item Spawner: loaded 412 item(s) from the asset registry.
+[19:00:48.926] [INFO ] [T:07656] [Plugin:BetterDrone] boost key: following Sprint (LeftShift)
+[19:00:48.930] [INFO ] [T:07656] [Plugin:BetterDrone] DroneLaser: heat vent on the game's Reload key (R)
+[19:00:48.936] [INFO ] [T:07656] [Plugin:ProductionViewer] ProductionNet: session role resolved: Solo
+[19:00:49.132] [INFO ] [T:07656] [ModLoader] [ExperienceLoadComplete] UCrExperienceManagerComponent::OnExperienceLoadComplete called (#1)
+[19:00:49.133] [INFO ] [T:07656] [Plugin:BetterCheats] GameContext: net mode 0, cheats allowed.
+[19:00:49.180] [INFO ] [T:07656] [Plugin:BetterCheats] SessionConfig: loaded session 'DefaultSession' (D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\BetterCheats\DefaultSession.json).
+[19:00:49.181] [INFO ] [T:07656] [Plugin:BetterCheats] Attributes: applied saved config for session 'DefaultSession'.
+[19:00:49.182] [INFO ] [T:07656] [Plugin:BetterCheats] Building: applied saved config for session 'DefaultSession'.
+[19:00:49.183] [INFO ] [T:07656] [Plugin:BetterCheats] Movement: applied saved config for session 'DefaultSession' (baseline not yet captured).
+[19:00:49.183] [INFO ] [T:07656] [Plugin:BetterCheats] Tools: applied saved config for session 'DefaultSession'.
+[19:00:49.184] [INFO ] [T:07656] [Plugin:BetterCheats] Weapons: discovered weapon 'Default__I_PistolDataItem_C' -> tab 'Pistol'
+[19:00:49.185] [INFO ] [T:07656] [Plugin:BetterCheats] Weapons: discovered weapon 'Default__I_RifleDataItem_C' -> tab 'Rifle'
+[19:00:49.185] [INFO ] [T:07656] [Plugin:BetterCheats] Weapons: discovered weapon 'Default__I_ShotgunDataItem_C' -> tab 'Shotgun'
+[19:00:49.185] [INFO ] [T:07656] [Plugin:BetterCheats] Weapons: discovered weapon 'Default__I_MachineGunDataItem_C' -> tab 'Machine Gun'
+[19:00:49.185] [INFO ] [T:07656] [Plugin:BetterCheats] Weapons: applied saved config for session 'DefaultSession' (4 known weapons).
+[19:00:49.185] [INFO ] [T:07656] [Plugin:BetterCheats] Power: applying saved config for session 'DefaultSession' via rescan.
+[19:00:49.185] [INFO ] [T:07656] [Plugin:BetterCheats] Enemies: applied saved config for session 'DefaultSession'.
+[19:00:49.208] [INFO ] [T:07656] [Plugin:BetterCheats] Inventory: refreshing item list for stack sizes from the asset registry...
+[19:00:49.218] [INFO ] [T:07656] [Plugin:BetterCheats] Inventory: loaded 439 item type(s) for stack sizes.
+[19:00:49.261] [INFO ] [T:07656] [Plugin:BetterCheats] Power: found 65 electricity-using building type(s).
+[19:00:49.299] [INFO ] [T:02032] [init] Boot sequence finished in 46438 ms -- init thread exiting

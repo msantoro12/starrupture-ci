@@ -37,8 +37,14 @@
 #                                       the log must say so; loading it is the failure
 #           "removed": false,           true: the DLL was taken out of the install but the
 #                                       plugin is still expected, so it fails as missing
-#           "dll": "Waila.dll" }        optional file name; lets refusal lines that only name
+#           "dll": "Waila.dll",         optional file name; lets refusal lines that only name
 #                                       a path (not the plugin) be matched to this plugin
+#           "uiOffInitFailure": "MiniMap: atlas texture interface initialization failed" }
+#                                       optional: the one ERROR text of a plugin whose init
+#                                       needs the UI layer the rig turns off ([UI] Enabled=0).
+#                                       That ERROR line plus "Plugin initialization failed:
+#                                       <logName>", and nothing else for the plugin, passes it
+#                                       as loaded and one fewer is expected to initialise
 #       ]
 #     }
 #   boot.json        process facts for the client (the shipping exe). Same fields as
@@ -54,6 +60,11 @@
 #                             windows (e.g. "The game has crashed"); null or "" when none
 #     compat_reports   array  names of compat-report-*.json found in ModLoader\ afterwards;
 #                             empty when none
+#   compat-report-<CL>.json   each file boot.json lists, copied from ModLoader\. Judged by
+#                    what it says: it fails on outcome "safe-off", a required pattern miss, a
+#                    global that is unresolved or rejected, or a change of field "missing" or
+#                    "vtableSlot". A "partial" report with only other changes passes, and the
+#                    changes are shown as notes. A listed file that is absent or unparseable fails.
 #   modloader.log    ModLoader\Logs\ModLoader.log (logging at INFO)
 #   proxy.log        ModLoader\Logs\Proxy.log
 #   autoupdate.log   ModLoader\Logs\AutoUpdate.log
@@ -64,6 +75,7 @@
 #
 # Client mode also writes verdict.json next to verdict.txt:
 #   { "verdict": "PASS"|"FAIL", "reason": "<one sentence naming the first failures>",
+#     "notes": [ "<what passed but is worth a look, e.g. a layout that moved>" ],
 #     "loader": { "expected", "logVersion", "state" },
 #     "plugins": [ { "name", "expected", "logVersion", "state", "note" } ] }
 # and summary.md, the job summary with the per-plugin table first. The evidence in all
@@ -130,8 +142,9 @@ function Test-BootField($Boot, [string]$Name) { return ($null -ne $Boot) -and ($
 
 # Fail when the loader wrote a compatibility report (the game's layout changed under
 # the plugins) or switched plugins off. Both mean the handoff to a new build is not
-# clean, in either mode.
-function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField) {
+# clean. Client mode (-SkipCompat) judges the report by its contents instead
+# (Get-CompatJudgement) and keeps only the switched-off check here.
+function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField, [switch]$SkipCompat) {
     $haveLog = ($null -ne $Ml) -and $Ml.Count -gt 0
     $compat = $null; $off = $null
     if ($Ml) {
@@ -143,10 +156,84 @@ function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField) {
     }
     $listed = @(@(Get-Prop $Boot 'compat_reports' @()) | Where-Object { $_ })
     $fieldOk = (-not $RequireBootField) -or (Test-BootField $Boot 'compat_reports')
-    Add-Check 'no_compat_report' ($haveLog -and $fieldOk -and $null -eq $compat -and $listed.Count -eq 0) $(
-        if ($compat) { "FOUND: $compat" } elseif ($listed.Count -gt 0) { 'boot.json lists: ' + ($listed -join '; ') } elseif (-not $fieldOk) { 'boot.json has no compat_reports field' } elseif ($haveLog) { 'no report line, none listed in boot.json' } else { '' })
+    if (-not $SkipCompat) {
+        Add-Check 'no_compat_report' ($haveLog -and $fieldOk -and $null -eq $compat -and $listed.Count -eq 0) $(
+            if ($compat) { "FOUND: $compat" } elseif ($listed.Count -gt 0) { 'boot.json lists: ' + ($listed -join '; ') } elseif (-not $fieldOk) { 'boot.json has no compat_reports field' } elseif ($haveLog) { 'no report line, none listed in boot.json' } else { '' })
+    }
     Add-Check 'plugins_not_switched_off' ($haveLog -and $null -eq $off) $(
         if ($off) { "FOUND: $off" } elseif ($haveLog) { 'no "switched off" line' } else { '' })
+}
+
+# Client mode: judges the compat-report-<CL>.json files boot.json lists by what they say.
+# The loader writes one when the game's layout changed under it (compat_report.cpp, format
+# 3): outcome "safe-off" (every plugin refused) or "partial" (informational on its own),
+# patternMisses[] {name, required, found}, globals[] {name, resolved, rejected} and
+# changes[] {class, member, field, sdk, game}. Returns Bad (what fails), Notes (what passes
+# but is worth a look), Parsed (reports read) and Changes (changes[] entries seen).
+function Get-CompatJudgement($Ml, $Boot) {
+    $arrow = [string][char]0x2192
+    $bad = New-Object System.Collections.Generic.List[string]
+    $notes = New-Object System.Collections.Generic.List[string]
+    $parsed = 0; $changeCount = 0
+    $listed = @(@(Get-Prop $Boot 'compat_reports' @()) | Where-Object { $_ })
+    if (-not (Test-BootField $Boot 'compat_reports')) { $bad.Add('boot.json has no compat_reports field') }
+    $written = $null
+    $quiet = $false
+    if ($Ml) {
+        foreach ($l in $Ml) {
+            if ($null -eq $written -and $l -match 'Compatibility report written') { $written = $l }
+            if ($l -match 'Layout changed on this build \(.*\): no loader feature reads them') { $quiet = $true }
+        }
+    }
+    if ($written -and $listed.Count -eq 0) { $bad.Add("the log says a report was written but boot.json lists none: $written") }
+    foreach ($name in $listed) {
+        $name = [string]$name
+        if ($name -cnotmatch '^compat-report-[A-Za-z0-9._-]+\.json$') { $bad.Add("$name is not a compat report file name"); continue }
+        $path = Join-Path $OutDir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { $bad.Add("$name is listed in boot.json but was not kept"); continue }
+        $r = $null
+        try { $r = [System.IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop } catch { $r = $null }
+        if ($null -eq $r -or $r -isnot [pscustomobject]) { $bad.Add("$name cannot be parsed"); continue }
+        $shape = @()
+        $outcome = [string](Get-Prop $r 'outcome' '')
+        if ($outcome -eq '') { $shape += 'outcome' }
+        foreach ($k in 'patternMisses', 'globals', 'changes') {
+            if (-not $r.PSObject.Properties[$k] -or $r.PSObject.Properties[$k].Value -isnot [System.Array]) { $shape += $k }
+        }
+        if ($shape.Count -gt 0) { $bad.Add("$name has no usable " + ($shape -join ', ')); continue }
+        $parsed++
+        if ($outcome -ceq 'safe-off') { $bad.Add("$name outcome is safe-off: every plugin is switched off") }
+        elseif ($outcome -cne 'partial') { $bad.Add("$name outcome is '$outcome', not partial") }
+        foreach ($m in @($r.patternMisses)) {
+            $mName = [string](Get-Prop $m 'name' ''); $req = Get-Prop $m 'required'
+            if ($mName -eq '' -or $req -isnot [bool]) { $bad.Add("$name has a pattern miss without name or required"); continue }
+            if ($req) { $bad.Add("${name}: required pattern missed: $mName") } else { $notes.Add("optional pattern missed: $mName") }
+        }
+        foreach ($g in @($r.globals)) {
+            $gName = [string](Get-Prop $g 'name' ''); $res = Get-Prop $g 'resolved'; $rej = Get-Prop $g 'rejected'
+            if ($gName -eq '' -or $res -isnot [bool] -or $rej -isnot [bool]) { $bad.Add("$name has a global without name, resolved or rejected"); continue }
+            if (-not $res) { $bad.Add("${name}: global $gName is unresolved") }
+            elseif ($rej) { $bad.Add("${name}: global $gName was rejected") }
+        }
+        foreach ($c in @($r.changes)) {
+            $cls = [string](Get-Prop $c 'class' ''); $mem = [string](Get-Prop $c 'member' ''); $field = [string](Get-Prop $c 'field' '')
+            if ($cls -eq '' -or $mem -eq '' -or $field -eq '') { $bad.Add("$name has a change without class, member or field"); continue }
+            $changeCount++
+            if ($field -ceq 'missing' -or $field -ceq 'vtableSlot') { $bad.Add("${name}: ${cls}::$mem is $field"); continue }
+            $sdk = Get-Prop $c 'sdk'; $game = Get-Prop $c 'game'
+            if ($sdk -isnot [ValueType] -or $game -isnot [ValueType]) { $bad.Add("${name}: ${cls}::$mem ($field) has no sdk and game values"); continue }
+            $what = if ($field -cne 'offset') { "$field " } else { '' }
+            $why = if ($quiet) { ' (keys-only, no loader feature reads it)' } else { '' }
+            $notes.Add(('layout moved: {0}::{1} {2}0x{3:X}{4}0x{5:X}{6}' -f $cls, $mem, $what, [long]$sdk, $arrow, [long]$game, $why))
+        }
+    }
+    # With a report on record, a plugin that lost a feature is not a clean handoff.
+    if ($listed.Count -gt 0 -and $Ml) {
+        foreach ($l in $Ml) {
+            if ($l -cmatch '\[Map\] (\S+): feature "(.+?)" is off') { $bad.Add("$($Matches[1]) feature ""$($Matches[2])"" is off") }
+        }
+    }
+    return [pscustomobject]@{ Listed = $listed; Written = $written; Bad = @($bad); Notes = @($notes); Parsed = $parsed; Changes = $changeCount }
 }
 
 # Check lines, verdict.txt and the job summary. Client mode sets $script:LeadMd (the
@@ -155,6 +242,7 @@ function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField) {
 # mode quotes launch logs there, so it prints names only and writes summary.md instead.
 $script:LeadMd = $null
 $script:VerdictJson = $null
+$script:Notes = @()
 function Publish-Verdict([string]$Title) {
     $failed = @($results | Where-Object { -not $_.Pass })
     $lines = foreach ($r in $results) { '{0,-26} {1,-4} {2}' -f $r.Name, $(if ($r.Pass) { 'PASS' } else { 'FAIL' }), $r.Evidence }
@@ -245,6 +333,7 @@ function Invoke-ClientVerdict {
     $proxy = Read-Lines (Join-Path $OutDir 'proxy.log')
     $au = Read-Lines (Join-Path $OutDir 'autoupdate.log')
     $haveLog = ($null -ne $ml) -and $ml.Count -gt 0
+    $compat = Get-CompatJudgement $ml $boot
 
     # ---- the set under test ----
     $specs = @()
@@ -262,6 +351,7 @@ function Invoke-ClientVerdict {
             $specs += [pscustomobject]@{
                 Repo = $repo; LogName = $(if ($logName) { $logName } else { $repo }); Expect = $expect
                 Refused = $refused; Removed = [bool](Get-Prop $p 'removed' $false); Dll = [string](Get-Prop $p 'dll' '')
+                UiOffInitFailure = [string](Get-Prop $p 'uiOffInitFailure' '')
             }
         }
         $setOk = ($loaderExpect -ne '') -and ($raw.Count -gt 0) -and ($bad.Count -eq 0)
@@ -322,13 +412,21 @@ function Invoke-ClientVerdict {
     Add-Check 'loader_not_disabled' ($haveLog -and $null -eq $disabled) $(if ($disabled) { "FOUND: $disabled" } elseif ($haveLog) { 'no disable line' } else { '' })
 
     # Layout: the loader's check of the SDK's class layouts against the running game.
+    # A moved member is no fault when the loader's own compat report, judged by its contents,
+    # holds only changes it can live with (Get-CompatJudgement): then it is a note.
     $lay = First-Match $ml '\[LayoutCheck\] SDK CL \d+ against the game: (\d+) classes, (\d+) checked, (\d+) mismatched, (\d+) missing'
-    $layOk = $false
+    $layOk = $false; $layMoved = $false
     if ($lay -and $lay -match 'against the game: (\d+) classes, (\d+) checked, (\d+) mismatched, (\d+) missing') {
-        $layOk = ([int]$Matches[2] -gt 0) -and ([int]$Matches[3] -eq 0) -and ([int]$Matches[4] -eq 0)
+        $layMoved = [int]$Matches[3] -gt 0
+        $layOk = ([int]$Matches[2] -gt 0) -and ([int]$Matches[4] -eq 0)
     }
-    $layBad = First-Match $ml 'Layout mismatch|Layout changed on this build'
-    Add-Check 'layout_ok' ($layOk -and $null -eq $layBad) $(if ($layBad) { "FOUND: $layBad" } else { $lay })
+    $layBad = First-Match $ml 'Layout mismatch'
+    $layChanged = First-Match $ml 'Layout changed on this build'
+    $layExplained = $layMoved -and $null -ne $layChanged -and $compat.Parsed -gt 0 -and $compat.Changes -gt 0 -and $compat.Bad.Count -eq 0
+    $layPass = $layOk -and $null -eq $layBad -and ($layExplained -or (-not $layMoved -and $null -eq $layChanged))
+    Add-Check 'layout_ok' $layPass $(
+        if ($layBad) { "FOUND: $layBad" } elseif ($layChanged -and -not $layExplained) { "FOUND: $layChanged" }
+        elseif ($layExplained) { "$lay; " + ($compat.Notes -join '; ') } else { $lay })
 
     # ---- no update traffic ----
     # The loader logs "Starting auto-update check" even when updates are off, and the
@@ -367,6 +465,7 @@ function Invoke-ClientVerdict {
         if ($s.Refused) { foreach ($i in $found) { if ($i.Kind -eq 'refused' -and $i.Name -ceq $s.LogName) { [void]$accounted.Add($i.Line) } } }
     }
     $rows = @()
+    $uiOffCount = 0
     foreach ($s in $specs) {
         $esc = [regex]::Escape($s.LogName)
         $info = First-Match $ml "Plugin info - Name: $esc," -Case
@@ -399,11 +498,27 @@ function Invoke-ClientVerdict {
             Add-Check "plugin_version_$($s.Repo)" $verOk $(if ($logVer) { "log version $logVer, expected $($s.Expect)" } else { '' })
             Add-Check "plugin_not_refused_$($s.Repo)" ($haveLog -and $refusals.Count -eq 0) $(
                 if ($refusals.Count -gt 0) { "FOUND: $($refusals[0].Line)" } elseif ($haveLog) { "no refusal or switched-off line for $($s.LogName)" } else { '' })
-            Add-Check "plugin_no_fault_$($s.Repo)" ($haveLog -and $crashLines.Count -eq 0) $(
-                if ($crashLines.Count -gt 0) { "FOUND: $($crashLines[0].Line)" } elseif ($haveLog) { "no crash or init-failure line for $($s.LogName)" } else { '' })
             $inited = First-Match $ml ("Plugin initialized: $esc$") -Case
-            Add-Check "plugin_initialized_$($s.Repo)" ($null -ne $inited) $inited
+            # A plugin whose init needs the UI layer the rig turns off ([UI] Enabled=0) logs one
+            # known ERROR and then "Plugin initialization failed". That pair, and nothing else
+            # for the plugin, passes it as loaded; the ERROR line is the only one excused.
+            $uiOffLine = $null
+            if ($s.UiOffInitFailure -and $hasLoad -and $verOk -and -not $inited -and $refusals.Count -eq 0 -and $crashLines.Count -eq 1 -and $crashLines[0].Kind -eq 'initfailed') {
+                $want = "[Plugin:$($s.LogName)] $($s.UiOffInitFailure)"
+                $hits = @(); $errAt = -1; $failAt = -1
+                for ($i = 0; $i -lt $ml.Count; $i++) {
+                    if ($ml[$i] -cmatch '^\[[\d:.]+\]\s+\[ERROR\s*\]' -and $ml[$i].EndsWith($want, [StringComparison]::Ordinal)) { $hits += $ml[$i]; $errAt = $i }
+                    if ($ml[$i] -ceq $crashLines[0].Line -and $failAt -lt 0) { $failAt = $i }
+                }
+                if ($hits.Count -eq 1 -and $failAt -gt $errAt) { $uiOffLine = $hits[0]; [void]$accounted.Add($uiOffLine); $uiOffCount++ }
+            }
+            Add-Check "plugin_no_fault_$($s.Repo)" ($haveLog -and ($crashLines.Count -eq 0 -or $uiOffLine)) $(
+                if ($uiOffLine) { "loaded, not refused; init needs the UI layer the rig turns off: $uiOffLine" }
+                elseif ($crashLines.Count -gt 0) { "FOUND: $($crashLines[0].Line)" } elseif ($haveLog) { "no crash or init-failure line for $($s.LogName)" } else { '' })
+            Add-Check "plugin_initialized_$($s.Repo)" (($null -ne $inited) -or $uiOffLine) $(
+                if ($uiOffLine) { 'not initialised, as expected: init needs the UI layer the rig turns off ([UI] Enabled=0)' } else { $inited })
             if ($refusals.Count -gt 0) { $state = 'refused'; $note += (Short (Bare $refusals[0].Line) 120) }
+            elseif ($uiOffLine) { $state = 'loaded; init needs the UI layer the rig turns off'; $note += (Short (Bare $uiOffLine) 120) }
             elseif ($crashLines.Count -gt 0) { $state = 'crashed'; $note += (Short (Bare $crashLines[0].Line) 120) }
             elseif (-not $hasLoad) { $state = 'missing'; if ($s.Removed) { $note += 'removed from the install' } }
             elseif (-not $verOk) { $state = 'wrong version' }
@@ -435,18 +550,21 @@ function Invoke-ClientVerdict {
         if ($strangers.Count -gt 0) { 'FOUND a plugin outside the set: ' + ($strangers -join ', ') } elseif ($haveLog) { 'every plugin the loader read is in the set' } else { '' })
 
     $wantInit = @($specs | Where-Object { -not $_.Refused }).Count
+    # A plugin excused for the UI layer the rig turns off is loaded but does not initialise:
+    # the summary shows one fewer initialised and that many failed, and nothing more.
+    $wantInited = $wantInit - $uiOffCount
     $sums = @(); if ($ml) { $sums = @($ml | Where-Object { $_ -match 'InitAllLoadedPlugins: (\d+) initialized, (\d+) failed' }) }
     $sumOk = $false; $sumEv = ''
     if ($sums.Count -gt 0) {
-        $maxInit = 0; $anyFail = $false
+        $maxInit = 0; $maxFail = 0
         foreach ($l in $sums) {
             if ($l -match 'InitAllLoadedPlugins: (\d+) initialized, (\d+) failed') {
                 $maxInit = [Math]::Max($maxInit, [int]$Matches[1])
-                if ([int]$Matches[2] -gt 0) { $anyFail = $true }
+                $maxFail = [Math]::Max($maxFail, [int]$Matches[2])
             }
         }
-        $sumOk = (-not $anyFail) -and ($maxInit -eq $wantInit)
-        $sumEv = "$($sums[-1])  (max initialized $maxInit, expected $wantInit)"
+        $sumOk = ($maxFail -eq $uiOffCount) -and ($maxInit -eq $wantInited)
+        $sumEv = "$($sums[-1])  (max initialized $maxInit, expected $wantInited$(if ($uiOffCount -gt 0) { ", $uiOffCount excused for the UI layer" }))"
     }
     Add-Check 'plugins_initialized' $sumOk $sumEv
     $startup = First-Match $ml 'Plugin startup phase complete'
@@ -464,7 +582,14 @@ function Invoke-ClientVerdict {
     $scanOk = First-Match $ml '\[HookScan\] .*pattern\(s\) resolved, no failures'
     Add-Check 'hookscan_clean' ($haveLog -and $null -eq $scanBad -and $null -ne $scanOk) $(if ($scanBad) { "FOUND: $scanBad" } elseif ($scanOk) { $scanOk } else { '' })
 
-    Add-HandoffChecks $ml $boot -RequireBootField
+    Add-HandoffChecks $ml $boot -RequireBootField -SkipCompat
+    # A compat report is judged by what it says (Get-CompatJudgement), not by existing.
+    Add-Check 'compat_report_ok' ($haveLog -and $compat.Bad.Count -eq 0) $(
+        if ($compat.Bad.Count -gt 0) { 'FOUND: ' + ($compat.Bad -join '; ') }
+        elseif (-not $haveLog) { '' }
+        elseif ($compat.Parsed -eq 0) { 'no compat report written' }
+        else { "$($compat.Parsed) report(s) judged: " + $(if ($compat.Notes.Count -gt 0) { $compat.Notes -join '; ' } else { 'nothing moved' }) })
+    $script:Notes = @($compat.Notes)
 
     # ---- crashes and errors ----
     $crashRe = 'CRASHED|FATAL ENGINE CRASH|\[PluginGuard\]'
@@ -500,12 +625,14 @@ function Invoke-ClientVerdict {
     $script:VerdictJson = [ordered]@{
         verdict = $(if ($failed.Count -eq 0) { 'PASS' } else { 'FAIL' })
         reason  = $reason
+        notes   = @($script:Notes)
         loader  = [ordered]@{ expected = $loaderExpect; logVersion = $logLoader; state = $loaderState }
         plugins = @($rows)
     }
     $cell = { param($t) ([string]$t -replace '\|', '\|') -replace '`', "'" }
     $md = New-Object System.Collections.Generic.List[string]
     $md.Add("Branch $(Get-Prop $set 'branch' 'n/a'), build $(Get-Prop $set 'buildId' 'n/a'). $reason")
+    foreach ($n in $script:Notes) { $md.Add(''); $md.Add("Note: $n") }
     $md.Add('')
     $md.Add('| Plugin | Expected | In log | State | Note |')
     $md.Add('|---|---|---|---|---|')

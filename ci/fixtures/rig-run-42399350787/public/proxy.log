@@ -1,0 +1,54 @@
+[2026-11-07 19:00:02.438] [INFO ] StarRupture Mod Loader (dwmapi.dll proxy) loaded
+[2026-11-07 19:00:02.439] [INFO ] ---- environment ----
+[2026-11-07 19:00:02.462] [INFO ]   build tag    : cand-42399350787-556ce13 (client)
+[2026-11-07 19:00:02.476] [INFO ]   compiled     : Nov  7 2026 18:39:31
+[2026-11-07 19:00:02.494] [INFO ]   host process : D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe (pid 504)
+[2026-11-07 19:00:02.509] [INFO ]   command line : "D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe" -nullrhi -unattended -nosound -log
+[2026-11-07 19:00:02.510] [INFO ]   game dir     : D:\sr-client\StarRupture\Binaries\Win64
+[2026-11-07 19:00:02.510] [INFO ]   proxy module : D:\sr-client\StarRupture\Binaries\Win64\dwmapi.dll (base 0x7FFC96D20000)
+[2026-11-07 19:00:02.511] [INFO ]   current dir  : D:\sr-client\StarRupture\Binaries\Win64
+[2026-11-07 19:00:02.511] [INFO ]   Core DLL: present, 6001152 bytes, modified 2026-11-07 18:51:04
+[2026-11-07 19:00:02.511] [INFO ]   ImGui DLL: present, 3039744 bytes, modified 2026-11-07 18:51:04
+[2026-11-07 19:00:02.512] [INFO ]   ModLoader folder (D:\sr-client\StarRupture\Binaries\Win64\ModLoader):
+[2026-11-07 19:00:02.512] [INFO ]     [dir]  Logs
+[2026-11-07 19:00:02.513] [INFO ]     [file] modloader.ini (65 bytes)
+[2026-11-07 19:00:02.525] [INFO ]     [dir]  Plugins
+[2026-11-07 19:00:02.525] [INFO ]     [dir]  Preload
+[2026-11-07 19:00:02.525] [INFO ]     [file] readme.txt (125 bytes)
+[2026-11-07 19:00:02.525] [INFO ]     [file] scan_cache.ini (2085 bytes)
+[2026-11-07 19:00:02.541] [INFO ]     [file] StarRupture-ImGui.dll (3039744 bytes)
+[2026-11-07 19:00:02.555] [INFO ]     [file] StarRupture-ImGui.pdb (13021184 bytes)
+[2026-11-07 19:00:02.556] [INFO ]     [file] StarRupture-ModLoader-Core.dll (6001152 bytes)
+[2026-11-07 19:00:02.572] [INFO ]     [file] StarRupture-ModLoader-Core.pdb (52285440 bytes)
+[2026-11-07 19:00:02.573] [INFO ]     [file] StarRupture-ModLoader-Updater.exe (1152512 bytes)
+[2026-11-07 19:00:02.588] [INFO ]     [file] StarRupture-ModLoader-Updater.pdb (11014144 bytes)
+[2026-11-07 19:00:02.604] [INFO ]   Plugins folder (D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins):
+[2026-11-07 19:00:02.606] [INFO ]     [file] BetterCheats.dll (5092352 bytes)
+[2026-11-07 19:00:02.607] [INFO ]     [file] BetterDrone.dll (4435456 bytes)
+[2026-11-07 19:00:02.619] [INFO ]     [file] CameraControls.dll (469504 bytes)
+[2026-11-07 19:00:02.620] [INFO ]     [file] Codex.dll (4021248 bytes)
+[2026-11-07 19:00:02.621] [INFO ]     [file] Compass_Plugin.dll (117760 bytes)
+[2026-11-07 19:00:02.634] [INFO ]     [dir]  config
+[2026-11-07 19:00:02.635] [INFO ]     [file] MiniMap.dll (698368 bytes)
+[2026-11-07 19:00:02.650] [INFO ]     [file] ProductionViewer.dll (3494912 bytes)
+[2026-11-07 19:00:02.666] [INFO ]     [file] RuptureTimer.dll (88576 bytes)
+[2026-11-07 19:00:02.678] [INFO ]     [file] Waila.dll (346624 bytes)
+[2026-11-07 19:00:02.679] [INFO ]     [file] WaveOptimiser.dll (73216 bytes)
+[2026-11-07 19:00:02.697] [INFO ] ---------------------
+[2026-11-07 19:00:02.698] [DEBUG] SetDllDirectoryW(D:\sr-client\StarRupture\Binaries\Win64\ModLoader) ok
+[2026-11-07 19:00:02.712] [INFO ] Initializing dwmapi.dll proxy...
+[2026-11-07 19:00:02.713] [INFO ] DwmapiProxy::Initialize() starting
+[2026-11-07 19:00:02.728] [INFO ] Loading real dwmapi.dll from: C:\Windows\system32\dwmapi.dll
+[2026-11-07 19:00:02.729] [INFO ] Real dwmapi.dll loaded at 0x7FFCD9150000
+[2026-11-07 19:00:02.730] [INFO ] PE export table: base ordinal 100, 112 function slots
+[2026-11-07 19:00:02.730] [INFO ] Export resolution complete: 112 resolved, 0 null slots skipped
+[2026-11-07 19:00:02.730] [INFO ] Dwmapi proxy initialized successfully
+[2026-11-07 19:00:02.731] [INFO ] Running auto-updater (details in ModLoader\Logs\AutoUpdate.log)...
+[2026-11-07 19:00:02.827] [INFO ] Auto-updater finished
+[2026-11-07 19:00:02.827] [INFO ] Loading StarRupture-ModLoader-Core.dll...
+[2026-11-07 19:00:02.827] [INFO ] Core DLL path: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\StarRupture-ModLoader-Core.dll
+[2026-11-07 19:00:02.828] [DEBUG] Calling LoadLibraryW on Core DLL...
+[2026-11-07 19:00:02.833] [INFO ] Core DLL loaded at 0x7FFC96720000
+[2026-11-07 19:00:02.833] [DEBUG] Core_Attach resolved at 00007FFC96728A44, Core_Detach at 00007FFC96728F8A
+[2026-11-07 19:00:02.834] [INFO ] Calling Core_Attach()...
+[2026-11-07 19:00:02.847] [INFO ] Core_Attach() succeeded -- mod loader is running, further output goes to ModLoader\Logs\modloader.log

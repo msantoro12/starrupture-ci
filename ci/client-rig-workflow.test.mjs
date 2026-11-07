@@ -321,7 +321,9 @@ test('order: verdict before upload, leak gate before upload, upload only when th
   assert.match(upload, /retention-days: [1-7]\n/);
   const files = [...upload.matchAll(/^\s+out\/([\w.-]+)$/gm)].map((m) => m[1]).sort();
   assert.deepEqual(files, ['autoupdate.log', 'boot.json', 'dll-hashes.json', 'modloader.log', 'proxy.log', 'set.json', 'verdict.json', 'verdict.txt']);
-  assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:'))), 'named files, no wildcard');
+  // Named files, and the one wildcard the compat reports need (their names carry the build).
+  assert.match(upload, /^\s+out\/compat-report-\*\.json$/m);
+  assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:')).replace('out/compat-report-*.json', '')), 'named files, no other wildcard');
   // The gate scans what would be uploaded, for the account name, the login values and the IDs.
   const gate = step('Leak gate');
   assert.match(gate, /Get-ChildItem out -Recurse -File/);
@@ -366,6 +368,11 @@ test('verdict contract: the launch writes every file verdict.ps1 -Client reads',
   }
   assert.match(setup, /set\.json/);
   assert.match(setup, /buildId/);
+  // A compat report is judged by its contents: the launch keeps the file, the upload carries it, the set carries uiOffInitFailure.
+  assert.ok(v.includes('compat-report-'));
+  assert.match(launch, /foreach \(\$f in \$compatFiles\) \{ \[IO\.File\]::WriteAllText\(\(Join-Path \$OutDir \$f\.Name\), \(Scrub/);
+  assert.match(setup, /\$row\.uiOffInitFailure = \$_\.uiOffInitFailure/);
+  assert.ok(v.includes('uiOffInitFailure'));
 });
 
 test('the rig is in the node test line', () => {
@@ -383,10 +390,10 @@ test('rig set: ten plugins, MiniMap from its author with the version form it log
   assert.equal(names.length, 10);
   assert.deepEqual(names.map((p) => p.Name).sort(), ['BetterCheats', 'BetterDrone', 'CameraControls', 'Codex', 'Compass', 'MiniMap', 'ProductionViewer', 'RuptureTimer', 'WAILA', 'WaveOptimiser']);
   const m = names.find((p) => p.Name === 'MiniMap');
-  assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true, Pin: { Tag: PIN_TAG, Digest: `sha256:${PIN_HEX}` } });
+  assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'MiniMap: atlas texture interface initialization failed', Pin: { Tag: PIN_TAG, Digest: `sha256:${PIN_HEX}` } });
   // The other nine keep the rig's owner and Latest: no owner, no pin.
   for (const p of names.filter((x) => x.Name !== 'MiniMap')) {
-    assert.ok(!('Owner' in p) && !('StripV' in p) && !('Pin' in p), `${p.Name}: unchanged`);
+    assert.ok(!('Owner' in p) && !('StripV' in p) && !('Pin' in p) && !('UiOffInitFailure' in p), `${p.Name}: unchanged`);
   }
   // Every plugin whose owner is neither the rig's nor the loader's author has a pin.
   for (const p of names.filter((x) => x.Owner && !['msantoro12', 'AlienXAXS'].includes(x.Owner))) assert.ok(p.Pin?.Tag && /^sha256:[0-9a-f]{64}$/.test(p.Pin.Digest), `${p.Name} is pinned`);
@@ -465,6 +472,9 @@ test('rig set: Resolve gives ten plugins, MiniMap from LetMeInside at its pinned
   assert.equal(m.logName, 'MiniMap');
   assert.equal(m.dll, 'MiniMap.dll');
   assert.equal(m.expectRefused, false, 'refused on public is a fail');
+  // Its init needs the UI layer the rig turns off: the data comes from plugin-names.json, and no other plugin has it.
+  assert.equal(m.uiOffInitFailure, 'MiniMap: atlas texture interface initialization failed');
+  assert.deepEqual(out.plan.plugins.filter((p) => p.uiOffInitFailure).map((p) => p.name), ['MiniMap']);
   assert.equal(m.asset.name, 'MiniMap-Client.dll', 'the client DLL, not the zip or the manifest');
   // The pinned release is fetched by its tag; Latest is only asked about, to see whether a newer one waits.
   assert.ok(out.uris.includes(MINIMAP_PIN_URL), out.uris.join('\n'));

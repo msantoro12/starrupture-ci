@@ -193,8 +193,8 @@ $clientCases = [ordered]@{
  'layout_missing_classes'  = @{ Mut = { param($c) $c.ml = $c.ml -replace '0 missing', '2 missing' };                        Fail = 'layout_ok' }
  'layout_line_missing'     = @{ Mut = { param($c) Drop $c 'SDK CL 127004 against' };                                       Fail = 'layout_ok' }
  'layout_plugins_off'      = @{ Mut = { param($c) $c.ml += "$($err)[init] Layout mismatch -- plugins are switched off for this session" }; Fail = 'plugins_not_switched_off' }
- 'compat_report_line'      = @{ Mut = { param($c) $c.ml += "$($sig)[LayoutCheck] Compatibility report written to ModLoader\compat-report-128786.json" }; Fail = 'no_compat_report' }
- 'compat_report_listed'    = @{ Mut = { param($c) $c.boot.compat_reports = @('compat-report-128786.json') };               Fail = 'no_compat_report' }
+ 'compat_report_line'      = @{ Mut = { param($c) $c.ml += "$($sig)[LayoutCheck] Compatibility report written to ModLoader\compat-report-128786.json" }; Fail = 'compat_report_ok' }
+ 'compat_report_listed'    = @{ Mut = { param($c) $c.boot.compat_reports = @('compat-report-128786.json') };               Fail = 'compat_report_ok' }
  # Crashes
  'fatal_engine_crash'      = @{ Mut = { param($c) $c.ml += "$($err)[CrashReporter] *** FATAL ENGINE CRASH *** -- suppressing CrashReportClient upload" }; Fail = 'no_crash_markers' }
  'pluginguard_fault'       = @{ Mut = { param($c) $c.ml += "$($err)[PluginGuard] Fault (code=0xC0000005 at 00007FF7A6224989) under plugin 'ProductionViewer', in its tick callback, raised in engine or loader code: not contained" }; Fail = 'no_crash_markers' }
@@ -203,7 +203,7 @@ $clientCases = [ordered]@{
  # A boot.json that lacks a field is no evidence of a clean run
  'boot_no_crash_files'     = @{ Mut = { param($c) $c.boot.PSObject.Properties.Remove('crash_files') };                        Fail = 'no_crash_files' }
  'boot_no_crash_dialog'    = @{ Mut = { param($c) $c.boot.PSObject.Properties.Remove('crash_dialog') };                       Fail = 'no_crash_dialog' }
- 'boot_no_compat_reports'  = @{ Mut = { param($c) $c.boot.PSObject.Properties.Remove('compat_reports') };                     Fail = 'no_compat_report' }
+ 'boot_no_compat_reports'  = @{ Mut = { param($c) $c.boot.PSObject.Properties.Remove('compat_reports') };                     Fail = 'compat_report_ok' }
  'early_exit_zero'         = @{ Mut = { param($c) $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 0 }; Fail = 'client_alive_at_end' }
  'early_exit_nonzero'      = @{ Mut = { param($c) $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 53 }; Fail = 'client_alive_at_end' }
  'process_not_found'       = @{ Mut = { param($c) $c.boot.process_found = $false };                                        Fail = 'client_process_started' }
@@ -272,6 +272,128 @@ foreach ($k in $clientCases.Keys) {
     if (Test-Path (Join-Path $r.Dir 'verdict.json')) { $problems += @(& $extra $k $r) } else { $problems += 'no verdict.json' }
     if ($problems.Count -gt 0) { $bad++ }
     'client {0,-24} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
+}
+
+# ---- client mode, the two real rig artifacts of run 42399350787 ----------------
+# fixtures\rig-run-42399350787 holds what the rig uploaded for that run, untouched: the
+# public_test_branch rig (candidate loader 556ce13 on CL-129402: one member moved, a
+# compat report written, MiniMap refused as declared) and the public rig (MiniMap
+# loaded, its init fails because the rig runs with [UI] Enabled=0). Only two things are
+# not from the artifacts: set.json of the public rig gains MiniMap's uiOffInitFailure
+# (the rig's set step writes it from plugin-names.json; the run predates the field), and
+# the test branch's compat-report-129402.json was not uploaded by that run, so it is
+# written the way the loader's writer does (core/compat_report.cpp at 5172c71, format 3,
+# the same layout as the real CL-128786 report) from what that run's log records: the
+# product version, the layout counts, the four global RVAs and the one TimerActor change
+# (the exe hash is zeros). Both runs failed the old verdict for these reasons alone.
+$rigFx = Join-Path (Join-Path $PSScriptRoot 'fixtures') 'rig-run-42399350787'
+$uiOffText = (@(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-names.json') -Raw | ConvertFrom-Json | ForEach-Object { $_ }) | Where-Object { $_.Name -eq 'MiniMap' }).UiOffInitFailure
+if ($uiOffText -isnot [string] -or -not $uiOffText) { throw 'plugin-names.json has no UiOffInitFailure for MiniMap' }
+$arrow = [string][char]0x2192
+
+function New-RigCase([string]$Name, [string]$Run, [scriptblock]$Mutate) {
+    $src = Join-Path $rigFx $Run
+    $d = Join-Path $root "rig-$Run-$Name"; New-Item -ItemType Directory $d | Out-Null
+    $c = @{
+        ml = [string[]](Get-Content -LiteralPath (Join-Path $src 'modloader.log') -Encoding UTF8)
+        boot = Get-Content -LiteralPath (Join-Path $src 'boot.json') -Raw | ConvertFrom-Json
+        set = Get-Content -LiteralPath (Join-Path $src 'set.json') -Raw | ConvertFrom-Json
+        compat = $null
+    }
+    $rep = Join-Path $src 'compat-report-129402.json'
+    if (Test-Path $rep) { $c.compat = Get-Content -LiteralPath $rep -Raw -Encoding UTF8 }
+    if ($Run -eq 'public') { ($c.set.plugins | Where-Object { $_.repo -eq 'MiniMap' }) | Add-Member -NotePropertyName uiOffInitFailure -NotePropertyValue $uiOffText -Force }
+    & $Mutate $c
+    Set-Content (Join-Path $d 'modloader.log') $c.ml -Encoding utf8
+    $c.boot | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $d 'boot.json') -Encoding utf8
+    $c.set | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $d 'set.json') -Encoding utf8
+    foreach ($f in 'proxy.log', 'autoupdate.log', 'dll-hashes.json') { Copy-Item (Join-Path $src $f) $d }
+    if ($null -ne $c.compat) { Set-Content (Join-Path $d 'compat-report-129402.json') $c.compat -Encoding utf8 -NoNewline }
+    $shell = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
+    $out = & $shell -NoProfile -File $verdict -OutDir $d -Client 2>&1
+    [pscustomobject]@{ Case = $Name; Exit = $LASTEXITCODE; Out = ($out -join "`n"); Dir = $d }
+}
+function Edit-Report($c, [string]$Old, [string]$New) {
+    if (-not $c.compat.Contains($Old)) { throw "the compat report fixture lacks: $Old" }
+    $c.compat = $c.compat.Replace($Old, $New)
+}
+$missRow = '{ "name": "Fname_AppendString", "module": "StarRuptureGameSteam-Win64-Shipping.exe", "pattern": "48 89 5C 24 ?? 57", "required": REQ, "found": false }'
+$uiOffErr = "[19:00:31.326] [ERROR] [T:02032] [Plugin:MiniMap] $uiOffText"
+$tb = 'test-branch'
+$rigCases = [ordered]@{
+ # The two real runs: both must pass
+ 'test-branch real'           = @{ Run = $tb;      Mut = { param($c) } }
+ 'public real'                = @{ Run = 'public'; Mut = { param($c) } }
+ # A compat report is judged by its contents
+ 'compat safe-off'            = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "safe-off"' };                    Fail = 'compat_report_ok' }
+ 'compat required miss'       = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"patternMisses": []' ('"patternMisses": [ ' + $missRow.Replace('REQ', 'true') + ' ]') }; Fail = 'compat_report_ok' }
+ 'compat optional miss'       = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"patternMisses": []' ('"patternMisses": [ ' + $missRow.Replace('REQ', 'false') + ' ]') } }
+ 'compat global unresolved'   = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"name": "GWorld", "resolved": true' '"name": "GWorld", "resolved": false' }; Fail = 'compat_report_ok' }
+ 'compat global rejected'     = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"name": "GNames", "resolved": true, "rva": 238566080, "sdkOffset": 237091840, "rejected": false' '"name": "GNames", "resolved": true, "rva": 238566080, "sdkOffset": 237091840, "rejected": true' }; Fail = 'compat_report_ok' }
+ 'compat missing change'      = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"member": "TimerActor", "field": "offset", "sdk": 144, "game": 152 }' '"member": "TimerActor", "field": "offset", "sdk": 144, "game": 152 }, { "class": "UCrFoo", "member": "Bar", "field": "missing" }' }; Fail = 'compat_report_ok' }
+ 'compat vtable slot change'  = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"member": "TimerActor", "field": "offset", "sdk": 144, "game": 152 }' '"member": "TimerActor", "field": "offset", "sdk": 144, "game": 152 }, { "class": "UObject", "member": "ProcessEvent", "field": "vtableSlot", "sdk": 76, "game": 77 }' }; Fail = 'compat_report_ok' }
+ 'compat missing also layout' = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"field": "offset", "sdk": 144, "game": 152' '"field": "missing"' }; Fail = 'layout_ok' }
+ 'compat file not kept'       = @{ Run = $tb; Mut = { param($c) $c.compat = $null };                                                                  Fail = 'compat_report_ok' }
+ 'compat file garbage'        = @{ Run = $tb; Mut = { param($c) $c.compat = 'this is not json' };                                                     Fail = 'compat_report_ok' }
+ 'compat file truncated'      = @{ Run = $tb; Mut = { param($c) $c.compat = $c.compat.Substring(0, 300) };                                            Fail = 'compat_report_ok' }
+ 'compat file empty'          = @{ Run = $tb; Mut = { param($c) $c.compat = ' ' };                                                                    Fail = 'compat_report_ok' }
+ 'compat no outcome'          = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial",' '' };                                          Fail = 'compat_report_ok' }
+ 'compat no changes list'     = @{ Run = $tb; Mut = { param($c) $c.compat = [regex]::Replace($c.compat, '(?s),\s*"changes":.*\}\s*$', "`n}") };       Fail = 'compat_report_ok' }
+ 'compat unknown outcome'     = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "fine"' };                          Fail = 'compat_report_ok' }
+ 'compat listed not written'  = @{ Run = $tb; Mut = { param($c) $c.boot.compat_reports = @() };                                                       Fail = 'compat_report_ok' }
+ 'compat feature off'         = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: no row for CL-129402 (reflected)" }; Fail = 'compat_report_ok' }
+ 'compat plugins switched off' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[init] The menu state for plugins is switched off" };               Fail = 'plugins_not_switched_off' }
+ 'compat undeclared refusal'  = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)Plugin 'Codex' is not loaded: Needs an update to run on CL-129402" }; Fail = 'plugin_not_refused_Codex' }
+ 'layout moved without report' = @{ Run = $tb; Mut = { param($c) $c.boot.compat_reports = @(); $c.compat = $null; $c.ml = @($c.ml | Where-Object { $_ -notmatch 'Compatibility report written' }) }; Fail = 'layout_ok' }
+ 'layout moved, report has no changes' = @{ Run = $tb; Mut = { param($c) $c.compat = [regex]::Replace($c.compat, '"changes": \[.*?\]', '"changes": []', 'Singleline') }; Fail = 'layout_ok' }
+ # MiniMap on the UI-off rig: only the known ERROR plus its init failure passes
+ 'uioff other error'          = @{ Run = 'public'; Mut = { param($c) $c.ml = $c.ml | ForEach-Object { if ($_ -eq $uiOffErr) { $_ -replace 'atlas texture interface initialization failed', 'atlas texture is broken' } else { $_ } } }; Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff message extended'     = @{ Run = 'public'; Mut = { param($c) $c.ml = $c.ml | ForEach-Object { if ($_ -eq $uiOffErr) { "$_ (device lost)" } else { $_ } } };    Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff no init failed line'  = @{ Run = 'public'; Mut = { param($c) $c.ml = @($c.ml | Where-Object { $_ -notmatch 'Plugin initialization failed: MiniMap' }) };    Fail = 'plugin_initialized_MiniMap' }
+ 'uioff no error line'        = @{ Run = 'public'; Mut = { param($c) $c.ml = @($c.ml | Where-Object { $_ -ne $uiOffErr }) };                               Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff second error'         = @{ Run = 'public'; Mut = { param($c) $c.ml += "$($err)[Plugin:MiniMap] MiniMap: could not load the icon sheet" };                Fail = 'no_loader_errors' }
+ 'uioff error repeated'       = @{ Run = 'public'; Mut = { param($c) $c.ml += ($uiOffErr -replace '19:00:31.326', '19:00:31.999') };                          Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff init failed twice'    = @{ Run = 'public'; Mut = { param($c) $c.ml += '[19:00:35.000] [INFO ] [T:02032] [ModLoader] Plugin initialization failed: MiniMap' }; Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff error after failure'  = @{ Run = 'public'; Mut = { param($c) $c.ml = @($c.ml | Where-Object { $_ -ne $uiOffErr }) + $uiOffErr };                      Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff other plugin same'    = @{ Run = 'public'; Mut = { param($c)
+        $c.ml += "[19:00:36.000] [ERROR] [T:02032] [Plugin:Codex] $uiOffText"
+        $c.ml += '[19:00:36.001] [INFO ] [T:02032] [ModLoader] Plugin initialization failed: Codex' };                                                       Fail = 'plugin_no_fault_Codex' }
+ 'uioff plugin crashed'       = @{ Run = 'public'; Mut = { param($c) $c.ml += "$($err)[PluginManager] Plugin 'MiniMap' CRASHED in its tick callback -- code=0xC0000005 fault=0x7FF700001234" }; Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff plugin refused'       = @{ Run = 'public'; Mut = { param($c) $c.ml += "$($sig)Plugin 'MiniMap' is not loaded: Needs an update to run on CL-127004" };       Fail = 'plugin_not_refused_MiniMap' }
+ 'uioff summary says ten'     = @{ Run = 'public'; Mut = { param($c) $c.ml = $c.ml -replace '9 initialized, 1 failed \(of 10', '10 initialized, 0 failed (of 10' }; Fail = 'plugins_initialized' }
+ 'uioff summary two failed'   = @{ Run = 'public'; Mut = { param($c) $c.ml = $c.ml -replace '9 initialized, 1 failed \(of 10', '8 initialized, 2 failed (of 10' };  Fail = 'plugins_initialized' }
+ 'uioff not declared'         = @{ Run = 'public'; Mut = { param($c) ($c.set.plugins | Where-Object { $_.repo -eq 'MiniMap' }).PSObject.Properties.Remove('uiOffInitFailure') }; Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff wrong text declared'  = @{ Run = 'public'; Mut = { param($c) ($c.set.plugins | Where-Object { $_.repo -eq 'MiniMap' }).uiOffInitFailure = 'MiniMap: something else' }; Fail = 'plugin_no_fault_MiniMap' }
+ 'uioff other ERROR line'     = @{ Run = 'public'; Mut = { param($c) $c.ml += "$($err)[ImGuiBackend] D3D12CreateDevice failed" };                               Fail = 'no_loader_errors' }
+}
+foreach ($k in $rigCases.Keys) {
+    $r = New-RigCase $k $rigCases[$k].Run $rigCases[$k].Mut
+    $mustFail = $rigCases[$k].Fail
+    $want = if ($mustFail) { 1 } else { 0 }
+    $failed = ($r.Out -split "`n" | Where-Object { $_ -match ' FAIL\s*$' -and $_ -notmatch '^VERDICT' } | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
+    $problems = @()
+    if ($r.Exit -ne $want) { $problems += "exit $($r.Exit), want $want" }
+    if ($mustFail -and (($failed -split ',') -notcontains $mustFail)) { $problems += "check $mustFail did not fail" }
+    if (-not $mustFail -and $failed) { $problems += "unexpected failures: $failed" }
+    if (Test-Path (Join-Path $r.Dir 'verdict.json')) {
+        $j = Get-Content -LiteralPath (Join-Path $r.Dir 'verdict.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $md = Get-Content -LiteralPath (Join-Path $r.Dir 'summary.md') -Raw -Encoding UTF8
+        $mm = $j.plugins | Where-Object { $_.name -eq 'MiniMap' }
+        $moved = "layout moved: UCrEnviroWaveTimerSubsystem::TimerActor 0x90${arrow}0x98 (keys-only, no loader feature reads it)"
+        if ($k -eq 'test-branch real') {
+            if (@($j.notes) -notcontains $moved) { $problems += 'verdict.json lacks the layout-moved note' }
+            if ($md -notmatch [regex]::Escape("Note: $moved")) { $problems += 'summary.md lacks the layout-moved note' }
+            if ($mm.state -ne 'refused (as declared)') { $problems += "MiniMap state $($mm.state)" }
+        }
+        if ($k -eq 'compat optional miss' -and @($j.notes) -notcontains 'optional pattern missed: Fname_AppendString') { $problems += 'optional miss not noted' }
+        if ($k -eq 'public real') {
+            if ($mm.state -ne 'loaded; init needs the UI layer the rig turns off') { $problems += "MiniMap state $($mm.state)" }
+            if ($r.Out -notmatch 'plugins_initialized\s+PASS') { $problems += 'plugins_initialized not PASS' }
+            if ($j.reason -notmatch '^All \d+ checks passed') { $problems += "reason: $($j.reason)" }
+        }
+    } else { $problems += 'no verdict.json' }
+    if ($problems.Count -gt 0) { $bad++ }
+    'rig {0,-34} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
 }
 
 # Client mode keeps the logs' text off the console and out of GITHUB_STEP_SUMMARY: the
