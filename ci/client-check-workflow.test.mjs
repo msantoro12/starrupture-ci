@@ -759,9 +759,9 @@ const runBash = (script, { cwd, env, files = {} }) => {
   return spawnSync(bash, ['-c', script], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env, FAKE_DIR: cwd, RUNNER_TEMP: cwd, PATH: bin + delimiter + process.env.PATH } });
 };
 const calls = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
-const alertRun = ({ env = {}, result, decision, jobs = [], logs = {}, noChain = false } = {}) => {
+const alertRun = ({ env = {}, result, decision, jobs = [], logs = {}, noChain = false, extra = {} } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'alert-'));
-  const files = { 'out.txt': '' };
+  const files = { 'out.txt': '', ...extra };
   if (result) files['res/result.json'] = result;
   if (decision) files['chain/decision.json'] = decision;
   else if (!noChain) files['chain/map-mode-report.json'] = {};
@@ -1958,8 +1958,8 @@ test('key sources: the scans builder adds the sources after the released scans, 
   put('keysrc-MiniMap.json', { plugin: { name: 'MiniMap' }, patterns: [row('MiniMap/Free', 0x3000, { fp: '0x11111111' })] });
   const tag = (n, b) => `msantoro12/StarRupture-Plugin-${n}@${b}`;
   put('keysrc.json', { sources: [
-    { name: 'WAILA', tag: tag('WAILA', 'gss/plugin-work'), status: 'ok' },
-    { name: 'MiniMap', tag: tag('MiniMap', 'ci/hosted-build'), status: 'ok' },
+    { name: 'WAILA', tag: tag('WAILA', 'gss/plugin-work'), sha: 'a'.repeat(40), status: 'ok' },
+    { name: 'MiniMap', tag: tag('MiniMap', 'ci/hosted-build'), sha: 'b'.repeat(40), status: 'ok' },
     { name: 'Codex', tag: tag('Codex', 'gss/plugin-work'), status: 'failed', error: 'x' },
     { name: '../evil', tag: 'x', status: 'ok' },
   ] });
@@ -1972,6 +1972,9 @@ test('key sources: the scans builder adds the sources after the released scans, 
     ['Waila', true, tag('WAILA', 'gss/plugin-work'), 'current', 'res/keysrc-WAILA.json'],
     ['MiniMap', true, tag('MiniMap', 'ci/hosted-build'), 'current', 'res/keysrc-MiniMap.json'],
   ]);
+  // Only the key sources are marked, so map mode can tell a key that must not gate from a plan plugin's.
+  assert.deepEqual(scans.map((s) => s.keySource), [undefined, undefined, true, true]);
+  assert.deepEqual(scans.map((s) => s.commit), [undefined, undefined, 'a'.repeat(40), 'b'.repeat(40)]);
   // One component per plugin name: a key both ask for is one row, supplied by the released scan; a key only the source asks for gets a row too.
   const input = assemble(JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')), dir);
   assert.deepEqual(input.components.map((c) => [c.owner, c.releases.map((x) => x.tag)]), [
@@ -1988,6 +1991,19 @@ test('key sources: the scans builder adds the sources after the released scans, 
   rmSync(join(dir, 'res', 'keysrc.json'));
   assert.equal(spawnSync(process.execPath, ['-e', script, '129402'], { cwd: dir, env: { ...process.env, PLUGINS: 'AlienXAXS/StarRupture-Plugin-WAILA@main', LOADER_REF: 'v1' }, encoding: 'utf8', windowsHide: true }).status, 0);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans.map((s) => s.owner), ['ModLoader', 'Waila']);
+});
+
+test('key sources: the alert job lists the alert lines of the map writers, loudly, without failing the chain', { skip: !bash }, () => {
+  const line1 = 'key source msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work (c0ffee012345, checked the branch, not an installed DLL): asks for UCrWaveSubsystem::AddEntitiesToWave at 0x76B59B0, which the released map names UCrMassEnviroWaveSubsystem::AddEntitiesToWave; that branch is stale';
+  const line2 = 'key source msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build (c0ffee012345, checked the branch, not an installed DLL): compiles the size of ACrGameStateBase, which changed on CL-129402; that build needs SR_SIZE_CHECK or live';
+  const NL = String.fromCharCode(10);
+  const a = alertRun({ decision: goodDecision, extra: { 'chain/map-mode-report.json': { alerts: [line1, 7] }, 'chain/field-rows.json': { alerts: [line2] } } });
+  assert.equal(a.status, 0, a.stderr);
+  assert.ok(a.md.includes(`- ${line1}${NL}`) && a.md.includes(`- ${line2}${NL}`), a.md);
+  // Loud, not a failure: the chain still counts as passed.
+  assert.deepEqual(a.outputs, { alert: 'true', passed: 'true', ready: 'false' });
+  // No alerts, no line; a report without the field is fine.
+  assert.equal(alertRun({ decision: goodDecision, extra: { 'chain/field-rows.json': { rows: [] } } }).outputs.alert, 'false');
 });
 
 test('key sources: no program in a node -e block closes its single quotes early (an apostrophe in a comment would)', () => {

@@ -50,6 +50,11 @@
 // uses file every class is taken to be used by its compiled size. A class that
 // is gone degrades every plugin that has a key in it.
 //
+// A key source (a fork build scanned for its keys only, named `<Name>@<branch>`
+// in the uses file) never gates: when only key sources use a changed class by its
+// compiled size, that is a note and an alert line, not a refusal, and the
+// class-key size row is still written. A plan plugin's compiled use still refuses.
+//
 // Sizes are rows too. For every class a component requests the size of (`size
 // <Class> check|compiled|live` in the uses file), and for every `<plugin> <Class>
 // [size] [optional]` line of native-keys.txt (an unreflected struct), it writes a
@@ -106,6 +111,8 @@ const rowOf = (key, cl, f) => ({ key, cl, offset: f.offset, size: f.size, mask: 
 // A class key (no `::`) is a struct's own size: offset 0, size N, mask 0, no member.
 const isClassKey = (key) => !key.includes('::');
 const sizeRow = (key, cl, size) => rowOf(key, cl, { offset: 0, size, boolMask: 0 });
+// A key source's component is `<Name>@<branch>` (layout-table.mjs gen --uses-out); a plan plugin's has no '@'.
+export const isKeySource = (component) => component.includes('@');
 const classOf = (key) => key.split('::')[0];
 const memberOf = (key) => key.split('::')[1];
 
@@ -135,9 +142,10 @@ export function parseUses(text, where = 'uses') {
 
 // Plans the rows. next/base: arrays of { key, result, offset?, size?, boolMask? };
 // uses: parseUses() or null. Returns { problems, rows, absent, covered, notes, degraded }.
-export function planFieldRows(keys, next, base, cl, uses = null) {
+export function planFieldRows(keys, next, base, cl, uses = null, sources = new Map()) {
   const problems = [];
   const notes = [];
+  const alerts = [];
   const rows = [];
   const absent = [];
   const covered = new Set();
@@ -219,7 +227,13 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
     const change = `its size changed (${hex(m.base.size)} -> ${hex(m.next.size)})`;
     const per = uses ? uses.size.get(m.key) ?? new Map() : new Map(ownersOf(m.key).map((o) => [o, 'compiled']));
     if (!uses && !per.size) per.set('?', 'compiled');
-    const compiled = [...per].filter(([, how]) => how === 'compiled').map(([o]) => o).sort(cmp);
+    const compiledAll = [...per].filter(([, how]) => how === 'compiled').map(([o]) => o).sort(cmp);
+    const compiled = compiledAll.filter((o) => !isKeySource(o));
+    for (const o of compiledAll.filter(isKeySource)) {
+      notes.push(`class ${m.key}: ${change}; key source ${o} compiles its size`);
+      const src = sources.get(o);
+      alerts.push(`key source ${src?.tag ?? o} (${src?.commit ? src.commit.slice(0, 12) : 'commit unknown'}, checked the branch, not an installed DLL): compiles the size of ${m.key}, which changed on CL-${cl}; that build needs SR_SIZE_CHECK or live`);
+    }
     const checked = [...per].filter(([, how]) => how === 'check').map(([o]) => o).sort(cmp);
     const live = [...per].filter(([, how]) => how === 'live').map(([o]) => o).sort(cmp);
     if (compiled.length) {
@@ -227,7 +241,7 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
       return;
     }
     for (const o of checked) degrade(o, m.key, 'high', `${change}; SR_SIZE_CHECK(${m.key}) fails, so the loader turns that request off`);
-    if (!checked.length) notes.push(`class ${m.key}: ${change}; ${live.length ? `${live.join(', ')} read${live.length === 1 ? 's' : ''} its size live from the running game` : 'no plugin depends on its whole size'}`);
+    if (!checked.length && !compiledAll.length) notes.push(`class ${m.key}: ${change}; ${live.length ? `${live.join(', ')} read${live.length === 1 ? 's' : ''} its size live from the running game` : 'no plugin depends on its whole size'}`);
     covered.add(m.key);
   };
 
@@ -285,15 +299,15 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
   rows.sort((a, b) => cmp(a.key, b.key));
   absent.sort((a, b) => cmp(a.key, b.key));
   const byOwner = Object.fromEntries([...degraded].sort((a, b) => cmp(a[0], b[0])).map(([o, list]) => [o, list.sort((a, b) => cmp(a.key, b.key))]));
-  return { problems, rows, absent, covered: [...covered].sort(cmp), notes, degraded: byOwner };
+  return { problems, rows, absent, covered: [...covered].sort(cmp), notes, alerts, degraded: byOwner };
 }
 
 // The header text with the rows added, or the reasons it was refused.
-export function fieldRows(headerText, { cl, keys, next, base, uses = null }) {
+export function fieldRows(headerText, { cl, keys, next, base, uses = null, sources = new Map() }) {
   const map = parse(headerText, 'the header');
   if (map.flavour !== 'loader') throw new MapError('field rows go into the loader map; this header is a plugin map');
   if (!map.builds.some((b) => b.cl === cl)) throw new MapError(`CL-${cl} is not in the build table; add the build first (map-mode.mjs write, or version-map.mjs add-build)`);
-  const plan = planFieldRows(keys, next, base, cl, uses);
+  const plan = planFieldRows(keys, next, base, cl, uses, sources);
   const problems = [...plan.problems];
   const out = parse(emit(map), 'the header');
   let added = 0;
@@ -305,7 +319,7 @@ export function fieldRows(headerText, { cl, keys, next, base, uses = null }) {
       try { addAbsentField(out, { key: a.key, cl }); } catch (e) { if (!(e instanceof MapError)) throw e; problems.push(e.message); }
     }
   }
-  return { text: problems.length ? null : emit(out), added, rows: plan.rows.map((r) => r.key), problems, absent: plan.absent, covered: plan.covered, notes: plan.notes, degraded: plan.degraded };
+  return { text: problems.length ? null : emit(out), added, rows: plan.rows.map((r) => r.key), problems, absent: plan.absent, covered: plan.covered, notes: plan.notes, alerts: plan.alerts, degraded: plan.degraded };
 }
 
 // The key list as the client check has it: ci/native-keys.txt (each plugin's
@@ -344,6 +358,16 @@ export function keysFromCheck(nativeText, layoutText) {
   return keys;
 }
 
+// The scans builder's commits.json (the check's keysrc.json, name, tag and sha only): component name (`<Name>@<branch>`, as in the uses file) -> { tag, commit }.
+export function keySourcesOf(text) {
+  const out = new Map();
+  for (const k of JSON.parse(text.replace(/^﻿/, '')).sources ?? []) {
+    if (typeof k?.name !== 'string' || typeof k.tag !== 'string' || !k.tag.includes('@')) continue;
+    out.set(`${k.name}@${k.tag.slice(k.tag.indexOf('@') + 1)}`, { tag: k.tag, commit: typeof k.sha === 'string' ? k.sha : undefined });
+  }
+  return out;
+}
+
 export function main(argv) {
   const [cmd, header, ...rest] = argv;
   const o = { keys: [] };
@@ -356,7 +380,7 @@ export function main(argv) {
   const fromCheck = o['native-keys'] !== undefined || o['layout-keys'] !== undefined;
   const keysOk = fromCheck ? !!(o['native-keys'] && o['layout-keys']) && !o.keys.length : o.keys.length > 0 && o.uses === undefined;
   if (cmd !== 'write' || !header || !o.cl || !o.next || !keysOk || !/^\d+$/.test(o.cl)) {
-    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt>]) [--report <file>]\n');
+    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt> [--sources <commits.json>]]) [--report <file>]\n');
     return EXIT_ERROR;
   }
   try {
@@ -366,8 +390,8 @@ export function main(argv) {
     const uses = o.uses ? parseUses(readFileSync(o.uses, 'utf8'), o.uses) : null;
     const next = parseLayoutReport(readFileSync(o.next, 'utf8'), o.next);
     const base = o.base ? parseLayoutReport(readFileSync(o.base, 'utf8'), o.base) : null;
-    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses });
-    const report = { written: !!out.text, cl: Number(o.cl), added: out.added, rows: out.rows, absent: out.absent, degraded: out.degraded, covered: out.covered, notes: out.notes, problems: out.problems };
+    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses, sources: o.sources ? keySourcesOf(readFileSync(o.sources, 'utf8')) : new Map() });
+    const report = { written: !!out.text, cl: Number(o.cl), added: out.added, rows: out.rows, absent: out.absent, degraded: out.degraded, covered: out.covered, notes: out.notes, alerts: out.alerts, problems: out.problems };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.text) {
       for (const p of out.problems) process.stderr.write(`refused: ${p}\n`);

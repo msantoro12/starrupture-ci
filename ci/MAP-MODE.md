@@ -230,7 +230,7 @@ A function key (`Class::Function`) written without a `symbolRva` gets a note in 
 report: the symbol-start and one-key-per-symbol checks cannot run for it.
 
 It refuses, naming the keys: two keys for one symbol; one key at two addresses; a
-global key off a symbol's start; two request tuples under one `fp` of one key; a
+global key off a symbol's start (a key source's key dropped for its symbol, see Key sources, is not checked); two request tuples under one `fp` of one key; a
 required key (the loader's) without a locator, for a scoped one under the newest
 release's `fp`; a different verified row already there for a key, `fp` and CL; a
 coverage problem of the written map when key lists are given.
@@ -344,7 +344,7 @@ In `sr-client-check.yml`:
   header": 3 of 220 function keys have no CL-129402 row: a, b, c`. Nothing after
   that step (decide, export, staging, the push) runs.
 - The artifact `map-mode-<branch>` holds `carry.json` and `map-mode-report.json` (with
-  `absences`, `missing` and `line`) beside the other files.
+  `absences`, `alerts`, `missing` and `line`) beside the other files.
 
 ## Step 28: `field-rows.mjs write`
 
@@ -668,6 +668,27 @@ first in `scans.json`, and the sort keeps input order among equal owners and ran
 wins and the row's `from` names `<Owner> current`. A key only a source requests gets its row from the source
 (`from` is `<Owner> <repo>@<branch>`). Resolved rows at different addresses still refuse the write, as for any two
 scans.
+
+**A key source never gates.** The release the scans builder gives a source's scan carries `keySource: true`, and
+two rules follow from it:
+
+- One key per symbol. When a source's key names a symbol that a plan plugin's key also names, the plan
+  plugin's key wins: the source key is dropped, with a note (`<key>: asked for by key source <tag> at <rva>, where
+  the released map has <key2>; no row`) and an alert line (`key source <tag> (<sha>, checked the branch, not an
+  installed DLL): asks for <key> at <rva>, which the released map names <key2>; that branch is stale`). The
+  dropped key is listed in `absences`, so `complete` does not count it missing when an earlier row has it. Two plan plugins on one symbol, a plan plugin
+  against itself, and two source keys alone on one symbol still refuse.
+- Compiled sizes (`field-rows.mjs`). A use of `size <Class> compiled` that comes only from a key source (a
+  component named `<Name>@<branch>`; `--sources <commits.json>`, written by the scans builder, supplies its tag and commit) on a class whose size changed is a note and an alert line (`<plugin> key
+  source <tag> (<sha>, checked the branch, not an installed DLL): compiles the size of <Class>, which changed on CL-<n>; that build needs SR_SIZE_CHECK or live`), not a
+  refusal; the class-key size row is still written. A plan plugin's compiled use still refuses.
+
+Both kinds of alert line go to `map-mode-report.json` and `field-rows.json` (`alerts`), and the alert job lists them as
+review lines: loud, but they do not fail the chain.
+
+The alert lines say what was checked (the branch at a commit), never what is installed.
+Other checks still apply to a key source's rows: one key at two addresses, a request-tuple clash, and a key
+at a symbol's start that stays.
 
 ## The workflow chain
 

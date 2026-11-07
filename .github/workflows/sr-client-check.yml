@@ -2466,6 +2466,7 @@ jobs:
             // Key sources (res/keysrc.json, from the check job; every one is ok, the step above checked):
             // fork builds scanned for their keys only. After the released scans, so a key both ask for stays one
             // row and the row of the released plugin comes first in the order of ci/map-mode.mjs; the tag names where a row came from.
+            const commits = [];
             if (fs.existsSync("res/keysrc.json")) {
               for (const k of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) {
                 if (k.status !== "ok" || !/^[A-Za-z0-9_-]+$/.test(k.name)) continue;
@@ -2474,9 +2475,12 @@ jobs:
                 if (!owner) continue;
                 // The released scan of the same plugin joins the same component, which has one tracked flag.
                 for (const x of scans) if (x.owner === owner) x.tracked = true;
-                scans.push({ owner, tracked: true, tag: k.tag, rank: "current", file });
+                scans.push({ owner, tracked: true, tag: k.tag, rank: "current", keySource: true, commit: k.sha, file });
+                commits.push({ name: k.name, tag: k.tag, sha: k.sha });
               }
             }
+            // The alert lines of the field rows name the commit each fork branch was checked at.
+            fs.writeFileSync("commits.json", JSON.stringify({ sources: commits }));
             fs.writeFileSync("scans.json", JSON.stringify({ source: "steam_build " + process.argv[1], scans }));
           ' "$buildid"
           header=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
@@ -2539,7 +2543,7 @@ jobs:
           if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json); else echo "field-rows: no reference layout in the check's artifact (branch $BRANCH); running without --base"; fi
           fr=0
           node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" \
-            --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --report field-rows.json || fr=$?
+            --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --sources commits.json --report field-rows.json || fr=$?
           echo "field-rows: exit $fr"
           if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr): no member rows were written and no report exists; failing the job"; exit "$fr"; fi
           # The gate inputs, from what this run checked.
@@ -3351,6 +3355,11 @@ jobs:
             // gate nor takes the chain-passed mark away.
             const review = [...new Set([e.PLAN_REVIEW, e.BRANCH_RIG_REVIEW, e.OTHER_RIG_REVIEW].flatMap((t) => String(t ?? "").split(/\s+/)).filter((t) => /^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(t)))]
               .map((t) => "- new " + t.split("=")[0] + " release " + t.split("=")[1] + " waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in `ci/plugin-names.json`");
+            // Lines the map writers left in their reports (alerts): a stale fork branch, a fork build that compiles a changed
+            // size. Loud like the review lines, and for the same reason they block nothing.
+            for (const f of ["chain/map-mode-report.json", "chain/field-rows.json"]) {
+              for (const x of [].concat(readJson(f)?.alerts ?? [])) if (typeof x === "string" && x) review.push("- " + clip(x, 400));
+            }
 
             const out = (kv) => fs.appendFileSync(e.GITHUB_OUTPUT, Object.entries(kv).map(([k, v]) => k + "=" + v + "\n").join(""));
             const passed = lines.length === 0 && d !== null;
