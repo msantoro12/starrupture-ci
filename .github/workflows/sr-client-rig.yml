@@ -8,6 +8,8 @@ name: SR client rig
 # The job runs in environment `steam-client`, which serves branch main only, so a caller
 # must be on main. There is no schedule and no pull_request trigger. Details and a caller
 # example: .github/sr-pipeline/README.md ("Client test rig").
+# The Steam login is live while candidate code runs: run only candidates built from our own
+# branches (msantoro12 and AlienXAXS repos), never a fork PR or anything built from issue text.
 #
 # One game session per account: runs queue, and GitHub keeps one waiting run per group (a
 # third run replaces the second). Nothing cancels a run that is going.
