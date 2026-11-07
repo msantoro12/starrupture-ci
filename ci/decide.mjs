@@ -283,15 +283,15 @@ function refusalFromFields(p, running) {
 // The plugins the loader's own rule predicts refused on a build the check did not scan: the
 // OTHER Steam branch's current CL. Plugin metadata (interface version, the build it was made on,
 // the migrated flag where known) does not depend on the branch, so the rows of this check's scan
-// are judged with loaderRefusal against that CL. What is specific to the scanned build (the
-// scanner's REFUSED verdict, a probe note about another CL) says nothing here: loaderRefusal
-// reads a note only for the CL it names. A plugin whose fields cannot say is not listed, so a
-// refusal the rule does not predict stays unexpected and fails the rig.
-// `scanned`: cl is the CL the rows were scanned on, so the scanner's own REFUSED verdict (interface
-// outside the loader's range) is a refusal there too.
-export function expectedRefusals(rows, cl, scanned = false) {
-  if (!Array.isArray(rows)) return [];
-  const names = rows.filter((p) => isObj(p) && typeof p.name === 'string' && p.name !== '' && (loaderRefusal(p, cl) || (scanned && p.verdict === 'REFUSED'))).map((p) => p.name);
+// are judged with loaderRefusal against that CL. A probe note about another CL says nothing
+// here: loaderRefusal reads a note only for the CL it names. The scanner's REFUSED verdict counts
+// on every CL: it means the interface version is outside the range of the loader the scanner was
+// built from (sr-aobscan plugin_scan.cpp), which is the candidate loader both rigs run, whatever
+// the build. A plugin whose fields cannot say is not listed, so a refusal the rule does not
+// predict stays unexpected and fails the rig.
+export function expectedRefusals(rows, cl) {
+  if (!Array.isArray(rows) || !Number.isInteger(Number(cl)) || Number(cl) <= 0 || cl === null) return [];
+  const names = rows.filter((p) => isObj(p) && typeof p.name === 'string' && p.name !== '' && (p.verdict === 'REFUSED' || loaderRefusal(p, cl))).map((p) => p.name);
   return [...new Set(names)].sort();
 }
 
@@ -483,7 +483,7 @@ export function decide(inputs) {
       pluginsOk: perPlugin.length > 0 && perPlugin.every((p) => p.status === 'updated' || p.heldAlone === true),
       // The DLLs the rig runs that the loader refuses on this build, sorted: the client rig's expect_refused
       // input. From the rig's own DLLs (--rig-plugins), never from the plugin builds judged in perPlugin.
-      expectRefused: rigRows === null ? [] : expectedRefusals(rigRows, cl, true),
+      expectRefused: rigRows === null ? [] : expectedRefusals(rigRows, cl),
     };
     // The other branch's build: the same rule on that CL (--other-cl). On the very CL this check
     // scanned, the scanned verdicts apply too, so the two lists are then the same.
