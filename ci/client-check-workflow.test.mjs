@@ -280,7 +280,7 @@ test('push-loader: the key, the environment and the target are named, and the al
   assert.match(j, /\n {4}environment: fork-push\n/);
   assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
   assert.match(j, /\n {4}needs: \[map-mode\]\n/);
-  assert.match(j, /needs\.map-mode\.result == 'success' && needs\.map-mode\.outputs\.staged == 'true' &&inputs\.test_autopilot != true && inputs\.loader_repo == 'msantoro12\/StarRupture-ModLoader'/);
+  assert.match(j, /needs\.map-mode\.result == 'success' && needs\.map-mode\.outputs\.staged == 'true' && inputs\.test_autopilot != true && inputs\.loader_repo == 'msantoro12\/StarRupture-ModLoader'/);
   assert.match(j, /\n {4}outputs:\n {6}branch: \$\{\{ steps\.push\.outputs\.branch \}\}\n {6}sha: \$\{\{ steps\.push\.outputs\.sha \}\}\n/);
   assert.ok(!/continue-on-error/.test(j), 'no step of the push job may fail quietly');
   // The key is read by name, in two steps only, and no other secret is touched.
