@@ -1,7 +1,7 @@
-# Throwaway spike: can a hosted Windows runner launch the client far enough
-# for the mod loader to load its plugins? Not the rig. Game files stay on the
-# runner: never cached, never uploaded. Only scrubbed text logs leave, and only
-# after the leak gate has passed.
+# Throwaway spike: can a hosted Windows runner, with the real Steam client
+# signed in, launch the game far enough for the mod loader to load its plugins?
+# Not the rig. Game files stay on the runner: never cached, never uploaded. Only
+# scrubbed text logs leave, and only after the leak gate has passed.
 name: Rig spike
 
 on:
@@ -23,7 +23,7 @@ env:
 jobs:
   spike:
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 95
     environment: steam-client-replay
     permissions:
       contents: read
@@ -217,25 +217,30 @@ jobs:
           Get-ChildItem -LiteralPath $bin -Filter dwmapi.dll | ForEach-Object { "$($_.Name) $($_.Length)" }
           Get-ChildItem -LiteralPath $ml -Recurse -File | ForEach-Object { "$($_.FullName.Substring($bin.Length)) $($_.Length)" }
 
-      - name: Try the launches
+      - name: Try the Steam client and the launches
         id: attempts
-        timeout-minutes: 35
+        timeout-minutes: 60
         shell: pwsh
         env:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
-        run: ./ci/rig-spike.ps1 -Install $env:INSTALL_DIR -OutDir out -Attempts B,E
+        run: ./ci/rig-spike.ps1 -Install $env:INSTALL_DIR -OutDir out
 
-      - name: Remove the login cache from the runner
+      - name: Remove Steam and the login from the runner
         if: always()
         shell: pwsh
         run: |
-          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(steam|StarRupture|UnrealCEF|CrashReport|WerFault)' } | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
-          Remove-Item -Recurse -Force C:\steamcmd -ErrorAction SilentlyContinue
-          if (Test-Path C:\steamcmd) { Write-Host '::error::C:\steamcmd could not be removed'; exit 1 }
-          'steamcmd and its login cache are removed from the runner.'
+          Stop-Service 'Steam Client Service' -Force -ErrorAction SilentlyContinue
+          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(steam|gameoverlayui|StarRupture|UnrealCEF|CrashReport|WerFault)' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          $left = 0
+          foreach ($d in 'C:\steamcmd', (Join-Path ${env:ProgramFiles(x86)} 'Steam'), (Join-Path $env:LOCALAPPDATA 'Steam')) {
+            Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $d) { Write-Host "::error::$d could not be removed"; $left++ }
+          }
+          if ($left) { exit 1 }
+          'steamcmd, the Steam client and the login are removed from the runner.'
 
       - name: Leak gate
         id: leak
@@ -243,14 +248,23 @@ jobs:
         shell: pwsh
         env:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
         run: |
           $user = "$env:STEAM_USER".Trim()
           if (-not $user) { Write-Host '::error::No account name to check against'; exit 1 }
+          # The name, every long value in the login, and the IDs and persona the script met.
+          $terms = @($user)
+          $vdf = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("$env:STEAM_CACHE".Trim()))
+          foreach ($m in [regex]::Matches($vdf, '"[^"\r\n]*"[ \t]+"([^"\r\n]{16,})"')) { $terms += $m.Groups[1].Value }
+          $extra = Join-Path $env:RUNNER_TEMP 'rig-gate-terms.txt'
+          if (Test-Path -LiteralPath $extra) { $terms += @(Get-Content -LiteralPath $extra | Where-Object { $_ }); Remove-Item -LiteralPath $extra -Force }
           $bad = 0
           if (Test-Path out) {
             foreach ($f in Get-ChildItem out -Recurse -File) {
               $t = [IO.File]::ReadAllText($f.FullName)
-              if ($t.IndexOf($user, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $t -match '7656119\d{10}|\[U:1:\d+\]') {
+              $hit = $t -match '7656119\d{10}|\[U:1:\d+\]'
+              foreach ($term in $terms) { if ($t.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $true } }
+              if ($hit) {
                 Write-Host "::error::Account data found in $($f.Name)"
                 $bad++
               }
