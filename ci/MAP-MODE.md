@@ -45,11 +45,29 @@ It checks out the loader commit the header was read from (the head of
 `version_map.generated.h`, and pushes it. It never pushes a tag and never forces.
 A branch that already holds the same tree is left alone; one that holds another
 tree stays as it is, and the push goes to `auto/update-<CL>-<run id>-<attempt>`.
-The job outputs `branch` and `sha` for the next steps (a candidate loader build,
-the client rig). A missing key fails the job with "Loader deploy key missing",
+The job outputs `branch` and `sha` for the next steps (the `candidate-loader` job,
+below, and the client rig). A missing key fails the job with "Loader deploy key missing",
 naming the secret and the environment; it is never skipped quietly. The job runs
-for a staged build only: a beta branch, not a `test_autopilot` run, and the
-loader repository must be the fork.
+for a build the chain carried through to staging: not a `test_autopilot` run, and the
+loader repository must be the fork. A build first seen on `public` is pushed too: it gets its
+own `auto/update-<CL>` and a candidate like any other (it is not entered in the
+staged index, since public is what a staged build is promoted to).
+
+### The candidate loader and its tests
+
+The `candidate-loader` job of `sr-client-check.yml` follows `push-loader` and
+builds the loader from the exact commit that job pushed: Client Release, with the
+build action shared with `sr-build-all.yml` (`.github/actions/build-loader`) and the
+build tag `cand-<run id>-<sha7>`. It then builds and runs the loader's
+`VersionMapTests` and `LayoutCheckTests` on that commit (each project built from its
+vcxproj, the exit code is the verdict), so a pushed row set that breaks the map's own
+checks fails the chain. It checks that the tag is compiled into
+`StarRupture-ModLoader-Core.dll` and uploads `dwmapi.dll` and `ModLoader/*.dll` as the
+artifact `loader-candidate-<branch>` (7 days), the layout the client rig takes as a
+candidate. Outputs: `artifact`, `version` (the tag), `expect` (`Loader=<tag>`, the
+rig's `expect` value) and `sha`; the candidate run id is this run's `github.run_id`.
+The `build-scanner` job also builds and runs the scanner's `ObservedTests` before it
+hashes the scanner. The alert job does not yet watch these two jobs.
 
 ## Step 27: `map-mode.mjs write`
 
@@ -366,7 +384,8 @@ switches off scheduled workflows in a public repository after 60 days of no acti
 ## Staging and promotion (dry run)
 
 A beta build that passed the chain is staged, and promoted when public flips to the
-same build. Both are plan printers: the `map-mode` job of `sr-client-check.yml` runs
+same build. A build first seen on `public` is pushed to the loader fork but is not
+staged (nothing to promote it to). Both are plan printers: the `map-mode` job of `sr-client-check.yml` runs
 them (below), and nothing is signed with the release key, published or released
 from them. The staged index is not kept between runs, so a plan is all they produce.
 

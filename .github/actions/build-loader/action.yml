@@ -1,0 +1,45 @@
+name: Build the loader
+description: >-
+  MSBuild of the loader solution as the loader's release.yml does it (Client or
+  Server), minus everything that tags, releases or uploads. Run in the loader
+  checkout; the build tag and the manifest URL are compiled in, so the code
+  behind them is compile-checked too. Used by sr-build-all.yml and by the
+  candidate job of sr-client-check.yml.
+
+inputs:
+  configuration:
+    description: 'Solution configuration: Client Release or Server Release'
+    required: true
+  build_tag:
+    description: 'Compiled in as ModLoaderBuildTag; the loader prints it as "[init] Build: <tag>" in ModLoader.log'
+    required: true
+  manifest_url:
+    description: 'Compiled in as AutoUpdateManifestUrl'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+
+    - name: Build ${{ inputs.configuration }}
+      shell: pwsh
+      env:
+        CONFIGURATION: ${{ inputs.configuration }}
+        BUILD_TAG: ${{ inputs.build_tag }}
+        MANIFEST_URL: ${{ inputs.manifest_url }}
+      run: |
+        # Same arguments as the loader's release.yml build steps, plus the
+        # parallelism switches.
+        msbuild "StarRupture-ModLoader.sln" `
+          /p:Configuration="$env:CONFIGURATION" `
+          /p:Platform=x64 `
+          /p:PostBuildEventUseInBuild=false `
+          /p:ModLoaderBuildTag="$env:BUILD_TAG" `
+          /p:AutoUpdateManifestUrl="$env:MANIFEST_URL" `
+          /m `
+          /p:CL_MP=true `
+          /nodeReuse:false `
+          /v:minimal
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

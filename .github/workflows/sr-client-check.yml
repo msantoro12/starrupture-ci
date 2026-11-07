@@ -295,6 +295,23 @@ jobs:
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The scanner's own tests (the locator it reports for a registry row,
+      # against the loader's VersionMap::ResolveLoaderEntry). A manual test
+      # project of the scanner branch: built from its project file in the loader
+      # checkout above, which supplies the version map code and the test doubles.
+      # Its exit code is its verdict, so a failure fails this job and with it the check.
+      - name: Build and run the scanner's tests (ObservedTests)
+        shell: pwsh
+        working-directory: loader
+        run: |
+          msbuild "tools\AobScan\ObservedTests\ObservedTests.vcxproj" `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "ObservedTests did not build (exit $LASTEXITCODE)" }
+          & "build\tests\observed_tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "ObservedTests failed (exit $LASTEXITCODE)" }
+
       - name: Hash the scanner
         id: hash
         shell: pwsh
@@ -1884,7 +1901,7 @@ jobs:
             const hex = (n) => "0x" + n.toString(16).toUpperCase().padStart(8, "0");
             const buildid = String(r.download?.buildid || process.env.BUILDID);
             const scans = [{ exe: process.env.BRANCH, buildid, ok: true }];
-            if (r.reference?.status === "used") scans.push({ exe: "public", buildid: String(r.reference.buildid), ok: true });
+            if (r.reference?.status === "used" && process.env.BRANCH !== "public") scans.push({ exe: "public", buildid: String(r.reference.buildid), ok: true });
             const build = { cl, branch: process.env.BRANCH, buildid, productVersion: r.checks.exe.productVersion, exeSha256: r.checks.exe.sha256,
               imageStamp: hex(row.stamp), size: row.size, run: Number(process.env.RUN_ID), scans,
               repo: { sha: process.env.LOADER_SHA, tree: process.env.LOADER_TREE, verdict: "FIXED" } };
@@ -1898,11 +1915,11 @@ jobs:
             writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && d.pluginsOk === true, exe: process.env.BRANCH, buildid }));
           '
           if [ -f tool/state/staged.json ]; then cp tool/state/staged.json staged.json; else echo '{}' > staged.json; fi
-          if [ "$BRANCH" != public ]; then
-            node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json
-            node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("stage-plan.json","utf8")); if (p.index) fs.writeFileSync("staged.json", JSON.stringify(p.index, null, 1));'
-            echo "staged=true" >> "$GITHUB_OUTPUT"
-          fi
+          # A beta build is staged (branch and index entry). A build first seen on public gets the
+          # same branch for its candidate loader and the rig, with no index entry (ci/staging.mjs).
+          node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json
+          node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("stage-plan.json","utf8")); if (p.index) fs.writeFileSync("staged.json", JSON.stringify(p.index, null, 1));'
+          echo "staged=true" >> "$GITHUB_OUTPUT"
           [ "$TEST_AUTOPILOT" = true ] && promote_flag=(--test-autopilot)
           p=0
           node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
@@ -2027,10 +2044,10 @@ jobs:
   # map-mode job wrote and the loader commit that job read it from, adds one
   # commit that changes only that header, and pushes auto/update-<CL> (ci/staging.mjs
   # push: one repository, one branch pattern, never a tag, never a force). The
-  # branch is the input of the next steps: a candidate loader build and the client rig.
+  # branch is the input of the next steps: the candidate-loader job and the client rig.
   # A missing key fails the job with its name; it never skips quietly. A run that
-  # targets another loader repository, a test run and a run that staged nothing
-  # (a public build, a chain that held) have nothing to push and skip.
+  # targets another loader repository, a test run and a run whose chain held
+  # have nothing to push and skip. A build first seen on public is pushed too.
   push-loader:
     name: push the map rows to the loader fork
     needs: [map-mode]
@@ -2105,6 +2122,133 @@ jobs:
             --header chain/version_map.generated.h --checkout loader --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT")"
           echo "$out" >> "$GITHUB_OUTPUT"
           echo "Loader fork: $(echo $out)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- Candidate loader: the pushed rows, built and tested ----------------
+  # Builds the loader from exactly the commit push-loader pushed (the loader
+  # with the candidate map rows) the way sr-build-all.yml does (Client Release,
+  # the same build action, a build tag), runs the loader's VersionMapTests and
+  # LayoutCheckTests on that commit, and uploads the build in the layout the
+  # client rig takes as a candidate (dwmapi.dll and ModLoader/*.dll, no plugins).
+  # A failing build or test fails the job, so nothing downstream gets a candidate.
+  # No secrets and no environment: it runs loader code from the owner's fork,
+  # which is what the push job just wrote. The build tag is the exact string the
+  # loader prints as "[init] Build: <tag> (client)" in ModLoader.log (the verdict
+  # script's loader_build_line check compares it with the rig's expect=Loader=...),
+  # and the job checks it is compiled into the built DLL before it uploads.
+  candidate-loader:
+    name: candidate loader
+    needs: [push-loader]
+    if: ${{ !cancelled() && needs.push-loader.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.out.outputs.artifact }}
+      version: ${{ steps.out.outputs.version }}
+      expect: ${{ steps.out.outputs.expect }}
+      sha: ${{ steps.out.outputs.sha }}
+    env:
+      LOADER_SHA: ${{ needs.push-loader.outputs.sha }}
+      ARTIFACT: loader-candidate-${{ inputs.branch }}
+    steps:
+      - name: Name the build
+        id: tag
+        shell: pwsh
+        run: |
+          # The commit is push-loader's output; nothing else is built here.
+          if ($env:LOADER_SHA -notmatch '^[0-9a-f]{40}$') { throw "push-loader named no loader commit ('$($env:LOADER_SHA)')" }
+          # Unique per run and commit, and a plain token: the rig's expect value takes letters, digits and . _ + -
+          "tag=cand-$($env:GITHUB_RUN_ID)-$($env:LOADER_SHA.Substring(0, 7))" >> $env:GITHUB_OUTPUT
+
+      - name: Check out the loader at the pushed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: msantoro12/StarRupture-ModLoader
+          ref: ${{ needs.push-loader.outputs.sha }}
+          # The Game SDK is the loader's own submodule: the build uses the commit the loader pins.
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check it is that commit
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          if ($head -ne $env:LOADER_SHA) { throw "checked out $head, push-loader pushed $($env:LOADER_SHA)" }
+          "Loader msantoro12/StarRupture-ModLoader at $head"
+
+      # After the loader checkout, so its clean step does not remove it.
+      - name: Check out the build action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-actions
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Build Client Release
+        uses: ./ci-actions/.github/actions/build-loader
+        with:
+          configuration: Client Release
+          build_tag: ${{ steps.tag.outputs.tag }}
+          manifest_url: ${{ github.server_url }}/msantoro12/StarRupture-ModLoader/releases/latest/download/manifest-client.json
+
+      # The loader's test projects are not part of the solution build; each is
+      # built from its project file, as Tests/README.md says, and its exit code is its verdict.
+      - name: VersionMapTests
+        shell: pwsh
+        run: |
+          msbuild "Tests\VersionMapTests\VersionMapTests.vcxproj" /p:Configuration="Client Release" /p:Platform=x64 /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "VersionMapTests did not build (exit $LASTEXITCODE)" }
+          & "build\tests\version_map_tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "VersionMapTests failed (exit $LASTEXITCODE)" }
+
+      - name: LayoutCheckTests
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          msbuild "Tests\LayoutCheckTests\LayoutCheckTests.vcxproj" /p:Configuration="Client Release" /p:Platform=x64 /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "LayoutCheckTests did not build (exit $LASTEXITCODE)" }
+          & "build\tests\layout_check_tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "LayoutCheckTests failed (exit $LASTEXITCODE)" }
+
+      - name: Check the build
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $dir = 'build\Client Release'
+          foreach ($f in 'dwmapi.dll', 'ModLoader\StarRupture-ModLoader-Core.dll') {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) { throw "the build has no $f" }
+          }
+          # The loader prints its compiled-in build tag; it must be the one named above.
+          $core = [IO.File]::ReadAllBytes((Join-Path $dir 'ModLoader\StarRupture-ModLoader-Core.dll'))
+          if (-not [Text.Encoding]::Latin1.GetString($core).Contains($env:TAG, [StringComparison]::Ordinal)) {
+            throw "the build tag $($env:TAG) is not compiled into StarRupture-ModLoader-Core.dll"
+          }
+          "Build tag $($env:TAG) is in the Core DLL."
+
+      - name: Upload the candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACT }}
+          # Same files as the loader-client artifact of sr-build-all.yml: dwmapi.dll and ModLoader/*.dll at the root, no plugins.
+          path: |
+            build/Client Release/dwmapi.dll
+            build/Client Release/ModLoader/*.dll
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Name the candidate
+        id: out
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          "artifact=$($env:ARTIFACT)" >> $env:GITHUB_OUTPUT
+          "version=$($env:TAG)" >> $env:GITHUB_OUTPUT
+          "expect=Loader=$($env:TAG)" >> $env:GITHUB_OUTPUT
+          "sha=$($env:LOADER_SHA)" >> $env:GITHUB_OUTPUT
+          "Candidate loader $($env:TAG): artifact $($env:ARTIFACT) of run $($env:GITHUB_RUN_ID), loader commit $($env:LOADER_SHA)" >> $env:GITHUB_STEP_SUMMARY
 
   # ---- Alert: a failed or held run is visible without opening Actions ----
   # One issue per branch, opened on the first problem and commented on for every

@@ -46,7 +46,7 @@ test('loader_repo: the allowlist fails both loader-checkout jobs before the chec
 test('loader_repo: every loader checkout and the compiled-in feed use it, none the bare owner', () => {
   assert.ok(!/repository: \$\{\{ env\.OWNER \}\}\/StarRupture-ModLoader/.test(wf));
   assert.equal(wf.match(/repository: \$\{\{ env\.LOADER_REPO \}\}\n\s+ref: \$\{\{ inputs\.loader_branch \|\| 'main' \}\}/g)?.length, 2);
-  assert.match(wf, /MANIFEST_URL: .*\$\{\{ env\.LOADER_REPO \}\}\/releases/);
+  assert.match(wf, /manifest_url: .*\$\{\{ env\.LOADER_REPO \}\}\/releases/);
 });
 
 test('loader_branch: documented as accepting a full commit sha, and the loader job logs the repo and HEAD', () => {
@@ -55,4 +55,19 @@ test('loader_branch: documented as accepting a full commit sha, and the loader j
   const at = j.indexOf('- name: Log what was checked out');
   assert.ok(at > j.indexOf('actions/checkout'));
   assert.match(j.slice(at), /echo "Loader \$LOADER_REPO at \$\(git rev-parse HEAD\)"/);
+});
+
+test('the loader build steps are the shared action, which the candidate job of the client check uses too', () => {
+  const j = job('loader');
+  assert.ok(j.indexOf('actions/checkout') < j.indexOf('- name: Check out the build action'), 'the action is checked out after the loader (the loader checkout cleans the workspace)');
+  assert.match(j, /- name: Check out the build action\n\s+uses: actions\/checkout@[^\n]+\n\s+with:\n\s+path: ci-actions\n\s+sparse-checkout: \.github\/actions\n/);
+  assert.match(j, /uses: \.\/ci-actions\/\.github\/actions\/build-loader\n\s+with:\n\s+configuration: \$\{\{ matrix\.config \}\}\n\s+build_tag: ci-\$\{\{ github\.run_number \}\}\n/);
+  assert.ok(!/msbuild /.test(j), 'no msbuild call is left in the loader job');
+  const action = readFileSync(join(here, '..', '.github', 'actions', 'build-loader', 'action.yml'), 'utf8').replace(/\r\n/g, '\n');
+  for (const arg of ['/p:Configuration="$env:CONFIGURATION"', '/p:Platform=x64', '/p:PostBuildEventUseInBuild=false', '/p:ModLoaderBuildTag="$env:BUILD_TAG"', '/p:AutoUpdateManifestUrl="$env:MANIFEST_URL"', '/m', '/p:CL_MP=true', '/nodeReuse:false']) {
+    assert.ok(action.includes(arg), `the action passes ${arg}`);
+  }
+  assert.match(action, /microsoft\/setup-msbuild@[0-9a-f]{40}/);
+  const client = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8');
+  assert.ok(client.includes('uses: ./ci-actions/.github/actions/build-loader'), 'the candidate job builds with it');
 });
