@@ -561,17 +561,18 @@ test('rig gate: the second rig follows the first, even when the first fails (the
   assert.ok(!/concurrency:\n {6}group: sr-client-rig/.test(wf), 'the call jobs add no group of their own');
 });
 
-test('rig gate: the candidate, the run id and the expect come from candidate-loader; default tags; no extra inputs', () => {
+test('rig gate: the candidate, the run id and the expect come from candidate-loader; the tags the check read; no extra inputs', () => {
   const a = mapOf(job('rig-branch'), 'with');
   const b = mapOf(job('rig-other'), 'with');
-  assert.deepEqual(Object.keys(a).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused']);
-  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused']);
+  assert.deepEqual(Object.keys(a).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused', 'tags']);
+  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused', 'tags']);
   for (const w of [a, b]) {
     assert.equal(w.candidate_run_id, '${{ github.run_id }}');
     assert.equal(w.candidate_artifact, '${{ needs.candidate-loader.outputs.artifact }}');
     assert.equal(w.expect, '${{ needs.candidate-loader.outputs.expect }}');
+    // The releases the check read and declared the refusals for: both rigs run exactly these (empty: each repo's Latest release, nothing declared).
+    assert.equal(w.tags, '${{ needs.map-mode.outputs.rig_tags }}');
   }
-  assert.ok(!/\n {6}tags:/.test(job('rig-branch') + job('rig-other')), "the default tags: each repo's Latest release");
   assert.ok(!/remove_plugins/.test(job('rig-branch') + job('rig-other')));
 });
 
@@ -1187,4 +1188,272 @@ test('review alert: the alert job reads the review output of both rigs', () => {
   const al = job('alert');
   assert.match(al, /\n {6}BRANCH_RIG_REVIEW: \$\{\{ needs\.rig-branch\.outputs\.review \}\}\n/);
   assert.match(al, /\n {6}OTHER_RIG_REVIEW: \$\{\{ needs\.rig-other\.outputs\.review \}\}\n/);
+});
+
+// ------------------------------------------------------------ fix round: the plan reads the pins, the rig's DLLs are read, publish is not wired
+
+// The plan step, run for real under Windows PowerShell with stand-ins for the releases API and git: the
+// step's run block beside a tool/ci/plugin-names.json, and the outputs GitHub would collect.
+const PLAN_NAMES = JSON.parse(readFileSync(join(here, 'plugin-names.json'), 'utf8'));
+const MINIMAP = PLAN_NAMES.find((n) => n.Name === 'MiniMap');
+const PIN_TAG = MINIMAP.Pin.Tag;
+const PIN_DIGEST = MINIMAP.Pin.Digest;
+const MINIMAP_REPO = 'LetMeInside/StarRupture-Plugin-MiniMap';
+// latest: the tag the API names as MiniMap's newest release. pinDigest: the digest its assets carry at the pinned tag.
+// pinAssets: 'client' (the client DLL beside a zip), 'zip' (no DLL) or 'two' (two client DLLs).
+const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.3.0', pinDigest = PIN_DIGEST, pinAssets = 'client' }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'plan-'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  writeFileSync(join(dir, 'tool', 'ci', 'plugin-names.json'), JSON.stringify(names));
+  writeFileSync(join(dir, 'plan.ps1'), '\ufeff' + runOf(job('plugin-plan'), 'Check the plugin list'));
+  const out = join(dir, 'github-output.txt');
+  const uris = join(dir, 'uris.txt');
+  const assets = {
+    client: "@(@{ name = 'MiniMap-Client.dll'; state = 'uploaded'; digest = $digest; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-Client.dll\" }, @{ name = 'MiniMap-v1.zip'; state = 'uploaded'; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-v1.zip\" })",
+    zip: "@(@{ name = 'MiniMap-v1.zip'; state = 'uploaded'; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-v1.zip\" })",
+    two: "@(@{ name = 'Foo-Client.dll'; state = 'uploaded'; digest = $digest; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-Client.dll\" }, @{ name = 'Other-Client.dll'; state = 'uploaded'; digest = $digest; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/Other-Client.dll\" })",
+  }[pinAssets];
+  writeFileSync(join(dir, 'run.ps1'), '\ufeff' + [
+    "$ErrorActionPreference = 'Stop'",
+    'function Invoke-RestMethod { param($Headers, $Uri, $TimeoutSec)',
+    `  Add-Content -LiteralPath '${uris}' -Value $Uri`,
+    "  if ($Uri -notmatch '/repos/([^/]+)/([^/]+)/releases/(latest|tags/(.+))$') { throw \"unexpected $Uri\" }",
+    '  $owner = $Matches[1]; $repo = $Matches[2]',
+    "  if ($repo -eq 'StarRupture-Plugin-MiniMap') {",
+    `    $tag = if ($Matches[4]) { $Matches[4] } else { '${latest}' }`,
+    `    $digest = if ($tag -ceq '${PIN_TAG}') { '${pinDigest}' } else { 'sha256:' + ('b' * 64) }`,
+    `    $assets = ${assets}`,
+    '  } else {',
+    "    $tag = 'v2.0.0'",
+    "    $assets = @(@{ name = \"$repo-Client.dll\"; state = 'uploaded'; digest = 'sha256:' + ('c' * 64); browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/$repo-Client.dll\" })",
+    '  }',
+    '  [pscustomobject]@{ tag_name = $tag; assets = @($assets | ForEach-Object { [pscustomobject]$_ }) }',
+    '}',
+    // The tag's commit: one line for the ref asked about.
+    'function git { $global:LASTEXITCODE = 0; ("a" * 40) + [char]9 + $args[2] }',
+    `$env:GITHUB_OUTPUT = '${out}'`,
+    "$env:GH_TOKEN = 'x'; $env:PLUGIN_SDK_REPO = 'AlienXAXS/StarRupture-Plugin-SDK'; $env:GAME_SDK_REPO = 'AlienXAXS/StarRupture-Game-SDK'",
+    "$env:EXCLUDE = ''; $env:TEST_AUTOPILOT = 'false'; $env:PUBLISH = 'false'; $env:MAP_MODE = 'true'",
+    `$env:PLUGINS = '${plugins}'`,
+    `Set-Location '${dir}'`,
+    "& (Join-Path (Get-Location) 'plan.ps1')",
+  ].join('\n'));
+  const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(dir, 'run.ps1')], { encoding: 'utf8', windowsHide: true });
+  const read = (f) => {
+    if (!existsSync(f)) return '';
+    const b = readFileSync(f);
+    return b[0] === 0xff && b[1] === 0xfe ? b.toString('utf16le').slice(1) : b.toString('utf8'); // Windows PowerShell 5.1 writes UTF-16 with >>
+  };
+  const outputs = Object.fromEntries(read(out).split(/\r?\n/).filter(Boolean).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  return { r, text: `${r.stdout}\n${r.stderr}`, outputs, matrix: outputs.matrix ? JSON.parse(outputs.matrix) : null, uris: read(uris).split(/\r?\n/).filter(Boolean) };
+};
+const PLAN_PLUGINS = `${MINIMAP_REPO}@latest-release AlienXAXS/StarRupture-Plugin-WAILA@latest-release`;
+const planEntry = (p, name) => p.matrix.find((e) => e.name === name);
+
+test('B1 plan: a plugin of another author is the reviewed release (tag and digest), a newer one is only reported', { skip: !powershell }, () => {
+  const p = planRun({ plugins: PLAN_PLUGINS });
+  assert.equal(p.r.status, 0, p.text);
+  const m = planEntry(p, 'MiniMap');
+  assert.equal(m.release, PIN_TAG, 'scanned at the Pin, not at the newest release (v1.3.0)');
+  assert.equal(m.ref, PIN_TAG);
+  assert.equal(m.source, 'release');
+  assert.equal(m.error, '');
+  assert.equal(m.dll, 'MiniMap-Client.dll', 'the rig\'s pick: the client DLL, not the zip');
+  assert.equal(m.asset, `https://github.com/${MINIMAP_REPO}/releases/download/${PIN_TAG}/MiniMap-Client.dll`);
+  assert.equal(m.assetSha256, PIN_DIGEST.slice('sha256:'.length), 'the reviewed digest is the one the download is compared with');
+  assert.ok(p.uris.includes(`https://api.github.com/repos/${MINIMAP_REPO}/releases/tags/${PIN_TAG}`), p.uris.join('\n'));
+  assert.equal(p.outputs.review, 'MiniMap=v1.3.0');
+  // The plugins of the trusted owners still follow their latest release.
+  const w = planEntry(p, 'WAILA');
+  assert.equal(w.release, 'v2.0.0');
+  assert.ok(p.uris.includes('https://api.github.com/repos/AlienXAXS/StarRupture-Plugin-WAILA/releases/latest'));
+  assert.ok(!p.uris.some((u) => /WAILA\/releases\/tags\//.test(u)));
+});
+
+test('B1 plan: no newer release, no review line', { skip: !powershell }, () => {
+  const p = planRun({ plugins: PLAN_PLUGINS, latest: PIN_TAG });
+  assert.equal(p.r.status, 0, p.text);
+  assert.equal(p.outputs.review, '');
+  assert.equal(planEntry(p, 'MiniMap').release, PIN_TAG);
+});
+
+test('B1 plan: a pinned release whose DLL changed, has no client DLL, or has two never runs, and is never built from source', { skip: !powershell }, () => {
+  const changed = planRun({ plugins: PLAN_PLUGINS, pinDigest: 'sha256:' + 'd'.repeat(64) });
+  assert.equal(changed.r.status, 0, changed.text);
+  const m = planEntry(changed, 'MiniMap');
+  assert.match(m.error, /digest/);
+  assert.match(m.error, /changed after review/);
+  assert.deepEqual([m.dll, m.asset, m.assetSha256], ['', '', ''], 'nothing to scan');
+  assert.notEqual(m.source, 'build', 'a reviewed release is never built from source');
+  assert.equal(planEntry(changed, 'WAILA').error, '', 'the other plugins are not affected');
+  for (const pinAssets of ['zip', 'two']) {
+    const p = planRun({ plugins: PLAN_PLUGINS, pinAssets });
+    assert.equal(p.r.status, 0, p.text);
+    const e = planEntry(p, 'MiniMap');
+    assert.match(e.error, /client DLL assets \(exactly one is needed\)/, pinAssets);
+    assert.notEqual(e.source, 'build', pinAssets);
+    assert.equal(e.asset, '', pinAssets);
+  }
+});
+
+test('B1 plan: another author\'s plugin without a usable Pin is not fetched at all, and only @latest-release is allowed for it', { skip: !powershell }, () => {
+  const strip = (pin) => PLAN_NAMES.map((n) => (n.Name === 'MiniMap' ? (pin === undefined ? Object.fromEntries(Object.entries(n).filter(([k]) => k !== 'Pin')) : { ...n, Pin: pin }) : n));
+  for (const [what, names] of [['no Pin', strip(undefined)], ['a bad digest', strip({ Tag: PIN_TAG, Digest: 'sha256:abc' })], ['a bad tag', strip({ Tag: '../x', Digest: PIN_DIGEST })]]) {
+    const p = planRun({ plugins: PLAN_PLUGINS, names });
+    assert.equal(p.r.status, 0, `${what}: ${p.text}`);
+    const m = planEntry(p, 'MiniMap');
+    assert.notEqual(m.error, '', what);
+    assert.match(m.error, /Pin/, what);
+    assert.equal(m.asset, '', what);
+    assert.ok(!p.uris.some((u) => u.includes('StarRupture-Plugin-MiniMap')), `${what}: no release of it was read: ${p.uris}`);
+  }
+  // A branch or a commit of another author's plugin would be built and run next to the login.
+  const branch = planRun({ plugins: `${MINIMAP_REPO}@main` });
+  assert.notEqual(branch.r.status, 0);
+  assert.match(branch.text.replace(/\s+/g, ' '), /allowed only as owner\/repo@latest-release, which is its reviewed release/);
+});
+
+test('B1 plan: the job reads the pins from the repository, with a read-only token, and outputs the review list', () => {
+  const j = job('plugin-plan');
+  assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.match(j, /\n {6}review: \$\{\{ steps\.plan\.outputs\.review \}\}\n/);
+  const co = stepText(j, 'Check out the plugin pins');
+  assert.ok(co.includes('path: tool') && co.includes('sparse-checkout: ci/plugin-names.json') && co.includes('persist-credentials: false'));
+  assert.ok(j.indexOf('- name: Check out the plugin pins') < j.indexOf('- name: Check the plugin list'), 'the pins are there before the plan reads them');
+  const al = job('alert');
+  assert.match(al, /\n {6}PLAN_REVIEW: \$\{\{ needs\.plugin-plan\.outputs\.review \}\}\n/);
+  assert.ok(al.includes('[e.PLAN_REVIEW, e.BRANCH_RIG_REVIEW, e.OTHER_RIG_REVIEW]'));
+});
+
+test('B1 alert: a newer release the plan saw raises the review line once, though the rigs saw it too', { skip: !bash }, () => {
+  const a = alertRun({ decision: goodDecision, env: { PLAN_REVIEW: 'MiniMap=v1.3.0', BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0', OTHER_RIG_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.equal(a.status, 0, a.stderr);
+  const line = '- new MiniMap release v1.3.0 waiting for review';
+  assert.equal(a.md.split(line).length, 2, a.md);
+  const b = alertRun({ decision: goodDecision, env: { PLAN_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.ok(b.md.includes(line), 'the plan alone is enough');
+  assert.deepEqual(b.outputs, { alert: 'true', passed: 'true', ready: 'false' });
+});
+
+// ---- S1: the DLLs the rig runs are read by the check job and decide declares the refusals from them
+
+test('S1 check: the rig\'s own set is resolved, fetched through the rig\'s cache and read before the layouts', () => {
+  const j = job('check');
+  const names = ['Check out the rig\'s set script', 'Resolve the rig\'s plugin set', 'Restore the rig\'s release files', 'Download what the cache lacks', 'Save the rig\'s release files', 'Read the rig\'s plugin DLLs'];
+  const at = names.map((n) => j.indexOf(`- name: ${n}\n`));
+  assert.ok(at.every((x, i) => x > 0 && (i === 0 || x > at[i - 1])), `in this order: ${at}`);
+  assert.ok(at[5] < j.indexOf('# ---- Layouts from the PDBs'), 'before the layout steps');
+  // The rig's own script and its names file, from this repository.
+  const tool = stepText(j, names[0]);
+  assert.ok(tool.includes('ci/client-rig-set.ps1') && tool.includes('ci/plugin-names.json') && tool.includes('persist-credentials: false'));
+  const res = stepText(j, names[1]);
+  assert.ok(res.includes('-Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER'));
+  assert.ok(res.includes("MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}"), 'the rig\'s default owner');
+  assert.ok(!res.includes('-Tags'), 'the check resolves what the rig would resolve with no tags');
+  // The same cache the rig uses: path and key (the cache version depends on the path).
+  const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(rig.includes('DOWNLOAD_DIR: D:\\rig-dl') && rig.includes('key: sr-client-rig-dl-${{ steps.res.outputs.key }}'));
+  const restore = stepText(j, names[2]);
+  assert.ok(restore.includes('path: D:\\rig-dl') && restore.includes('key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}') && restore.includes('restore-keys: sr-client-rig-dl-'));
+  assert.ok(stepText(j, names[3]).includes('-Mode Fetch'));
+  assert.ok(stepText(j, names[4]).includes('key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}'));
+  // Each step may fail without failing the check: the facts are then unknown and nothing is declared.
+  for (const n of names.slice(0, 4).concat(names[5])) assert.match(stepText(j, n), /continue-on-error: true/, n);
+});
+
+test('S1 check: each DLL is read with the scanner, and one that cannot be read gets an error row, never a guess', () => {
+  const run = runOf(job('check'), 'Read the rig\'s plugin DLLs');
+  assert.ok(run.includes('$SCANNER_SHA256') || run.includes('$env:SCANNER_SHA256'), 'the scanner is the verified one');
+  assert.ok(run.includes('--plugin $file --json'));
+  assert.ok(run.includes("$e.asset.digest -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $e.asset.digest"), 'the file is the digest the release gives');
+  assert.ok(run.includes("throw \"sr-aobscan could not read its plugin facts (exit $code)\""));
+  assert.ok(run.includes('$r.error = $_.Exception.Message'), 'a failed read is an error row');
+  assert.ok(run.includes('out\\rig-plugins.json') && !/out\\plugin-/.test(run), 'not named like a scan of the build: map mode reads every out/plugin-*.json');
+  assert.ok(job('check').includes('out/rig-plugins.json\n          if-no-files-found: warn'), 'in the artifact map mode downloads');
+});
+
+const rigChain = () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          rig_flag=()\n');
+  const end = mm.indexOf('echo "rig_tags=$rig_tags" >> "$GITHUB_OUTPUT"\n', start) + 'echo "rig_tags=$rig_tags" >> "$GITHUB_OUTPUT"\n'.length;
+  assert.ok(start > 0 && end > start, 'map mode reads the rig facts before decide');
+  return mm.slice(start, end).replace(/^ {10}/gm, '');
+};
+
+test('S1 map mode: decide gets the rig facts, and both rigs the resolved tags', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}rig_tags: \$\{\{ steps\.chain\.outputs\.rig_tags \}\}\n/);
+  assert.ok(mm.indexOf('rig_flag=(--rig-plugins res/rig-plugins.json)') < mm.indexOf('node tool/ci/decide.mjs'), 'before decide');
+  assert.match(mm.slice(mm.indexOf('node tool/ci/decide.mjs'), mm.indexOf('node tool/ci/decide.mjs') + 600), /"\$\{other_flag\[@\]\}" "\$\{rig_flag\[@\]\}"/);
+  for (const rig of RIG_JOBS) assert.match(job(rig), /\n {6}tags: \$\{\{ needs\.map-mode\.outputs\.rig_tags \}\}\n/, `${rig} runs the releases the check read`);
+  const run = (files) => {
+    const dir = mkdtempSync(join(tmpdir(), 'rig-chain-'));
+    for (const [n, c] of Object.entries(files)) { mkdirSync(dirname(join(dir, n)), { recursive: true }); writeFileSync(join(dir, n), c); }
+    const r = spawnSync(bash, ['-c', `set -euo pipefail\n${rigChain()}\necho "flag=[\${rig_flag[*]}] tags=[$rig_tags]"`], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_OUTPUT: join(dir, 'out.txt') } });
+    return { status: r.status, out: r.stdout, err: r.stderr, outputs: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '' };
+  };
+  const good = run({ 'res/rig-plugins.json': JSON.stringify({ tags: 'Codex=v1.0.0 MiniMap=v1.2.0', plugins: [] }) });
+  assert.equal(good.status, 0, good.err);
+  assert.match(good.out, /flag=\[--rig-plugins res\/rig-plugins\.json\] tags=\[Codex=v1\.0\.0 MiniMap=v1\.2\.0\]/);
+  assert.equal(good.outputs, 'rig_tags=Codex=v1.0.0 MiniMap=v1.2.0\n');
+  // With the BOM Windows PowerShell writes.
+  assert.match(run({ 'res/rig-plugins.json': '\ufeff' + JSON.stringify({ tags: 'Codex=v1.0.0', plugins: [] }) }).out, /tags=\[Codex=v1\.0\.0\]/);
+  // No file: nothing is declared, nothing is passed to the rigs, and it is said so.
+  const none = run({});
+  assert.equal(none.status, 0, none.err);
+  assert.match(none.out, /flag=\[\] tags=\[\]/);
+  assert.match(none.out, /::notice title=Rig plugins unknown::/);
+  assert.equal(none.outputs, 'rig_tags=\n');
+  // A tags value outside the rig's grammar stops the chain.
+  const bad = run({ 'res/rig-plugins.json': JSON.stringify({ tags: 'Codex=v1.0.0; rm -rf', plugins: [] }) });
+  assert.equal(bad.status, 2);
+  assert.match(bad.out, /::error::the rig's tags are not Name=tag pairs/);
+});
+
+// ---- S2: an enabled autopilot publishes nothing on the unattended path, and the summary says so
+
+test('S2 summary: the unattended chain\'s M says publish is not wired, a held or dispatched decision does not', () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf("          node -e '\n            const d = JSON.parse(require(\"fs\").readFileSync(\"decision.json\"");
+  const end = mm.indexOf("\n          '\n", start);
+  assert.ok(start > 0 && end > start, 'the summary script exists');
+  const script = mm.slice(start, end).replace(/^ {10}node -e '\n/, '').replace(/^ {12}/gm, '');
+  const run = (decision) => {
+    const dir = mkdtempSync(join(tmpdir(), 'summary-'));
+    writeFileSync(join(dir, 'decision.json'), JSON.stringify({ plugins: [], reasons: [], notes: [], ...decision }));
+    const r = spawnSync(process.execPath, ['-e', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_STEP_SUMMARY: join(dir, 'summary.md') } });
+    assert.equal(r.status, 0, r.stderr);
+    return readFileSync(join(dir, 'summary.md'), 'utf8');
+  };
+  const SAID = 'publish not wired on the unattended path';
+  // Autopilot on: the candidate chain decides M, and nothing publishes it.
+  assert.ok(run({ decision: 'M', cl: 129402, candidate: true, wouldBe: 'M' }).includes(SAID));
+  // Autopilot off: HOLD, which says the autopilot holds it; the line about wiring is not added.
+  assert.ok(!run({ decision: 'HOLD', cl: 129402, candidate: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] }).includes(SAID));
+  // A dispatch with publish on is not the unattended path.
+  assert.ok(!run({ decision: 'M', cl: 129402 }).includes(SAID));
+  // A test run never.
+  assert.ok(!run({ decision: 'HOLD', cl: 129402, test: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] }).includes(SAID));
+});
+
+test('S2 docs: re-enabling the autopilot is said to need the publish wiring, and the deploy key setup is step 26', () => {
+  for (const f of [join(here, 'MAP-MODE.md'), join(here, '..', '.github', 'sr-pipeline', 'README.md')]) {
+    const text = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\s+/g, ' ');
+    assert.match(text, /publish wiring/, f);
+    assert.match(text, /publish not wired on the unattended path/, f);
+    assert.match(text, /an enabled autopilot (does nothing extra|changes nothing)/, f);
+    assert.match(text, /step 26/, f);
+    assert.ok(!/it publishes on its own/.test(text) && !/pipeline publishes on its own/.test(text), `${f}: no claim that the autopilot publishes by itself`);
+  }
+});
+
+// ---- N2: "ready, publish held" only for a chain that staged a candidate and ran the rigs
+
+test('N2 alert: a dispatch with publish on that the autopilot held (no candidate) is not "ready"', { skip: !bash }, () => {
+  const a = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: [AUTOPILOT_HOLD] }, env: { STAGED_EXPECTED: 'false', CANDIDATE_RESULT: 'skipped', RIG_GATE_RESULT: 'skipped' } });
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.outputs.ready, 'false');
+  assert.equal(a.ready, null, 'no ready note is written');
+  // The candidate chain's hold is still ready.
+  assert.equal(alertRun({ decision: HOLD_ONLY_AUTOPILOT }).outputs.ready, 'true');
 });

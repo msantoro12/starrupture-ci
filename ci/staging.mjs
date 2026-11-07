@@ -52,8 +52,6 @@ export const LOADER_REPO = 'StarRupture-ModLoader';
 export const PUSH_REPOS = ['msantoro12/StarRupture-ModLoader'];
 export const PUSH_BRANCH = /^auto\/update-[0-9]+(-[0-9]+){0,2}$/;
 export const HEADER_PATH = 'StarRupture-ModLoader-Core/hooks/game/version_map.generated.h';
-export const DEPLOY_KEY_SECRET = 'SR_DEPLOYKEY_MODLOADER';
-export const DEPLOY_KEY_ENV = 'fork-push';
 const RECORD_KEY = 'Staging-Record: ';
 
 export class StagingError extends Error {}

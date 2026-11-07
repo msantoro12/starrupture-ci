@@ -376,13 +376,25 @@ jobs:
     if: inputs.branch && inputs.branch != 'expiry-only'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       hosted: ${{ steps.plan.outputs.hosted }}
       any: ${{ steps.plan.outputs.any }}
       anyHosted: ${{ steps.plan.outputs.anyHosted }}
+      # <Plugin>=<tag> for each plugin of another author whose newest release is not the reviewed one: the alert's "waiting for review" line.
+      review: ${{ steps.plan.outputs.review }}
     steps:
+      # The one list of the reviewed releases of other authors' plugins (Pin in ci/plugin-names.json), which the rig reads too.
+      - name: Check out the plugin pins
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci/plugin-names.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the plugin list
         id: plan
         shell: pwsh
@@ -413,26 +425,56 @@ jobs:
           # job itself and never becomes an artifact. A latest release that
           # cannot be resolved costs only that plugin (FETCH-FAILED), never
           # the plan.
+          # A plugin whose owner is neither msantoro12 nor AlienXAXS (MiniMap) is not taken at its
+          # latest release: it is the reviewed release in its Pin in ci/plugin-names.json (tag, and the
+          # sha256 of its client DLL), the one release the rig runs too. A newer release is only
+          # reported for review (the `review` output) and changes nothing that is scanned or predicted.
+          # Such a plugin is never built from source here.
+          $names = @(Get-Content -LiteralPath 'tool/ci/plugin-names.json' -Raw | ConvertFrom-Json | ForEach-Object { $_ })
+          $trusted = @('msantoro12', 'AlienXAXS')
+          $review = [Collections.Generic.List[string]]::new()
           $list = [Collections.Generic.List[object]]::new()
           $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
-            $owner = $Matches[1]; $repo = "$($Matches[1])/$($Matches[2])"; $ref = $Matches[3]
-            $e = [ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
+            $owner = $Matches[1]; $short = $Matches[2]; $repo = "$($Matches[1])/$short"; $ref = $Matches[3]
+            $e = [ordered]@{ name = ($short -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
                              release = ''; dll = ''; asset = ''; assetSha256 = ''; error = ''; hosted = ($owner -eq 'msantoro12') }
             if ($ref -eq 'latest-release') { try {
               $e.source = 'release'; $e.hosted = $false
-              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers $api -TimeoutSec 60 }
-              catch { throw "$repo has no latest release ($($_.Exception.Message))" }
+              $pin = $null; $entry = $null; $relPath = 'latest'
+              if ($owner -cnotin $trusted) {
+                $entry = @($names | Where-Object { $_.Repo -ceq $short -and $_.PSObject.Properties['Owner'] -and $_.Owner -ceq $owner }) | Select-Object -First 1
+                $pin = if ($entry -and $entry.PSObject.Properties['Pin']) { $entry.Pin } else { $null }
+                if (-not $pin) { throw "$repo is another author's plugin and runs only at a reviewed release: add a Pin (Tag and Digest) for it to ci/plugin-names.json" }
+                $pinTag = if ($pin.PSObject.Properties['Tag']) { [string]$pin.Tag } else { '' }
+                $pinDigest = if ($pin.PSObject.Properties['Digest']) { [string]$pin.Digest } else { '' }
+                if ($pinTag -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') { throw "${repo}: the Pin tag '$pinTag' is not a release tag" }
+                if ($pinDigest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "${repo}: the Pin digest '$pinDigest' is not sha256:<64 lower-case hex digits>" }
+                $relPath = "tags/$pinTag"
+              }
+              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$relPath" -Headers $api -TimeoutSec 60 }
+              catch { throw "$repo has no $(if ($pin) { "release $pinTag" } else { 'latest release' }) ($($_.Exception.Message))" }
               $tag = [string]$rel.tag_name
               if ($tag -notmatch '^[A-Za-z0-9._-]+$') { throw "$repo's latest release tag '$tag' is not a plain tag name" }
+              if ($pin -and $tag -cne $pinTag) { throw "$repo's release for the Pin is tagged '$tag', not '$pinTag'" }
               $tagRefs = @(git ls-remote "https://github.com/$repo" "refs/tags/$tag" "refs/tags/$tag^{}")
               if ($LASTEXITCODE -ne 0) { throw "git ls-remote $repo failed (exit $LASTEXITCODE)" }
               # An annotated tag's commit is on its peeled line.
               $line = @(@($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag^{}" }) + @($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag" })) | Select-Object -First 1
               if (-not $line) { throw "$repo has no tag '$tag'" }
               $e.ref = $tag; $e.release = $tag; $e.sha = ($line -split '\s+')[0]
-              $dlls = @($rel.assets | Where-Object { $_.name -match '\.dll$' -and $_.state -eq 'uploaded' })
+              # The Pin's release: the rig's own pick, <Asset>-Client.dll (else the one -Client.dll), and its digest is the reviewed one.
+              $dlls = if ($pin) {
+                $named = @($rel.assets | Where-Object { $_.name -ieq "$($entry.Asset)-Client.dll" -and $_.state -eq 'uploaded' })
+                if ($named.Count) { $named } else { @($rel.assets | Where-Object { $_.name -match '-Client\.dll$' -and $_.state -eq 'uploaded' }) }
+              } else { @($rel.assets | Where-Object { $_.name -match '\.dll$' -and $_.state -eq 'uploaded' }) }
+              $dlls = @($dlls)
+              if ($pin) {
+                if ($dlls.Count -ne 1) { throw "$repo $tag has $($dlls.Count) client DLL assets (exactly one is needed); a reviewed release is never built from source" }
+                $got = if ($dlls[0].PSObject.Properties['digest']) { "$($dlls[0].digest)" } else { '' }
+                if ($got -cne $pinDigest) { throw "$repo ${tag}: the release's $($dlls[0].name) has the digest '$got', not the reviewed $pinDigest; the asset changed after review, so it is not checked" }
+              }
               if ($dlls.Count -eq 1 -and $dlls[0].browser_download_url -match ('^https://github\.com/' + [regex]::Escape($repo) + '/releases/download/' + [regex]::Escape($tag) + '/[A-Za-z0-9._-]+\.dll$')) {
                 # The URL pattern above is what later steps rely on for the asset name.
                 $e.dll = [string]$dlls[0].name; $e.asset = [string]$dlls[0].browser_download_url
@@ -441,13 +483,24 @@ jobs:
                 else { Write-Host "::notice title=Plugin $($e.name)::GitHub recorded no SHA-256 for $($e.dll), so the download is not compared with one" }
                 Write-Host "::notice title=Plugin $($e.name)::latest release $tag, checking its DLL $($e.dll)"
               } else {
+                if ($pin) { throw "$repo ${tag}: the client DLL's download URL is not the release's own asset" }
                 $e.source = 'build'; $e.hosted = ($owner -eq 'msantoro12')
                 Write-Host "::notice title=Plugin $($e.name)::latest release $tag has $($dlls.Count) usable DLL assets (exactly one is needed), so its source at the tag is built"
+              }
+              if ($pin) {
+                # A newer release is reported for review and never scanned. Failing to ask is not a failure of the plan.
+                try { $latestTag = [string](Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers $api -TimeoutSec 60).tag_name }
+                catch { $latestTag = ''; Write-Host "::warning title=Latest release not read::$($e.name): $($_.Exception.Message)" }
+                if ($latestTag -and $latestTag -cne $pinTag) {
+                  $shown = if ($latestTag -cmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$') { $latestTag } else { 'unreadable-tag' }
+                  $review.Add("$($e.name)=$shown")
+                  Write-Host "::warning title=New release waiting for review::new $($e.name) release $shown waiting for review; the check scans the reviewed $pinTag"
+                }
               }
             } catch {
               $e.error = $_.Exception.Message
               Write-Host "::warning title=Plugin $($e.name)::$($e.error)"
-            } } elseif ($owner -eq 'LetMeInside') { throw "plugin '$p': LetMeInside is allowed only as owner/repo@latest-release" }
+            } } elseif ($owner -cnotin $trusted) { throw "plugin '$p': $owner is allowed only as owner/repo@latest-release, which is its reviewed release" }
             $list.Add($e)
           }
           # Each ref is resolved to its commit here, before any plugin code
@@ -480,6 +533,7 @@ jobs:
           "hosted=$(ConvertTo-Json -InputObject @($hosted) -Compress)" >> $env:GITHUB_OUTPUT
           "any=$(if ($list.Count) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
           "anyHosted=$(if ($hosted.Count) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+          "review=$($review -join ' ')" >> $env:GITHUB_OUTPUT
           $json
 
   plugins:
@@ -1250,6 +1304,123 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # ---- The rig's plugin DLLs: read before the rig runs --------------------
+      # The rig does not run the plugin builds scanned above: it runs the Latest released plugins
+      # (MOD_OWNER's, AlienXAXS by default) and the reviewed release of each plugin of another
+      # author (the Pin in ci/plugin-names.json). Which of them the loader refuses on a build has to
+      # be declared to the rig before it runs, so the exact set is resolved here by the rig's own
+      # script, fetched through the rig's own cache (asset id and digest in the key: the rig then
+      # downloads nothing), and each DLL is read by the scanner (interface version, the build it was
+      # made on, and the loader's note on this build). Nothing of it is a verdict on the plugin: the
+      # facts go to decide's expect_refused, and the tags go to both rigs so they run these very
+      # releases. A DLL whose facts cannot be read has no row, and then nothing is declared for it.
+      - name: Check out the rig's set script
+        id: rigtool
+        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-rig
+          sparse-checkout: |
+            ci/client-rig-set.ps1
+            ci/plugin-names.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Resolve the rig's plugin set
+        id: rigset
+        if: always() && steps.rigtool.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
+        run: ./ci-rig/ci/client-rig-set.ps1 -Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER -PlanPath (Join-Path $env:RUNNER_TEMP 'rig-plan.json')
+
+      - name: Restore the rig's release files
+        id: rigcache
+        if: always() && steps.rigset.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # The rig's own path and key: the cache is shared with it.
+          path: D:\rig-dl
+          key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}
+          restore-keys: sr-client-rig-dl-
+
+      - name: Download what the cache lacks
+        id: rigfetch
+        if: always() && steps.rigset.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PLAN_PATH: ${{ runner.temp }}\rig-plan.json
+        run: ./ci-rig/ci/client-rig-set.ps1 -Mode Fetch -PlanPath $env:PLAN_PATH -DownloadDir 'D:\rig-dl'
+
+      - name: Save the rig's release files
+        if: always() && steps.rigfetch.outcome == 'success' && steps.rigcache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:\rig-dl
+          key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}
+
+      - name: Read the rig's plugin DLLs
+        id: rigdlls
+        if: always() && steps.rigfetch.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+        run: |
+          # out/rig-plugins.json: { tags: "Name=tag ...", plugins: [{ name, tag, plugin, verdict, note? } or { name, tag, error }] }.
+          # `plugin` is the scanner's block for the DLL, as in the plugin rows above; map mode reads the
+          # facts and never the verdict. The scanner's own files stay out of out/ (map mode reads every
+          # out/plugin-*.json as a scan of the build).
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          New-Item -ItemType Directory -Force out | Out-Null
+          $plan = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-plan.json') -Raw | ConvertFrom-Json
+          $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          $work = Join-Path $env:RUNNER_TEMP 'rig-scan'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          $tagRx = '^[A-Za-z0-9][A-Za-z0-9._+-]*$'
+          $tags = [Collections.Generic.List[string]]::new()
+          $rows = foreach ($e in @($plan.plugins | Where-Object { $_.asset })) {
+            $r = [ordered]@{ name = $e.name; tag = $e.tag }
+            try {
+              if ($e.tag -cnotmatch $tagRx) { throw "its release tag '$($e.tag)' is not a plain tag" }
+              $tags.Add("$($e.name)=$($e.tag)")
+              # The rig's cache layout (client-rig-set.ps1 Get-AssetPath).
+              $file = Join-Path 'D:\rig-dl' (Join-Path "$($e.repo)\$($e.tag)\$($e.asset.id)" ([IO.Path]::GetFileName($e.asset.name)))
+              if (-not (Test-Path -LiteralPath $file)) { throw "$($e.asset.name) is not in the downloaded files" }
+              if ($e.asset.digest -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $e.asset.digest) { throw "$($e.asset.name) does not match the digest the release gives" }
+              $stem = Join-Path $work $e.name
+              $ErrorActionPreference = 'Continue'
+              & $scanner $exe.FullName --plugin $file --json > "$stem.json" 2> "$stem.txt"
+              $code = $LASTEXITCODE
+              $ErrorActionPreference = 'Stop'
+              $scan = if ($code -ne 2 -and (Test-Path -LiteralPath "$stem.json") -and (Get-Item -LiteralPath "$stem.json").Length) { Get-Content -LiteralPath "$stem.json" -Raw | ConvertFrom-Json } else { $null }
+              if (-not $scan -or -not $scan.PSObject.Properties['plugin'] -or -not $scan.plugin.PSObject.Properties['interfaceVersion']) { throw "sr-aobscan could not read its plugin facts (exit $code)" }
+              $r.plugin = $scan.plugin
+              $r.verdict = $scan.verdict
+              if ($scan.PSObject.Properties['note']) { $r.note = $scan.note }
+            } catch {
+              $r.error = $_.Exception.Message
+              Write-Host "::warning title=Rig plugin $($e.name)::$($r.error); nothing is declared for it, so a refusal of it fails the rig"
+            }
+            $r
+          }
+          [ordered]@{ branch = $env:BRANCH; tags = ($tags -join ' '); plugins = @($rows) } |
+            ConvertTo-Json -Depth 8 | Set-Content out\rig-plugins.json -Encoding utf8
+          foreach ($r in @($rows)) { "$($r.name) $($r.tag): $(if ($r.Contains('plugin')) { 'interface ' + $r.plugin.interfaceVersion } else { $r.error })" }
+
       # ---- Layouts from the PDBs: what each component reads, on both builds --
       - name: Read the used layouts from the PDBs
         id: layout
@@ -1539,7 +1710,7 @@ jobs:
               $r.tree = [string](git -C "$d\src" write-tree); Invoke-Native 'git write-tree'
               $r.patch = "autofix-$($p.name).patch"
               git -C "$d\src" diff --cached > "out\$($r.patch)"; Invoke-Native 'git diff'
-              if ($p.source -eq 'release') { $r.verdict = 'PATCH'; $r.reasons = @("another author's released plugin: the patch only"); $results.Add($r); continue }
+              if ($p.source -eq 'release') { $r.verdict = 'PATCH'; $r.reasons = @("another author's released plugin: information only, nothing is pushed or built from it"); $results.Add($r); continue }
 
               # Rebuilt exactly as the plugins job built the scanned DLL.
               if ($meta.loaderRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$' -or $meta.loaderInterface -notmatch '^[0-9a-f]{40}$') { throw 'plugin.json does not name the loader interface it was built against' }
@@ -1664,6 +1835,7 @@ jobs:
             out/layout-keys.txt
             out/layout-uses.txt
             out/offsets-*.json
+            out/rig-plugins.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -1716,6 +1888,9 @@ jobs:
       # there (decide --other-cl). Empty when that build's CL is not in the candidate map, so every
       # refusal on that branch is unexpected.
       expect_refused_other: ${{ steps.chain.outputs.expect_refused_other }}
+      # The releases the rigs run, as the rig's tags input takes them (Name=tag, space separated; empty when the check could not
+      # resolve them, and then the rigs resolve the Latest themselves and nothing is declared for them).
+      rig_tags: ${{ steps.chain.outputs.rig_tags }}
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
@@ -1912,10 +2087,25 @@ jobs:
           other_flag=()
           if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "$other_branch runs build $other_buildid = CL-$other_cl"
           else echo "::notice title=Other branch unknown::$other_branch build '${other_buildid:-unknown}' has no row in the candidate map: its rig expects no refusals"; fi
+          # The DLLs the rigs will run (out/rig-plugins.json of the check): the refusals declared to a rig are
+          # predicted from their own facts, not from the plugin builds this check judged. Without the file
+          # nothing is declared and any refusal fails the rig.
+          rig_flag=()
+          rig_tags=""
+          if [ -f res/rig-plugins.json ]; then
+            rig_flag=(--rig-plugins res/rig-plugins.json)
+            rig_tags="$(node -p "JSON.parse(require('fs').readFileSync('res/rig-plugins.json','utf8').replace(/^\uFEFF/, '')).tags ?? ''")"
+            if [ -n "$rig_tags" ] && ! printf '%s' "$rig_tags" | grep -Eq '^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*( [A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*)*$'; then
+              echo "::error::the rig's tags are not Name=tag pairs the rig takes: $rig_tags"; exit 2
+            fi
+          else
+            echo "::notice title=Rig plugins unknown::the check could not read the DLLs the rigs run: no refusal is declared for them, and the rigs take the Latest releases"
+          fi
+          echo "rig_tags=$rig_tags" >> "$GITHUB_OUTPUT"
           d=0
           node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
             --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json --fields field-rows.json \
-            --history history.json --out decision.json "${test_flag[@]}" "${other_flag[@]}" || d=$?
+            --history history.json --out decision.json "${test_flag[@]}" "${other_flag[@]}" "${rig_flag[@]}" || d=$?
           decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
           would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
@@ -1947,6 +2137,8 @@ jobs:
               md.push(`| ${p.name} | ${status} | ${off} | ${[...p.reasons, ...p.degraded.map((x) => x.why)].join("; ").replace(/[|]/g, "/")} |`);
             }
             md.push("", ...d.reasons.map((r) => `- HOLD: ${r}`), ...d.notes.map((n) => `- ${n}`));
+            // The unattended chain (candidate) never publishes: no job takes its M to the feed, whatever the autopilot says.
+            if (d.candidate === true && d.decision === "M") md.push("- **publish not wired on the unattended path**: the autopilot is on, but this chain only builds, signs with the TEST key and stages; the feed is published only by a dispatch with publish on");
             require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
           '
           promote_flag=()
@@ -2332,7 +2524,8 @@ jobs:
   # deploy with the github rig for version updates"). Two calls of the reusable
   # sr-client-rig.yml, each launching the real client under the real Steam client
   # with the candidate loader (candidate-loader's artifact, this run's id) laid over
-  # the Latest released plugins, MiniMap included (the rig's default set: no tags input):
+  # the plugin releases the check read (the `tags` input: the Latest released plugins and
+  # the reviewed release of MiniMap, resolved and read once in the check job):
   #   rig-branch  the Steam branch this check is for, with map-mode's expect_refused:
   #               the plugins the loader refuses on that build must be refused, and
   #               every other plugin must load.
@@ -2365,6 +2558,7 @@ jobs:
       candidate_run_id: ${{ github.run_id }}
       candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
       expect: ${{ needs.candidate-loader.outputs.expect }}
+      tags: ${{ needs.map-mode.outputs.rig_tags }}
       expect_refused: ${{ needs.map-mode.outputs.expect_refused }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
@@ -2383,6 +2577,7 @@ jobs:
       candidate_run_id: ${{ github.run_id }}
       candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
       expect: ${{ needs.candidate-loader.outputs.expect }}
+      tags: ${{ needs.map-mode.outputs.rig_tags }}
       expect_refused: ${{ needs.map-mode.outputs.expect_refused_other }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
@@ -2491,6 +2686,7 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       BUILD_RESULT: ${{ needs.build.result }}
       PLAN_RESULT: ${{ needs.plugin-plan.result }}
+      PLAN_REVIEW: ${{ needs.plugin-plan.outputs.review }}
       CHECK_RESULT: ${{ needs.check.result }}
       MAP_MODE_RESULT: ${{ needs.map-mode.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
@@ -2597,7 +2793,8 @@ jobs:
               const reasons = d.reasons ?? [];
               const nothingNew = reasons.some((x) => /^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/.test(x));
               const autopilotOnly = reasons.length === 1 && reasons[0] === AUTOPILOT;
-              if (autopilotOnly) readyHold = d.test !== true;
+              // Ready only when the chain went on to stage and run the rigs (the candidate chain); a dispatch with publish on stops at the HOLD.
+              if (autopilotOnly) readyHold = d.candidate === true && d.test !== true;
               else if (!nothingNew) lines.push("- decide: **HOLD** on CL-" + (d.cl ?? "?"), ...reasons.map((x) => "  - " + x));
             }
             const expected = e.STAGED_EXPECTED === "true";
@@ -2619,10 +2816,10 @@ jobs:
               }
             }
 
-            // A newer release of a plugin by another author than the reviewed one the rig ran. The rig kept
-            // running the reviewed release, so nothing failed: the line is loud, but it neither blocks the
+            // A newer release of a plugin by another author than the reviewed one the plan and the rig used. Both kept
+            // using the reviewed release, so nothing failed: the line is loud, but it neither blocks the
             // gate nor takes the chain-passed mark away.
-            const review = [...new Set(["BRANCH", "OTHER"].flatMap((p) => String(e[p + "_RIG_REVIEW"] ?? "").split(/\s+/)).filter((t) => /^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(t)))]
+            const review = [...new Set([e.PLAN_REVIEW, e.BRANCH_RIG_REVIEW, e.OTHER_RIG_REVIEW].flatMap((t) => String(t ?? "").split(/\s+/)).filter((t) => /^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(t)))]
               .map((t) => "- new " + t.split("=")[0] + " release " + t.split("=")[1] + " waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in `ci/plugin-names.json`");
 
             const out = (kv) => fs.appendFileSync(e.GITHUB_OUTPUT, Object.entries(kv).map(([k, v]) => k + "=" + v + "\n").join(""));
@@ -2987,7 +3184,7 @@ jobs:
             $md.Add('|---|---|---|---|---|---|')
             foreach ($p in @($af.plugins)) {
               $where = '-'
-              if ($p.verdict -eq 'PATCH') { $where = "patch only: ``$($p.patch)`` in the run's artifact" }
+              if ($p.verdict -eq 'PATCH') { $where = "information only: ``$($p.patch)`` in the run's artifact, not pushed" }
               elseif ($p.verdict -in 'FIXED', 'PARTIAL' -and $p.repo -match '^msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+$') {
                 $where = 'not pushed (see the auto-apply job)'
                 # The fallback name carries the attempt that pushed it, which may be an earlier one.

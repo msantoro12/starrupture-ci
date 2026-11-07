@@ -96,8 +96,13 @@ Policy (owner), in plain words:
   both Steam branches, the same DLLs. A rig fail blocks publish and raises the alert.
 - Graphics are not a gate. The rig runs `-nullrhi` to the main menu: no rendering, overlay,
   DX11 or in-world checks. Graphical problems get small fixes after a release.
-- Autopilot off means build everything, publish nothing. When it is switched on again the
-  pipeline publishes on its own once every gate passes. It stays off until the owner has
+- Autopilot off means build everything, publish nothing. Switching it on again does not
+  publish by itself: the unattended chain never calls the `publish` job, so today an enabled
+  autopilot does nothing extra (the decision reads `M`, and the run summary says "publish not
+  wired on the unattended path"). Re-enabling the autopilot also needs the publish wiring
+  (sr-watch calling the check with publish on, or a publish step after a green `rig-gate`,
+  signed with the release key), which is separate work and the owner's call. The staged
+  branch push needs the loader fork's deploy key (step 26). It stays off until the owner has
   approved the first full run.
 - The rig runs only candidates built in this repository from our own branches.
 - Expected refusals on the other branch: `expect_refused_other` is `decision.json`'s
@@ -107,10 +112,21 @@ Policy (owner), in plain words:
   nothing is declared, so a refusal there is a loud fail. A plugin of interface v72 or later
   that is not built here has no known migration flag and is not predicted.
 - Plugins of other authors are pinned. A rig plugin whose owner is neither msantoro12 nor
-  AlienXAXS (MiniMap) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`;
-  a digest mismatch on the pinned tag fails the rig. A newer release does not change the run:
-  the rig keeps the pinned one and the alert job adds "new <plugin> release <tag> waiting for
-  review", which blocks nothing.
+  AlienXAXS (MiniMap) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
+  in the client check as well as in the rig: the check's `plugin-plan` reads the same Pin,
+  fetches that tag and never builds such a plugin from source; a digest mismatch, a missing or
+  malformed Pin fails the plugin (FETCH-FAILED) and the rig. A newer release does not change
+  anything that is scanned, run or predicted: the alert job adds "new <plugin> release <tag>
+  waiting for review", which blocks nothing.
+- The refusals declared to a rig come from the DLLs that rig runs. The check job resolves the
+  rig's set with `ci/client-rig-set.ps1` (Latest released plugins plus the pinned third-party
+  one), fetches it through the rig's download cache, reads each DLL with `sr-aobscan --plugin`
+  into `out/rig-plugins.json`, and `decide.mjs --rig-plugins res/rig-plugins.json` applies the
+  loader's rule (`loaderRefusal`) to those facts, for `expect_refused` and
+  `expect_refused_other`. The resolved tags go to both rigs as `tags` (output `rig_tags`).
+  The `gss/plugin-work` builds still produce the map rows and the verdicts, but declare
+  nothing. A DLL whose facts cannot be read, or no `rig-plugins.json` at all, declares
+  nothing (a note in the decision), so a refusal there is a loud fail.
 - No player-facing text mentions the test branch.
 
 ## Step 27: `map-mode.mjs write`
