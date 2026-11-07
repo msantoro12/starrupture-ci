@@ -367,3 +367,105 @@ test('verdict contract: the launch writes every file verdict.ps1 -Client reads',
 test('the rig is in the node test line', () => {
   assert.match(read('.github', 'workflows', 'sr-node-tests.yml'), /node --test [^\n]*ci\/client-rig-workflow\.test\.mjs/);
 });
+
+// ---- Leg B3: MiniMap, the tenth plugin, from its author's repo ----
+
+const names = JSON.parse(read('ci', 'plugin-names.json'));
+
+test('rig set: ten plugins, MiniMap from its author with the version form it logs', () => {
+  assert.equal(names.length, 10);
+  assert.deepEqual(names.map((p) => p.Name).sort(), ['BetterCheats', 'BetterDrone', 'CameraControls', 'Codex', 'Compass', 'MiniMap', 'ProductionViewer', 'RuptureTimer', 'WAILA', 'WaveOptimiser']);
+  const m = names.find((p) => p.Name === 'MiniMap');
+  assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true });
+  // The other nine keep the rig's owner and the tag as logged.
+  for (const p of names.filter((x) => x.Name !== 'MiniMap')) {
+    assert.ok(!('Owner' in p) && !('StripV' in p), `${p.Name}: unchanged`);
+  }
+  assert.match(setup, /the ten plugins/);
+  assert.ok(!/one of the nine/.test(setup), 'the script no longer counts nine');
+});
+
+test('rig set: docs say ten and name the MiniMap source repo', () => {
+  const readme = read('.github', 'sr-pipeline', 'README.md');
+  assert.match(readme, /LetMeInside\/StarRupture-Plugin-MiniMap/);
+  assert.match(readme, /ten plugins/);
+  assert.ok(!/one of the nine/.test(readme), 'no "one of the nine" left');
+  assert.match(wf, /MiniMap/, 'the tags input lists MiniMap');
+});
+
+// Runs Resolve with a stand-in releases API: every repo has a Latest release holding the
+// client DLL beside a zip and a manifest (MiniMap's real layout), the loader its client zip.
+function resolveWithMock(args) {
+  const dir = mkdtempSync(join(tmpdir(), 'rig-res-'));
+  try {
+    const plan = join(dir, 'plan.json');
+    const uris = join(dir, 'uris.txt');
+    const wrapper = join(dir, 'run.ps1');
+    writeFileSync(wrapper, [
+      "$ErrorActionPreference = 'Stop'",
+      `$names = Get-Content -LiteralPath '${join(here, 'plugin-names.json')}' -Raw | ConvertFrom-Json`,
+      'function Invoke-RestMethod { param($Headers, $Uri, $TimeoutSec)',
+      `  Add-Content -LiteralPath '${uris}' -Value $Uri`,
+      '  if ($Uri -notmatch \'/repos/([^/]+)/([^/]+)/releases/(latest|tags/(.+))$\') { throw "unexpected $Uri" }',
+      "  $repo = $Matches[2]; $tag = if ($Matches[4]) { $Matches[4] } elseif ($repo -eq 'StarRupture-Plugin-MiniMap') { 'v1.2.0' } else { 'v1.0.0' }",
+      '  $p = $names | Where-Object { $_.Repo -eq $repo }',
+      '  $assets = if ($p) { @(@{ name = "$($p.Asset)-Client.dll"; id = 11; browser_download_url = "https://x/$repo/$($p.Asset)-Client.dll"; digest = \'sha256:\' + (\'a\' * 64); updated_at = \'t\' }, @{ name = "$($p.Asset)-v1.zip"; id = 12; browser_download_url = \'https://x/z\'; updated_at = \'t\' }, @{ name = \'manifest.json\'; id = 13; browser_download_url = \'https://x/m\'; updated_at = \'t\' }) } else { @(@{ name = \'StarRupture-ModLoader-Client-1.zip\'; id = 21; browser_download_url = \'https://x/loader.zip\'; updated_at = \'t\' }) }',
+      '  return [pscustomobject]@{ tag_name = $tag; assets = @($assets | ForEach-Object { [pscustomobject]$_ }) }',
+      '}',
+      `& '${join(here, 'client-rig-set.ps1')}' -Mode Resolve -PlanPath '${plan}' ${args}`,
+      'exit $LASTEXITCODE',
+    ].join('\n'));
+    for (const exe of ['pwsh', 'powershell']) {
+      const r = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', wrapper], { encoding: 'utf8', windowsHide: true });
+      if (r.error) continue;
+      let planJson = null;
+      try { planJson = JSON.parse(readFileSync(plan, 'utf8').replace(/^﻿/, '')); } catch { /* no plan on a failed run */ }
+      let seen = [];
+      try { seen = readFileSync(uris, 'utf8').split(/\r?\n/).filter(Boolean); } catch { /* none */ }
+      return { r, plan: planJson, uris: seen };
+    }
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('rig set: Resolve gives ten plugins, MiniMap from LetMeInside, its DLL picked, its logged version without the v', (t) => {
+  const out = resolveWithMock('-Branch public');
+  if (!out) return t.skip('no PowerShell on this machine');
+  assert.equal(out.r.status, 0, out.r.stdout + out.r.stderr);
+  assert.equal(out.plan.plugins.length, 10);
+  const m = out.plan.plugins.find((p) => p.name === 'MiniMap');
+  assert.equal(m.tag, 'v1.2.0');
+  assert.equal(m.expect, '1.2.0', 'the log prints 1.2.0 for the tag v1.2.0');
+  assert.equal(m.logName, 'MiniMap');
+  assert.equal(m.dll, 'MiniMap.dll');
+  assert.equal(m.expectRefused, false, 'refused on public is a fail');
+  assert.equal(m.asset.name, 'MiniMap-Client.dll', 'the client DLL, not the zip or the manifest');
+  assert.ok(out.uris.includes('https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest'), out.uris.join('\n'));
+  assert.ok(out.uris.includes('https://api.github.com/repos/AlienXAXS/StarRupture-Plugin-Codex/releases/latest'));
+  assert.ok(!out.uris.some((u) => /AlienXAXS\/StarRupture-Plugin-MiniMap/.test(u)), 'MiniMap is not looked up under the rig owner');
+  // The other nine are as before: the tag is what the log must show.
+  for (const p of out.plan.plugins.filter((x) => x.name !== 'MiniMap')) assert.equal(p.expect, 'v1.0.0', `${p.name} keeps the tag`);
+  // The cache key covers MiniMap's asset id and digest.
+  const dl = out.plan.downloads.find((d) => d.repo === 'StarRupture-Plugin-MiniMap');
+  assert.equal(dl.id, '11');
+  assert.match(dl.digest, /^a{64}$/);
+});
+
+test('rig set: expect_refused MiniMap is accepted for the test branch, and a tag override reaches the author repo', (t) => {
+  const out = resolveWithMock("-Branch public_test_branch -ExpectRefused 'MiniMap' -Tags 'MiniMap=v1.1.0'");
+  if (!out) return t.skip('no PowerShell on this machine');
+  assert.equal(out.r.status, 0, out.r.stdout + out.r.stderr);
+  const m = out.plan.plugins.find((p) => p.name === 'MiniMap');
+  assert.equal(m.expectRefused, true);
+  assert.equal(m.tag, 'v1.1.0');
+  assert.equal(m.expect, '1.1.0');
+  assert.ok(out.uris.includes('https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/tags/v1.1.0'), out.uris.join('\n'));
+});
+
+test('rig artifact: its name carries the branch, the candidate and the run, so two rigs of one run do not collide', () => {
+  assert.match(wf, /\n {6}ARTIFACT_NAME: sr-client-rig-\$\{\{ inputs\.branch \}\}-\$\{\{ inputs\.candidate_artifact \|\| 'release' \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\n/);
+  assert.match(step('Upload the scrubbed logs'), /name: \$\{\{ env\.ARTIFACT_NAME \}\}/);
+  assert.equal(wf.match(/ARTIFACT_NAME:/g)?.length, 1, 'one definition, read by the upload and the final step');
+});

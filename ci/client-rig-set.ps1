@@ -16,7 +16,7 @@
 #   -ExpectRefused "Codex"                   plugins that must be refused on this build
 #   -RemovePlugins "Codex"                   dropped from the install but still expected
 # Names are the loader, or a plugin by repo name, log name or asset name, in any case.
-# A name in -Expect that is not one of the nine is an extra plugin to expect.
+# A name in -Expect that is not one of the ten is an extra plugin to expect.
 #
 # -CandidateDir is a downloaded build artifact laid over the release set. Two layouts:
 #   the game folder's   dwmapi.dll, ModLoader/..., ModLoader/Plugins/*.dll
@@ -48,9 +48,12 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $PlanPath) { $PlanPath = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }) 'rig-plan.json' }
 
-# The nine plugins, read from plugin-names.json (also read by the client check's map step). Name is the repo's short name (and the key of the inputs), LogName the
+# The ten plugins, read from plugin-names.json (also read by the client check's map step). Name is the repo's short name (and the key of the inputs), LogName the
 # name in the loader's "Plugin info" line, Asset the release asset's prefix: <Asset>-Client.dll
-# is installed as <Asset>.dll.
+# is installed as <Asset>.dll. Owner, when present, is the GitHub owner of that plugin's repo
+# (MiniMap is its author's, LetMeInside; the other nine take -Owner). StripV: the plugin logs its
+# version without the release tag's leading v (MiniMap prints 1.2.0 for v1.2.0), so that is what
+# the log must show.
 $Plugins = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-names.json') -Raw | ConvertFrom-Json | ForEach-Object { $_ })
 $LoaderRepo = 'StarRupture-ModLoader'
 # The loader's own files besides dwmapi.dll, which a candidate may carry at its root.
@@ -93,12 +96,12 @@ function Read-Names([string]$Text) {
     return , $names
 }
 
-function Get-Release([string]$Repo, [string]$Tag) {
+function Get-Release([string]$Repo, [string]$Tag, [string]$RepoOwner = $Owner) {
     $h = @{ Accept = 'application/vnd.github+json' }
     if ($env:GH_TOKEN) { $h.Authorization = "Bearer $env:GH_TOKEN" }
-    $uri = if ($Tag) { "https://api.github.com/repos/$Owner/$Repo/releases/tags/$Tag" } else { "https://api.github.com/repos/$Owner/$Repo/releases/latest" }
+    $uri = if ($Tag) { "https://api.github.com/repos/$RepoOwner/$Repo/releases/tags/$Tag" } else { "https://api.github.com/repos/$RepoOwner/$Repo/releases/latest" }
     try { return Invoke-RestMethod -Headers $h -Uri $uri -TimeoutSec 60 }
-    catch { throw "$Owner/$Repo $(if ($Tag) { $Tag } else { 'Latest' }): the releases API said: $($_.Exception.Message)" }
+    catch { throw "$RepoOwner/$Repo $(if ($Tag) { $Tag } else { 'Latest' }): the releases API said: $($_.Exception.Message)" }
 }
 
 # The one asset to download. Only the loader's client zip and a plugin's client DLL are ever
@@ -166,7 +169,7 @@ function Resolve-Plan {
     $tagMap = @{}
     foreach ($k in $tagIn.Keys) {
         $c = Find-Entry $k
-        if (-not $c) { throw "tags names '$k', which is not the loader or one of the nine plugins" }
+        if (-not $c) { throw "tags names '$k', which is not the loader or one of the ten plugins" }
         $tagMap[$c] = $tagIn[$k]
     }
     $expIn = Read-Pairs $Expect 'expect'
@@ -182,7 +185,7 @@ function Resolve-Plan {
     $removed = @{}
     foreach ($n in (Read-Names $RemovePlugins)) {
         $c = Find-Entry $n
-        if (-not $c -or $c -eq 'Loader') { throw "remove_plugins names '$n', which is not one of the nine plugins" }
+        if (-not $c -or $c -eq 'Loader') { throw "remove_plugins names '$n', which is not one of the ten plugins" }
         $removed[$c] = $true
     }
 
@@ -232,13 +235,14 @@ function Resolve-Plan {
         if ($over) {
             if ($tagMap.ContainsKey($p.Name)) { Write-Host "::warning::tags names $($p.Name), which the candidate replaces; the tag is ignored" }
         } else {
-            $rel = Get-Release $p.Repo $(if ($tagMap.ContainsKey($p.Name)) { $tagMap[$p.Name] } else { '' })
+            $pOwner = if ($p.PSObject.Properties['Owner'] -and $p.Owner) { [string]$p.Owner } else { $Owner }
+            $rel = Get-Release $p.Repo $(if ($tagMap.ContainsKey($p.Name)) { $tagMap[$p.Name] } else { '' }) $pOwner
             $tag = [string]$rel.tag_name
             if (-not $removed.ContainsKey($p.Name)) { $asset = Select-Asset $rel $p.Name $p.Asset }
         }
         $entries += [ordered]@{
             name = $p.Name; logName = $p.LogName; repo = $p.Repo; assetPrefix = $p.Asset; dll = "$($p.Asset).dll"; extra = $false
-            tag = $tag; expect = $(if ($expMap.ContainsKey($p.Name)) { $expMap[$p.Name] } else { $tag })
+            tag = $tag; expect = $(if ($expMap.ContainsKey($p.Name)) { $expMap[$p.Name] } elseif ($p.PSObject.Properties['StripV'] -and $p.StripV) { $tag -replace '^v', '' } else { $tag })
             expectRefused = $refused.ContainsKey($p.Name); removed = $removed.ContainsKey($p.Name); overlaid = $over; asset = $asset
         }
     }

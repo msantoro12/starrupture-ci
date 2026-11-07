@@ -4,6 +4,7 @@
   {"Name": "CameraControls", "Repo": "StarRupture-Plugin-CameraControls", "LogName": "CameraControls", "Asset": "CameraControls"},
   {"Name": "Codex", "Repo": "StarRupture-Plugin-Codex", "LogName": "Codex", "Asset": "Codex"},
   {"Name": "Compass", "Repo": "StarRupture-Plugin-Compass", "LogName": "Compass", "Asset": "Compass_Plugin"},
+  {"Name": "MiniMap", "Repo": "StarRupture-Plugin-MiniMap", "LogName": "MiniMap", "Asset": "MiniMap", "Owner": "LetMeInside", "StripV": true},
   {"Name": "ProductionViewer", "Repo": "StarRupture-Plugin-ProductionViewer", "LogName": "ProductionViewer", "Asset": "ProductionViewer"},
   {"Name": "RuptureTimer", "Repo": "StarRupture-Plugin-RuptureTimer", "LogName": "AxRuptureTimer", "Asset": "RuptureTimer"},
   {"Name": "WAILA", "Repo": "StarRupture-Plugin-WAILA", "LogName": "Waila", "Asset": "Waila"},
