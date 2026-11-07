@@ -236,7 +236,7 @@ test('map step: plugins that report another name than their repo (Waila, AxRuptu
   copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
   writeFileSync(join(dir, 'res', 'scanner.json'), '{}');
   for (const n of ['Waila', 'AxRuptureTimer', 'BetterCheats', 'MiniMap']) writeFileSync(join(dir, 'res', `plugin-${n}.json`), JSON.stringify({ plugin: { name: n } }));
-  const plugins = ['WAILA', 'RuptureTimer', 'BetterCheats'].map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`).join(' ')
+  const plugins = ['WAILA', 'RuptureTimer', 'BetterCheats'].map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ')
     + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release';
   const r = spawnSync(process.execPath, ['-e', script, '1'], { cwd: dir, env: { ...process.env, PLUGINS: plugins, LOADER_REF: 'v1' }, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stderr);
@@ -286,7 +286,8 @@ test('push-loader: the key, the environment and the target are named, and the al
   assert.match(j, /\n {4}environment: fork-push\n/);
   assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
   assert.match(j, /\n {4}needs: \[map-mode\]\n/);
-  assert.match(j, /needs\.map-mode\.result == 'success' && needs\.map-mode\.outputs\.staged == 'true' && inputs\.test_autopilot != true && inputs\.loader_repo == 'msantoro12\/StarRupture-ModLoader'/);
+  assert.match(j, /\n {4}if: \$\{\{ !cancelled\(\) && needs\.map-mode\.result == 'success' && needs\.map-mode\.outputs\.staged == 'true' && inputs\.test_autopilot != true \}\}\n/);
+  assert.ok(!/inputs\.loader_repo ==/.test(j), 'the base repository does not decide whether the push runs: the target is always the fork');
   assert.match(j, /\n {4}outputs:\n {6}branch: \$\{\{ steps\.push\.outputs\.branch \}\}\n {6}sha: \$\{\{ steps\.push\.outputs\.sha \}\}\n/);
   assert.ok(!/continue-on-error/.test(j), 'no step of the push job may fail quietly');
   // The key is read by name, in two steps only, and no other secret is touched.
@@ -295,9 +296,13 @@ test('push-loader: the key, the environment and the target are named, and the al
   assert.ok(j.indexOf('- name: Check the deploy key') < j.indexOf('- name: Check out the push tool'));
   // Pushes go through staging.mjs push: no git push, tag or force in the workflow.
   assert.ok(!/git (-C \S+ )?push|--force|--tags|refs\/tags/.test(j));
-  assert.ok(j.includes('node tool/ci/staging.mjs target --repo "$LOADER_REPO" --plan chain/stage-plan.json'));
+  assert.ok(j.includes('node tool/ci/staging.mjs target --repo "$PUSH_REPO" --plan chain/stage-plan.json'));
+  assert.match(j, /\n {6}PUSH_REPO: msantoro12\/StarRupture-ModLoader\n/, 'the one repository the job writes to is the fork');
+  assert.ok(j.includes('staging.mjs push --repo "$PUSH_REPO"'));
   assert.ok(j.indexOf('staging.mjs target') < j.indexOf('- name: Commit the header and push the branch'), 'the allowlist runs before the key is written');
-  assert.match(j, /repository: msantoro12\/StarRupture-ModLoader\n\s+ref: \$\{\{ steps\.base\.outputs\.sha \}\}/, 'the checkout is the fork at the commit the rows were read from, not a moving ref');
+  // The base is the repository the rows were read from (AlienX's released line), never the fork, at that exact commit.
+  assert.match(j, /repository: \$\{\{ inputs\.loader_repo \}\}\n\s+ref: \$\{\{ steps\.base\.outputs\.sha \}\}\n\s+path: loader\n(?:\s+#.*\n)*\s+fetch-depth: 0\n/, 'the checkout is loader_repo at the commit the rows were read from, not a moving ref, with its whole history');
+  assert.ok(!/repository: msantoro12\/StarRupture-ModLoader/.test(j), 'the fork is never checked out as the base');
   // The map-mode job tells the push job when there is something to push.
   assert.match(job('map-mode'), /\n {6}staged: \$\{\{ steps\.chain\.outputs\.staged \}\}\n/);
   assert.ok(job('map-mode').includes('echo "staged=true" >> "$GITHUB_OUTPUT"'));
@@ -428,7 +433,7 @@ test('build-scanner: the scanner branch\'s ObservedTests are built and run again
   assert.ok(run.includes('& "build\\tests\\observed_tests.exe"'));
   assert.equal(run.match(/if \(\$LASTEXITCODE -ne 0\) \{ throw /g)?.length, 2, 'the build and the run both throw on a nonzero exit');
   // The checkouts it uses are the inputs the scan uses: the scanner source from scanner_ref, the loader at loader_ref.
-  assert.match(j, /ref: \$\{\{ inputs\.scanner_ref \}\}\n\s+path: scanner-src\n\s+sparse-checkout: tools\/AobScan\n/);
+  assert.match(j, /repository: \$\{\{ inputs\.scanner_repo \}\}\n\s+ref: \$\{\{ inputs\.scanner_ref \}\}\n\s+path: scanner-src\n\s+sparse-checkout: tools\/AobScan\n/);
   assert.match(j, /ref: \$\{\{ inputs\.loader_ref \}\}\n\s+path: loader\n/);
 });
 
@@ -515,7 +520,7 @@ const okNeeds = () => ({
   'rig-other': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public_test_branch-x-1-1' } },
   check: { result: 'success', outputs: {} },
 });
-const okInputs = () => ({ publish: true, test_autopilot: false, branch: 'public', loader_repo: 'msantoro12/StarRupture-ModLoader', map_mode: true });
+const okInputs = () => ({ publish: true, test_autopilot: false, branch: 'public', loader_repo: 'AlienXAXS/StarRupture-ModLoader', map_mode: true });
 // The `with:` and `secrets:` maps of a call job, as written (values are the raw expressions).
 const mapOf = (j, key) => {
   const at = j.indexOf(`\n    ${key}:\n`);
@@ -652,7 +657,7 @@ test('rig gate: a rig failure fails the chain visibly (the gate job is red unles
   notStaged['map-mode'].outputs.staged = 'false';
   assert.equal(cond(notStaged, okInputs()), false, 'nothing staged: nothing to test');
   assert.equal(cond(okNeeds(), { ...okInputs(), test_autopilot: true }), false, 'a test run pushes nothing');
-  assert.equal(cond(okNeeds(), { ...okInputs(), loader_repo: 'AlienXAXS/StarRupture-ModLoader' }), false, 'another loader repository is never pushed');
+  assert.equal(cond(okNeeds(), { ...okInputs(), loader_repo: 'msantoro12/StarRupture-ModLoader' }), true, 'the base repository does not matter: what is staged is always pushed to the fork');
   // The autopilot decides publishing only; the rig runs either way (a HOLD with the autopilot off is still a candidate).
   assert.ok(!/state\/autopilot/.test(wf.slice(wf.indexOf('  rig-branch:'), wf.indexOf('  alert:'))));
 });
@@ -1469,4 +1474,93 @@ test('N2 alert: a dispatch with publish on that the autopilot held (no candidate
   assert.equal(a.ready, null, 'no ready note is written');
   // The candidate chain's hold is still ready.
   assert.equal(alertRun({ decision: HOLD_ONLY_AUTOPILOT }).outputs.ready, 'true');
+});
+
+// ------------------------------------------------------------ the bases are the released line
+
+const DEFAULT_PLUGINS = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls']
+  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release';
+const defaultOf = (section, input) => section.match(new RegExp(`\\n {6}${input}:\\n(?: {8}description: [^\\n]*\\n)? {8}type: string\\n {8}default: '([^']*)'\\n`))?.[1];
+
+test('bases: both triggers default to AlienX main for the loader, both SDKs and the nine plugins; only the scanner overlay is the fork\'s', () => {
+  for (const [name, section] of [['workflow_call', call], ['workflow_dispatch', dispatch]]) {
+    assert.equal(defaultOf(section, 'loader_repo'), 'AlienXAXS/StarRupture-ModLoader', name);
+    assert.equal(defaultOf(section, 'loader_ref'), 'main', name);
+    assert.equal(defaultOf(section, 'plugin_sdk_repo'), 'AlienXAXS/StarRupture-Plugin-SDK', name);
+    assert.equal(defaultOf(section, 'plugin_sdk_ref'), 'main', name);
+    assert.equal(defaultOf(section, 'game_sdk_repo'), 'AlienXAXS/StarRupture-Game-SDK', name);
+    assert.equal(defaultOf(section, 'game_sdk_ref'), 'main', name);
+    assert.equal(defaultOf(section, 'plugins'), DEFAULT_PLUGINS, name);
+    // The scanner overlay: tools/AobScan only, from the fork's scanner branch.
+    assert.equal(defaultOf(section, 'scanner_repo'), 'msantoro12/StarRupture-ModLoader', name);
+    assert.equal(defaultOf(section, 'scanner_ref'), 'ci/aobscan', name);
+  }
+});
+
+test('bases: no workflow, script or doc reads a default base from the stale gss work branches', () => {
+  const ci = join(here, '..', '.github');
+  const texts = {
+    'sr-client-check.yml': wf, 'sr-watch.yml': watch,
+    'sr-build-all.yml': readFileSync(join(ci, 'workflows', 'sr-build-all.yml'), 'utf8'),
+    'engine-test.yml': readFileSync(join(ci, 'workflows', 'engine-test.yml'), 'utf8'),
+    'sr-client-rig.yml': readFileSync(join(ci, 'workflows', 'sr-client-rig.yml'), 'utf8'),
+    'README.md': readFileSync(join(ci, 'sr-pipeline', 'README.md'), 'utf8'),
+    'MAP-MODE.md': readFileSync(join(here, 'MAP-MODE.md'), 'utf8'),
+  };
+  for (const [name, text] of Object.entries(texts)) assert.ok(!/gss\/(loader|plugin|sdk)-work/.test(text), `${name} still names a gss work branch`);
+  // The nine default plugins are AlienX's, every one a branch ref, so plugin-plan resolves each to a commit before any plugin code runs.
+  const entries = defaultOf(call, 'plugins').split(' ');
+  assert.equal(entries.length, 10);
+  assert.equal(entries.filter((e) => /^AlienXAXS\/StarRupture-Plugin-[A-Za-z]+@main$/.test(e)).length, 9);
+});
+
+test('bases: the scanner repository is on the same allowlist as the loader, and the scanner is the only thing taken from it', () => {
+  const j = job('build');
+  assert.match(j, /\$env:SCANNER_REPO -notmatch '\^\(msantoro12\|AlienXAXS\)\/StarRupture-ModLoader\$'/);
+  assert.ok(j.indexOf('SCANNER_REPO -notmatch') < j.indexOf('- name: Check out the loader'), 'checked before anything is fetched');
+  // The loader (patterns, SDK, header) is loader_repo@loader_ref; the scanner overlay is the other checkout, sparse.
+  assert.match(j, /repository: \$\{\{ inputs\.loader_repo \}\}\n\s+ref: \$\{\{ inputs\.loader_ref \}\}\n\s+path: loader\n\s+submodules: recursive\n/);
+  assert.match(j, /repository: \$\{\{ inputs\.scanner_repo \}\}\n\s+ref: \$\{\{ inputs\.scanner_ref \}\}\n\s+path: scanner-src\n\s+sparse-checkout: tools\/AobScan\n/);
+});
+
+test('bases: map-mode reads the header at the commit the scanner was built from, and refuses a different one', { skip: !bash }, () => {
+  assert.match(job('build'), /\n {6}loader_sha: \$\{\{ steps\.read\.outputs\.loader_sha \}\}\n/);
+  const mm = job('map-mode');
+  assert.match(mm, /repository: \$\{\{ inputs\.loader_repo \}\}\n\s+ref: \$\{\{ needs\.build\.outputs\.loader_sha \}\}\n\s+path: loader\n/);
+  assert.ok(!/ref: \$\{\{ inputs\.loader_ref \}\}/.test(mm), 'the header is not read at a moving branch');
+  // The guard, run for real against a repository whose HEAD is and is not the scanned commit.
+  const guard = runOf(mm, 'Write the update into the header').split('\n').filter((l) => /read_sha|SCANNED_LOADER_SHA/.test(l)).join('\n');
+  const dir = mkdtempSync(join(tmpdir(), 'bases-'));
+  const git = (...a) => spawnSync('git', ['-C', join(dir, 'loader'), ...a], { encoding: 'utf8', windowsHide: true });
+  mkdirSync(join(dir, 'loader'));
+  git('init', '-q');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'a');
+  const head = git('rev-parse', 'HEAD').stdout.trim();
+  const run = (sha) => spawnSync(bash, ['-c', guard + '\necho passed'], { cwd: dir, encoding: 'utf8', env: { ...process.env, SCANNED_LOADER_SHA: sha }, windowsHide: true });
+  const ok = run(head);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, /passed/);
+  for (const other of ['', '0'.repeat(40)]) {
+    const bad = run(other);
+    assert.equal(bad.status, 2, `exit for ${JSON.stringify(other)}`);
+    assert.match(bad.stdout, /::error::the header was read at [0-9a-f]{40}, not at the loader commit the scanner was built from/);
+  }
+});
+
+test('bases: auto-apply cuts the plugin fork\'s branch from the plugin repository the plan named (AlienX main), and pushes to the fork', () => {
+  const j = job('auto-apply');
+  // The commit must be the one plugin-plan resolved, on AlienX's repository or the fork's, and the checkout is that repository.
+  assert.ok(j.includes('(.repo == "AlienXAXS/StarRupture-Plugin-" + $n or .repo == "msantoro12/StarRupture-Plugin-" + $n)'));
+  assert.ok(j.includes('[ "${planned#* }" = "$SHA" ]'));
+  assert.ok(j.includes('echo "repo=${planned% *}" >> "$GITHUB_OUTPUT"'));
+  assert.match(j, /- name: Check the work item\n\s+id: item\n/);
+  assert.match(j, /repository: \$\{\{ steps\.item\.outputs\.repo \}\}\n\s+ref: \$\{\{ matrix\.sha \}\}\n\s+path: plugin\n(?:\s+#.*\n)*\s+fetch-depth: 0\n/);
+  assert.ok(!/repository: msantoro12\/StarRupture-Plugin/.test(j), 'the fork is not the base');
+  // The push target is still the owner's fork of that plugin, over ssh, with that fork's key.
+  assert.ok(j.includes('url="git@github.com:msantoro12/StarRupture-Plugin-$NAME.git"'));
+  // The check job only lists a fix for the nine, from either owner's repository.
+  assert.ok(job('check').includes("$p.repo -match '^(msantoro12|AlienXAXS)/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$'"));
+  // The report looks for the pushed branch on the fork, not on the repository the commit was read from.
+  assert.ok(job('report').includes('$fork = "msantoro12/$($Matches[2])"'));
+  assert.ok(job('report').includes('git ls-remote "https://github.com/$fork"'));
 });
