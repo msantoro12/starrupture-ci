@@ -1,6 +1,6 @@
 # StarRupture game-update pipeline
 
-Workflows that watch Steam for a new StarRupture build, check that the loader and plugins still compile (one result per component), and check the new client build offline. They run on GitHub-hosted runners with the built-in `GITHUB_TOKEN`. No self-hosted runner. Issues are used only as alerts: `vmap-watchdog.yml`, and the `alert` job of `sr-client-check.yml` (a failed job, or a map-mode HOLD for any reason but "nothing new", opens or updates the issue "SR map mode: <branch> needs attention"). The one secret is the Steam login of a separate CI account, used only by the client check (see "Steam login for the client check").
+Workflows that watch Steam for a new StarRupture build, check that the loader and plugins still compile (one result per component), and check the new client build offline. They run on GitHub-hosted runners with the built-in `GITHUB_TOKEN`. No self-hosted runner. Issues are used only as alerts: `vmap-watchdog.yml`, the `alert` job of `sr-client-check.yml` and the stale-PR step of `sr-watch.yml`. The issue "SR map mode: <branch> needs attention" is opened on the first problem and commented on for every later one; it carries the label `pipeline-alert`, is assigned to the owner and mentions him, so GitHub notifies him, and each alert line says its cause (the failing job or gate and its first error line, or the verdict reason). Alert lines: a failed job; a client check that did not run (status `skipped` or `no-login`); a map-mode HOLD for any reason but "nothing new" or the autopilot switch alone; map rows that were not pushed to the loader fork; a candidate loader that failed to build or pass its tests; a client rig that did not end with success and PASS. A HOLD whose only reason is "autopilot is disabled", with every gate and job passing, is not an alert: the alert job writes one "Ready, publish held (autopilot off)" comment on the update PR (edited in place) and no issue. A run with no alert line labels the PR `chain-passed-<branch>`; when `sr-watch.yml` skips a build because its game-update PR is open and that PR has been open over 6 hours without the label for every changed client branch, it comments on (or opens) the branch's alert issue, at most once per 6 hours. The one secret is the Steam login of a separate CI account, used only by the client check (see "Steam login for the client check").
 
 They live in `msantoro12/starrupture-ci`. The mod repos are checked out from `vars.MOD_OWNER` (default `AlienXAXS`); nothing here writes to them.
 
@@ -100,14 +100,15 @@ Copied from the loader's `release.yml` and the plugins' `release.yml` build step
 
 | Job | Permissions | Used for |
 |---|---|---|
-| `sr-watch` / `poll` | `contents: write`, `pull-requests: write` | baseline commit to main, `game-update/*` branches, label, PR |
+| `sr-watch` / `poll` | `contents: write`, `pull-requests: write`, `issues: write` | baseline commit to main, `game-update/*` branches, label, PR, the stale-PR alert issue |
 | `sr-watch` / `build-all` (caller) | `contents: read`, `pull-requests: write`, `actions: read` | covers the called workflow |
 | `sr-build-all` / `interface`, `loader`, `plugin` | `contents: read` | check out and build |
 | `sr-build-all` / `report` | `contents: read`, `actions: read`, `pull-requests: write` | list jobs and artifacts, comment on the PR |
-| `sr-watch` / `client-check` (caller) | `contents: write`, `pull-requests: write`, `issues: write` (a ceiling) | covers the called workflow; passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` (by name) and `VMAP_SIGN_KEY_TEST`, no deploy key or release key |
+| `sr-watch` / `client-check` (caller) | `contents: write`, `pull-requests: write`, `issues: write` (a ceiling) | covers the called workflow; passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` (by name), `VMAP_SIGN_KEY_TEST` and the deploy keys of the loader fork and the nine plugin forks, no release key |
 | `sr-client-check` / `build-scanner` | `contents: read` | check out the loader, build the scanner |
 | `sr-client-check` / `check` | `contents: read`, environment `steam-client` | the only job that can read the Steam login; checks out no repository |
 | `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR; no environment, no secrets |
+| `sr-client-check` / `alert` | `contents: read`, `issues: write`, `pull-requests: write`, `actions: read` | the alert issue, the `chain-passed-<branch>` label and ready note on the PR, the failed steps and logs of the run |
 | `sr-client-check` / `login-expiry` | none | reads the repo variable `STEAM_CI_LOGIN_AT` |
 | `sr-client-rig` / `rig` | `contents: read`, `actions: read`, environment `steam-client` | the one job; reads the Steam login in the install, launch and leak-gate steps only; `actions: read` is for fetching a candidate run's artifact |
 

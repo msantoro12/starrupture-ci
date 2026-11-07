@@ -22,6 +22,8 @@ const check = workflows['sr-client-check.yml'];
 const rig = workflows['sr-client-rig.yml'];
 const SECRETS = ['STEAM_CI_USERNAME', 'STEAM_CI_LOGIN_CACHE'];
 const CALLED = ['sr-client-check.yml', 'sr-client-rig.yml'];
+// The names `gh secret list --env fork-push` shows besides the loader's: the auto-apply job's per-fork keys.
+const PLUGIN_KEYS = ['BETTERCHEATS', 'BETTERDRONE', 'WAILA', 'CODEX', 'COMPASS', 'PRODUCTIONVIEWER', 'RUPTURETIMER', 'WAVEOPTIMISER', 'CAMERACONTROLS'].map((n) => `SR_DEPLOYKEY_${n}`);
 
 // A job runs to the next job key (two-space indent) or the end of the file.
 const jobs = (wf) => wf.slice(wf.indexOf('\njobs:\n') + 7).split(/\n(?= {2}[a-z][\w-]*:\n)/);
@@ -85,10 +87,10 @@ test('both called workflows declare the Steam secrets as required, and read them
   }
 });
 
-test('sr-watch passes the login, the TEST key, the loader fork key and nothing else; no inherit, no release or plugin fork key', () => {
+test('sr-watch passes the login, the TEST key, the loader fork key, the nine plugin fork keys and nothing else; no inherit, no release key', () => {
   const j = job(workflows['sr-watch.yml'], 'client-check');
   const secrets = j.slice(j.indexOf('\n    secrets:\n') + 1).trimEnd().split('\n').slice(1).map((l) => l.trim().split(':')[0]);
-  assert.deepEqual(secrets.sort(), [...SECRETS, 'VMAP_SIGN_KEY_TEST', 'SR_DEPLOYKEY_MODLOADER'].sort());
+  assert.deepEqual(secrets.sort(), [...SECRETS, 'VMAP_SIGN_KEY_TEST', 'SR_DEPLOYKEY_MODLOADER', ...PLUGIN_KEYS].sort());
   assert.ok(!/secrets: inherit/.test(workflows['sr-watch.yml']));
   assert.ok(!/\n {6}publish:/.test(j), 'publish is not passed');
 });
@@ -120,7 +122,7 @@ test('report and alert state the real cause, and say how to check the build agai
   assert.match(report, /if \(\$env:CHECK_RESULT -ne 'success'\)[\s\S]*gh workflow run sr-watch\.yml --ref main -f force=true/);
   const alert = job(check, 'alert');
   assert.match(step(alert, 'Download the check result'), /name: client-check-\$\{\{ inputs\.branch \}\}\n\s+path: res/);
-  assert.match(alert, /if \(e\.CHECK_RESULT === "failure"\) lines\.push\("  - cause: " \+ \(r\?\.reason/);
+  assert.match(alert, /if \(r\?\.reason\) lines\.push\("  - cause: " \+ \(r\.status === "no-login"/);
   assert.match(alert, /gh workflow run sr-watch\.yml --ref main -f force=true/);
 });
 

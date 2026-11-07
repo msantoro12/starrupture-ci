@@ -7,10 +7,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -125,12 +125,12 @@ test('field-rows: a missing reference layout is never named, and only a refusal 
 
 test('alert: a failed job or a HOLD other than "nothing new" opens or updates one issue per branch', () => {
   const a = job('alert');
-  assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish\]/);
+  assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate\]/);
   assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
   assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
   assert.ok(a.includes('result === "failure"'));
-  assert.ok(a.includes('gh issue create --title "$title" --body-file alert.md'));
+  assert.ok(a.includes('gh issue create --title "$TITLE" --body-file alert.md --label pipeline-alert --assignee "$OWNER"'));
   assert.ok(a.includes('gh issue comment "$number" --body-file alert.md'));
   // The caller's ceiling must grant issues: write, or GitHub rejects the call.
   const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -704,4 +704,351 @@ test('rig gate: the nested call fits its callers (permissions ceiling, depth, ma
   const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8').replace(/\r\n/g, '\n');
   assert.ok(!/\n {4}uses: /.test(rig));
   assert.match(rig, /\n {4}environment: steam-client\n/);
+});
+
+// ------------------------------------------------------------ leg C1: loud alerts, the stale update PR, the plugin fork keys
+
+// The alert job's two bash steps, run for real: the step's run block in a temp directory, with the
+// files the earlier steps leave (res/, chain/, failed-jobs.jsonl, logs/) and the env GitHub would set.
+const ALERT_ENV = {
+  BRANCH: 'public_test_branch', BUILDID: '26461198', OWNER: 'msantoro12', RUN_ID: '9', GH_REPO: 'o/r', PR: '26',
+  RUN_URL: 'https://github.com/o/r/actions/runs/9',
+  BUILD_RESULT: 'success', PLAN_RESULT: 'success', CHECK_RESULT: 'success', MAP_MODE_RESULT: 'success', PUBLISH_RESULT: 'skipped',
+  STAGED_EXPECTED: 'true', PUSH_RESULT: 'success', CANDIDATE_RESULT: 'success', RIG_GATE_RESULT: 'success',
+  BRANCH_RIG_NAME: 'public_test_branch', BRANCH_RIG_RESULT: 'success', BRANCH_RIG_VERDICT: 'PASS', BRANCH_RIG_REASON: 'All 41 checks passed', BRANCH_RIG_ARTIFACT: 'sr-client-rig-public_test_branch-1',
+  OTHER_RIG_NAME: 'public', OTHER_RIG_RESULT: 'success', OTHER_RIG_VERDICT: 'PASS', OTHER_RIG_REASON: 'All 41 checks passed', OTHER_RIG_ARTIFACT: 'sr-client-rig-public-1',
+};
+const AUTOPILOT_HOLD = 'autopilot is disabled (enabled is not true)';
+const HOLD_ONLY_AUTOPILOT = { decision: 'HOLD', cl: 129402, candidate: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] };
+// A fake `gh`: logs every call, answers from files in its own directory. Nothing leaves the temp directory.
+const FAKE_GH = `#!/bin/bash
+printf '%s\\n' "$*" >> "$FAKE_DIR/calls.log"
+reply() { [ -f "$FAKE_DIR/$1" ] && cat "$FAKE_DIR/$1"; return 0; }
+case "$1 $2" in
+  "pr list") reply pr.json ;;
+  "pr view") case "$*" in *title*) echo "Game build 26461198 on public_test_branch" ;; *) reply pr-chain-labels.txt ;; esac ;;
+  "issue list") reply issue-number.txt ;;
+  "api repos/"*) case "$2" in */comments) reply comment-times.txt ;; *) reply issue-body-time.txt ;; esac ;;
+esac
+exit 0
+`;
+const runBash = (script, { cwd, env, files = {} }) => {
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(cwd, name)), { recursive: true });
+    writeFileSync(join(cwd, name), typeof content === 'string' ? content : JSON.stringify(content));
+  }
+  const bin = join(cwd, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'gh'), FAKE_GH);
+  chmodSync(join(bin, 'gh'), 0o755);
+  return spawnSync(bash, ['-c', script], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env, FAKE_DIR: cwd, RUNNER_TEMP: cwd, PATH: bin + delimiter + process.env.PATH } });
+};
+const calls = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
+const alertRun = ({ env = {}, result, decision, jobs = [], logs = {}, noChain = false } = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'alert-'));
+  const files = { 'out.txt': '' };
+  if (result) files['res/result.json'] = result;
+  if (decision) files['chain/decision.json'] = decision;
+  else if (!noChain) files['chain/map-mode-report.json'] = {};
+  if (jobs.length) files['failed-jobs.jsonl'] = jobs.map((j) => JSON.stringify(j)).join('\n') + '\n';
+  for (const [id, text] of Object.entries(logs)) files[`logs/${id}.txt`] = text;
+  const script = runOf(job('alert'), 'Work out what needs attention');
+  const r = runBash(script, { cwd: dir, env: { ...ALERT_ENV, ...env, GITHUB_OUTPUT: join(dir, 'out.txt') }, files });
+  const read = (n) => (existsSync(join(dir, n)) ? readFileSync(join(dir, n), 'utf8') : null);
+  const outputs = Object.fromEntries((read('out.txt') ?? '').split('\n').filter(Boolean).map((l) => l.split('=')));
+  return { status: r.status, stderr: r.stderr, outputs, md: read('alert.md'), ready: read('ready.md') };
+};
+const goodDecision = { decision: 'M', cl: 129402 };
+
+test('alert (leg C1): a run in which every job and gate passed raises nothing, and is marked passed', { skip: !bash }, () => {
+  const a = alertRun({ decision: goodDecision });
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.md, null);
+  assert.deepEqual(a.outputs, { alert: 'false', passed: 'true', ready: 'false' });
+});
+
+test('alert (leg C1): a failed job is a line with its cause, from the check result, the jobs API and the first error line of its log', { skip: !bash }, () => {
+  // check: the reason its result.json recorded.
+  const noLogin = alertRun({ env: { CHECK_RESULT: 'failure', MAP_MODE_RESULT: 'skipped', STAGED_EXPECTED: 'false' }, result: { status: 'no-login', reason: 'the Steam login secrets reached the called check empty' } });
+  assert.equal(noLogin.outputs.alert, 'true');
+  assert.match(noLogin.md, /- job \*\*check\*\* failed\n  - cause: no Steam login \(status no-login\): the Steam login secrets reached the called check empty/);
+  // check: no result artifact at all, and a failed step from the jobs API.
+  const noResult = alertRun({
+    env: { CHECK_RESULT: 'failure', MAP_MODE_RESULT: 'skipped', STAGED_EXPECTED: 'false' },
+    jobs: [{ id: 11, name: 'client-check (public_test_branch) / check', step: 'Download the client build' }],
+    logs: { 11: '﻿2026-11-07T13:29:38.4Z group\n2026-11-07T13:29:43.8Z ##[error]steamcmd exited 5: login failed\n2026-11-07T13:29:43.9Z ##[error]Process completed with exit code 1.\n' },
+  });
+  assert.match(noResult.md, /- job \*\*check\*\* failed\n  - cause: no check result artifact; step "Download the client build": steamcmd exited 5: login failed/);
+  // The job of the other branch's matrix entry is not mistaken for this one.
+  const other = alertRun({ env: { CHECK_RESULT: 'failure', MAP_MODE_RESULT: 'skipped', STAGED_EXPECTED: 'false' }, jobs: [{ id: 12, name: 'client-check (public) / check', step: 'Not this one' }, { id: 13, name: 'client-check (public_test_branch) / check', step: 'This one' }] });
+  assert.match(other.md, /step "This one"/);
+  assert.ok(!/Not this one/.test(other.md));
+  // map mode: names the failing step and says when its artifact is missing.
+  const mm = alertRun({
+    env: { MAP_MODE_RESULT: 'failure', STAGED_EXPECTED: 'false' }, noChain: true,
+    jobs: [{ id: 21, name: 'map mode', step: 'Write the update into the header' }],
+    logs: { 21: '2026-11-07T13:29:43.8Z ##[error]map mode refused the update (exit 2); see the log and map-mode-report.json\n2026-11-07T13:29:43.9Z ##[error]Process completed with exit code 2.\n' },
+  });
+  assert.match(mm.md, /- job \*\*map mode\*\* failed\n  - the map-mode artifact is missing/);
+  assert.match(mm.md, /cause: step "Write the update into the header": map mode refused the update \(exit 2\)/);
+  // With the artifact there, the missing-artifact line is not written.
+  const mm2 = alertRun({ env: { MAP_MODE_RESULT: 'failure', STAGED_EXPECTED: 'false' }, jobs: [{ id: 21, name: 'map mode', step: 'Export' }] });
+  assert.ok(!/artifact is missing/.test(mm2.md));
+  // The others: build-scanner, plugin-plan, publish.
+  for (const [env, name] of [[{ BUILD_RESULT: 'failure' }, 'build-scanner'], [{ PLAN_RESULT: 'failure' }, 'plugin-plan'], [{ PUBLISH_RESULT: 'failure' }, 'publish the feed']]) {
+    assert.match(alertRun({ env, decision: goodDecision }).md, new RegExp(`- job \\*\\*${name}\\*\\* failed`), name);
+  }
+  // Every alert names the owner, so GitHub notifies him.
+  assert.match(noLogin.md, /^@msantoro12 branch `public_test_branch`, build 26461198, \[run\]\(https:\/\/github\.com\/o\/r\/actions\/runs\/9\)\./);
+});
+
+test('alert (leg C1): a check that did not run (status skipped or no-login) is a line even when the check job succeeded', { skip: !bash }, () => {
+  const skipped = alertRun({ result: { status: 'skipped', reason: 'no Steam login is configured' }, decision: goodDecision });
+  assert.equal(skipped.outputs.alert, 'true');
+  assert.equal(skipped.outputs.passed, 'false');
+  assert.match(skipped.md, /- client check \*\*did not run\*\* \(status skipped\): no Steam login is configured/);
+  const noLogin = alertRun({ result: { status: 'no-login', reason: 'environment steam-client has no STEAM_CI_USERNAME' }, decision: goodDecision });
+  assert.match(noLogin.md, /- client check \*\*did not run\*\* \(status no-login\): environment steam-client has no STEAM_CI_USERNAME/);
+  // A skipped result without a reason still says so.
+  assert.match(alertRun({ result: { status: 'skipped' }, decision: goodDecision }).md, /\(status skipped\): no reason recorded/);
+  // A normal pass and a new build are not.
+  assert.equal(alertRun({ result: { status: 'pass' }, decision: goodDecision }).outputs.alert, 'false');
+});
+
+test('alert (leg C1): a new build is information in an alert, never an alert by itself', { skip: !bash }, () => {
+  const result = { status: 'new-build', checks: { exe: { cl: 129402, productVersion: '1.0.0.129402', requiredCl: 'no row' } } };
+  assert.deepEqual(alertRun({ result, decision: goodDecision }).outputs, { alert: 'false', passed: 'true', ready: 'false' });
+  const withFault = alertRun({ result, decision: goodDecision, env: { PUBLISH_RESULT: 'failure' } });
+  assert.match(withFault.md, /New build \*\*CL-129402\*\* \(1\.0\.0\.129402\), measured by map mode: the loader does not run on it yet \(no row\); this is not a failure\./);
+});
+
+test('alert (leg C1): a HOLD is a line with its reasons, except "nothing new" and the autopilot switch alone', { skip: !bash }, () => {
+  const held = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G4: 2 required patterns missed', 'G5: 3 used classes changed'] } });
+  assert.equal(held.outputs.alert, 'true');
+  assert.match(held.md, /- decide: \*\*HOLD\*\* on CL-129402\n  - G4: 2 required patterns missed\n  - G5: 3 used classes changed/);
+  assert.equal(alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G3: CL-129402 is not newer than CL-129402'] } }).outputs.alert, 'false');
+  // The autopilot switch beside another reason is still an alert, and lists both.
+  const both = alertRun({ decision: { decision: 'HOLD', cl: 129402, candidate: true, reasons: [AUTOPILOT_HOLD, 'G1 compile: failed'] } });
+  assert.equal(both.outputs.alert, 'true');
+  assert.match(both.md, /  - autopilot is disabled \(enabled is not true\)\n  - G1 compile: failed/);
+  // No decision from a map-mode job that succeeded.
+  assert.match(alertRun({ noChain: true }).md, /map mode finished without a decision \(and the map-mode artifact is missing\)/);
+});
+
+test('alert (leg C1): a HOLD whose only reason is "autopilot is disabled", every gate and job passing, raises no issue and writes the ready note', { skip: !bash }, () => {
+  const a = alertRun({ decision: HOLD_ONLY_AUTOPILOT });
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.md, null, 'no alert.md, so the issue step is skipped');
+  assert.deepEqual(a.outputs, { alert: 'false', passed: 'true', ready: 'true' });
+  assert.equal(a.ready, '<!-- sr-ready-held:public_test_branch -->\n**Ready, publish held (autopilot off).** CL-129402 on `public_test_branch`: every gate and job passed, [run](https://github.com/o/r/actions/runs/9).\n');
+  assert.equal(a.ready.trim().split('\n').length - 1, 1, 'one line besides the marker');
+  // A test run (dispatch) says nothing on a PR.
+  assert.equal(alertRun({ decision: { ...HOLD_ONLY_AUTOPILOT, test: true, candidate: undefined } }).outputs.ready, 'false');
+  // With the autopilot as the only decide reason but a job failing, it is an alert and no note.
+  const failing = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { CANDIDATE_RESULT: 'failure', BRANCH_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', BRANCH_RIG_REASON: '', OTHER_RIG_RESULT: 'skipped', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '', RIG_GATE_RESULT: 'failure' } });
+  assert.equal(failing.outputs.alert, 'true');
+  assert.equal(failing.ready, null);
+  // The step that opens the issue runs only for an alert.
+  assert.match(step(job('alert'), 'Open or update the issue'), /\n {8}if: steps\.what\.outputs\.alert == 'true'\n/);
+});
+
+test('alert (leg C1): a missing or failed push, a failed candidate build or test, and a rig that did not pass are lines with the cause', { skip: !bash }, () => {
+  const push = alertRun({
+    decision: HOLD_ONLY_AUTOPILOT,
+    env: { PUSH_RESULT: 'failure', CANDIDATE_RESULT: 'skipped', RIG_GATE_RESULT: 'failure', BRANCH_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', BRANCH_RIG_REASON: '', OTHER_RIG_RESULT: 'skipped', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '' },
+    jobs: [{ id: 31, name: 'client-check (public_test_branch) / push the map rows to the loader fork', step: 'Check the deploy key' }],
+    logs: { 31: '2026-11-07T13:29:43.8Z ##[error]Loader deploy key missing: the secret SR_DEPLOYKEY_MODLOADER is not set\n' },
+  });
+  assert.match(push.md, /- the staged map rows were \*\*not pushed\*\* to the loader fork \(push-loader failed\)\n  - cause: step "Check the deploy key": Loader deploy key missing/);
+  assert.match(push.md, /- \*\*client rig gate\*\* failed/);
+  assert.match(push.md, /  - rig public_test_branch: did not run - candidate loader job: skipped/);
+  // A push that never ran although the chain staged is a missing push.
+  const skipped = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { PUSH_RESULT: 'skipped', CANDIDATE_RESULT: 'skipped' } });
+  assert.match(skipped.md, /\(push-loader ended skipped\)\n  - cause: a job before it did not finish/);
+  // Nothing staged (or a test run): no push is expected, so none is missing.
+  assert.equal(alertRun({ decision: goodDecision, env: { STAGED_EXPECTED: 'false', PUSH_RESULT: 'skipped', CANDIDATE_RESULT: 'skipped', RIG_GATE_RESULT: 'skipped', BRANCH_RIG_RESULT: 'skipped', OTHER_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', OTHER_RIG_VERDICT: '' } }).outputs.alert, 'false');
+  // The candidate build or its tests.
+  const cand = alertRun({
+    decision: HOLD_ONLY_AUTOPILOT, env: { CANDIDATE_RESULT: 'failure', RIG_GATE_RESULT: 'failure', BRANCH_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', BRANCH_RIG_REASON: '', OTHER_RIG_RESULT: 'skipped', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '' },
+    jobs: [{ id: 32, name: 'client-check (public_test_branch) / candidate loader', step: 'Run VersionMapTests' }],
+    logs: { 32: '2026-11-07T13:30:00.0Z ##[error]VersionMapTests: 2 failed\n' },
+  });
+  assert.match(cand.md, /- the \*\*candidate loader\*\* did not build and pass its tests \(candidate-loader failed\)\n  - cause: step "Run VersionMapTests": VersionMapTests: 2 failed/);
+  // A rig FAIL carries its verdict reason and logs artifact; the other rig passing is not listed.
+  const rig = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { RIG_GATE_RESULT: 'failure', OTHER_RIG_RESULT: 'failure', OTHER_RIG_VERDICT: 'FAIL', OTHER_RIG_REASON: 'plugin_not_refused_MiniMap: FOUND' } });
+  assert.match(rig.md, /- \*\*client rig gate\*\* failed: the feed is published only when both rigs pass\n  - rig public: FAIL - plugin_not_refused_MiniMap: FOUND \(logs: artifact sr-client-rig-public-1\)\n/);
+  assert.ok(!/rig public_test_branch/.test(rig.md));
+  // A rig job that ended success without a PASS verdict is not a pass, and neither is a cancelled one.
+  assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { BRANCH_RIG_VERDICT: '' , BRANCH_RIG_REASON: '' } }).md, /rig public_test_branch: success - no verdict; see the rig job/);
+  assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { OTHER_RIG_RESULT: 'cancelled', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '' } }).md, /rig public: cancelled - no verdict/);
+  // A failed gate job alone (rigs fine) is still a line.
+  assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { RIG_GATE_RESULT: 'failure' } }).md, /- \*\*client rig gate\*\* failed/);
+});
+
+test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the owner on create; a re-alert comments on the open issue', { skip: !bash }, () => {
+  const script = runOf(job('alert'), 'Open or update the issue');
+  const dir = mkdtempSync(join(tmpdir(), 'alert-issue-'));
+  const created = runBash(script, { cwd: dir, env: ALERT_ENV, files: { 'alert.md': 'x' } });
+  assert.equal(created.status, 0, created.stderr);
+  const c = calls(dir);
+  assert.ok(c.includes('label create pipeline-alert --color B60205 --description A pipeline run or a game-update PR needs the owner --force'), c.join('\n'));
+  assert.ok(c.includes('issue create --title SR map mode: public_test_branch needs attention --body-file alert.md --label pipeline-alert --assignee msantoro12'), c.join('\n'));
+  assert.ok(!c.some((l) => l.startsWith('issue comment')));
+  // An open issue for the branch: comment on that one, and make sure it is labelled and assigned.
+  const dir2 = mkdtempSync(join(tmpdir(), 'alert-issue-'));
+  const again = runBash(script, { cwd: dir2, env: ALERT_ENV, files: { 'alert.md': 'x', 'issue-number.txt': '27\n' } });
+  assert.equal(again.status, 0, again.stderr);
+  const c2 = calls(dir2);
+  assert.ok(c2.includes('issue comment 27 --body-file alert.md'), c2.join('\n'));
+  assert.ok(c2.includes('issue edit 27 --add-label pipeline-alert --add-assignee msantoro12'), c2.join('\n'));
+  assert.ok(!c2.some((l) => l.startsWith('issue create')));
+  // The lookup is by exact title.
+  assert.ok(c2.some((l) => l.startsWith('issue list --state open --search SR map mode: public_test_branch needs attention in:title')));
+});
+
+test('alert (leg C1): the PR gets the chain-passed label after a clean run, loses it after an alert, and one ready note that is edited in place', { skip: !bash }, () => {
+  const s = step(job('alert'), 'Mark the pull request');
+  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' \}\}\n/);
+  const script = runOf(job('alert'), 'Mark the pull request');
+  const run = (env, files = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'alert-pr-'));
+    const r = runBash(script, { cwd: dir, env: { ...ALERT_ENV, ...env }, files: { 'ready.md': 'note\n', ...files } });
+    assert.equal(r.status, 0, r.stderr);
+    return calls(dir);
+  };
+  const passed = run({ ALERT: 'false', PASSED: 'true', READY: 'false' });
+  assert.ok(passed.includes('pr edit 26 --add-label chain-passed-public_test_branch'), passed.join('\n'));
+  assert.ok(passed.some((l) => l.startsWith('label create chain-passed-public_test_branch ')));
+  assert.ok(!passed.some((l) => l.startsWith('pr comment') || l.includes('PATCH')));
+  const alerted = run({ ALERT: 'true', PASSED: 'false', READY: 'false' });
+  assert.ok(alerted.includes('pr edit 26 --remove-label chain-passed-public_test_branch'), alerted.join('\n'));
+  // Nothing alerted but not passed (no decision, map mode off): the label is left as it was.
+  const neither = run({ ALERT: 'false', PASSED: 'false', READY: 'false' });
+  assert.ok(!neither.some((l) => l.startsWith('pr edit')));
+  // The ready note: a new comment, or the existing marked one edited.
+  const fresh = run({ ALERT: 'false', PASSED: 'true', READY: 'true' });
+  assert.ok(fresh.includes('pr comment 26 --body-file ready.md'), fresh.join('\n'));
+  const edited = run({ ALERT: 'false', PASSED: 'true', READY: 'true' }, { 'comment-times.txt': '555\n' });
+  assert.ok(edited.includes('api -X PATCH repos/o/r/issues/comments/555 -F body=@ready.md'), edited.join('\n'));
+  assert.ok(!edited.some((l) => l.startsWith('pr comment')));
+});
+
+// ---- sr-watch: the stale game-update PR
+
+// A step of a job, as written.
+const step = (j, name) => {
+  const at = j.indexOf(`- name: ${name}\n`);
+  assert.ok(at >= 0, `step "${name}" exists`);
+  const next = j.indexOf('\n      - ', at + 1);
+  return j.slice(at, next < 0 ? undefined : next);
+};
+
+const NOW = Date.parse('2026-11-07T20:00:00Z') / 1000;
+const hoursAgo = (h) => new Date((NOW - h * 3600) * 1000).toISOString().replace('.000Z', 'Z');
+const staleRun = ({ ageH, labels = [], matrix = '[{"branch":"public","buildid":"1"},{"branch":"public_test_branch","buildid":"2"}]', issue, issueBodyTime, commentTimes, noPr = false }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'stale-'));
+  const pr = { number: 26, headRefName: 'game-update/client-public_test_branch-26461198', title: 'Game build 26461198 on public_test_branch', createdAt: hoursAgo(ageH), labels: ['game-update', ...labels].map((name) => ({ name })) };
+  const files = {};
+  if (!noPr) files['pr.json'] = JSON.stringify(pr);
+  if (issue) files['issue-number.txt'] = `${issue}\n`;
+  if (issueBodyTime) files['issue-body-time.txt'] = `${issueBodyTime}\n`;
+  if (commentTimes) files['comment-times.txt'] = commentTimes.join('\n') + '\n';
+  const script = runOf(poll, 'Alert on a stale game-update PR');
+  const r = runBash(script, { cwd: dir, env: { MATRIX: matrix, STALE_HOURS: '6', OWNER: 'msantoro12', GH_REPO: 'o/r', NOW_EPOCH: String(NOW), GITHUB_SERVER_URL: 'https://github.com' }, files });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const c = calls(dir);
+  const body = existsSync(join(dir, 'stale.md')) ? readFileSync(join(dir, 'stale.md'), 'utf8') : null;
+  return { calls: c, creates: c.filter((l) => l.startsWith('issue create')), comments: c.filter((l) => l.startsWith('issue comment')), edits: c.filter((l) => l.startsWith('issue edit')), body, out: r.stdout };
+};
+const watchJob = (name) => {
+  const rest = watch.slice(watch.indexOf(`\n  ${name}:\n`) + 1);
+  const next = rest.slice(1).search(/\n {2}[a-z][\w-]*:\n/);
+  return next < 0 ? rest : rest.slice(0, next + 1);
+};
+const poll = watchJob('poll');
+
+test('stale PR (leg C1): the step runs on the skip path only, and the poll job may write issues', () => {
+  const s = step(poll, 'Alert on a stale game-update PR');
+  assert.match(s, /\n {8}if: steps\.pr\.outputs\.skip == 'true'\n/);
+  assert.match(poll, /\n {4}permissions:\n(?: {6}.*\n)*? {6}issues: write/);
+  assert.match(s, /STALE_HOURS: '6'/);
+  assert.match(s, /MATRIX: \$\{\{ steps\.poll\.outputs\.client_matrix \}\}/);
+  // It comes after the PR step, whose skip path it reads.
+  assert.ok(poll.indexOf('- name: Alert on a stale game-update PR') > poll.indexOf('- name: Open or update the game-update PR'));
+  // A refreshed PR drops its chain-passed labels, so the old pass does not stand for the new build.
+  assert.match(poll, /select\(startswith\("chain-passed-"\)\)[\s\S]*--remove-label "\$l"/);
+});
+
+test('stale PR (leg C1): a game-update PR open over 6 hours without the chain-passed label opens the branch alert issue, labelled and assigned', { skip: !bash }, () => {
+  const r = staleRun({ ageH: 7 });
+  assert.equal(r.creates.length, 2, r.calls.join('\n'));
+  assert.ok(r.creates.includes('issue create --title SR map mode: public needs attention --body-file ' + r.calls.find((l) => l.startsWith('issue create')).split('--body-file ')[1].split(' --label')[0] + ' --label pipeline-alert --assignee msantoro12'), r.creates.join('\n'));
+  assert.ok(r.creates.some((l) => l.startsWith('issue create --title SR map mode: public_test_branch needs attention')));
+  assert.ok(r.calls.some((l) => l.startsWith('label create pipeline-alert ')));
+  assert.match(r.body, /^<!-- sr-stale-pr:26 -->\n@msantoro12 game-update PR #26 \(Game build 26461198 on public_test_branch\) has been open 7 hours and the client chain has not passed for `public_test_branch`: the PR has no `chain-passed-public_test_branch` label\./);
+  assert.match(r.body, /gh workflow run sr-watch\.yml --ref main -f force=true/);
+});
+
+test('stale PR (leg C1): under 6 hours, with every chain-passed label, with no client branch, or with no open PR it raises nothing', { skip: !bash }, () => {
+  const none = (r, why) => { assert.ok(!r.calls.some((l) => l.startsWith('issue ') && !l.startsWith('issue list')), `${why}: ${r.calls.join('\n')}`); assert.ok(!r.calls.some((l) => l.startsWith('label create')), why); };
+  none(staleRun({ ageH: 5.5 }), 'under 6 hours');
+  none(staleRun({ ageH: 30, labels: ['chain-passed-public', 'chain-passed-public_test_branch'] }), 'both branches passed');
+  none(staleRun({ ageH: 30, matrix: '[]' }), 'no client branch, nothing to pass');
+  none(staleRun({ ageH: 30, matrix: '' }), 'no matrix');
+  none(staleRun({ ageH: 30, noPr: true }), 'no open update PR');
+  // Exactly the limit counts as stale.
+  assert.equal(staleRun({ ageH: 6 }).creates.length, 2);
+});
+
+test('stale PR (leg C1): only the branch that has not passed is raised', { skip: !bash }, () => {
+  const r = staleRun({ ageH: 12, labels: ['chain-passed-public'] });
+  assert.equal(r.creates.length, 1);
+  assert.match(r.creates[0], /SR map mode: public_test_branch needs attention/);
+});
+
+test('stale PR (leg C1): at most once per 6 hours, by the marker in the issue body or a comment', { skip: !bash }, () => {
+  // Raised 2 hours ago (a comment): nothing now.
+  const recent = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(20), hoursAgo(2)] });
+  assert.equal(recent.comments.length, 0, recent.calls.join('\n'));
+  assert.equal(recent.creates.length, 0);
+  assert.match(recent.out, /Already raised for public/);
+  // Raised 7 hours ago: a new comment on the same issue, labelled and assigned again.
+  const old = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(7)] });
+  assert.equal(old.comments.length, 1);
+  assert.match(old.comments[0], /^issue comment 40 --body-file /);
+  assert.deepEqual(old.edits, ['issue edit 40 --add-label pipeline-alert --add-assignee msantoro12']);
+  assert.equal(old.creates.length, 0);
+  // The issue this step opened (marker in the body) counts as the last raise.
+  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, issueBodyTime: hoursAgo(1) }).comments.length, 0);
+  // An open issue with no marker anywhere (the alert job's own) gets a comment right away.
+  const plain = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40 });
+  assert.equal(plain.comments.length, 1);
+  // Just inside and just outside the window.
+  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(5.9)] }).comments.length, 0);
+  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(6.1)] }).comments.length, 1);
+});
+
+// ---- the plugin fork deploy keys
+
+const FORK_KEYS = ['BETTERCHEATS', 'BETTERDRONE', 'WAILA', 'CODEX', 'COMPASS', 'PRODUCTIONVIEWER', 'RUPTURETIMER', 'WAVEOPTIMISER', 'CAMERACONTROLS'].map((n) => `SR_DEPLOYKEY_${n}`);
+
+test('plugin keys (leg C1): sr-watch passes the nine fork keys by name; the client check declares them (not required); only auto-apply reads them', () => {
+  const caller = watch.slice(watch.indexOf('  client-check:\n'));
+  for (const k of FORK_KEYS) {
+    assert.ok(caller.includes(`\n      ${k}: \${{ secrets.${k} }}\n`) || caller.endsWith(`\n      ${k}: \${{ secrets.${k} }}`), `sr-watch passes ${k} by name`);
+    assert.match(call, new RegExp(`\\n {6}${k}:\\n {8}description: [^\\n]+\\n {8}required: false\\n`), `${k} is declared, not required`);
+  }
+  assert.ok(!/secrets: inherit/.test(watch));
+  // The auto-apply job names exactly these nine and no other key.
+  const names = [...new Set(job('auto-apply').match(/secrets\.[A-Z_]+/g))].map((x) => x.slice(8)).sort();
+  assert.deepEqual(names, [...FORK_KEYS].sort());
+  // No other job reads a fork key, and the release key stays out of both.
+  for (const n of [...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((x) => x !== 'auto-apply')) {
+    const body = job(n).replace(/^ *#.*$/gm, '');
+    assert.ok(!FORK_KEYS.some((k) => body.includes(k)), `${n} does not read a plugin fork key`);
+  }
+  assert.ok(!/VMAP_SIGN_KEY:/.test(call) && !/VMAP_SIGN_KEY:/.test(caller));
+  // The nine are the ones the auto-apply name check admits.
+  const allowed = job('auto-apply').match(/\^\(([A-Za-z|]+)\)\$/)[1].split('|').map((n) => `SR_DEPLOYKEY_${n.toUpperCase()}`).sort();
+  assert.deepEqual(allowed, [...FORK_KEYS].sort());
 });

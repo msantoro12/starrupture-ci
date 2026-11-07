@@ -67,7 +67,9 @@ artifact `loader-candidate-<branch>` (7 days), the layout the client rig takes a
 candidate. Outputs: `artifact`, `version` (the tag), `expect` (`Loader=<tag>`, the
 rig's `expect` value) and `sha`; the candidate run id is this run's `github.run_id`.
 The `build-scanner` job also builds and runs the scanner's `ObservedTests` before it
-hashes the scanner. The alert job does not yet watch these two jobs.
+hashes the scanner. The alert job watches these two jobs (a push that did not happen, a
+candidate that failed to build or pass its tests) and the rigs, and names the cause in the
+issue it raises (see "Alerts" below).
 
 ### The client rig gate
 
@@ -514,8 +516,9 @@ no plugin code, no game file.
    history to the `vmap-feed` release. `sr-watch.yml` does not pass `publish`, and passes
    only the Steam login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, by name, so the called
    `check` job reads them from `steam-client`), `VMAP_SIGN_KEY_TEST` and the loader fork's
-   deploy key `SR_DEPLOYKEY_MODLOADER` (no `secrets: inherit`, no release key, no plugin
-   fork key). Its `client-check` job grants
+   deploy key `SR_DEPLOYKEY_MODLOADER` and the nine plugin forks' deploy keys
+   (`SR_DEPLOYKEY_<PLUGIN>`, read by the `auto-apply` job in `fork-push`); no `secrets: inherit`,
+   no release key. Its `client-check` job grants
    `contents: write` as a ceiling: GitHub checks every called job against the caller's
    permissions when it parses the call, so `publish` could not be called otherwise; each
    called job still sets its own, and only `publish` asks for write.
@@ -528,3 +531,31 @@ Offline replay (2026-11-01, run 41272795133, CL-128786, a throwaway key): the lo
 header pruned to CL-127004 gives 102 rows written, 557 field rows with 5 absent,
 decide M (autopilot copy enabled), a signed and verified feed, a staged
 `auto/update-128786` and a promote plan with a seq.
+
+## Alerts
+
+A stuck or failing update has to reach the owner through GitHub's own notifications, with
+the cause in the alert. The `alert` job of `sr-client-check.yml` opens (or comments on)
+the issue "SR map mode: <branch> needs attention", labelled `pipeline-alert`, assigned to
+`msantoro12` and mentioning him. Its lines, each with its cause:
+
+- a failed job (build-scanner, plugin-plan, check, map mode, publish the feed): the cause
+  is the check's `result.json` reason, else the failed step and the first `##[error]` line
+  of its log (jobs API); a map mode that never uploaded its artifact says so;
+- a client check that did not run: `result.json` status `skipped` or `no-login`, with the
+  reason it recorded;
+- a map-mode HOLD, with the decide reasons, except "nothing new" (G3) and the autopilot switch
+  alone;
+- staged rows that were not pushed (`push-loader`), a candidate loader that did not build or
+  pass its tests (`candidate-loader`);
+- the rig gate failing, or a rig job that did not end with `success` and verdict `PASS`, with
+  the rig's verdict reason and logs artifact.
+
+A HOLD whose only reason is "autopilot is disabled" with everything else passing is the
+normal waiting state, not an alert: the PR gets one "Ready, publish held (autopilot off)"
+comment (edited in place) and no issue is opened. A run with no alert line labels the PR
+`chain-passed-<branch>`. `sr-watch.yml`, when it skips a build because its game-update PR
+is open, checks that PR: open over 6 hours and no `chain-passed-<branch>` label for a changed
+client branch means the branch's alert issue gets a comment (or is opened), at most once per
+6 hours (a `<!-- sr-stale-pr:N -->` marker in the issue or its comments dates the last one).
+A PR refreshed by a new build loses its labels.
