@@ -1699,6 +1699,8 @@ test('carry: map mode uploads carry.json with its other files, and the gate runs
   assert.match(mm, /path: \|\n\s+version_map\.generated\.h\n\s+map-mode-report\.json\n\s+carry\.json\n\s+observations\.json\n/);
   assert.ok(mm.indexOf('assemble scans.json') < mm.indexOf('map-mode.mjs write "$header"') && mm.indexOf('map-mode.mjs write "$header"') < mm.indexOf('map-mode.mjs complete "$header"'));
   assert.ok(mm.indexOf('map-mode.mjs complete "$header"') < mm.indexOf('- name: Decide, export, sign, stage and plan the promotion'), 'the gate runs before decide');
+});
+
 // ---- Key sources: fork builds scanned for map keys only ----------------------------------------------------
 
 const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls'];
@@ -1824,7 +1826,7 @@ test('key sources: a branch is resolved to its commit before any code runs, and 
   for (const status of ['diverged', 'behind']) {
     x = keyResolve(pinned, { ...fake, compare: { [`${repo} ${HEX40}`]: status } });
     assert.equal(x.r.status, 1, status);
-    assert.match(x.r.stdout, /^::error title=Key sources::.*is not in the branch's history/m);
+    assert.match(x.r.stdout, /^::error title=Key sources::.*is not in the history of the branch/m);
   }
   x = keyResolve(pinned, fake);
   assert.equal(x.r.status, 1, 'an unknown commit');
@@ -1986,4 +1988,15 @@ test('key sources: the scans builder adds the sources after the released scans, 
   rmSync(join(dir, 'res', 'keysrc.json'));
   assert.equal(spawnSync(process.execPath, ['-e', script, '129402'], { cwd: dir, env: { ...process.env, PLUGINS: 'AlienXAXS/StarRupture-Plugin-WAILA@main', LOADER_REF: 'v1' }, encoding: 'utf8', windowsHide: true }).status, 0);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans.map((s) => s.owner), ['ModLoader', 'Waila']);
+});
+
+test('key sources: no program in a node -e block closes its single quotes early (an apostrophe in a comment would)', () => {
+  let n = 0;
+  for (let at = wf.indexOf("node -e '"); at >= 0; at = wf.indexOf("node -e '", at + 1)) {
+    const end = wf.indexOf("'", at + "node -e '".length);
+    // The program ends at a quote that closes the argument: end of line, or the shell arguments that follow it.
+    assert.match(wf.slice(end + 1, end + 40), /^(?: "\$\w+")*[ \t]*\n/, `the node -e program at offset ${at} ends early, at: ${wf.slice(end - 40, end + 20)}`);
+    n++;
+  }
+  assert.ok(n >= 8, `${n} programs checked`);
 });

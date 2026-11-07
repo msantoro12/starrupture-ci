@@ -804,7 +804,7 @@ jobs:
                 if (e.pin !== head) {
                   let status = "";
                   try { status = run("gh", ["api", `repos/${e.repo}/compare/${e.pin}...${head}`, "--jq", ".status"]); } catch (x) { fail(`${e.tag}: cannot compare the pin ${e.pin} with the branch: ${x.message}`); }
-                  if (status !== "ahead" && status !== "identical") fail(`${e.tag}: the pin ${e.pin} is not in the branch's history (compare says ${status})`);
+                  if (status !== "ahead" && status !== "identical") fail(`${e.tag}: the pin ${e.pin} is not in the history of the branch (compare says ${status})`);
                 }
                 e.sha = e.pin;
               } else e.sha = head;
@@ -1696,8 +1696,8 @@ jobs:
               $scan = if ($code -ne 2 -and (Test-Path "$stem.json") -and (Get-Item "$stem.json").Length) { Get-Content "$stem.json" -Raw | ConvertFrom-Json } else { $null }
               if (-not $scan) { throw "sr-aobscan could not run it (exit $code); see out/keysrc-$($p.name).txt" }
               $r.verdict = $scan.verdict
-              if ($scan.verdict -eq 'CRASH') { throw "OnPluginLoadHooks crashed ($($scan.crash)); the keys it had not yet asked for are missing" }
-              $r.keys = @($scan.patterns | Where-Object { $_.PSObject.Properties['key'] -and $_.key }).Count
+              if ($scan.verdict -eq 'CRASH') { throw "OnPluginLoadHooks crashed ($(if ($scan.PSObject.Properties['crash']) { $scan.crash })); the keys it had not yet asked for are missing" }
+              $r.keys = if ($scan.PSObject.Properties['patterns']) { @($scan.patterns | Where-Object { $_.PSObject.Properties['key'] -and $_.key }).Count } else { 0 }
               if (-not $r.keys) { Write-Host "::warning title=Key source $($p.tag)::its scan has no keyed request, so it adds no rows" }
               $r.status = 'ok'
               Write-Host "$($p.tag) @ $($p.sha): $($r.keys) keyed requests ($($scan.verdict))"
@@ -2465,13 +2465,14 @@ jobs:
             }
             // Key sources (res/keysrc.json, from the check job; every one is ok, the step above checked):
             // fork builds scanned for their keys only. After the released scans, so a key both ask for stays one
-            // row and the released plugin's row comes first in map-mode's order; the tag names where a row came from.
+            // row and the row of the released plugin comes first in the order of ci/map-mode.mjs; the tag names where a row came from.
             if (fs.existsSync("res/keysrc.json")) {
               for (const k of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) {
                 if (k.status !== "ok" || !/^[A-Za-z0-9_-]+$/.test(k.name)) continue;
                 const file = "res/keysrc-" + k.name + ".json";
                 const owner = JSON.parse(fs.readFileSync(file, "utf8")).plugin?.name;
                 if (!owner) continue;
+                // The released scan of the same plugin joins the same component, which has one tracked flag.
                 for (const x of scans) if (x.owner === owner) x.tracked = true;
                 scans.push({ owner, tracked: true, tag: k.tag, rank: "current", file });
               }
