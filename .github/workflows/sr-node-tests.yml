@@ -6,10 +6,10 @@ name: SR node tests
 
 on:
   pull_request:
-    paths: ['ci/**', 'ci/verdict.ps1', 'ci/test-verdict.ps1', 'state/autopilot.json', '.github/workflows/sr-node-tests.yml']
+    paths: ['ci/**', 'state/autopilot.json', '.github/workflows/sr-node-tests.yml']
   push:
     branches: [main]
-    paths: ['ci/**', 'ci/verdict.ps1', 'ci/test-verdict.ps1', 'state/autopilot.json', '.github/workflows/sr-node-tests.yml']
+    paths: ['ci/**', 'state/autopilot.json', '.github/workflows/sr-node-tests.yml']
   workflow_dispatch:
 
 permissions:

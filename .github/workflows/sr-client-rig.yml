@@ -9,9 +9,12 @@ name: SR client rig
 # must be on main. There is no schedule and no pull_request trigger. Details and a caller
 # example: .github/sr-pipeline/README.md ("Client test rig").
 #
-# One game session per account: runs queue, they are never cancelled.
-# Game files, engine logs, dumps and Steam config files never leave the runner. Only the
-# scrubbed text logs and the JSON the verdict wrote are uploaded, after the leak gate.
+# One game session per account: runs queue, and GitHub keeps one waiting run per group (a
+# third run replaces the second). Nothing cancels a run that is going.
+# Game files, engine logs, dumps and Steam config files never leave the runner. Nothing
+# taken from the logs reaches the console, the job summary or an upload before the leak
+# gate has passed: the verdict writes its text to files in out/, and the last step
+# publishes them. Only the scrubbed text logs and the verdict files are uploaded.
 
 on:
   workflow_dispatch:
@@ -237,6 +240,8 @@ jobs:
         id: cleanup
         if: always()
         shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
         run: |
           Stop-Service 'Steam Client Service' -Force -ErrorAction SilentlyContinue
           Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(steam|gameoverlayui|StarRupture|UnrealCEF|CrashReport|WerFault)' } | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -246,11 +251,18 @@ jobs:
             Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue
             if (Test-Path -LiteralPath $d) { Write-Host "::error::$d could not be removed"; $left++ }
           }
+          # The saved login's registry entries, and the app id file the launch wrote.
+          Remove-Item -LiteralPath 'HKCU:\Software\Valve' -Recurse -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath 'HKCU:\Software\Valve') { Write-Host '::error::HKCU\Software\Valve could not be removed'; $left++ }
+          if ($env:INSTALL_DIR -and (Test-Path -LiteralPath $env:INSTALL_DIR)) {
+            Get-ChildItem -LiteralPath $env:INSTALL_DIR -Recurse -Filter steam_appid.txt -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
           if ($left) { exit 1 }
           'steamcmd, the Steam client and the login are removed from the runner.'
 
       # Fails the step on a FAIL verdict; the job is failed by the last step, after the
-      # leak gate and the upload have run.
+      # leak gate and the upload have run. It prints check names only and writes its text
+      # (evidence, summary table) to files: the last step publishes them.
       - name: Judge the launch
         id: verdict
         if: always() && steps.launch.outcome == 'success'
@@ -266,6 +278,10 @@ jobs:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
         run: |
+          # The launch could not tell the persona name: the gate cannot cover it, so nothing
+          # taken from the logs goes out.
+          $hold = Join-Path $env:RUNNER_TEMP 'rig-hold.txt'
+          if (Test-Path -LiteralPath $hold) { Write-Host "::error::$((Get-Content -LiteralPath $hold -Raw).Trim())"; exit 1 }
           $user = "$env:STEAM_USER".Trim()
           if (-not $user) { Write-Host '::error::No account name to check against'; exit 1 }
           # The name, every long value in the login, and the IDs and persona the launch met.
@@ -300,6 +316,8 @@ jobs:
             out/proxy.log
             out/autoupdate.log
             out/verdict.json
+            out/verdict.txt
+            out/dll-hashes.json
             out/set.json
             out/boot.json
           retention-days: 3
@@ -317,15 +335,22 @@ jobs:
           UPLOAD: ${{ steps.upload.outcome }}
           ARTIFACT_NAME: sr-client-rig-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          $verdict = 'FAIL'; $reason = ''
+          $verdict = 'FAIL'; $reason = ''; $publish = $false
           $vj = 'out/verdict.json'
           $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
-          if ($env:LEAK -eq 'failure') { $reason = 'The leak gate found account data in the output; nothing was uploaded.' }
-          elseif ($env:CLEANUP -eq 'failure') { $reason = 'The runner could not be cleaned of Steam and the login.' }
-          elseif (Test-Path -LiteralPath $vj) {
-            $j = Get-Content -LiteralPath $vj -Raw | ConvertFrom-Json
-            $verdict = $j.verdict; $reason = $j.reason
+          $hold = Join-Path $env:RUNNER_TEMP 'rig-hold.txt'
+          # The verdict's reason and tables quote the logs: they go out only after the leak gate passed.
+          if (Test-Path -LiteralPath $hold) {
+            $reason = (Get-Content -LiteralPath $hold -Raw).Trim()
+            if (Test-Path -LiteralPath $vj) { $reason += " The verdict itself was $((Get-Content -LiteralPath $vj -Raw | ConvertFrom-Json).verdict)." }
           }
+          elseif ($env:LEAK -eq 'failure') { $reason = 'The leak gate found account data in the output; nothing was uploaded.' }
+          elseif ($env:CLEANUP -eq 'failure') { $reason = 'The runner could not be cleaned of Steam and the login.' }
+          elseif ((Test-Path -LiteralPath $vj) -and $env:LEAK -eq 'success') {
+            $j = Get-Content -LiteralPath $vj -Raw | ConvertFrom-Json
+            $verdict = $j.verdict; $reason = $j.reason; $publish = $true
+          }
+          elseif (Test-Path -LiteralPath $vj) { $reason = 'The leak gate did not pass, so nothing from the logs was published.' }
           elseif (Test-Path -LiteralPath $why) { $reason = (Get-Content -LiteralPath $why -Raw).Trim() }
           else { $reason = 'The rig stopped before the verdict ran; see the failed step.' }
           $reason = ($reason -replace '\s+', ' ').Trim()
@@ -335,4 +360,9 @@ jobs:
           "reason=$reason" >> $env:GITHUB_OUTPUT
           "artifact=$artifact" >> $env:GITHUB_OUTPUT
           "### Client rig: $verdict`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($publish) {
+            foreach ($f in 'out/verdict.txt', 'out/summary.md') { if (-not (Test-Path -LiteralPath $f)) { Write-Host "::warning::$f was not written" } }
+            if (Test-Path -LiteralPath 'out/verdict.txt') { Write-Host '::group::Verdict checks'; Get-Content -LiteralPath 'out/verdict.txt'; Write-Host '::endgroup::' }
+            if (Test-Path -LiteralPath 'out/summary.md') { Get-Content -LiteralPath 'out/summary.md' -Raw | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+          }
           if ($verdict -ne 'PASS') { Write-Host "::error title=Client rig::$reason"; exit 1 }

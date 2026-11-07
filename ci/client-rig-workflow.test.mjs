@@ -17,6 +17,7 @@ const read = (...p) => readFileSync(join(here, '..', ...p), 'utf8').replace(/\r\
 const wf = read('.github', 'workflows', 'sr-client-rig.yml');
 const launch = read('ci', 'client-rig-launch.ps1');
 const setup = read('ci', 'client-rig-set.ps1');
+const verdictPs = read('ci', 'verdict.ps1');
 
 // The steps of the one job, split at "      - " (six spaces), keyed by name or uses.
 const jobText = wf.slice(wf.indexOf('\n    steps:\n') + 1);
@@ -131,6 +132,21 @@ test('candidate: this repository only, never a fork, run id and artifact togethe
   assert.match(setup, /reparse|ReparsePoint/i);
 });
 
+test('candidate layouts: the game folder, and the pipeline\'s own flat plugin artifacts', () => {
+  // A root file is dwmapi.dll, one of the loader's files, or a plugin; anything else root-level is refused.
+  assert.match(setup, /\$LoaderFiles = @\('StarRupture-ModLoader-Core\.dll', 'StarRupture-ImGui\.dll', 'StarRupture-ModLoader-Updater\.exe'\)/);
+  assert.match(setup, /if \(\$rel -notmatch '\/'\)/);
+  assert.match(setup, /ModLoader\/Plugins\/\$rel/);
+  assert.match(setup, /a root file must be dwmapi\.dll, one of the loader's files or a plugin DLL/);
+  // Resolve and Install read the layout through the same function, and every overlaid DLL still needs an expect.
+  assert.match(setup, /function Get-CandidateFiles\(\[string\]\$Dir\)/);
+  assert.equal(setup.match(/\(Get-CandidateFiles |= Get-CandidateFiles /g)?.length, 2, 'used by Resolve and Install');
+  assert.match(setup, /add Name=version for each to expect/);
+  // The workflow's builds really are flat: sr-build-all uploads one plugin DLL per artifact.
+  const build = read('.github', 'workflows', 'sr-build-all.yml');
+  assert.match(build, /path: build\/Client Release\/Plugins\/\$\{\{ matrix\.dll \}\}/);
+});
+
 test('actions are pinned to a full sha', () => {
   const uses = [...wf.matchAll(/^\s+- uses: (\S+)|^\s+uses: (\S+)/gm)].map((m) => m[1] ?? m[2]);
   assert.ok(uses.length >= 5);
@@ -146,6 +162,12 @@ test('release files: cached by repo and tag, no manifest anywhere in the rig', (
   assert.match(setup, /-Client\.dll/);
   // A restore key may bring back other tags' files: the fetch keeps exactly the plan's files.
   assert.match(setup, /Files from other releases removed from the cache folder/);
+  // The key follows the upload: the asset's id and its digest (or upload time) are in it, the id is
+  // in the cached file's path, and the API's digest is checked on a cached file and a download.
+  assert.match(setup, /#\$\(\$_\.id\):\$\(if \(\$_\.digest\) \{ \$_\.digest \} else \{ \$_\.updated \}\)/);
+  assert.match(setup, /\$\(\$Item\.repo\)\\\$\(\$Item\.tag\)\\\$\(\$Item\.id\)/);
+  assert.match(setup, /does not match the digest the release gives/);
+  assert.match(setup, /Cached \$\(\$d\.name\) does not match the release's digest/);
   assert.match(setup, /StarRupture-ModLoader-Client-/);
   // The loader's update manifest, by any name or address, is not in any file of the rig.
   const manifestUrl = /manifest\.json|[\w-]*manifest[\w.-]*\.(?:json|xml|txt)|raw\.githubusercontent|releases\/download\/[^\s'"]*manifest|update[-_]?feed/i;
@@ -177,6 +199,66 @@ test('launch: steamcmd beta branch verified, firewall, app id, args, and the ret
   assert.match(launch, /boot\.json/);
 });
 
+test('firewall: a block rule for every exe in the install, derived from it, each one verified', () => {
+  assert.match(launch, /function Get-InstallExes\(\[string\]\$Dir\) \{\n.*-Recurse -File -Force -Filter \*\.exe/);
+  assert.match(launch, /\$exes = Get-InstallExes \$InstallDir/);
+  assert.match(launch, /Enable-Firewall \$exes\n/);
+  assert.match(launch, /function Enable-Firewall\(\[string\[\]\]\$Programs\)/);
+  // The game and the updater must be in the derived list, or the launch stops.
+  assert.match(launch, /foreach \(\$must in \$script:exe, \$script:updater\)/);
+  // Each rule is read back, program path included.
+  assert.match(launch, /Get-NetFirewallApplicationFilter/);
+  assert.match(launch, /\$filter\.Program -ne \$prog/);
+  // No hand list of program names in the firewall code.
+  const fw = launch.slice(launch.indexOf('function Enable-Firewall'), launch.indexOf('function Reset-GameState'));
+  assert.ok(!/CrashReportClient|\.exe'/.test(fw), 'the rule set is not a list of names');
+  assert.match(launch, /Get-InstallExes \$inst/, 'the helper is exercised by -Check');
+});
+
+test('persona: read from what Steam wrote, and a run that cannot tell holds back everything from the logs', () => {
+  assert.match(launch, /function Get-Personas\(/);
+  assert.match(launch, /loginusers\.vdf/);
+  assert.match(launch, /localconfig\.vdf/);
+  // Read after the game is stopped and Steam has shut down, before the logs are scrubbed into out/.
+  const at = (re) => launch.search(re);
+  assert.ok(at(/\n {4}Stop-Game\n {4}# Steam writes the persona[^\n]*\n {4}Stop-Steam\n/) > 0, 'Steam is stopped after the game');
+  assert.ok(at(/Stop-Steam\n[\s\S]*\$persona = Read-Personas/) > 0 && at(/\$persona = Read-Personas[\s\S]*Scrub \(Read-Shared \$p\)/) > 0);
+  assert.match(launch, /if \(-not \$persona\.Known\) \{ Set-Hold /);
+  assert.match(launch, /rig-hold\.txt/);
+  assert.match(launch, /Add-Secret \$n -Gate/);
+  // The gate refuses to pass on a hold, the upload needs the gate, the last step says why.
+  const gate = step('Leak gate');
+  assert.match(gate, /\$hold = Join-Path \$env:RUNNER_TEMP 'rig-hold\.txt'\n\s+if \(Test-Path -LiteralPath \$hold\) \{[^\n]*exit 1 \}/);
+  assert.ok(gate.indexOf('rig-hold.txt') < gate.indexOf('$user ='), 'checked before anything else');
+  assert.match(steps[indexOfStep('upload')], /if: always\(\) && steps\.leak\.outcome == 'success'/);
+  const final = step('Outputs and result');
+  assert.match(final, /\$hold = Join-Path \$env:RUNNER_TEMP 'rig-hold\.txt'/);
+  assert.ok(final.indexOf('Test-Path -LiteralPath $hold') < final.indexOf("$env:LEAK -eq 'failure'"), 'a hold is reported before a leak');
+  // No new secret: the only secrets are still the two login ones.
+  assert.deepEqual([...new Set([...wf.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]))].sort(), ['STEAM_CI_LOGIN_CACHE', 'STEAM_CI_USERNAME']);
+});
+
+test('nothing from the logs is published before the leak gate', () => {
+  const leak = indexOfStep('leak');
+  // No step ahead of the gate writes the job summary or prints the verdict's files.
+  steps.slice(0, leak + 1).forEach((s) => {
+    assert.ok(!/GITHUB_STEP_SUMMARY/.test(s), `${nameOf(s)}: no summary before the leak gate`);
+    assert.ok(!/verdict\.txt|summary\.md|verdict\.json/.test(s.replace(/^ {8}run: \.\/ci\/verdict\.ps1 .*$/m, '')), `${nameOf(s)}: does not print the verdict files`);
+  });
+  // The scripts that handle logs never write the summary; the verdict does so only in server mode.
+  for (const [name, text] of [['launch', launch], ['set', setup]]) assert.ok(!/GITHUB_STEP_SUMMARY/.test(text), `${name}: no summary`);
+  assert.match(verdictPs, /if \(\$Client\) \{ \[System\.IO\.File\]::WriteAllText\(\(Join-Path \$OutDir 'summary\.md'\)/);
+  assert.match(verdictPs, /elseif \(\$env:GITHUB_STEP_SUMMARY\) \{ \$md -join/);
+  assert.equal(verdictPs.match(/-FilePath \$env:GITHUB_STEP_SUMMARY/g)?.length, 1, 'only the server branch writes it');
+  // After the gate, only the last step publishes, and only when the gate passed.
+  const publishers = steps.filter((s) => /GITHUB_STEP_SUMMARY/.test(s)).map(nameOf);
+  assert.deepEqual(publishers, ['Outputs and result']);
+  const final = step('Outputs and result');
+  assert.match(final, /\(Test-Path -LiteralPath \$vj\) -and \$env:LEAK -eq 'success'\) \{\n[^}]*\$publish = \$true/);
+  assert.match(final, /if \(\$publish\) \{[\s\S]*out\/verdict\.txt[\s\S]*out\/summary\.md/);
+  assert.ok(final.indexOf('out/summary.md') > final.indexOf('$publish = $true'));
+});
+
 test('hard limits: no emulator, stub strip, patching, ActiveProcess write or password', () => {
   for (const [name, text] of [['launch', launch], ['set', setup]]) {
     assert.ok(!/goldberg|\bgse\b|steamless|smartsteam|CreamAPI/i.test(text), `${name}: no emulator or stub stripper`);
@@ -201,8 +283,8 @@ test('order: verdict before upload, leak gate before upload, upload only when th
   const upload = steps[up];
   assert.match(upload, /if: always\(\) && steps\.leak\.outcome == 'success'/);
   assert.match(upload, /retention-days: [1-7]\n/);
-  const files = [...upload.matchAll(/^\s+out\/([\w.]+)$/gm)].map((m) => m[1]).sort();
-  assert.deepEqual(files, ['autoupdate.log', 'boot.json', 'modloader.log', 'proxy.log', 'set.json', 'verdict.json']);
+  const files = [...upload.matchAll(/^\s+out\/([\w.-]+)$/gm)].map((m) => m[1]).sort();
+  assert.deepEqual(files, ['autoupdate.log', 'boot.json', 'dll-hashes.json', 'modloader.log', 'proxy.log', 'set.json', 'verdict.json', 'verdict.txt']);
   assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:'))), 'named files, no wildcard');
   // The gate scans what would be uploaded, for the account name, the login values and the IDs.
   const gate = step('Leak gate');
@@ -222,6 +304,8 @@ test('cleanup: runs always, removes steamcmd, the Steam folder and the Steam pro
   assert.match(c, /Stop-Process -Force/);
   assert.match(c, /StarRupture/);
   assert.match(c, /Steam Client Service/);
+  assert.match(c, /Remove-Item -LiteralPath 'HKCU:\\Software\\Valve' -Recurse -Force/);
+  assert.match(c, /Filter steam_appid\.txt/);
   assert.ok(indexOfStep('cleanup') > indexOfStep('launch') && indexOfStep('cleanup') < indexOfStep('verdict'));
   // The verdict only reads out/, which cleanup leaves alone.
   assert.ok(!/out\b/.test(c));
