@@ -19,9 +19,13 @@ on:
   workflow_dispatch:
     inputs:
       loader_branch:
-        description: 'ModLoader branch'
+        description: 'ModLoader branch or full commit sha'
         type: string
         default: 'main'
+      loader_repo:
+        description: 'ModLoader repository, owner/name (blank: the default owner; only msantoro12 or AlienXAXS StarRupture-ModLoader)'
+        type: string
+        default: ''
       plugin_sdk_branch:
         description: 'Plugin SDK branch'
         type: string
@@ -55,6 +59,9 @@ on:
       loader_branch:
         type: string
         default: 'main'
+      loader_repo:
+        type: string
+        default: ''
       plugin_sdk_branch:
         type: string
         default: 'main'
@@ -85,6 +92,10 @@ env:
   # Account that owns the mod repos being checked. Repo variable MOD_OWNER
   # overrides the default.
   OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
+  # Loader repository. Blank input keeps the owner above; a value must pass
+  # the allowlist in the "Check the loader repository" step.
+  LOADER_REPO: ${{ inputs.loader_repo || format('{0}/StarRupture-ModLoader', vars.MOD_OWNER || 'AlienXAXS') }}
+  LOADER_REPO_INPUT: ${{ inputs.loader_repo }}
 
 jobs:
   # ---- Plugin SDK -------------------------------------------------------
@@ -95,10 +106,18 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Check the loader repository
+        run: |
+          # Only our own branches are built, never an arbitrary repository.
+          case "$LOADER_REPO_INPUT" in
+            ''|msantoro12/StarRupture-ModLoader|AlienXAXS/StarRupture-ModLoader) ;;
+            *) echo "::error::loader_repo '$LOADER_REPO_INPUT' is not allowed; use msantoro12/StarRupture-ModLoader or AlienXAXS/StarRupture-ModLoader"; exit 1 ;;
+          esac
+
       - name: Check out the loader headers
         uses: actions/checkout@v7.0.1
         with:
-          repository: ${{ env.OWNER }}/StarRupture-ModLoader
+          repository: ${{ env.LOADER_REPO }}
           ref: ${{ inputs.loader_branch || 'main' }}
           path: loader
           sparse-checkout: StarRupture-ModLoader-Core/plugins/plugin_interface.h
@@ -152,15 +171,26 @@ jobs:
             config: Server Release
             manifest: manifest-server.json
     steps:
+      - name: Check the loader repository
+        run: |
+          # Only our own branches are built, never an arbitrary repository.
+          case "$LOADER_REPO_INPUT" in
+            ''|msantoro12/StarRupture-ModLoader|AlienXAXS/StarRupture-ModLoader) ;;
+            *) echo "::error::loader_repo '$LOADER_REPO_INPUT' is not allowed; use msantoro12/StarRupture-ModLoader or AlienXAXS/StarRupture-ModLoader"; exit 1 ;;
+          esac
+
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
         with:
-          repository: ${{ env.OWNER }}/StarRupture-ModLoader
+          repository: ${{ env.LOADER_REPO }}
           ref: ${{ inputs.loader_branch || 'main' }}
           # The Game SDK is the loader's own git submodule: the build uses the
           # commit the loader pins, not the game_sdk_branch input.
           submodules: recursive
           persist-credentials: false
+
+      - name: Log what was checked out
+        run: echo "Loader $LOADER_REPO at $(git rev-parse HEAD)"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
@@ -169,7 +199,7 @@ jobs:
         shell: pwsh
         env:
           BUILD_TAG: ci-${{ github.run_number }}
-          MANIFEST_URL: ${{ github.server_url }}/${{ env.OWNER }}/StarRupture-ModLoader/releases/latest/download/${{ matrix.manifest }}
+          MANIFEST_URL: ${{ github.server_url }}/${{ env.LOADER_REPO }}/releases/latest/download/${{ matrix.manifest }}
         run: |
           # Same arguments as the loader's release.yml build steps (the
           # build tag and manifest URL are compiled in, so the code behind
