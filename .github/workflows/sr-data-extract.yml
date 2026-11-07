@@ -58,10 +58,12 @@ name: SR data extract
 #   The job passes the artifact name, the extractor sha and the Dumper-7 sha on as outputs.
 #   extract job (environment steam-client): download the game with steamcmd and launch it
 #   with the Steam client, both through ci/client-rig-launch.ps1; dump; remove Steam and the
-#   login material from the runner (-Phase Login: fatal and verified, always, even on failure);
-#   only then run the extractor; leak-gate and upload; last, remove the Steam install folder
-#   (-Phase Folder: retries for about 60 s, warns and names the locking process, never fails
-#   the job; it runs after the extractor because the game files may sit under that folder).
+#   login material from the runner (-Phase Login: stops every Steam process first, retries each
+#   removal for about 60 s, then fatal and verified, always, even on failure; a failure names
+#   the item and the process holding it); only then run the extractor; leak-gate and upload;
+#   last, remove the Steam install folder, its logs folder included (-Phase Folder: retries for
+#   about 60 s, warns and names the locking process, never fails the job; it runs after the
+#   extractor because the game files may sit under that folder).
 #   The cleanup and the leak gate are ci/steam-cleanup.ps1 and ci/leak-gate.ps1, the same
 #   scripts sr-client-rig.yml runs (it runs the cleanup as one piece).
 #
@@ -462,8 +464,7 @@ jobs:
           # cleanup-failed: the login could not be removed, so the extractor never ran.
           $status = if ($env:CLEANUP -ne 'success') { 'cleanup-failed' } elseif ($env:EXTRACT -eq 'success') { 'ok' } else { 'extract-failed' }
           if ($status -eq 'extract-failed') {
-            $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
-            if (-not (Test-Path -LiteralPath $why) -or -not (Get-Content -LiteralPath $why -Raw).Trim()) { Set-Content -LiteralPath $why -Value "The extractor ran and failed (step outcome '$env:EXTRACT'); see its step log." -Encoding utf8 }
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-extract-reason.txt') -Value "The extractor ran and failed (step outcome '$env:EXTRACT'); see its step log." -Encoding utf8
           }
           New-Item -ItemType Directory -Force stage/usmap | Out-Null
           Copy-Item -LiteralPath $env:USMAP -Destination stage/usmap/
@@ -516,9 +517,13 @@ jobs:
           USMAP_OK: ${{ steps.usmap.outputs.ok }}
           UPLOAD: ${{ steps.upload.outcome }}
         run: |
-          # login-failed: the launch script left its marker (Steam did not accept the saved login).
-          # Otherwise empty until the game started (boot.json saw the process, or a usmap came out);
-          # then usmap-failed without a usmap; a status that says ok needs the upload.
+          # One status, and the reason of the stage that set it:
+          #   login-failed    the launch could not sign in (rig-login-failed.txt; reason: rig-reason.txt)
+          #   cleanup-failed  the login could not be removed after the launch (rig-cleanup-reason.txt)
+          #   usmap-failed    the game ran but no usmap came out (rig-reason.txt, if the launch gave one)
+          #   extract-failed  the extractor (rig-extract-reason.txt), the leak gate or the upload failed
+          # Empty until the game started (boot.json saw the process, or a usmap came out); a status
+          # that says ok needs the upload.
           $loginFailed = Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-login-failed.txt')
           $started = $env:USMAP_OK -eq 'true'
           if (Test-Path -LiteralPath out/boot.json) {
@@ -535,8 +540,16 @@ jobs:
           $artifact = if ($env:UPLOAD -eq 'success') { "sr-data-$env:BRANCH-$env:BUILDID" } else { '' }
           "status=$status" >> $env:GITHUB_OUTPUT
           "artifact_name=$artifact" >> $env:GITHUB_OUTPUT
-          $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
-          $reason = if (Test-Path -LiteralPath $why) { (Get-Content -LiteralPath $why -Raw).Trim() } else { '' }
+          function Read-Reason([string]$name) {
+            $f = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $f) { (Get-Content -LiteralPath $f -Raw).Trim() } else { '' }
+          }
+          $cleanupReason = Read-Reason 'rig-cleanup-reason.txt'
+          $reason = switch ($status) {
+            'cleanup-failed' { if ($cleanupReason) { "$cleanupReason The extractor did not run." } else { '' } }
+            'extract-failed' { if ($env:STAGE_STATUS -eq 'extract-failed') { Read-Reason 'rig-extract-reason.txt' } else { '' } }
+            default { Read-Reason 'rig-reason.txt' }
+          }
           # The reason is never empty for a status that is not ok.
           if ($status -ne 'ok' -and -not $reason) {
             $reason = switch ($status) {
@@ -546,6 +559,10 @@ jobs:
               'extract-failed' { 'The extractor, the leak gate or the upload failed; see the failed step.' }
               default { 'The job stopped before the game started; see the failed step.' }
             }
+          }
+          # A sign-in failure and a leftover login are two facts: say the second one too.
+          if ($status -eq 'login-failed' -and $env:CLEANUP -eq 'failure') {
+            $reason = "$reason The login also could not be removed from the runner: $(if ($cleanupReason) { $cleanupReason } else { 'see the cleanup step.' })".Trim()
           }
           "### Data extract: $(if ($status) { $status } else { 'stopped before the game started' })`n`nbuild $env:BUILDID, artifact: $(if ($artifact) { $artifact } else { 'none' })`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($status -ne 'ok') { Write-Host "::error title=Data extract::status '$status'. $reason"; exit 1 }
