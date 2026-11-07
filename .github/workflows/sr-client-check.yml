@@ -1673,6 +1673,10 @@ jobs:
       test: ${{ steps.chain.outputs.test }}
       # 'true' when the chain staged a build (stage-plan.json exists and the header is the candidate): the push-loader job's cue.
       staged: ${{ steps.chain.outputs.staged }}
+      # The plugins the loader is expected to refuse on this branch's build, as the client rig's
+      # expect_refused input takes them: log names separated by spaces, empty when none. Set
+      # whenever decide ran, held or not.
+      expect_refused: ${{ steps.chain.outputs.expect_refused }}
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
@@ -1859,6 +1863,13 @@ jobs:
           would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
           echo "publishable=false" >> "$GITHUB_OUTPUT"
+          # The plugins the loader refuses on this build (decide's expectRefused), in the rig's grammar.
+          expect_refused="$(node -p "(JSON.parse(require('fs').readFileSync('decision.json','utf8')).expectRefused ?? []).join(' ')")"
+          if [ -n "$expect_refused" ] && ! printf '%s' "$expect_refused" | grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'; then
+            echo "::error::expectRefused is not a list of plugin names the rig takes: $expect_refused"; exit 2
+          fi
+          echo "expect_refused=$expect_refused" >> "$GITHUB_OUTPUT"
+          [ -z "$expect_refused" ] || echo "::notice title=Loader refuses on CL::expected refusals on $BRANCH: $expect_refused"
           # A test run by the dispatch input, the chain's own flag or the decision itself.
           # A candidate that is not M (the autopilot holds it) is never publishable either.
           is_test="$(node -p "const d = JSON.parse(require('fs').readFileSync('decision.json','utf8')); String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || d.test === true || (d.candidate === true && d.decision !== 'M'))")"

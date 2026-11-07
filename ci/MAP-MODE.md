@@ -308,6 +308,33 @@ table. Only a verdict decide does not know, and the loader's own gates (G1 to G4
 globals, a loader key), hold the whole update. `pluginsOk` is false only
 then, and the promote re-scan (`verify.json`) reads it.
 
+A plugin is judged against the candidate map, and against the loader's own rule. The
+probe's planned stop (`the probe ended PluginInit there, as planned ... (0xC0000005)`) is
+not a crash: a FAIL plugin whose refusals are all for rows the field-rows report wrote
+(`fields.rows`) is `updated`, and only what the candidate does not fix holds it alone (a
+pattern still MISSING, a refusal for a key with no row, or a FAIL with nothing listed). A
+plugin the loader refuses on the build is `held`, whatever its scan says, with the reason
+`refused by the loader on CL-<n>: plugin interface v<x>, needs its author's update`. The
+rule is `VersionMap::OffBuildRefusal` (the loader's `memory_scanner/version_map.cpp`, called
+from `plugin_manager.cpp` at DLL load, before the plugin scans): a plugin is judged
+against the build its SDK came from. Interface v70 and v71 have no game-build tail and
+count as built on CL-127004; v72 and newer name their build. Off that build the plugin is
+refused unless it is v72 or newer and declares `PLUGIN_MAP_MIGRATED`. The pipeline reads
+the interface version and build from the scanner's `plugin` block in `plugins.json`
+(`interfaceVersion`, `gameBuild`), and the migrated flag from `rule3.migrated` (plugins
+built here; a released DLL has none), else from the probe `note`, where the scanner puts
+the loader's own refusal text (`Needs an update to run on CL-<n>: ...`). The autofix patch
+for another author's plugin (verdict `PATCH`) stays a patch: no row is ever written for
+it, and a refused plugin lists no degraded patterns.
+
+`decision.json` `expectRefused` lists, sorted, the plugins the loader refuses on this
+branch's build (the rule above, and the scanner's own REFUSED verdict). The map-mode job
+exposes it as the output `expect_refused`: log names separated by single spaces, empty
+when there are none, written whenever decide ran (held or not). It is the client rig's
+`expect_refused` input as `client-rig-set.ps1` reads it (`Read-Names`: tokens of
+`[A-Za-z0-9_.-]`). For CL-129402 on `public_test_branch` it is `MiniMap`; on `public`
+(CL-127004) it is empty.
+
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
 same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,
 or for another CL) holds whatever moved, on every path: the native members get their

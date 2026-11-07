@@ -7,8 +7,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -452,4 +453,39 @@ test('loader key: only push-loader reads it, in the fork-push environment; it is
   assert.ok(!/secrets: inherit/.test(watch));
   // The push job's if names no secret, so a missing key reaches the first step, which fails with the cause.
   assert.ok(!/secrets\./.test(job('push-loader').match(/\n {4}if: [^\n]+\n/)[0]));
+});
+
+// ------------------------------------------------------------ leg B2: expected refusals per branch
+
+test('expect_refused: the map-mode job outputs the plugins the loader refuses on the branch\'s build, before the chain can stop', () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}expect_refused: \$\{\{ steps\.chain\.outputs\.expect_refused \}\}\n/);
+  const at = mm.indexOf('expect_refused="$(node -p');
+  assert.ok(at > 0, 'the step reads decision.json');
+  // Set right after the decision is read, ahead of the exit 0 that ends a chain whose decision is not M.
+  assert.ok(at > mm.indexOf('echo "decision=$decision"') && at < mm.indexOf('nothing exported or signed'));
+  assert.ok(mm.includes('echo "expect_refused=$expect_refused" >> "$GITHUB_OUTPUT"'));
+  // A rig input is never fed to a shell: the value is checked against the rig's name grammar first.
+  assert.ok(mm.includes("grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'"));
+});
+
+test('expect_refused: the step turns decision.json into the rig input (names separated by spaces, empty when none)', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          expect_refused="$(node -p');
+  const end = mm.indexOf('\n', mm.indexOf('echo "expect_refused=$expect_refused"')) + 1;
+  const snippet = mm.slice(start, end).replace(/^ {10}/gm, '');
+  assert.ok(snippet.length > 100);
+  const run = (decision) => {
+    const dir = mkdtempSync(join(tmpdir(), 'expect-refused-'));
+    writeFileSync(join(dir, 'decision.json'), JSON.stringify(decision));
+    const r = spawnSync(bash, ['-c', snippet], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, BRANCH: 'public_test_branch', GITHUB_OUTPUT: join(dir, 'out.txt') } });
+    return { status: r.status, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '' };
+  };
+  assert.deepEqual(run({ decision: 'HOLD', expectRefused: ['MiniMap'] }), { status: 0, out: 'expect_refused=MiniMap\n' });
+  assert.equal(run({ decision: 'M', expectRefused: ['Codex', 'MiniMap'] }).out, 'expect_refused=Codex MiniMap\n');
+  assert.equal(run({ decision: 'M', expectRefused: [] }).out, 'expect_refused=\n');
+  assert.equal(run({ decision: 'HOLD' }).out, 'expect_refused=\n', 'a decision written before the list existed');
+  const bad = run({ decision: 'M', expectRefused: ['Mini Map; rm'] });
+  assert.equal(bad.status, 2);
+  assert.equal(bad.out, '');
 });
