@@ -140,9 +140,11 @@ The set is the loader's client zip and each plugin's `<Name>-Client.dll` from th
 | `expect_refused` | plugins that must be refused on this build; they pass only if refused |
 | `remove_plugins` | plugins left out of the install but still expected, so they must show as missing |
 
+The Steam login is live while candidate code runs, so the rig only runs candidates built from our own branches (the msantoro12 and AlienXAXS repositories). It never runs a fork pull request or anything built straight from issue text.
+
 Dispatch it: `gh workflow run sr-client-rig.yml --ref main -f branch=public`. The outputs are `verdict` (PASS or FAIL), `reason` and `artifact` (the scrubbed logs and the verdict's files: `modloader.log`, `proxy.log`, `autoupdate.log`, `verdict.json`, `verdict.txt`, `dll-hashes.json`, `set.json`, `boot.json`; 3 days). The job fails on a FAIL verdict, after the upload. Game files, dumps, engine logs and Steam config files never leave the runner. Nothing taken from the logs reaches the console, the job summary or an upload before the leak gate has passed: the verdict writes its text to files and the last step publishes them once the gate is green. The gate also covers the Steam persona name, read from what the Steam client wrote after login; if it cannot be determined, nothing from the logs is uploaded or published and the job says why. An always-run step removes steamcmd, the Steam client and the login. Without the login secrets the run fails with that reason; it does not skip green.
 
-Call it from another workflow in this repository:
+Call it from another workflow in this repository, and only with a candidate built from our own branches. A caller must never pass a fork pull request's build or anything built straight from issue text, because the Steam login is live while the candidate runs:
 
 ```yaml
 jobs:
