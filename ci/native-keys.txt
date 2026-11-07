@@ -30,6 +30,12 @@ ProductionViewer FCrGridEntityHandle::Data
 # ci/apply-proposals.mjs "fixed offsets in the source". Engine-internal
 # layouts (TArray, TSharedPtr counts) are engine invariants and are left out.
 #
+# A line with a class name alone, <plugin> <ClassName> [size] [optional], names an
+# unreflected struct the plugin needs the size of. The size is read from the PDB
+# and written as a class-key row (the class name as the key, offset 0, mask 0) on
+# every build. The word size is for reading; optional is as below. No built
+# values, no anchor.
+#
 # Before the anchor a line may give, in this order:
 #   <offset> <size> <mask>  the built values (hex), for a key whose PDB size is
 #                           not the plugin's: FTransform::Translation is sized

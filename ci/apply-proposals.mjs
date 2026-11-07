@@ -604,6 +604,13 @@ export function parseNativeKeys(text) {
   text.split(/\r?\n/).forEach((raw, i) => {
     const line = raw.trim();
     if (!line || line.startsWith('#')) return;
+    // `<plugin> <ClassName> [size] [optional]`: the struct's own size, read from
+    // the PDB (a class key). It carries no built values and no anchor.
+    const sz = /^(\S+)\s+([A-Za-z_]\w*)(?:\s+(size))?(?:\s+(optional))?$/.exec(line);
+    if (sz) {
+      entries.push({ plugin: sz[1], key: sz[2], size: true, ...(sz[4] ? { optional: true } : {}) });
+      return;
+    }
     const m = /^(\S+)\s+(\S+::\S+)(?:\s+(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+))?(?:\s+(optional))?(?:\s+(\S.*))?$/.exec(line);
     if (!m) throw new Error(`native-keys.txt line ${i + 1}: malformed '${raw}'`);
     const e = { plugin: m[1], key: m[2] };

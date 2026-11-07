@@ -418,3 +418,13 @@ test('verdict and message: rewritten offsets must read ok on the rebuilt source;
   assert.match(msg, /UObj::Alpha\n {2}offset 0x78 -> 0x80 \(src\/wave\.cpp:1\)/);
   assert.ok(!msg.includes('UObj::Beta'));
 });
+
+test('native-keys: a size line is "<plugin> <Class> [size] [optional]"; built values, an anchor, a wrong order or a bare word are malformed', () => {
+  const e = parseNativeKeys('# c\nP FMassQuery\nP FMassQuery size\nQ FOpt size optional\nQ FOpt2 optional\nP UObj::Alpha\n');
+  assert.deepEqual(e.map((x) => [x.plugin, x.key, x.size === true, x.optional === true]),
+    [['P', 'FMassQuery', true, false], ['P', 'FMassQuery', true, false], ['Q', 'FOpt', true, true], ['Q', 'FOpt2', true, true], ['P', 'UObj::Alpha', false, false]]);
+  assert.equal(e.find((x) => x.size)?.compiled, undefined, 'a size line has no anchor');
+  for (const bad of ['P FMassQuery optional size', 'P FMassQuery 0x0 0x8 0x0', 'P FMassQuery a.cpp:kS~=~@;', 'P FMassQuery size size', 'P 1Bad size', 'P FMassQuery size optional extra', 'P Foo-Bar']) {
+    assert.throws(() => parseNativeKeys(bad), /malformed/, bad);
+  }
+});

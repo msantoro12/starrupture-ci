@@ -38,7 +38,11 @@ every row it has:
   `fp`, for the current release of its owner and the one before it.
 
 The row identity is the key, the `fp` (0 on a global row) and the CL. A field
-key is `Class::Member`.
+key is `Class::Member`, or a class name alone: a **class-key row** is that
+struct's own size (offset 0, size N, bool mask 0, no new name), the same row a
+size request (`SR_SIZE`, `SR_SIZE_CHECK`) matches in the loader. It is a normal
+field row, so the header, the feed (format 1) and loaders that read it need
+nothing new.
 
 ## Commands
 
@@ -111,7 +115,7 @@ blank lines are skipped):
 function <key>                          a hookName, or a loader registry name
 required <key>                          a function key the loader needs to start
 native <key> [<offset> <size> <mask>] [optional]   a native (non-reflected) field; the values as built, hex, all three or none
-field <key> [optional]                  a reflected field
+field <key> [optional]                  a reflected field; a key with no `::` is a class (its size)
 ```
 
 A member gone on a build gets an absent row: the loader turns that one request off and

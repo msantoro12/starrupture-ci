@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addBuild, emit, parse, parseKeys, unionKeys } from './version-map.mjs';
+import { addBuild, emit, exportFeed, parse, parseFeed, parseKeys, unionKeys } from './version-map.mjs';
 import { fieldRows, keysFromCheck, parseUses, LOADER_FIELD_KEYS } from './field-rows.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -284,4 +284,115 @@ test('the command line writes the header and the report, and logs no member name
   assert.equal(row(readFileSync(h, 'utf8'), 'ACrCrafter::CraftComponent').offset, 0x6e0);
   const refused = spawnSync(process.execPath, [TOOL, 'write', h, '--cl', '130000', '--next', w('n2.json', { keys: [gone('UCrGameInstance::ServerSessionName')] }), '--keys', w('k2.txt', 'native UCrGameInstance::ServerSessionName\n')], { encoding: 'utf8', windowsHide: true });
   assert.equal(refused.status, 3);
+});
+
+// ---- class-key rows: a struct's own size, one per build ---------------------
+
+test('a class-key row for every requested size, with the size unchanged: offset 0, the new build\'s size, mask 0, on every run', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field ACrCrafter\n')]);
+  const b = [...base(), ent('ACrCrafter', null, 0x70)];
+  const n = [...next(), ent('ACrCrafter', null, 0x70)];
+  for (const how of ['check', 'live', 'compiled']) {
+    const out = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses(`P key ACrCrafter\nP size ACrCrafter ${how}\n`) });
+    assert.deepEqual(out.problems, []);
+    assert.deepEqual(row(out.text, 'ACrCrafter'), { key: 'ACrCrafter', cl: 130000, member: null, offset: 0, size: 0x70, mask: 0 }, how);
+    assert.ok(out.rows.includes('ACrCrafter'));
+  }
+  const unused = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses('P key ACrCrafter\nP key ACrCrafter::CraftComponent\n') });
+  assert.equal(row(unused.text, 'ACrCrafter'), undefined, 'a size nobody requests gets no row');
+  const noUses = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b });
+  assert.equal(row(noUses.text, 'ACrCrafter'), undefined, 'without a uses file nothing says which sizes are requested');
+});
+
+test('a class-key row for a changed size carries the new size; the note, degraded and refused outcomes stay', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field ACrCrafter\n')]);
+  const b = [...base(), ent('ACrCrafter', null, 0x70)];
+  const n = [...next(), ent('ACrCrafter', null, 0x78)];
+  const live = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses('P size ACrCrafter live\n') });
+  assert.equal(row(live.text, 'ACrCrafter').size, 0x78);
+  assert.ok(live.notes.some((x) => x.startsWith('class ACrCrafter: its size changed (0x70 -> 0x78); P reads')));
+  assert.equal(live.degraded.P, undefined);
+  const checked = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses('P size ACrCrafter check\n') });
+  assert.equal(row(checked.text, 'ACrCrafter').size, 0x78);
+  assert.deepEqual(checked.degraded.P.map((d) => [d.key, d.severity]), [['ACrCrafter', 'high']]);
+  const compiled = fieldRows(header(), { cl: 130000, keys: k, next: n, base: b, uses: parseUses('P size ACrCrafter compiled\n') });
+  assert.equal(compiled.text, null, 'a compiled-size use is still refused, and no row ships');
+});
+
+test('a size row comes from the new build\'s layout report, not the reference\'s; a class the build does not resolve gets none', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field ACrCrafter\n')]);
+  const uses = parseUses('P size ACrCrafter live\n');
+  const b = [...base(), ent('ACrCrafter', null, 0x70)];
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ent('ACrCrafter', null, 0x90)], base: b, uses });
+  assert.equal(row(out.text, 'ACrCrafter').size, 0x90);
+  const none = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), gone('ACrCrafter')], base: [...base(), gone('ACrCrafter')], uses });
+  assert.deepEqual(none.problems, []);
+  assert.equal(row(none.text, 'ACrCrafter'), undefined);
+  assert.ok(none.notes.some((x) => x === 'class ACrCrafter: no size row, the new build reports MISSING'));
+  // A size use of a class the report has no entry for is a broken input, not a skipped row.
+  const missing = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: base(), uses });
+  assert.equal(missing.text, null);
+  assert.ok(missing.problems.some((p) => p.startsWith('class ACrCrafter: a component requests its size, and the new build\'s report has no entry')));
+});
+
+test('a class-key row goes through the same add-field rule: a second run adds nothing, a different earlier row is refused', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field ACrCrafter\n')]);
+  const uses = parseUses('P size ACrCrafter live\n');
+  const b = [...base(), ent('ACrCrafter', null, 0x70)];
+  const once = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ent('ACrCrafter', null, 0x70)], base: b, uses });
+  const twice = fieldRows(once.text, { cl: 130000, keys: k, next: [...next(), ent('ACrCrafter', null, 0x70)], base: b, uses });
+  assert.equal(twice.text, once.text);
+  const clash = fieldRows(once.text, { cl: 130000, keys: k, next: [...next(), ent('ACrCrafter', null, 0x78)], base: b, uses });
+  assert.equal(clash.text, null);
+  assert.ok(clash.problems.some((p) => p.includes('ACrCrafter')));
+});
+
+test('the header and the feed carry a class-key row like a member row, and the feed parses back', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field ACrCrafter\n')]);
+  const b = [...base(), ent('ACrCrafter', null, 0x70)];
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ent('ACrCrafter', null, 0x78)], base: b, uses: parseUses('P size ACrCrafter live\n') });
+  assert.match(out.text, /^\t\/\/ ACrCrafter\n\t\{ 130000, 0x0, 0x78, 0x00, nullptr \},$/m);
+  const feed = exportFeed(parse(out.text));
+  assert.match(feed, /^field\tACrCrafter\t130000\t0x0\t0x78\t0x00\t-$/m);
+  assert.deepEqual(parseFeed(feed).fields.find((r) => r.key === 'ACrCrafter' && r.cl === 130000), { key: 'ACrCrafter', cl: 130000, member: null, offset: 0, size: 0x78, mask: 0 });
+});
+
+test('a native-keys size line (<plugin> <Class> [size] [optional]) is a class-key row on every build, from the PDB size', () => {
+  const lines = 'P FMassQuery size\nQ FMassQuery\nP FOptional size optional\n';
+  const k = keysFromCheck(lines, 'FMassQuery\nFOptional\nACrCrafter::CraftComponent\n');
+  assert.deepEqual([...k.native.keys()].sort(), ['FMassQuery', 'FOptional']);
+  assert.deepEqual(k.owners.get('FMassQuery'), ['P', 'Q']);
+  assert.deepEqual([...k.fields], ['ACrCrafter::CraftComponent'], 'a size line is not also a reflected key');
+  assert.ok(k.optionalFields.has('FOptional') && !k.optionalFields.has('FMassQuery'));
+  const rep = () => [ent('FMassQuery', null, 0x350), ent('FOptional', null, 8), ent('ACrCrafter::CraftComponent', 0x6e0, 8)];
+  // The size is the same on both builds, and still gets its own row on the new one.
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: rep(), base: rep() });
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(row(out.text, 'FMassQuery'), { key: 'FMassQuery', cl: 130000, member: null, offset: 0, size: 0x350, mask: 0 });
+  assert.equal(row(out.text, 'FOptional').size, 8);
+  assert.ok(out.covered.includes('FMassQuery'));
+  // Gone on the new build: an absent row, high for a required line, low for an optional one.
+  const goneNext = [{ key: 'FMassQuery', result: 'NOTYPE' }, { key: 'FOptional', result: 'NOTYPE' }, ent('ACrCrafter::CraftComponent', 0x6e0, 8)];
+  const absent = fieldRows(header(), { cl: 130000, keys: k, next: goneNext, base: rep() });
+  assert.deepEqual(absent.problems, []);
+  assert.deepEqual(absent.absent.map((a) => [a.key, a.severity]), [['FMassQuery', 'high'], ['FOptional', 'low']]);
+  // Not found for any other reason: refused, an unverified row never ships.
+  const ambiguous = fieldRows(header(), { cl: 130000, keys: k, next: [{ key: 'FMassQuery', result: 'AMBIGUOUS' }, ent('FOptional', null, 8), ent('ACrCrafter::CraftComponent', 0x6e0, 8)], base: rep() });
+  assert.equal(ambiguous.text, null);
+  assert.ok(ambiguous.problems.some((p) => p.includes('FMassQuery') && p.includes('AMBIGUOUS')));
+});
+
+test('the command line writes class-key rows from --uses and from a native-keys size line, and logs only keys and numbers', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fieldrows-size-'));
+  const w = (name, doc) => { writeFileSync(join(dir, name), typeof doc === 'string' ? doc : JSON.stringify(doc)); return join(dir, name); };
+  const h = w('v.h', header());
+  const rep = [ent('ACrCrafter', null, 0x78), ent('FMassQuery', null, 0x350)];
+  const run = spawnSync(process.execPath, [TOOL, 'write', h, '--cl', '130000', '--next', w('n.json', { keys: rep }), '--base', w('b.json', { keys: [ent('ACrCrafter', null, 0x70), ent('FMassQuery', null, 0x350)] }),
+    '--native-keys', w('nk.txt', 'P FMassQuery size\n'), '--layout-keys', w('lk.txt', 'ACrCrafter\nFMassQuery\n'), '--uses', w('u.txt', 'P key ACrCrafter\nP size ACrCrafter live\n'),
+    '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /2 rows added/);
+  const text = readFileSync(h, 'utf8');
+  assert.deepEqual([row(text, 'ACrCrafter').size, row(text, 'FMassQuery').size, row(text, 'FMassQuery').offset], [0x78, 0x350, 0]);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).rows, ['ACrCrafter', 'FMassQuery']);
 });
