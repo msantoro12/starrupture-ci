@@ -277,38 +277,74 @@ offset of the instruction start inside the pattern, as `ScanValidation::Resolve`
 ## Carrying forward the keys no plugin requested
 
 A key that has rows on earlier CLs but that no scanned DLL requested on the new
-build gets no row from `assemble`. The scanner's `carry` mode re-resolves each such
-key on the target exe with the patterns of its earlier rows and writes `carry.json`
-(`kind: carry`, `cl`, `rows: [{ key, fromCL, matches, rva, result, reason }]`, with
-`result` one of `match`, `none`, `ambiguous`).
+build gets no row from `assemble`. The scanner's carry mode
+(`sr-aobscan <exe> --carry --map <header> [--cl <CL>] [--ignore-cl <CL>]`) re-resolves
+each such key on the target exe with the pattern of its newest earlier row, the lookup
+the loader does at run time, and writes `carry.json`: `{ kind: "carry", cl, summary,
+rows }`. A row is one key as the map keeps it (key, kind, fp):
+
+- `key`, `kind` (the map's number) and `fp` (hex; 0 for a global key);
+- `fromCL`: the build whose pattern was tried, or `null` when the key has no pattern
+  row to try;
+- `matches`, `rva` and `result`, one of `match`, `none`, `ambiguous`, with a `reason`
+  unless it matched;
+- the locator that was tried: `pattern`, `resultOffset`, `followRel32At`, `followRipDispAt`;
+- `owners` (comma-separated), when a newer absent row of a global key binds owners.
+
+The scanner exits 0 whenever it wrote a report, so the report is what a step reads,
+never the exit code. Exit 2 means there is no report.
 
 ```
 node ci/map-mode.mjs assemble <scans.json> --out <observations.json> --carry <carry.json> --base <header>
-node ci/map-mode.mjs write <header> --input <observations.json>
-node ci/map-mode.mjs complete <header> --cl <CL> [--report <file>]
+node ci/map-mode.mjs write <header> --input <observations.json> --report <write report>
+node ci/map-mode.mjs complete <header> --cl <CL> --report <write report>
 ```
 
-`--base` is the loader header before the write: the rows at each entry's `fromCL`
-give the key's kind, fp and locator. Per entry:
-- `match` with `matches` 1: a present row for the target CL (one per fp that row
-  had), at the entry's `rva`. A field named like a row field (`pattern`,
-  `resultOffset`, `followRel32At`, `followRipDispAt`) replaces the header's value;
-  other fields are ignored.
-- `none`, `ambiguous`, or a `match` with other than 1 hit: an absent row. The
-  header has no reason column, so the `reason` shows as a note in the write report. A global
-  absent row must list owners, so a carried one copies the owners of the key's earlier rows
-  in `--base` (present or absent, sorted, each once). A scoped key lists none. If no earlier
-  row of a global key names an owner, no row is written: the key and its reason go to the
-  write report's `absences` and the gate below counts it as accounted for.
-- A key with a fresh scan row (any component) gets no carried row. A report whose
-  `cl` is not the spec's CL, or whose `kind` is not `carry`, is refused. Without
-  `--carry` nothing changes.
+`--base` is the loader header before the write. Per entry:
+- `match` with `matches` 1: a present row for the target CL at the entry's `rva`, with
+  the entry's `kind`, `fp`, `pattern`, `resultOffset`, `followRel32At` and
+  `followRipDispAt`. A match without a pattern or an `rva` is refused.
+- `none`, `ambiguous`, or a `match` with other than 1 hit: an absent row. The header
+  has no reason column, so the reason shows as a note in the write report
+  ("carried from CL-N: ..."). A global absent row must list owners: the entry's `owners`
+  when it has them, else the owners of the key's earlier rows in `--base` (sorted, each
+  once). A scoped key lists none. If a global key has no owners either way, no row is
+  written: the key and its reason go to the write report's `absences` and the gate below
+  counts it as accounted for.
+- A `fromCL` of `null` is an absent row with the reason `no pattern row`, by the same
+  owner rules (so report-only when no owner is named).
+- A key with a fresh scan row (any component) gets no carried row.
+
+A carry report that is missing, is not JSON, has another `kind` or another `cl` than
+the build, or holds an entry with no key, no `kind` or `fp`, an unknown `result`, a
+`match` with no `fromCL`, or a malformed locator, stops `assemble` with exit 2 and a
+message that names the file and the key. Nothing is guessed. Without `--carry` nothing
+changes.
 
 `complete` is the gate: every function key with a row on an earlier CL must have a
 row on `<CL>`, present or absent, or be named in the `absences` of the write report given as
-`--report` (the result is merged into that file). A key missing from both still fails. It prints one line (`N of M function keys have no
-CL-X row: a, b, c, +k more`), lists each key on stderr, and exits 3 when any is
-missing, 0 otherwise.
+`--report` (the result, `missing` and `line`, is merged into that file). A key missing from
+both still fails. It prints one line (`N of M function keys have no CL-X row: a, b, c,
++k more`), lists each key on stderr, and exits 3 when any is missing, 0 otherwise.
+
+In `sr-client-check.yml`:
+- The `check` job runs the scan after the login cache is gone: it checks out the base
+  header (the loader commit the scanner was built from, `needs.build.outputs.loader_sha`,
+  which is also the commit `auto/update-<CL>` is cut from) and runs the scanner the
+  build job made with `--carry --map` against the exe it just checked, with `--cl` set to
+  the exe's CL. A dispatched test run (`test_autopilot`) re-measures a CL the header
+  already has rows for, so it adds `--ignore-cl`. The report is `out/carry.json`, in the
+  `client-check-<branch>` artifact. The step fails (annotation `Carry scan`) when
+  there is no usable report, so the check job fails with that cause.
+- The `map-mode` job passes it to `assemble` with the unwritten header as `--base`,
+  and stops with `::error::` when the file is missing or `assemble` refuses it. After
+  `write` it runs `complete` on the written header with the write report. On exit 3 the
+  job fails with `::error::<the one-line cause>`; the alert reads that annotation first, so
+  its "map mode" line reads, for example, `cause: step "Write the update into the
+  header": 3 of 220 function keys have no CL-129402 row: a, b, c`. Nothing after
+  that step (decide, export, staging, the push) runs.
+- The artifact `map-mode-<branch>` holds `carry.json` and `map-mode-report.json` (with
+  `absences`, `missing` and `line`) beside the other files.
 
 ## Step 28: `field-rows.mjs write`
 
@@ -592,7 +628,9 @@ The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 job's artifacts, the loader's header and the `vmap-feed` release: no Steam login,
 no plugin code, no game file.
 
-1. `map-mode.mjs assemble` and `write` put the observations in the header. The build
+1. `map-mode.mjs assemble` (with the check's `carry.json`), `write` and then `complete`
+   put the observations in the header and fail the job if a key with an earlier row is
+   left with none (above). The build
    row is named `<branch> <buildid>`. The build id is the one Steam installed
    (`result.json` `download.buildid`), else the `buildid` input (a manual dispatch
    can give it; the poller always does), else the job stops. A plugin is tracked

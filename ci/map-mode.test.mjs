@@ -559,9 +559,17 @@ const carryScratch = (carryRows) => {
   writeFileSync(join(dir, 'base.h'), header());
   return { dir, spec: { cl: 130000, build: BUILD, scans: [{ owner: 'ModLoader', tag: 'v1.22.1', rank: 'current', file: 'loader.json' }], carry: { file: 'carry.json', header: 'base.h' } } };
 };
-const entry = (key, fromCL, result, extra = {}) => ({ key, fromCL, matches: result === 'match' ? 1 : result === 'none' ? 0 : 2, rva: '0x1339290', result, ...extra });
+// A report entry as the scanner writes it: the kind and fp of the key, and the locator that was tried.
+const KEY_KIND = { [BC]: [1, 0], [SF]: [1, 0], [PE]: [2, FP_A], GWorld: [4, 0], [GO]: [6, FP_GO] };
+const entry = (key, fromCL, result, extra = {}) => ({
+  key, fromCL, matches: result === 'match' ? 1 : result === 'none' ? 0 : 2, rva: '0x1339290', result,
+  kind: KEY_KIND[key][0], fp: `0x${KEY_KIND[key][1].toString(16).toUpperCase().padStart(8, '0')}`,
+  pattern: '48 89 5C 24 ?? 55 56 57 48 8D AC 24', resultOffset: 0, followRel32At: -1, followRipDispAt: -1, ...extra,
+});
+// The entry of a key with no pattern row to try.
+const noRow = (key, extra = {}) => entry(key, null, 'none', { rva: null, pattern: '', reason: 'no locator to carry: no row has a pattern', ...extra });
 
-test('a carried match is a present row with the earlier row locator', () => {
+test('a carried match is a present row with the locator the scanner tried', () => {
   const { dir, spec } = carryScratch([entry(BC, 127004, 'match')]);
   const out = mapMode(header(), assemble(spec, dir));
   assert.deepEqual(out.problems, []);
@@ -571,12 +579,57 @@ test('a carried match is a present row with the earlier row locator', () => {
   assert.equal(row.pattern, '48 89 5C 24 ?? 55 56 57 48 8D AC 24');
 });
 
-test('a carried match on a scoped key writes one row per fp that had a pattern', () => {
-  const { dir, spec } = carryScratch([entry(PE, 128786, 'match', { followRipDispAt: 3 })]);
+test('a carried match copies the site and follow extras of the entry', () => {
+  const { dir, spec } = carryScratch([
+    entry(PE, 128786, 'match', { pattern: '?? ?? 48 85 C0', resultOffset: -4, followRipDispAt: 3 }),
+    entry(SF, 127004, 'match', { pattern: '40 53 ??', resultOffset: 6, followRel32At: 1 }),
+  ]);
   const out = mapMode(header(), assemble(spec, dir));
   assert.deepEqual(out.problems, []);
-  assert.equal(find(out.text, PE, FP_A).followRipDispAt, 3, 'a named extra field is copied');
-  assert.equal(find(out.text, PE, FP_B), undefined, 'the fp that was absent has no pattern to carry');
+  const site = find(out.text, PE, FP_A);
+  assert.deepEqual([site.kind, site.pattern, site.resultOffset, site.followRel32At, site.followRipDispAt], [2, '?? ?? 48 85 C0', -4, -1, 3]);
+  const fn = find(out.text, SF, 0);
+  assert.deepEqual([fn.kind, fn.fp, fn.pattern, fn.resultOffset, fn.followRel32At, fn.followRipDispAt], [1, 0, '40 53 ??', 6, 1, -1]);
+});
+
+test('a scoped key is carried per fp: the fp with a pattern is present, the one without is absent', () => {
+  const { dir, spec } = carryScratch([entry(PE, 128786, 'match', { followRipDispAt: 3 }), noRow(PE, { fp: `0x${FP_B.toString(16)}` })]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.deepEqual(out.problems, []);
+  assert.equal(find(out.text, PE, FP_A).followRipDispAt, 3);
+  const gone = find(out.text, PE, FP_B);
+  assert.equal(gone.absent, true);
+  assert.equal(gone.owners, null, 'a scoped absent row lists no owners');
+});
+
+test('a null fromCL is an absent row with the reason "no pattern row", on the owners the earlier rows name', () => {
+  const { dir, spec } = carryScratch([noRow(SF)]);
+  const input = assemble(spec, dir);
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  const row = find(out.text, SF, 0);
+  assert.equal(row.absent, true);
+  assert.deepEqual(row.owners, ['BetterCheats', 'WAILA']);
+  assert.ok(out.notes.some((n) => n.startsWith(`${SF}:`) && n.endsWith('absent on CL-130000, no pattern row')), out.notes.join('\n'));
+  assert.deepEqual(out.absences, []);
+});
+
+test('a null fromCL on a global key no earlier row names an owner for is report-only', () => {
+  const { dir, spec } = carryScratch([noRow(BC)]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.deepEqual(out.problems, []);
+  assert.equal(find(out.text, BC, 0), undefined, 'no row is written');
+  assert.deepEqual(out.absences.map((a) => [a.key, a.fromCL]), [[BC, null]]);
+  assert.match(out.absences[0].reason, /^no pattern row; no earlier row names an owner/);
+});
+
+test('the owners of the entry are the owners of the absent row, sorted, and win over the earlier rows', () => {
+  const { dir, spec } = carryScratch([entry(SF, 127004, 'none', { reason: 'no hit', owners: 'WAILA,Codex,WAILA' }), entry(BC, 127004, 'ambiguous', { reason: '2 hits', owners: 'Codex' })]);
+  const out = mapMode(header(), assemble(spec, dir));
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(find(out.text, SF, 0).owners, ['Codex', 'WAILA'], 'the earlier rows would have said BetterCheats,WAILA');
+  assert.deepEqual(find(out.text, BC, 0).owners, ['Codex'], 'and a key with no earlier owner is no longer report-only');
+  assert.deepEqual(out.absences, []);
 });
 
 test('a carried absent row copies the owners the earlier rows name, with the reason as a note', () => {
@@ -640,6 +693,51 @@ test('a carry report for another CL or of another kind is refused', () => {
   assert.throws(() => assemble(spec, dir), /not CL-130000/);
   writeFileSync(join(dir, 'carry.json'), JSON.stringify({ kind: 'scan', rows: [] }));
   assert.throws(() => assemble(spec, dir), /not a carry report/);
+});
+
+test('a malformed carry report fails loudly, naming the file and the key', () => {
+  const refused = (rows, pattern) => {
+    const { dir, spec } = carryScratch(rows);
+    assert.throws(() => assemble(spec, dir), pattern);
+  };
+  const { kind, ...noKind } = entry(BC, 127004, 'match');
+  const { fp, ...noFp } = entry(BC, 127004, 'match');
+  refused([noKind], /carry\.json: UCrBuildingComponent.*no kind or fp/);
+  refused([noFp], /no kind or fp/);
+  refused([entry(BC, 127004, 'match', { kind: 'bogus' })], /not a PluginScanKind/);
+  refused([entry(BC, 127004, 'match', { fp: 'zz' })], /fp "zz" is not a number/);
+  refused([entry(BC, 127004, 'maybe')], /result "maybe" is not match, none or ambiguous/);
+  refused([entry(BC, undefined, 'none')], /fromCL undefined is not a number/);
+  refused([entry(BC, null, 'match')], /a match names no fromCL/);
+  refused([entry(BC, 127004, 'match', { pattern: '' })], /a match without a pattern/);
+  refused([entry(BC, 127004, 'match', { rva: null })], /a match without an rva/);
+  refused([entry(BC, 127004, 'match', { followRel32At: '3' })], /followRel32At "3" is not an integer/);
+  refused([entry(SF, 127004, 'none', { owners: ['Codex'] })], /owners \["Codex"\] is not a comma-separated string/);
+  refused([{ fromCL: 127004 }], /an entry has no key/);
+  const { dir, spec } = carryScratch([]);
+  writeFileSync(join(dir, 'carry.json'), JSON.stringify({ kind: 'carry', cl: 130000 }));
+  assert.throws(() => assemble(spec, dir), /not a carry report/);
+  writeFileSync(join(dir, 'carry.json'), '{ "kind": "carry", "rows": [');
+  assert.throws(() => assemble(spec, dir), /carry\.json is not JSON/);
+  writeFileSync(join(dir, 'carry.json'), 'null');
+  assert.throws(() => assemble(spec, dir), /not a carry report/);
+});
+
+test('a missing or unreadable carry report stops assemble from the command line, with a message', () => {
+  const { dir, spec } = carryScratch([]);
+  const { carry, ...plain } = spec;
+  writeFileSync(join(dir, 'spec.json'), JSON.stringify(plain));
+  const run = (carryFile) => spawnSync(process.execPath, [TOOL, 'assemble', join(dir, 'spec.json'), '--out', join(dir, 'in.json'), '--carry', carryFile, '--base', join(dir, 'base.h')], { encoding: 'utf8', windowsHide: true });
+  const missing = run(join(dir, 'nope.json'));
+  assert.equal(missing.status, 2);
+  assert.match(missing.stderr, /^map-mode: .*nope\.json/);
+  writeFileSync(join(dir, 'bad.json'), '<html>');
+  const bad = run(join(dir, 'bad.json'));
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /bad\.json is not JSON/);
+  const noBase = spawnSync(process.execPath, [TOOL, 'assemble', join(dir, 'spec.json'), '--out', join(dir, 'in.json'), '--carry', join(dir, 'carry.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(noBase.status, 2);
+  assert.match(noBase.stderr, /--carry needs --base/);
 });
 
 test('completeness lists the keys with an earlier row and none on the CL', () => {

@@ -215,7 +215,7 @@ export function planRows(rows, { cl }) {
       problems.push(`required key ${key}${fp ? ` (fp ${hex8(fp)})` : ''} has no locator on CL-${cl}${scoped ? ' under the newest release' : ''}: ${g.map((r) => `${r.owner} ${r.tag} ${r.result}`).join(', ')}`);
       continue;
     }
-    for (const r of g) if (r.reason) notes.push(`${key}${fp ? ` (fp ${hex8(fp)})` : ''}: absent on CL-${cl}, carried from CL-${r.tag}: ${r.reason}`);
+    for (const r of g) if (r.reason) notes.push(`${key}${fp ? ` (fp ${hex8(fp)})` : ''}: absent on CL-${cl}, ${r.reason}`);
     ops.push({ type: 'absent', key, kind, fp, owners: scoped ? null : [...new Set(g.flatMap((r) => r.owners ?? [r.owner]))].sort(cmp) });
   }
 
@@ -329,56 +329,74 @@ function harnessRow(r, owner) {
 
 // ---- Carried rows -------------------------------------------------------------
 
-const CARRY_LOCATOR = ['pattern', 'resultOffset', 'followRel32At', 'followRipDispAt'];
+const CARRY_LOCATOR = ['resultOffset', 'followRel32At', 'followRipDispAt'];
+const NO_PATTERN_ROW = 'no pattern row';
 
 // The carry report (the scanner's `carry` mode: each function key with no row on
-// the target CL, re-resolved there with the patterns of its earlier rows) as rows
-// for the loader's component. spec.carry = { file, header }: the report, and the
-// base header whose rows at each entry's fromCL give the key's kind, fp and
-// locator. A report field named after a row field (pattern, resultOffset,
-// followRel32At, followRipDispAt) replaces the header's value; other fields are
-// ignored. A fresh scan row for a key always wins: its key gets no carried row.
-// A carried absent row on a global key lists the owners the key's earlier rows
-// name. A key whose earlier rows name none gets no row: it comes back in
-// `absences`, for the write report. Returns { releases, absences }.
+// the target CL, re-resolved there with the pattern of its newest earlier row) as
+// rows for the loader's component. spec.carry = { file, header }: the report, and
+// the base header, whose rows give the owners an absent row lists when the entry
+// names none. An entry is one (key, kind, fp) with the locator that was tried
+// (pattern, resultOffset, followRel32At, followRipDispAt), the build it came from
+// (fromCL, null when the key has no pattern row to try) and, for a global key,
+// the owners that a newer absent row binds. A fresh scan row for a key always
+// wins: its key gets no carried row. A carried absent row on a global key lists
+// the entry's owners, else the owners the key's earlier rows name; a key with
+// none gets no row and comes back in `absences`, for the write report.
+// Returns { releases, absences }.
 function carryRows(spec, dir, cl, components) {
   const { file, header } = spec.carry;
   if (typeof file !== 'string' || typeof header !== 'string') throw new MapError('spec.carry needs a file and a header');
-  const report = JSON.parse(readFileSync(resolve(dir, file), 'utf8').replace(/^\uFEFF/, ''));
-  if (report.kind !== 'carry' || !Array.isArray(report.rows)) throw new MapError(`${file} is not a carry report (kind carry, rows array)`);
+  let report;
+  try { report = JSON.parse(readFileSync(resolve(dir, file), 'utf8').replace(/^﻿/, '')); } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    throw new MapError(`${file} is not JSON: ${e.message}`);
+  }
+  if (!report || report.kind !== 'carry' || !Array.isArray(report.rows)) throw new MapError(`${file} is not a carry report (kind carry, rows array)`);
   if (cl !== undefined && report.cl !== undefined && Number(report.cl) !== Number(cl)) throw new MapError(`${file} is the carry report of CL-${report.cl}, not CL-${cl}`);
   const map = parse(readFileSync(resolve(dir, header), 'utf8'), 'the base header');
   const fresh = new Set();
   for (const c of components.values()) for (const rel of c.releases) for (const r of rel.rows) fresh.add(r.key);
-  const byFrom = new Map(); // fromCL -> rows
+  const byFrom = new Map(); // fromCL (null: no pattern row) -> rows
   const absences = [];
   for (const e of report.rows) {
-    if (typeof e.key !== 'string' || !e.key) throw new MapError(`${file}: an entry has no key`);
-    if (!['match', 'none', 'ambiguous'].includes(e.result)) throw new MapError(`${file}: ${e.key}: result ${JSON.stringify(e.result)} is not match, none or ambiguous`);
+    if (!e || typeof e.key !== 'string' || !e.key) throw new MapError(`${file}: an entry has no key`);
+    const where = `${file}: ${e.key}`;
+    if (!['match', 'none', 'ambiguous'].includes(e.result)) throw new MapError(`${where}: result ${JSON.stringify(e.result)} is not match, none or ambiguous`);
+    if (e.kind === undefined || e.fp === undefined) throw new MapError(`${where}: the entry has no kind or fp`);
+    const kind = kindOf(e.kind);
+    const fp = numberOf(e.fp, `${where}: fp`);
+    const from = e.fromCL === null ? null : numberOf(e.fromCL, `${where}: fromCL`, { lo: 1 });
+    if (from === null && e.result === 'match') throw new MapError(`${where}: a match names no fromCL`);
+    if (e.owners !== undefined && typeof e.owners !== 'string') throw new MapError(`${where}: owners ${JSON.stringify(e.owners)} is not a comma-separated string`);
     if (fresh.has(e.key)) continue;
-    const from = numberOf(e.fromCL, `${file}: ${e.key}: fromCL`, { lo: 1 });
-    const present = e.result === 'match' && e.matches === 1;
-    const earlier = [...new Set(map.functions.filter((x) => x.key === e.key && x.owners && (cl === undefined || x.cl < cl)).flatMap((x) => x.owners))].sort(cmp);
-    for (const b of map.functions.filter((x) => x.key === e.key && x.cl === from)) {
-      const row = { key: e.key, kind: b.kind, fp: b.fp };
-      for (const f of CARRY_LOCATOR) row[f] = e[f] ?? b[f];
-      if (present) {
-        if (row.pattern === null || e.rva === undefined) continue; // no locator to write
-        Object.assign(row, { result: 'OK', rva: e.rva });
-      } else {
-        const why = e.result === 'match' ? `${e.matches} matches` : (e.reason || e.result);
-        Object.assign(row, { result: e.result === 'ambiguous' || e.result === 'match' ? 'AMBIGUOUS' : 'MISSING', reason: why });
-        if (isGlobalKind(b.kind)) {
-          if (!earlier.length) { absences.push({ key: e.key, fromCL: from, reason: `${why}; no earlier row names an owner, so no row is written` }); continue; }
-          row.owners = earlier;
-        }
+    const row = { key: e.key, kind, fp };
+    if (e.result === 'match' && e.matches === 1) {
+      if (typeof e.pattern !== 'string' || !e.pattern) throw new MapError(`${where}: a match without a pattern; the map cannot carry it`);
+      if (e.rva === undefined || e.rva === null) throw new MapError(`${where}: a match without an rva`);
+      Object.assign(row, { result: 'OK', rva: e.rva, pattern: e.pattern });
+      for (const f of CARRY_LOCATOR) {
+        if (e[f] === undefined) continue;
+        if (!Number.isInteger(e[f])) throw new MapError(`${where}: ${f} ${JSON.stringify(e[f])} is not an integer`);
+        row[f] = e[f];
       }
-      if (!byFrom.has(from)) byFrom.set(from, []);
-      byFrom.get(from).push(row);
+    } else {
+      const why = from === null ? NO_PATTERN_ROW : e.result === 'match' ? `${e.matches} matches` : (e.reason || e.result);
+      Object.assign(row, { result: e.result === 'none' ? 'MISSING' : 'AMBIGUOUS', reason: from === null ? why : `carried from CL-${from}: ${why}` });
+      if (isGlobalKind(kind)) {
+        const named = e.owners ? e.owners.split(',').map((o) => o.trim()).filter(Boolean)
+          : map.functions.filter((x) => x.key === e.key && x.owners && (cl === undefined || x.cl < cl)).flatMap((x) => x.owners);
+        const owners = [...new Set(named)].sort(cmp);
+        if (!owners.length) { absences.push({ key: e.key, fromCL: from, reason: `${why}; no earlier row names an owner, so no row is written` }); continue; }
+        row.owners = owners;
+      }
     }
+    if (!byFrom.has(from)) byFrom.set(from, []);
+    byFrom.get(from).push(row);
   }
-  // One release per source CL, tagged with it.
-  return { releases: [...byFrom].sort((x, y) => x[0] - y[0]).map(([from, rows]) => ({ tag: String(from), rank: 'current', fpAware: true, rows })), absences };
+  // One release per source CL, tagged with it; the keys with no pattern row to try ride in one of their own.
+  const order = (x, y) => (x[0] === null) - (y[0] === null) || x[0] - y[0];
+  return { releases: [...byFrom].sort(order).map(([from, rows]) => ({ tag: from === null ? 'no-pattern-row' : String(from), rank: 'current', fpAware: true, rows })), absences };
 }
 
 // spec: { cl, build, source, scans: [{ owner, tracked, tag, rank, fpAware, file }] },
@@ -479,7 +497,8 @@ export function main(argv) {
   }
   if (cmd !== 'write' || !header || !o.input) {
     process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true]\n'
-      + '       map-mode.mjs assemble <scans.json> --out <observations.json>\n');
+      + '       map-mode.mjs assemble <scans.json> --out <observations.json> [--carry <carry.json> --base <header>]\n'
+      + '       map-mode.mjs complete <header> --cl <CL> [--report <write report>]\n');
     return EXIT_ERROR;
   }
   try {
