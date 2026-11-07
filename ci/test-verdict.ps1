@@ -317,6 +317,18 @@ function Edit-Report($c, [string]$Old, [string]$New) {
     if (-not $c.compat.Contains($Old)) { throw "the compat report fixture lacks: $Old" }
     $c.compat = $c.compat.Replace($Old, $New)
 }
+# Adds a top-level "sizes" array (the loader's per-request class-key size entries) to the report.
+function Add-Sizes($c, [string]$Entries) {
+    $c.compat = [regex]::Replace($c.compat, '(\r?\n)\}\s*$', ",`$1  `"sizes`": [ $Entries ]`$1}")
+}
+function Size-Entry([string]$Plugin, [string]$Key, $RowCL, $Row, $Refl, [string]$Result) {
+    '{{ "plugin": "{0}", "key": "{1}", "rowCL": {2}, "rowSize": {3}, "reflectedSize": {4}, "result": "{5}" }}' -f $Plugin, $Key, $(if ($null -eq $RowCL) { 'null' } else { $RowCL }), $(if ($null -eq $Row) { 'null' } else { $Row }), $(if ($null -eq $Refl) { 'null' } else { $Refl }), $Result
+}
+$szMatch = Size-Entry 'AxRuptureTimer' 'FCrEnviroWaveSettings' 129402 44 44 'match'
+$szMismatch = Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 52 'mismatch'
+$szRowOnly = Size-Entry 'BetterCheats' 'FMassEntityManager' 129402 176 $null 'row-only'
+$szNoRow = Size-Entry 'BetterCheats' 'FMassEntityManager' $null $null $null 'no-row'
+$szReflOnly = Size-Entry 'Compass' 'FCrPlayerPersonalMarkerData' $null $null 40 'reflected-only'
 $missRow = '{ "name": "Fname_AppendString", "module": "StarRuptureGameSteam-Win64-Shipping.exe", "pattern": "48 89 5C 24 ?? 57", "required": REQ, "found": false }'
 $uiOffErr = "[19:00:31.326] [ERROR] [T:02032] [Plugin:MiniMap] $uiOffText"
 $tb = 'test-branch'
@@ -342,6 +354,17 @@ $rigCases = [ordered]@{
  'compat unknown outcome'     = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "fine"' };                          Fail = 'compat_report_ok' }
  'compat listed not written'  = @{ Run = $tb; Mut = { param($c) $c.boot.compat_reports = @() };                                                       Fail = 'compat_report_ok' }
  'compat feature off'         = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: no row for CL-129402 (reflected)" }; Fail = 'compat_report_ok' }
+ # Class-key size rows: the map row's size against the size the game reflects
+ 'sizes match'               = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szReflOnly" } }
+ 'sizes empty'               = @{ Run = $tb; Mut = { param($c) Add-Sizes $c '' } }
+ 'sizes mismatch'            = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szMismatch" };                                Fail = 'compat_report_ok' }
+ 'sizes unreflected, row'    = @{ Run = $tb; Mut = { param($c) Add-Sizes $c $szRowOnly } }
+ 'sizes unreflected, no row' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szNoRow" };                                   Fail = 'compat_report_ok' }
+ 'sizes result says match'   = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 52 'match') };  Fail = 'compat_report_ok' }
+ 'sizes result says differ'  = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 48 'mismatch') }; Fail = 'compat_report_ok' }
+ 'sizes unknown result'      = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 48 'fine') };  Fail = 'compat_report_ok' }
+ 'sizes entry no plugin'     = @{ Run = $tb; Mut = { param($c) Add-Sizes $c ($szMatch -replace '"plugin": "AxRuptureTimer", ', '') };  Fail = 'compat_report_ok' }
+ 'sizes not a list'          = @{ Run = $tb; Mut = { param($c) $c.compat = [regex]::Replace($c.compat, '(\r?\n)\}\s*$', ",`$1  `"sizes`": 7`$1}") }; Fail = 'compat_report_ok' }
  'compat plugins switched off' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[init] The menu state for plugins is switched off" };               Fail = 'plugins_not_switched_off' }
  'compat undeclared refusal'  = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)Plugin 'Codex' is not loaded: Needs an update to run on CL-129402" }; Fail = 'plugin_not_refused_Codex' }
  'layout moved without report' = @{ Run = $tb; Mut = { param($c) $c.boot.compat_reports = @(); $c.compat = $null; $c.ml = @($c.ml | Where-Object { $_ -notmatch 'Compatibility report written' }) }; Fail = 'layout_ok' }
@@ -386,6 +409,17 @@ foreach ($k in $rigCases.Keys) {
             if ($mm.state -ne 'refused (as declared)') { $problems += "MiniMap state $($mm.state)" }
         }
         if ($k -eq 'compat optional miss' -and @($j.notes) -notcontains 'optional pattern missed: Fname_AppendString') { $problems += 'optional miss not noted' }
+        if ($k -eq 'sizes match') {
+            $l1 = 'size row AxRuptureTimer: FCrEnviroWaveSettings row 0x2C (CL-129402), reflected 0x2C: match'
+            $l2 = 'size row Compass: FCrPlayerPersonalMarkerData row none, reflected 0x28: no row, reflected only'
+            foreach ($l in $l1, $l2) { if (@($j.notes) -notcontains $l) { $problems += "verdict.json lacks: $l" } }
+            if ($md -notmatch [regex]::Escape("Note: $l1")) { $problems += 'summary.md lacks the match line' }
+            if ($r.Out -notmatch 'compat_report_ok\s+PASS') { $problems += 'compat_report_ok not PASS' }
+            if (@($j.notes) -notcontains $moved) { $problems += 'the layout-moved note went missing' }
+        }
+        if ($k -eq 'sizes unreflected, row' -and @($j.notes) -notcontains 'size row BetterCheats: FMassEntityManager row 0xB0 (CL-129402), reflected none: unreflected, row only') { $problems += 'row-only line missing' }
+        if ($k -eq 'sizes mismatch' -and @($j.notes) -notcontains 'size row Codex: FAuSimpleItem row 0x30 (CL-129402), reflected 0x34: MISMATCH') { $problems += 'mismatch line missing' }
+        if ($k -in 'test-branch real', 'sizes empty' -and (@($j.notes) | Where-Object { $_ -like 'size row*' })) { $problems += 'size lines without class-key rows' }
         if ($k -eq 'public real') {
             if ($mm.state -ne 'loaded; init needs the UI layer the rig turns off') { $problems += "MiniMap state $($mm.state)" }
             if ($r.Out -notmatch 'plugins_initialized\s+PASS') { $problems += 'plugins_initialized not PASS' }

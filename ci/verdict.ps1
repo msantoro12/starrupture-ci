@@ -65,6 +65,10 @@
 #                    global that is unresolved or rejected, or a change of field "missing" or
 #                    "vtableSlot". A "partial" report with only other changes passes, and the
 #                    changes are shown as notes. A listed file that is absent or unparseable fails.
+#                    Its optional "sizes" array holds one entry per struct-size request:
+#                    { plugin, key, rowCL, rowSize, reflectedSize, result }, result one of
+#                    match, mismatch, row-only, no-row, reflected-only. Each entry is a note
+#                    line; mismatch and no-row fail. No "sizes", or an empty one, changes nothing.
 #   modloader.log    ModLoader\Logs\ModLoader.log (logging at INFO)
 #   proxy.log        ModLoader\Logs\Proxy.log
 #   autoupdate.log   ModLoader\Logs\AutoUpdate.log
@@ -168,12 +172,17 @@ function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField, [switch]$SkipC
 # The loader writes one when the game's layout changed under it (compat_report.cpp, format
 # 3): outcome "safe-off" (every plugin refused) or "partial" (informational on its own),
 # patternMisses[] {name, required, found}, globals[] {name, resolved, rejected} and
-# changes[] {class, member, field, sdk, game}. Returns Bad (what fails), Notes (what passes
-# but is worth a look), Parsed (reports read) and Changes (changes[] entries seen).
+# changes[] {class, member, field, sdk, game}, and sizes[] {plugin, key, rowCL, rowSize,
+# reflectedSize, result}: one entry per class-key size request, the map row's size against the
+# size the running game reflects. Returns Bad (what fails), Notes (what passes but is worth a
+# look), Sizes (one line per sizes[] entry, passing or not), SizeCounts (entries per result),
+# Parsed (reports read) and Changes (changes[] entries seen).
 function Get-CompatJudgement($Ml, $Boot) {
     $arrow = [string][char]0x2192
     $bad = New-Object System.Collections.Generic.List[string]
     $notes = New-Object System.Collections.Generic.List[string]
+    $sizeLines = New-Object System.Collections.Generic.List[string]
+    $sizeCounts = [ordered]@{}
     $parsed = 0; $changeCount = 0
     $listed = @(@(Get-Prop $Boot 'compat_reports' @()) | Where-Object { $_ })
     if (-not (Test-BootField $Boot 'compat_reports')) { $bad.Add('boot.json has no compat_reports field') }
@@ -226,6 +235,39 @@ function Get-CompatJudgement($Ml, $Boot) {
             $why = if ($quiet) { ' (keys-only, no loader feature reads it)' } else { '' }
             $notes.Add(('layout moved: {0}::{1} {2}0x{3:X}{4}0x{5:X}{6}' -f $cls, $mem, $what, [long]$sdk, $arrow, [long]$game, $why))
         }
+        # A class-key size row against the size the game reflects. A loader that writes no
+        # "sizes", or an empty one, leaves this out entirely.
+        $sizesProp = $r.PSObject.Properties['sizes']
+        if ($sizesProp -and $null -ne $sizesProp.Value) {
+            if ($sizesProp.Value -isnot [System.Array]) { $bad.Add("$name has no usable sizes"); continue }
+            foreach ($e in @($sizesProp.Value)) {
+                $plugin = [string](Get-Prop $e 'plugin' ''); $key = [string](Get-Prop $e 'key' ''); $res = [string](Get-Prop $e 'result' '')
+                $rowSize = Get-Prop $e 'rowSize'; $refl = Get-Prop $e 'reflectedSize'; $rowCL = Get-Prop $e 'rowCL'
+                if ($plugin -eq '' -or $key -eq '' -or $res -eq '') { $bad.Add("$name has a size entry without plugin, key or result"); continue }
+                if (($null -ne $rowSize -and $rowSize -isnot [ValueType]) -or ($null -ne $refl -and $refl -isnot [ValueType])) { $bad.Add("${name}: ${plugin}: $key has a size that is not a number"); continue }
+                $rowText = if ($null -ne $rowSize) { ('0x{0:X}' -f [long]$rowSize) + $(if ($null -ne $rowCL) { " (CL-$rowCL)" } else { '' }) } else { 'none' }
+                $reflText = if ($null -ne $refl) { '0x{0:X}' -f [long]$refl } else { 'none' }
+                $line = "size row ${plugin}: $key row $rowText, reflected ${reflText}: "
+                $problem = $null
+                switch -CaseSensitive ($res) {
+                    'match'          { if ($null -eq $rowSize -or $null -eq $refl) { $problem = 'match without both sizes' } elseif ([long]$rowSize -ne [long]$refl) { $problem = 'reported as a match but the sizes differ' } }
+                    'mismatch'       { if ($null -eq $rowSize -or $null -eq $refl) { $problem = 'mismatch without both sizes' } elseif ([long]$rowSize -eq [long]$refl) { $problem = 'reported as a mismatch but the sizes are equal' } }
+                    'row-only'       { if ($null -eq $rowSize) { $problem = 'row-only without a row size' } }
+                    'reflected-only' { if ($null -eq $refl) { $problem = 'reflected-only without a reflected size' } }
+                    'no-row'         { }
+                    default          { $problem = "has the unknown result '$res'" }
+                }
+                if ($problem) { $bad.Add("${name}: ${plugin}: $key $problem"); continue }
+                $sizeCounts[$res] = 1 + $(if ($sizeCounts.Contains($res)) { $sizeCounts[$res] } else { 0 })
+                switch -CaseSensitive ($res) {
+                    'match'          { $sizeLines.Add($line + 'match') }
+                    'mismatch'       { $sizeLines.Add($line + 'MISMATCH'); $bad.Add("${name}: ${plugin}: $key size row is $rowText, the game reflects $reflText") }
+                    'row-only'       { $sizeLines.Add($line + 'unreflected, row only') }
+                    'reflected-only' { $sizeLines.Add($line + 'no row, reflected only') }
+                    'no-row'         { $sizeLines.Add($line + 'NO ROW'); $bad.Add("${name}: ${plugin}: $key is unreflected and has no size row") }
+                }
+            }
+        }
     }
     # With a report on record, a plugin that lost a feature is not a clean handoff.
     if ($listed.Count -gt 0 -and $Ml) {
@@ -233,7 +275,7 @@ function Get-CompatJudgement($Ml, $Boot) {
             if ($l -cmatch '\[Map\] (\S+): feature "(.+?)" is off') { $bad.Add("$($Matches[1]) feature ""$($Matches[2])"" is off") }
         }
     }
-    return [pscustomobject]@{ Listed = $listed; Written = $written; Bad = @($bad); Notes = @($notes); Parsed = $parsed; Changes = $changeCount }
+    return [pscustomobject]@{ Listed = $listed; Written = $written; Bad = @($bad); Notes = @($notes); Sizes = @($sizeLines); SizeCounts = $sizeCounts; Parsed = $parsed; Changes = $changeCount }
 }
 
 # Check lines, verdict.txt and the job summary. Client mode sets $script:LeadMd (the
@@ -588,8 +630,10 @@ function Invoke-ClientVerdict {
         if ($compat.Bad.Count -gt 0) { 'FOUND: ' + ($compat.Bad -join '; ') }
         elseif (-not $haveLog) { '' }
         elseif ($compat.Parsed -eq 0) { 'no compat report written' }
-        else { "$($compat.Parsed) report(s) judged: " + $(if ($compat.Notes.Count -gt 0) { $compat.Notes -join '; ' } else { 'nothing moved' }) })
-    $script:Notes = @($compat.Notes)
+        else {
+            $sizeSummary = if ($compat.Sizes.Count -gt 0) { '; size rows: ' + (($compat.SizeCounts.Keys | ForEach-Object { "$($compat.SizeCounts[$_]) $_" }) -join ', ') } else { '' }
+            "$($compat.Parsed) report(s) judged: " + $(if ($compat.Notes.Count -gt 0) { $compat.Notes -join '; ' } else { 'nothing moved' }) + $sizeSummary })
+    $script:Notes = @($compat.Notes) + @($compat.Sizes)
 
     # ---- crashes and errors ----
     $crashRe = 'CRASHED|FATAL ENGINE CRASH|\[PluginGuard\]'
