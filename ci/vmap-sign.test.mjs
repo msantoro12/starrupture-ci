@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exportFeed, parse } from './version-map.mjs';
-import { PUBLIC_KEYS, signFeed, verifyFeed } from './vmap-sign.mjs';
+import { PUBLIC_KEYS, nextSeq, signFeed, verifyFeed } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, 'vmap-sign.mjs');
@@ -159,4 +159,47 @@ test('the command line signs and verifies, takes the key from the environment, a
   const nk = run(['sign', src, '--out', join(dir, 'x.txt'), '--key-id', 'k1'], { VMAP_SIGN_KEY: '' });
   assert.equal(nk.status, 2);
   assert.match(nk.stderr, /no private key/);
+});
+
+test('next-seq computes the seq once: max(now, last + 1), never over a day ahead', () => {
+  assert.equal(nextSeq(0, NOW), NOW);
+  assert.equal(nextSeq(NOW - 5, NOW), NOW);
+  assert.equal(nextSeq(NOW, NOW), NOW + 1);
+  assert.match(reasons(() => nextSeq(NOW + 86400, NOW)), /more than a day ahead/);
+});
+
+test('the signer signs the seq it is given, and refuses one that does not rise or is over a day ahead', () => {
+  const k = pair();
+  const seq = nextSeq(NOW - 5, NOW);
+  const r = signFeed(unsigned(), k.pem, { keyId: 'k1', now: NOW, lastSeq: NOW - 5, seq: seq + 7 });
+  assert.equal(r.seq, seq + 7);
+  assert.equal(verifyFeed(r.text, { keys: KEYS(k.hex), now: NOW }).seq, seq + 7);
+  assert.match(reasons(() => signFeed(unsigned(), k.pem, { keyId: 'k1', now: NOW, lastSeq: NOW, seq: NOW })), /does not rise above/);
+  assert.match(reasons(() => signFeed(unsigned(), k.pem, { keyId: 'k1', now: NOW, lastSeq: 0, seq: NOW + 86401 })), /more than a day ahead/);
+  assert.match(reasons(() => signFeed(unsigned(), k.pem, { keyId: 'k1', now: NOW, lastSeq: 0, seq: 0 })), /does not rise above/);
+});
+
+test('the command line passes one seq through next-seq, sign --seq and verify --expect-seq, and refuses a different one', () => {
+  const k = pair();
+  const dir = mkdtempSync(join(tmpdir(), 'vmap-sign-seq-'));
+  const [src, out] = [join(dir, 'feed.txt'), join(dir, 'signed.txt')];
+  writeFileSync(src, unsigned());
+  const run = (args, env = {}) => spawnSync(process.execPath, [TOOL, ...args], { encoding: 'utf8', env: { ...process.env, ...env }, windowsHide: true });
+  const n = run(['next-seq', '--last-seq', String(NOW + 3), '--now', String(NOW)]);
+  assert.equal(n.status, 0, n.stderr);
+  const seq = n.stdout.trim();
+  assert.equal(seq, String(NOW + 4));
+  // The clock moves on between the two steps: the signed seq is still the one computed first.
+  const s = run(['sign', src, '--out', out, '--key-id', 'k1', '--last-seq', String(NOW + 3), '--now', String(NOW + 50), '--seq', seq], { VMAP_SIGN_KEY: k.pem });
+  assert.equal(s.status, 0, s.stderr);
+  assert.match(s.stdout, new RegExp(`seq ${seq}`));
+  const verify = (expect) => run(['verify', out, '--pub', `k1=${k.hex}`, '--now', String(NOW), '--expect-seq', expect]);
+  assert.equal(verify(seq).status, 0);
+  const off = verify(String(Number(seq) + 1));
+  assert.equal(off.status, 3);
+  assert.match(off.stderr, /carries seq .*not the expected/);
+  assert.equal(verify('x').status, 2);
+  const stale = run(['sign', src, '--out', join(dir, 'x.txt'), '--key-id', 'k1', '--last-seq', String(NOW + 10), '--seq', seq], { VMAP_SIGN_KEY: k.pem });
+  assert.equal(stale.status, 2);
+  assert.match(stale.stderr, /does not rise above/);
 });

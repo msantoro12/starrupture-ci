@@ -532,8 +532,9 @@ is publishable.
 unsigned feed. `vmap-sign.mjs` signs and checks it:
 
 ```
-node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2 [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>]
-node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>] [--pub <keyId>=<64 hex>]... [--allow-test-key]
+node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2 [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>]
+node ci/vmap-sign.mjs next-seq [--last-seq <n>] [--now <unix seconds>]
+node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>] [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>]
 ```
 
 Signing inserts a `seq` line after the `format` line and ends the file with
@@ -545,6 +546,20 @@ the clock has not passed it. The private key is read from the environment variab
 512 KiB or one that already has a `seq` or `sig` line; `verify` takes files up to
 1 MiB, checks the signature before anything else and, with `--last-seq`, requires a
 higher `seq`. `verify` exits 3 when it refuses a file.
+
+**The feed only carries builds that are on public.** A game build that is only on the test
+branch never goes into a feed, however well it was mapped: a feed is read by every player's
+loader. `export-feed <header> --out <file> --public-builds state/public-builds.json` keeps
+the rows of the CLs on that list (the current public CL and the ones that were public
+before; format and source in VERSION-MAP.md) and leaves out every other CL, build row and
+all. It prints each CL it left out and how many rows. If the list cannot be read, is empty,
+or the header has no row for public's current CL, it refuses with exit 2 and writes no feed.
+
+**One seq per publish.** `seq` is worked out once with `vmap-sign.mjs next-seq` and that
+number is passed on: `vmap-sign.mjs sign --seq <n>` signs exactly it (it must rise above
+`--last-seq` and be within a day of the clock), `promote.mjs plan --seq <n>` plans with it,
+and the history entry records it. `vmap-sign.mjs verify --expect-seq <n>` refuses (exit 3)
+a signed feed that carries another seq, so a plan and a feed that disagree stop the run.
 
 The feed format, the key slots (`k1` is the TEST key, `k2` the release key) and what the
 loader checks are in the loader repository's [VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#the-feed).
