@@ -356,6 +356,17 @@ test('cleanup: runs always, removes steamcmd, the Steam folder and the Steam pro
   assert.ok(!/out\b/.test(c.replace(/#.*$/gm, '')));
 });
 
+test('cleanup: the rig runs both parts in one step; the login part is fatal, the folder part only warns', () => {
+  const cleanupStep = step('Remove Steam and the login from the runner');
+  assert.ok(!/-Phase/.test(cleanupStep), 'no -Phase: the default is login removal, then the folder');
+  const c = cleanupPs.replace(/^\s*#.*$/gm, '');
+  assert.match(c, /\[string\]\$Phase = 'All'|\[ValidateSet\('All', 'Login', 'Folder'\)\]\[string\]\$Phase = 'All'/);
+  assert.match(c, /if \(-not \(Remove-Login\)\) \{[\s\S]*?exit 1/);
+  assert.match(c, /if \(\$Phase -eq 'All'\) \{ Remove-Folder \}/);
+  assert.match(c, /::warning::[^\n]*held by: /);
+  assert.match(step('Outputs and result'), /CLEANUP -eq 'failure'/);
+});
+
 test('result: job fails on a failed verdict after the logs are uploaded, outputs always set', () => {
   const f = step('Outputs and result');
   assert.match(f, /\n {8}if: always\(\)\n/);

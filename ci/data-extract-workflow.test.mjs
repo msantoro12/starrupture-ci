@@ -9,7 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -114,6 +114,38 @@ test('the extractor runs only after a successful cleanup', () => {
   assert.ok(extractJob.indexOf('id: cleanup') < extractJob.indexOf('id: extract'), 'cleanup comes first');
 });
 
+test('step order: login removal, extractor, leak gate, upload, then the folder removal', () => {
+  const names = [...extractJob.matchAll(/\n {6}- name: (.*)\n/g)].map((m) => m[1]);
+  const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `step ${n} exists`); return i; };
+  const order = ['Launch the game and dump', 'Remove Steam and the login from the runner', 'Run the extractor', 'Leak gate', 'Upload the usmap and the extract', 'Remove the Steam folder', 'Outputs and result'].map(at);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'steps run in that order');
+  // The login step is the fatal one and only removes the login; the folder step is warn-only and always runs.
+  const login = stepOf(extractJob, 'Remove Steam and the login from the runner');
+  assert.match(login, /\n {8}if: always\(\)\n/);
+  assert.match(login, /steam-cleanup\.ps1 -InstallDir \$env:INSTALL_DIR -Phase Login\n\s+exit \$LASTEXITCODE/);
+  const folder = stepOf(extractJob, 'Remove the Steam folder');
+  assert.match(folder, /\n {8}if: always\(\)\n/);
+  assert.match(folder, /steam-cleanup\.ps1 -InstallDir \$env:INSTALL_DIR -Phase Folder\n\s+exit 0\n?$/);
+  assert.ok(!/continue-on-error/.test(login), 'a failed login removal fails the step');
+});
+
+test('the cleanup script: the login part is fatal and verified, the folder part retries and only warns', () => {
+  const c = read('ci', 'steam-cleanup.ps1').replace(/^\s*#.*$/gm, '');
+  assert.match(c, /ValidateSet\('All', 'Login', 'Folder'\)/);
+  // Login: ssfn, config.vdf, loginusers.vdf, steamcmd and the registry go; each is checked afterwards; exit 1 on a leftover.
+  for (const t of ['ssfn*', 'config.vdf', 'loginusers.vdf', 'C:\\steamcmd', 'HKCU:\\Software\\Valve']) assert.ok(c.includes(t), t);
+  assert.match(c, /\$left = @\(\$targets \| Where-Object \{ Test-Path -LiteralPath \$_ \}\)/);
+  assert.match(c, /rig-reason\.txt/);
+  // Folder: stops the client, the helper, the service and the game; retries; warns with the holder; exits 0.
+  for (const p of ['steam', 'StarRupture', 'Steam Client Service']) assert.ok(c.includes(p), p);
+  assert.match(c, /Start-Sleep -Seconds \$wait/);
+  assert.match(c, /\$FolderRetrySec = 60/);
+  assert.match(c, /::warning::[^\n]*held by: \$\(Get-Locker/);
+  assert.ok(!/::error::[^\n]*Steam folder|exit 1[^\n]*Remove-Folder/.test(c));
+  assert.match(c, /if \(\$Phase -eq 'Folder'\) \{ Remove-Folder \}\nif \(\$Phase -eq 'All'\) \{ Remove-Folder \}\nexit 0\s*$/);
+  assert.match(c, /if \(-not \(Remove-Login\)\) \{[\s\S]*?exit 1\n    \}/);
+});
+
 test('the build steps that compile pinned sources have a timeout', () => {
   for (const name of ['Build Dumper-7', 'Build the extractor']) {
     const s = buildJob.split('\n      - ').find((x) => x.startsWith(`name: ${name}\n`));
@@ -190,12 +222,12 @@ test('login failures leave a marker in the launch script and surface as login-fa
   // Both sign-in sites of the Install phase (steamcmd) and the three of the Launch phase use the marker.
   assert.equal(launch.match(/Stop-WithLogin '|Stop-WithLogin "/g).length, 5);
   assert.ok(!/throw '[^']*(saved CI login|Guard code|rate-limited the CI login)/.test(launch), 'no login failure is a plain throw');
-  assert.match(extract, /ok \| login-failed \| usmap-failed \| extract-failed/);
-  assert.match(extract, /ok, login-failed, usmap-failed or extract-failed/);
+  assert.match(extract, /ok \| login-failed \| usmap-failed \| cleanup-failed \| extract-failed/);
+  assert.match(extract, /ok, login-failed, usmap-failed, cleanup-failed or extract-failed/);
 });
 
 // Runs the "Outputs and result" step for a made-up state; returns its status output and exit code.
-function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', stage = '' }) {
+function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', stage = '', cleanup = 'success', reasonFile = '' }) {
   const dir = mkdtempSync(join(tmpdir(), 'sr-final-'));
   try {
     const temp = join(dir, 'tmp');
@@ -203,10 +235,11 @@ function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', st
     mkdirSync(temp);
     mkdirSync(join(work, 'out'), { recursive: true });
     if (login) writeFileSync(join(temp, 'rig-login-failed.txt'), 'login');
+    if (reasonFile) writeFileSync(join(temp, 'rig-reason.txt'), reasonFile);
     if (boot !== null) writeFileSync(join(work, 'out', 'boot.json'), JSON.stringify(boot));
     const outFile = join(dir, 'output.txt');
     writeFileSync(outFile, '');
-    const env = { ...process.env, RUNNER_TEMP: temp, GITHUB_OUTPUT: outFile, GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), BUILDID: '123', STAGE_STATUS: stage, USMAP_OK: usmapOk, UPLOAD: upload };
+    const env = { ...process.env, RUNNER_TEMP: temp, GITHUB_OUTPUT: outFile, GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), BUILDID: '123', STAGE_STATUS: stage, CLEANUP: cleanup, USMAP_OK: usmapOk, UPLOAD: upload };
     const script = runBlock(stepOf(extractJob, 'Outputs and result'));
     writeFileSync(join(dir, 'step.ps1'), script);
     for (const exe of ['pwsh', 'powershell']) {
@@ -216,7 +249,7 @@ function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', st
       const raw = readFileSync(outFile);
       const written = (raw[0] === 0xff && raw[1] === 0xfe ? raw.toString('utf16le') : raw.toString('utf8')).replace(/\r|﻿/g, '');
       const status = /^status=(.*)$/m.exec(written)?.[1];
-      return { code: r.status, status, out: r.stdout + r.stderr, written: readFileSync(outFile, 'utf8') };
+      return { code: r.status, status, out: r.stdout + r.stderr, written: readFileSync(outFile, 'utf8'), summary: existsSync(join(dir, 'summary.md')) ? readFileSync(join(dir, 'summary.md'), 'utf8') : '' };
     }
     return null;
   } finally {
@@ -242,6 +275,19 @@ test('the status step: login-failed, usmap-failed, extract-failed, ok, and empty
   const ok = finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'success', stage: 'ok' });
   assert.equal(ok.status, 'ok');
   assert.equal(ok.code, 0);
+  // The login could not be removed: the extractor never ran, whatever else happened.
+  const cf = finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'success', stage: 'cleanup-failed', cleanup: 'failure' });
+  assert.equal(cf.status, 'cleanup-failed');
+  assert.equal(cf.code, 1);
+  assert.equal(finalStatus({ boot: { process_found: true }, usmapOk: 'false', cleanup: 'failure' }).status, 'cleanup-failed', 'even with no usmap');
+  assert.equal(finalStatus({ login: true, cleanup: 'failure' }).status, 'login-failed', 'a sign-in failure stays login-failed');
+  // The reason text is never empty for a status that is not ok, and a recorded reason wins.
+  for (const st of [{ login: true }, { boot: { process_found: true }, usmapOk: 'false' }, { boot: { process_found: true }, usmapOk: 'true', upload: 'success', stage: 'extract-failed' }, { boot: { process_found: true }, usmapOk: 'true', cleanup: 'failure' }, {}]) {
+    const r = finalStatus(st);
+    assert.match(r.summary, /\n\n\S/, `a reason follows the status line for ${JSON.stringify(st)}`);
+    assert.match(r.out, /::error title=Data extract::status '[^']*'\. \S/);
+  }
+  assert.match(finalStatus({ boot: { process_found: true }, usmapOk: 'true', cleanup: 'failure', reasonFile: 'ssfn123 could not be removed' }).out, /ssfn123 could not be removed/);
 });
 
 // ---- S4: one cleanup and one leak gate, shared with the rig -------------------------------------

@@ -29,13 +29,15 @@ name: SR data extract
 #     artifact_name  sr-data-<branch>-<buildid>, or empty if nothing was uploaded. The branch
 #                    is in the name because a build promoted from the test branch to public
 #                    keeps its build id: a consumer dedupes on branch + buildid.
-#     status         ok | login-failed | usmap-failed | extract-failed.
+#     status         ok | login-failed | usmap-failed | cleanup-failed | extract-failed.
 #                    login-failed: Steam did not accept the saved CI login (rejected,
 #                    rate-limited, Guard code asked, client never signed in): the login needs
 #                    renewing, Dumper-7 is not at fault. usmap-failed: the game process ran
 #                    (or a usmap exists) but no usable .usmap came out. extract-failed: the
-#                    usmap exists but the extractor or its changelist/data guard failed, or
-#                    the leak gate, the cleanup or the upload failed. Empty: the job failed
+#                    usmap exists but the extractor ran and failed (its changelist/data guard
+#                    included), or the leak gate or the upload failed. cleanup-failed: the
+#                    Steam login could not be removed from the runner, so the extractor never
+#                    ran (the usmap is still uploaded). The reason text is never empty. Empty: the job failed
 #                    before the game started for another reason (install, build id mismatch,
 #                    Steam client start); the job result is failure. The job fails unless the
 #                    status is ok; the outputs are still set.
@@ -56,9 +58,12 @@ name: SR data extract
 #   The job passes the artifact name, the extractor sha and the Dumper-7 sha on as outputs.
 #   extract job (environment steam-client): download the game with steamcmd and launch it
 #   with the Steam client, both through ci/client-rig-launch.ps1; dump; remove Steam and the
-#   login files from the runner (always, even on failure); only then run the extractor;
-#   leak-gate and upload. The cleanup and the leak gate are ci/steam-cleanup.ps1 and
-#   ci/leak-gate.ps1, the same scripts sr-client-rig.yml runs.
+#   login material from the runner (-Phase Login: fatal and verified, always, even on failure);
+#   only then run the extractor; leak-gate and upload; last, remove the Steam install folder
+#   (-Phase Folder: retries for about 60 s, warns and names the locking process, never fails
+#   the job; it runs after the extractor because the game files may sit under that folder).
+#   The cleanup and the leak gate are ci/steam-cleanup.ps1 and ci/leak-gate.ps1, the same
+#   scripts sr-client-rig.yml runs (it runs the cleanup as one piece).
 #
 # TRUST. The extract job's secrets are delivered to the runner process at job start and stay
 # in its memory for the whole job; deleting the login files does not take them out of reach.
@@ -151,7 +156,7 @@ on:
         description: 'sr-data-<branch>-<buildid>, or empty if nothing was uploaded'
         value: ${{ jobs.extract.outputs.artifact_name }}
       status:
-        description: 'ok, login-failed, usmap-failed or extract-failed; empty if the job failed before the game started'
+        description: 'ok, login-failed, usmap-failed, cleanup-failed or extract-failed; empty if the job failed before the game started'
         value: ${{ jobs.extract.outputs.status }}
     # Environment secrets of steam-client. Unpassed, they read as empty with no error;
     # required, a caller that leaves them out fails at the call.
@@ -404,6 +409,7 @@ jobs:
         run: ./ci/client-rig-launch.ps1 -Phase Launch -Branch $env:BRANCH -InstallDir $env:INSTALL_DIR -OutDir out -PayloadScript ./ci/data/dump-usmap.ps1 -AttemptCapSec 900
 
       # Right after the launch, ahead of everything else. Runs on a failed or cancelled run too.
+      # Only the login goes here (fatal, verified); the Steam folder goes after the upload.
       - name: Remove Steam and the login from the runner
         id: cleanup
         if: always()
@@ -412,7 +418,7 @@ jobs:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
         run: |
           if (-not (Test-Path ./ci/steam-cleanup.ps1)) { 'The sources were not checked out, so nothing was installed.'; exit 0 }
-          ./ci/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR
+          ./ci/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR -Phase Login
           exit $LASTEXITCODE
 
       - name: Find the usmap
@@ -453,7 +459,12 @@ jobs:
           USMAP: ${{ steps.usmap.outputs.file }}
           CLEANUP: ${{ steps.cleanup.outcome }}
         run: |
-          $status = if ($env:EXTRACT -eq 'success' -and $env:CLEANUP -eq 'success') { 'ok' } else { 'extract-failed' }
+          # cleanup-failed: the login could not be removed, so the extractor never ran.
+          $status = if ($env:CLEANUP -ne 'success') { 'cleanup-failed' } elseif ($env:EXTRACT -eq 'success') { 'ok' } else { 'extract-failed' }
+          if ($status -eq 'extract-failed') {
+            $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
+            if (-not (Test-Path -LiteralPath $why) -or -not (Get-Content -LiteralPath $why -Raw).Trim()) { Set-Content -LiteralPath $why -Value "The extractor ran and failed (step outcome '$env:EXTRACT'); see its step log." -Encoding utf8 }
+          }
           New-Item -ItemType Directory -Force stage/usmap | Out-Null
           Copy-Item -LiteralPath $env:USMAP -Destination stage/usmap/
           if (Test-Path extract-out) { Copy-Item -LiteralPath extract-out -Destination stage/extract -Recurse }
@@ -482,12 +493,26 @@ jobs:
           overwrite: true
           if-no-files-found: error
 
+      # The Steam install folder, last: the game files the extractor reads can sit under it, and
+      # the login is already gone, so a folder that stays locked is a warning, never a failure.
+      - name: Remove the Steam folder
+        id: folder
+        if: always()
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          if (-not (Test-Path ./ci/steam-cleanup.ps1)) { 'The sources were not checked out, so nothing was installed.'; exit 0 }
+          ./ci/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR -Phase Folder
+          exit 0
+
       - name: Outputs and result
         id: final
         if: always()
         shell: pwsh
         env:
           STAGE_STATUS: ${{ steps.stage.outputs.status }}
+          CLEANUP: ${{ steps.cleanup.outcome }}
           USMAP_OK: ${{ steps.usmap.outputs.ok }}
           UPLOAD: ${{ steps.upload.outcome }}
         run: |
@@ -502,6 +527,8 @@ jobs:
           $status = ''
           if ($loginFailed) {
             $status = 'login-failed'
+          } elseif ($env:CLEANUP -eq 'failure') {
+            $status = 'cleanup-failed'
           } elseif ($started) {
             $status = if ($env:USMAP_OK -ne 'true') { 'usmap-failed' } elseif ($env:UPLOAD -ne 'success') { 'extract-failed' } else { $env:STAGE_STATUS }
           }
@@ -510,5 +537,15 @@ jobs:
           "artifact_name=$artifact" >> $env:GITHUB_OUTPUT
           $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
           $reason = if (Test-Path -LiteralPath $why) { (Get-Content -LiteralPath $why -Raw).Trim() } else { '' }
+          # The reason is never empty for a status that is not ok.
+          if ($status -ne 'ok' -and -not $reason) {
+            $reason = switch ($status) {
+              'login-failed' { 'Steam did not accept the saved CI login.' }
+              'cleanup-failed' { 'The Steam login could not be removed from the runner, so the extractor did not run.' }
+              'usmap-failed' { 'The game ran but no usable .usmap came out.' }
+              'extract-failed' { 'The extractor, the leak gate or the upload failed; see the failed step.' }
+              default { 'The job stopped before the game started; see the failed step.' }
+            }
+          }
           "### Data extract: $(if ($status) { $status } else { 'stopped before the game started' })`n`nbuild $env:BUILDID, artifact: $(if ($artifact) { $artifact } else { 'none' })`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           if ($status -ne 'ok') { Write-Host "::error title=Data extract::status '$status'. $reason"; exit 1 }
