@@ -64,8 +64,8 @@ function Remove-Login {
     Start-Sleep -Seconds 5
     $targets = @('C:\steamcmd', (Join-Path $env:LOCALAPPDATA 'Steam'),
         (Join-Path $steamDir 'config'), (Join-Path $steamDir 'userdata'), (Join-Path $steamDir 'logs'))
-    $targets += @(Get-ChildItem -LiteralPath $steamDir -Filter 'ssfn*' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-    $targets += @(Get-ChildItem -LiteralPath $steamDir -Recurse -Include 'config.vdf', 'loginusers.vdf' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    $targets += @(Get-ChildItem -LiteralPath $steamDir -Filter 'ssfn*' -File -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    $targets += @(Get-ChildItem -LiteralPath $steamDir -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -in 'config.vdf', 'loginusers.vdf' } | ForEach-Object { $_.FullName })
     foreach ($t in $targets) { $null = Remove-WithRetry $t 20 }
     # The saved login's registry entries, and the app id file the launch wrote.
     Remove-Item -LiteralPath 'HKCU:\Software\Valve' -Recurse -Force -ErrorAction SilentlyContinue
@@ -79,8 +79,10 @@ function Remove-Login {
         $left += @(Get-ChildItem -LiteralPath $InstallDir -Recurse -Filter steam_appid.txt -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
     }
     if ($left) {
-        foreach ($l in $left) { Write-Host "::error::$l could not be removed" }
-        $reason = "The Steam login could not be removed from the runner ($($left -join ', ')), so the extractor did not run."
+        # ssfn file names carry a number that may identify the account: print the pattern only.
+        $shown = @($left | ForEach-Object { $_ -replace 'ssfn\d+', 'ssfn*' } | Select-Object -Unique)
+        foreach ($l in $shown) { Write-Host "::error::$l could not be removed" }
+        $reason = "The Steam login could not be removed from the runner ($($shown -join ', ')), so the extractor did not run."
         if ($env:RUNNER_TEMP) { Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-reason.txt') -Value $reason -Encoding utf8 }
         return $false
     }
@@ -96,7 +98,12 @@ function Remove-Folder {
 }
 
 if ($Phase -in 'All', 'Login') {
-    if (-not (Remove-Login)) { exit 1 }
+    if (-not (Remove-Login)) {
+        # Defence in depth: still try the folder in the rig's one-step run.
+        if ($Phase -eq 'All') { Remove-Folder }
+        exit 1
+    }
 }
-if ($Phase -in 'All', 'Folder') { Remove-Folder }
+if ($Phase -eq 'Folder') { Remove-Folder }
+if ($Phase -eq 'All') { Remove-Folder }
 exit 0

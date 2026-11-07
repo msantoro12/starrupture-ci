@@ -361,8 +361,8 @@ test('cleanup: the rig runs both parts in one step; the login part is fatal, the
   assert.ok(!/-Phase/.test(cleanupStep), 'no -Phase: the default is login removal, then the folder');
   const c = cleanupPs.replace(/^\s*#.*$/gm, '');
   assert.match(c, /\[string\]\$Phase = 'All'|\[ValidateSet\('All', 'Login', 'Folder'\)\]\[string\]\$Phase = 'All'/);
-  assert.match(c, /if \(-not \(Remove-Login\)\) \{ exit 1 \}/);
-  assert.match(c, /if \(\$Phase -in 'All', 'Folder'\) \{ Remove-Folder \}/);
+  assert.match(c, /if \(-not \(Remove-Login\)\) \{[\s\S]*?exit 1/);
+  assert.match(c, /if \(\$Phase -eq 'All'\) \{ Remove-Folder \}/);
   assert.match(c, /::warning::[^\n]*held by: /);
   assert.match(step('Outputs and result'), /CLEANUP -eq 'failure'/);
 });

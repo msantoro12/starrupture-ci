@@ -135,7 +135,6 @@ test('the cleanup script: the login part is fatal and verified, the folder part 
   // Login: ssfn, config.vdf, loginusers.vdf, steamcmd and the registry go; each is checked afterwards; exit 1 on a leftover.
   for (const t of ['ssfn*', 'config.vdf', 'loginusers.vdf', 'C:\\steamcmd', 'HKCU:\\Software\\Valve']) assert.ok(c.includes(t), t);
   assert.match(c, /\$left = @\(\$targets \| Where-Object \{ Test-Path -LiteralPath \$_ \}\)/);
-  assert.match(c, /if \(-not \(Remove-Login\)\) \{ exit 1 \}/);
   assert.match(c, /rig-reason\.txt/);
   // Folder: stops the client, the helper, the service and the game; retries; warns with the holder; exits 0.
   for (const p of ['steam', 'StarRupture', 'Steam Client Service']) assert.ok(c.includes(p), p);
@@ -143,7 +142,8 @@ test('the cleanup script: the login part is fatal and verified, the folder part 
   assert.match(c, /\$FolderRetrySec = 60/);
   assert.match(c, /::warning::[^\n]*held by: \$\(Get-Locker/);
   assert.ok(!/::error::[^\n]*Steam folder|exit 1[^\n]*Remove-Folder/.test(c));
-  assert.match(c, /if \(\$Phase -in 'All', 'Folder'\) \{ Remove-Folder \}\nexit 0\s*$/);
+  assert.match(c, /if \(\$Phase -eq 'Folder'\) \{ Remove-Folder \}\nif \(\$Phase -eq 'All'\) \{ Remove-Folder \}\nexit 0\s*$/);
+  assert.match(c, /if \(-not \(Remove-Login\)\) \{[\s\S]*?exit 1\n    \}/);
 });
 
 test('the build steps that compile pinned sources have a timeout', () => {
