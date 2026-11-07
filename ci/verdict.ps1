@@ -64,7 +64,8 @@
 #                    what it says: it fails on outcome "safe-off", a required pattern miss, a
 #                    global that is unresolved or rejected, or a change of field "missing" or
 #                    "vtableSlot". A "partial" report with only other changes passes, and the
-#                    changes are shown as notes. A listed file that is absent or unparseable fails.
+#                    changes are shown as notes. Format 4 adds outcome "unchanged" (layout did not
+#                    change, a plugin made a size request), judged like "partial". A listed file that is absent or unparseable fails.
 #                    Its optional "sizes" array holds one entry per struct-size request:
 #                    { plugin, key, rowCL, rowSize, reflectedSize, result }, result one of
 #                    match, mismatch, row-only, no-row, reflected-only. Each entry is a note
@@ -170,7 +171,9 @@ function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField, [switch]$SkipC
 
 # Client mode: judges the compat-report-<CL>.json files boot.json lists by what they say.
 # The loader writes one when the game's layout changed under it (compat_report.cpp, format
-# 3): outcome "safe-off" (every plugin refused) or "partial" (informational on its own),
+# 3; format 4 adds outcome "unchanged" and sizes): outcome "safe-off" (every plugin refused),
+# "partial" or, from format 4, "unchanged" (layout did not move, a size request wrote the
+# report; both informational on their own),
 # patternMisses[] {name, required, found}, globals[] {name, resolved, rejected} and
 # changes[] {class, member, field, sdk, game}, and sizes[] {plugin, key, rowCL, rowSize,
 # reflectedSize, result}: one entry per class-key size request, the map row's size against the
@@ -212,7 +215,7 @@ function Get-CompatJudgement($Ml, $Boot) {
         if ($shape.Count -gt 0) { $bad.Add("$name has no usable " + ($shape -join ', ')); continue }
         $parsed++
         if ($outcome -ceq 'safe-off') { $bad.Add("$name outcome is safe-off: every plugin is switched off") }
-        elseif ($outcome -cne 'partial') { $bad.Add("$name outcome is '$outcome', not partial") }
+        elseif ($outcome -cne 'partial' -and $outcome -cne 'unchanged') { $bad.Add("$name outcome is '$outcome', not partial or unchanged") }
         foreach ($m in @($r.patternMisses)) {
             $mName = [string](Get-Prop $m 'name' ''); $req = Get-Prop $m 'required'
             if ($mName -eq '' -or $req -isnot [bool]) { $bad.Add("$name has a pattern miss without name or required"); continue }

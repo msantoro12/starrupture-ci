@@ -356,6 +356,9 @@ $rigCases = [ordered]@{
  'compat feature off'         = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: no row for CL-129402 (reflected)" }; Fail = 'compat_report_ok' }
  # Class-key size rows: the map row's size against the size the game reflects
  'sizes match'               = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szReflOnly" } }
+ 'unchanged sizes match'     = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "unchanged"'; Add-Sizes $c $szMatch } }
+ 'unchanged sizes mismatch'  = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "unchanged"'; Add-Sizes $c $szMismatch }; Fail = 'compat_report_ok' }
+ 'unchanged pattern miss'    = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "unchanged"'; Edit-Report $c '"patternMisses": []' ('"patternMisses": [ ' + $missRow.Replace('REQ', 'true') + ' ]') }; Fail = 'compat_report_ok' }
  'sizes empty'               = @{ Run = $tb; Mut = { param($c) Add-Sizes $c '' } }
  'sizes mismatch'            = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szMismatch" };                                Fail = 'compat_report_ok' }
  'sizes unreflected, row'    = @{ Run = $tb; Mut = { param($c) Add-Sizes $c $szRowOnly } }
