@@ -1100,6 +1100,61 @@ jobs:
           if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code $scanCode ($($scan.summary.requiredFailing) required patterns failing)" }
           if ($fail) { exit 1 }
 
+      # Map mode: the function keys no scanned DLL asks for still need a row on this
+      # build. The scanner re-resolves each of them on this exe with the pattern of
+      # its newest earlier row, as the loader does at run time (sr-aobscan --carry,
+      # against the header the candidate is cut from); map-mode's assemble turns
+      # the report into rows. Data only: the header is read, no code from it runs.
+      - name: Check out the base header
+        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ needs.build.outputs.loader_sha }}
+          path: base-loader
+          sparse-checkout: StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Carry the version map's keys onto this build
+        id: carry
+        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+          # A dispatched test run measures a CL the header already holds rows for (map-mode write --remeasure): the carry leaves them out the same way.
+          TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && inputs.publish != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          if ([string]$exe.VersionInfo.ProductVersion -notmatch 'CL-(\d+)$') { throw "ProductVersion '$($exe.VersionInfo.ProductVersion)' names no CL" }
+          $cl = $Matches[1]
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          $map = 'base-loader\StarRupture-ModLoader-Core\hooks\game\version_map.generated.h'
+          $scanArgs = @($exe.FullName, '--carry', '--map', $map, '--cl', $cl)
+          if ($env:TEST_AUTOPILOT -eq 'true') { $scanArgs += @('--ignore-cl', $cl) }
+          New-Item -ItemType Directory -Force out | Out-Null
+          $ErrorActionPreference = 'Continue'
+          & $scanner @scanArgs > out\carry.json 2> out\carry.txt
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          Get-Content out\carry.txt | Write-Host
+          # The scanner exits 0 whenever it wrote a report, whatever the keys did: the report decides.
+          $report = $null
+          try { $report = Get-Content out\carry.json -Raw | ConvertFrom-Json } catch { }
+          $has = { param($name) $report -is [pscustomobject] -and $report.PSObject.Properties[$name] }
+          if (-not ((& $has 'kind') -and $report.kind -eq 'carry' -and (& $has 'cl') -and [string]$report.cl -eq $cl -and (& $has 'rows') -and (& $has 'summary'))) {
+            Write-Host "::error title=Carry scan::sr-aobscan --carry wrote no carry report for CL-$cl (exit $code); the keys no plugin requested would get no row"
+            exit 1
+          }
+          "carry: $($report.summary | ConvertTo-Json -Compress)"
+
       # Plugin code never runs while the login cache could still be on disk.
       - name: Download the plugins
         if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && needs.plugin-plan.outputs.any == 'true'
@@ -1858,6 +1913,7 @@ jobs:
             out/result.json
             out/scanner.txt
             out/scanner.json
+            out/carry.json
             out/plugin-*.json
             out/plugin-*.txt
             out/autofix-*
@@ -2008,10 +2064,19 @@ jobs:
             }
             fs.writeFileSync("scans.json", JSON.stringify({ source: "steam_build " + process.argv[1], scans }));
           ' "$buildid"
-          node tool/ci/map-mode.mjs assemble scans.json --out observations.json
+          header=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
+          # The keys no scanned DLL requested come from the check job's carry scan, taken
+          # against this header before anything is written to it. Without the report the
+          # run stops here: those keys would get no row.
+          [ -f res/carry.json ] || { echo "::error::the check job wrote no carry.json; the keys no plugin requested would get no row"; exit 2; }
+          cp res/carry.json carry.json
+          if ! node tool/ci/map-mode.mjs assemble scans.json --out observations.json --carry carry.json --base "$header" 2> assemble.err; then
+            cat assemble.err >&2
+            echo "::error::map mode could not assemble the input: $(tr '\n' ' ' < assemble.err)"
+            exit 2
+          fi
           echo "loader_sha=$(git -C loader rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "loader_tree=$(git -C loader rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
-          header=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h
           # G3 compares the new CL with the one the header was built for.
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
@@ -2022,8 +2087,16 @@ jobs:
           # A test run measures a CL already in the table again; any other run refuses it.
           node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json --remeasure "$TEST_AUTOPILOT" || status=$?
           cp "$header" version_map.generated.h
-          if [ "$status" -ne 0 ]; then echo "::error::map mode refused the update (exit $status); see the log and map-mode-report.json"; fi
-          exit "$status"
+          if [ "$status" -ne 0 ]; then echo "::error::map mode refused the update (exit $status); see the log and map-mode-report.json"; exit "$status"; fi
+          # The gate: every function key with a row on an earlier CL has one on this CL, present
+          # or absent, or is named in the write report's absences. Exit 3 prints the one-line
+          # cause (which keys, how many); the error annotation is what the alert shows.
+          cl="$(node -p "JSON.parse(require('fs').readFileSync('observations.json', 'utf8')).cl")"
+          complete=0
+          cause="$(node tool/ci/map-mode.mjs complete "$header" --cl "$cl" --report map-mode-report.json)" || complete=$?
+          echo "$cause"
+          if [ "$complete" -eq 3 ]; then echo "::error::$cause"; elif [ "$complete" -ne 0 ]; then echo "::error::the completeness check failed (exit $complete); see the log"; fi
+          exit "$complete"
 
       - name: Decide, export, sign, stage and plan the promotion
         id: chain
@@ -2247,6 +2320,7 @@ jobs:
           path: |
             version_map.generated.h
             map-mode-report.json
+            carry.json
             observations.json
             field-rows.json
             g?.json

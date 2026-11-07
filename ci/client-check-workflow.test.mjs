@@ -1578,3 +1578,119 @@ test('native-keys: the layout step accepts every line of ci/native-keys.txt and 
   // The key the step lists for the plugin is the class name alone for a size line.
   assert.equal(size.exec('P FMassQuery size optional')[2], 'FMassQuery');
 });
+
+// ---- Carried rows: the carry scan in the check job, assemble and the completeness gate in map mode ----
+
+test('carry: the check job scans the base header against the new exe after the login cache is gone, and reports from the JSON', () => {
+  const c = job('check');
+  const names = stepsOf(c);
+  const at = (n) => names.indexOf(n);
+  const CARRY = "Carry the version map's keys onto this build";
+  assert.ok(at(CARRY) > 0, 'the carry step exists');
+  assert.ok(at('Remove the login cache from the runner') < at('Check out the base header'), 'the header comes after the cleanup');
+  assert.ok(at('Check the client build') < at('Check out the base header') && at('Check out the base header') < at(CARRY));
+  assert.ok(at(CARRY) < at('Download the plugins'));
+  const gate = "steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true";
+  assert.equal(c.split(`if: ${gate}\n`).length - 1, 2, 'both steps run only in map mode, after a passing scan');
+  // The header is the one the candidate is cut from: the scanned loader commit, data only.
+  assert.match(c, /repository: \$\{\{ inputs\.loader_repo \}\}\n\s+ref: \$\{\{ needs\.build\.outputs\.loader_sha \}\}\n\s+path: base-loader\n\s+sparse-checkout: StarRupture-ModLoader-Core\/hooks\/game\/version_map\.generated\.h\n\s+sparse-checkout-cone-mode: false\n\s+persist-credentials: false\n/);
+  const run = runOf(c, CARRY);
+  assert.ok(run.includes("$scanArgs = @($exe.FullName, '--carry', '--map', $map, '--cl', $cl)"));
+  assert.ok(run.includes("$map = 'base-loader\\StarRupture-ModLoader-Core\\hooks\\game\\version_map.generated.h'"));
+  assert.ok(run.includes('& $scanner @scanArgs > out\\carry.json 2> out\\carry.txt'));
+  assert.ok(run.includes('(Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256'), 'runs the scanner build-scanner made');
+  // A test run measures a CL the header holds rows for: only then are that CL's rows left out.
+  assert.ok(run.includes("if ($env:TEST_AUTOPILOT -eq 'true') { $scanArgs += @('--ignore-cl', $cl) }"));
+  assert.match(c, /TEST_AUTOPILOT: \$\{\{ inputs\.test_autopilot == true && inputs\.publish != true && contains\(github\.workflow_ref, '\/\.github\/workflows\/sr-client-check\.yml@'\) \}\}/);
+  // The scanner exits 0 whenever a report is written: the step reads the report, not the code.
+  assert.ok(run.includes("-and $report.kind -eq 'carry'") && run.includes('[string]$report.cl -eq $cl'));
+  assert.ok(!/if \(\$code -ne 0\)|\$LASTEXITCODE -ne 0/.test(run), 'the exit code decides nothing');
+  assert.match(run, /::error title=Carry scan::sr-aobscan --carry wrote no carry report for CL-\$cl \(exit \$code\)[^"]*"\n\s+exit 1/);
+  // It reaches the map-mode job through the check's artifact.
+  assert.match(c, /out\/scanner\.json\n\s+out\/carry\.json\n/);
+});
+
+// The head and the tail of the map-mode write step, run for real.
+const writeStep = () => runOf(job('map-mode'), 'Write the update into the header').split('\n');
+const between = (lines, from, to) => lines.slice(lines.findIndex((l) => l.startsWith(from)), lines.findIndex((l) => l.startsWith(to))).join('\n');
+const carryDir = (files) => {
+  const dir = mkdtempSync(join(tmpdir(), 'carrywf-'));
+  cpSync(here, join(dir, 'tool', 'ci'), { recursive: true });
+  const h = join(dir, 'loader', 'StarRupture-ModLoader-Core', 'hooks', 'game');
+  mkdirSync(h, { recursive: true });
+  cpSync(join(here, 'fixtures', 'version-map', 'loader.h'), join(h, 'version_map.generated.h'));
+  mkdirSync(join(dir, 'res'));
+  writeFileSync(join(dir, 'res', 'loader.json'), JSON.stringify({ patterns: [] }));
+  writeFileSync(join(dir, 'scans.json'), JSON.stringify({ cl: 130000, build: { stamp: '0x6B000001', size: '0x0A430000', source: 'public 1' }, scans: [{ owner: 'ModLoader', tracked: true, tag: 'v1', rank: 'current', file: 'res/loader.json' }] }));
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+  return dir;
+};
+
+test('carry: map mode assembles with the carry report against the unwritten header, and stops loudly without a good one', { skip: !bash }, () => {
+  const head = between(writeStep(), 'header=loader/', 'echo "loader_sha=');
+  assert.ok(head.includes('assemble scans.json --out observations.json --carry carry.json --base "$header"'));
+  const run = (files) => {
+    const dir = carryDir(files);
+    const r = spawnSync(bash, ['-c', `set -euo pipefail\n${head}\necho assembled`], { cwd: dir, encoding: 'utf8', windowsHide: true });
+    return { dir, r };
+  };
+  const good = run({ 'res/carry.json': JSON.stringify({ kind: 'carry', cl: 130000, summary: {}, rows: [] }) });
+  assert.equal(good.r.status, 0, good.r.stdout + good.r.stderr);
+  assert.ok(existsSync(join(good.dir, 'observations.json')) && existsSync(join(good.dir, 'carry.json')), 'the report is kept beside the other map-mode files');
+
+  const missing = run({});
+  assert.equal(missing.r.status, 2);
+  assert.match(missing.r.stdout, /::error::the check job wrote no carry\.json/);
+  assert.ok(!existsSync(join(missing.dir, 'observations.json')));
+
+  for (const [what, text, cause] of [
+    ['not JSON', '<html>', /::error::map mode could not assemble the input: map-mode: .*carry\.json is not JSON/],
+    ['another kind', JSON.stringify({ kind: 'scan', rows: [] }), /::error::map mode could not assemble the input: map-mode: .*not a carry report/],
+    ['another CL', JSON.stringify({ kind: 'carry', cl: 1, rows: [] }), /::error::map mode could not assemble the input: map-mode: .*not CL-130000/],
+    ['an entry without a kind', JSON.stringify({ kind: 'carry', cl: 130000, rows: [{ key: 'GWorld', fromCL: 128786, result: 'none' }] }), /::error::map mode could not assemble the input: map-mode: .*GWorld: the entry has no kind or fp/],
+  ]) {
+    const bad = run({ 'res/carry.json': text });
+    assert.equal(bad.r.status, 2, what);
+    assert.match(bad.r.stdout, cause, what);
+    assert.ok(!bad.r.stdout.includes('assembled'), what);
+  }
+});
+
+test('carry: the completeness gate fails the job with the one-line cause as the error annotation', { skip: !bash }, () => {
+  const lines = writeStep();
+  // A refusal of the write leaves before the gate runs.
+  const refuse = lines.findIndex((l) => l.includes('map mode refused the update'));
+  assert.ok(lines[refuse].includes('exit "$status"; fi'));
+  const start = lines.findIndex((l) => l.startsWith('cl="$(node -p'));
+  assert.ok(refuse < start);
+  const tail = lines.slice(start).join('\n');
+  assert.ok(tail.includes('complete "$header" --cl "$cl" --report map-mode-report.json'));
+  const run = (cl) => {
+    const dir = carryDir({ 'observations.json': JSON.stringify({ cl }), 'map-mode-report.json': JSON.stringify({ written: true, absences: [] }) });
+    const header = 'loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h';
+    const r = spawnSync(bash, ['-c', `set -euo pipefail\nheader=${header}\n${tail}`], { cwd: dir, encoding: 'utf8', windowsHide: true });
+    return { dir, r };
+  };
+  // CL-130000 has no row for any of the fixture's five keys: exit 3 and the cause on the annotation.
+  const gap = run(130000);
+  assert.equal(gap.r.status, 3, gap.r.stdout + gap.r.stderr);
+  assert.match(gap.r.stdout, /\n::error::5 of 5 function keys have no CL-130000 row: [^\n]+\n$/);
+  assert.match(gap.r.stderr, /missing: GWorld/);
+  const report = JSON.parse(readFileSync(join(gap.dir, 'map-mode-report.json'), 'utf8'));
+  assert.equal(report.missing.length, 5, 'the result is merged into the write report');
+  assert.equal(report.written, true);
+  // CL-128786 has a row for each: nothing to say.
+  const whole = run(128786);
+  assert.equal(whole.r.status, 0, whole.r.stdout + whole.r.stderr);
+  assert.ok(!whole.r.stdout.includes('::error'));
+  assert.match(whole.r.stdout, /^all 5 function keys with an earlier row have a CL-128786 row/);
+  // Any other failure of the check is an annotation too, not a bare exit code.
+  assert.ok(tail.includes('echo "::error::the completeness check failed (exit $complete); see the log"'));
+});
+
+test('carry: map mode uploads carry.json with its other files, and the gate runs before decide', () => {
+  const mm = job('map-mode');
+  assert.match(mm, /path: \|\n\s+version_map\.generated\.h\n\s+map-mode-report\.json\n\s+carry\.json\n\s+observations\.json\n/);
+  assert.ok(mm.indexOf('assemble scans.json') < mm.indexOf('map-mode.mjs write "$header"') && mm.indexOf('map-mode.mjs write "$header"') < mm.indexOf('map-mode.mjs complete "$header"'));
+  assert.ok(mm.indexOf('map-mode.mjs complete "$header"') < mm.indexOf('- name: Decide, export, sign, stage and plan the promotion'), 'the gate runs before decide');
+});
