@@ -1,7 +1,7 @@
 # Map mode
 
-The whole flow, from a new Steam build to a player's loader, is in the loader repository's
-[VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#how-a-build-reaches-players-ci). This file is the reference for the tools.
+The whole flow, from a new Steam build to a player's loader, is under "The workflow chain"
+below. This file is the reference for the tools.
 
 Map mode puts what a game update changes into the loader's version map
 (`version_map.generated.h`, format in `VERSION-MAP.md`), instead of into each
@@ -562,9 +562,17 @@ key and verifies it with the public key.
 ### Publishing and the watchdog
 
 The signed feed's home is this repository's `vmap-feed` release, as the asset
-`version-map-client.v1.txt`. How the loader repository's `vmap-publish.yml` carries it to the
-loader's Latest release, and how players fetch it, is in
-[VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#how-a-build-reaches-players-ci).
+`version-map-client.v1.txt`. The loader repository's `vmap-publish.yml` carries it to the loader's Latest release:
+
+- It runs every 15 minutes, pulls the `vmap-feed` asset and verifies it against the public
+  keys in the loader's `version_feed.cpp`.
+- It uploads to Latest only if the feed verifies and its `seq` is higher than the newest
+  `seq` on any release.
+- The first publish needs a manual run with `first_publish` set; until then every scheduled
+  run fails with "No release carries a feed".
+- The loader repository holds no signing secrets; only the signed file moves.
+- The feed sits on Latest because the loader's `prune_releases.yml` deletes the other
+  releases.
 
 `vmap-watchdog.yml` runs hourly and opens one issue when the feed on the loader's Latest release
 lags the last signed `seq` by more than two hours, or when Latest holds no feed. It opens no
@@ -691,6 +699,19 @@ Other checks still apply to a key source's rows: one key at two addresses, a req
 at a symbol's start that stays.
 
 ## The workflow chain
+
+```
+sr-watch (poll Steam, every build)
+  -> client-check: build, plugin-plan, plugins, key-sources, check
+  -> map-mode (assemble, write, field-rows, decide, export, sign k1, stage, promote plan)
+  -> push-loader (auto/update-<CL> to the loader fork)
+  -> candidate-loader (build the candidate loader and plugins)
+  -> rig-branch + rig-other (client rig on each Steam branch)
+  -> rig-gate (both PASS)
+  -> publish (public only, publish on; sign k2, upload to the vmap-feed release)
+  -> vmap-publish.yml (loader repo, every 15 min: verify, upload to Latest)
+  -> players' loaders
+```
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 `sr-watch.yml`) is the unattended path M on one build. It reads only the check
