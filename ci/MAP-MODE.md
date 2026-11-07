@@ -290,11 +290,29 @@ the reference build over the same key list. For the new CL it writes a row for
 every `native` key (offset, size, bool mask, found by the key's own text) and for
 every reflected `field` key whose offset, size or mask moved.
 
+It also writes a **class-key row** (the key is the class name alone, offset 0, size N,
+mask 0) for the size of every class a component requests (`size <Class>
+check|compiled|live` in `--uses`), on every build and whether or not the size
+changed, so each CL has its own row and none falls back to another build's. N is the
+size the new build's `--layout` report gives for the class. It goes through the same
+add-field rule as a member row: the same row again changes nothing, another value for
+that key and CL is refused. A class the new build does not resolve gets no row (what
+depended on it is degraded or refused below), and a requested class with no entry in
+the report refuses the run. Without `--uses` nothing says which sizes are requested,
+so no class-key row is written.
+
+A `native-keys.txt` line `<plugin> <ClassName> [size] [optional]` is the same row for an
+unreflected struct: its size is read from the PDB by the same `--layout` run (the scanner
+reports the size of any class that has a body in the PDB, reflected or not) and written
+on every build. The word `size` is only for reading. `optional` works as on a member
+line: a struct gone from a build gets an absent row and the plugin takes its fallback.
+It has no built values and no anchor.
+
 The gate is per plugin, over what that plugin requests. `--uses` is the client check's
 `layout-uses.txt`: per component, its keys (`key`), the members its code requests
 (`request`: `SR_FIELD`, its two-argument wrappers, a hand-written `"Class::Member"`), the
 members it looks up by name on first use (`lazy`, a `PluginLazyField`) and the classes it
-depends on the whole size of (`size <Class> check|compiled`) or reads live (`size <Class> live`). The plugin tables are built
+depends on the whole size of (`size <Class> check|compiled|live`) or reads live (`size <Class> live`). The plugin tables are built
 with `layout-table.mjs gen --granularity 2 --uses-out`, so a struct lists only the members
 a plugin uses or requests, as a UClass already did.
 
@@ -312,6 +330,7 @@ a plugin uses or requests, as a UClass already did.
   that uses the compiled size with no check (`sizeof`, a `TArray` of it by value, a copy)
   holds the update: the loader cannot see the change, so that code misreads it, and
   nothing in the feed turns one plugin off. The fix is `SR_SIZE_CHECK` in that plugin.
+  A refused class writes no header, so no class-key row ships with it.
   Without `--uses`, every class is taken to be used by its compiled size.
 - A class that is gone degrades every plugin with a key in it.
 - A row that is not verified never ships: a native key the report has no entry for, or

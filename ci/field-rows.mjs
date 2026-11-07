@@ -50,6 +50,14 @@
 // uses file every class is taken to be used by its compiled size. A class that
 // is gone degrades every plugin that has a key in it.
 //
+// Sizes are rows too. For every class a component requests the size of (`size
+// <Class> check|compiled|live` in the uses file), and for every `<plugin> <Class>
+// [size] [optional]` line of native-keys.txt (an unreflected struct), it writes a
+// class-key row: the key is the class name alone, offset 0, the size the new
+// build's layout report gives, mask 0. It does so on every build, changed or not,
+// so each CL has its own row; the classification above (note, degraded, refused)
+// is unchanged.
+//
 // The report's `covered` lists every class with a key that has a row or an
 // absent row, a register-sized key, or a change only notes cover: decide.mjs
 // checks the used classes that moved against it. `degraded` lists, per plugin,
@@ -95,6 +103,9 @@ export const LOADER_FIELD_KEYS = new Set([
 export const LOADER = 'ModLoader';
 
 const rowOf = (key, cl, f) => ({ key, cl, offset: f.offset, size: f.size, mask: f.boolMask ?? 0 });
+// A class key (no `::`) is a struct's own size: offset 0, size N, mask 0, no member.
+const isClassKey = (key) => !key.includes('::');
+const sizeRow = (key, cl, size) => rowOf(key, cl, { offset: 0, size, boolMask: 0 });
 const classOf = (key) => key.split('::')[0];
 const memberOf = (key) => key.split('::')[1];
 
@@ -194,8 +205,12 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
       if (built.size !== n.size) notes.push(`${key}: kept the built size ${hex(built.size)}, not the PDB's ${hex(n.size)}`);
       size = built.size;
     }
-    if (!Number.isInteger(n.offset)) { problems.push(`native ${key}: the report gives no offset`); continue; }
-    rows.push(rowOf(key, cl, { offset: n.offset, size, boolMask: n.boolMask }));
+    // A class key (native-keys.txt `<plugin> <Class>`) is the struct's own size: offset 0.
+    if (isClassKey(key)) rows.push(sizeRow(key, cl, size));
+    else {
+      if (!Number.isInteger(n.offset)) { problems.push(`native ${key}: the report gives no offset`); continue; }
+      rows.push(rowOf(key, cl, { offset: n.offset, size, boolMask: n.boolMask }));
+    }
     covered.add(classOf(key));
   }
 
@@ -224,13 +239,13 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
       if (diff) {
         for (const m of [...diff.moved, ...diff.changed]) {
           if (REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: PDB size is the register's; no row`); covered.add(classOf(m.key)); continue; }
-          if (!m.key.includes('::')) { resized(m); continue; }
+          if (isClassKey(m.key)) { resized(m); continue; }
           if (!Number.isInteger(m.next.offset)) { problems.push(`${m.key}: the new report gives no offset`); continue; }
           rows.push(rowOf(m.key, cl, m.next));
           covered.add(classOf(m.key));
         }
         for (const m of diff.missing) {
-          if (m.key.includes('::')) { gone(m.key, 'field', 'resolves on the reference build only (removed or renamed)'); continue; }
+          if (!isClassKey(m.key)) { gone(m.key, 'field', 'resolves on the reference build only (removed or renamed)'); continue; }
           // A class that is gone: its member keys get their absent rows above;
           // every plugin with a key in it loses what it reads from it.
           const owners = ownersOf(m.key);
@@ -250,6 +265,21 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
           if (n?.result === 'OK' && Number.isInteger(n.offset)) { rows.push(rowOf(key, cl, n)); covered.add(classOf(key)); }
         }
       }
+    }
+  }
+  // The size of every class a component requests (`size <Class> check|compiled|live`),
+  // on every build and not only when it changed, so each CL has its own class-key
+  // row and none falls back to another build's. The size is the one the report
+  // gives for the new build. A class the build does not resolve gets no row; the
+  // paths above degrade or refuse what depended on it.
+  if (uses) {
+    const have = new Set(rows.map((r) => r.key));
+    for (const key of [...uses.size.keys()].sort(cmp)) {
+      if (have.has(key)) continue;
+      const n = nextBy.get(key);
+      if (!n) { problems.push(`class ${key}: a component requests its size, and the new build's report has no entry`); continue; }
+      if (n.result !== 'OK') { notes.push(`class ${key}: no size row, the new build reports ${n.result}`); continue; }
+      rows.push(sizeRow(key, cl, n.size));
     }
   }
   rows.sort((a, b) => cmp(a.key, b.key));

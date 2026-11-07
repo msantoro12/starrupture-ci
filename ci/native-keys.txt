@@ -2,7 +2,8 @@
 # no name for them (Dumper-7 folds them into Pad_* bytes: not reflected).
 # sr-client-check reads each one from the PDB of every build it checks,
 # beside the plugin's used classes. Format: <plugin name> <Class::Member>,
-# the key naming the member the plugin's source comment already names.
+# the key naming the member the plugin's source comment already names, or
+# <plugin name> <ClassName> for an unreflected struct's size (see below).
 BetterCheats UCrGameInstance::ServerSessionName
 BetterCheats UCrEnviroWaveTimerSubsystem::NextWaveTimer
 BetterCheats UCrEnviroWaveTimerSubsystem::bWaitingForNextWave
@@ -29,6 +30,12 @@ ProductionViewer FCrGridEntityHandle::Data
 # In the regex @ is the number (hex or decimal) and ~ is \s*; see
 # ci/apply-proposals.mjs "fixed offsets in the source". Engine-internal
 # layouts (TArray, TSharedPtr counts) are engine invariants and are left out.
+#
+# A line with a class name alone, <plugin> <ClassName> [size] [optional], names an
+# unreflected struct the plugin needs the size of. The size is read from the PDB
+# and written as a class-key row (the class name as the key, offset 0, mask 0) on
+# every build. The word size is for reading; optional is as below. No built
+# values, no anchor.
 #
 # Before the anchor a line may give, in this order:
 #   <offset> <size> <mask>  the built values (hex), for a key whose PDB size is

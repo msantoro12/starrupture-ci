@@ -1564,3 +1564,17 @@ test('bases: auto-apply cuts the plugin fork\'s branch from the plugin repositor
   assert.ok(job('report').includes('$fork = "msantoro12/$($Matches[2])"'));
   assert.ok(job('report').includes('git ls-remote "https://github.com/$fork"'));
 });
+
+test('native-keys: the layout step accepts every line of ci/native-keys.txt and the size line form, and rejects a malformed one', () => {
+  const m = /if \(\$line -cnotmatch '([^']+)' -and \$line -cnotmatch '([^']+)'\) \{ throw "native-keys\.txt: malformed line/.exec(wf);
+  assert.ok(m, 'the step checks a member form and a size form');
+  const [member, size] = [new RegExp(m[1]), new RegExp(m[2])];
+  const ok = (line) => member.test(line) || size.test(line);
+  const real = readFileSync(join(here, 'native-keys.txt'), 'utf8').split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith('#'));
+  assert.ok(real.length > 30);
+  for (const line of real) assert.ok(ok(line), line);
+  for (const line of ['P FMassQuery', 'P FMassQuery size', 'P FMassQuery optional', 'P FMassQuery size optional']) assert.ok(ok(line), line);
+  for (const line of ['P FMassQuery optional size', 'P FMassQuery 0x1', 'P FMassQuery size x', 'justone']) assert.ok(!ok(line), line);
+  // The key the step lists for the plugin is the class name alone for a size line.
+  assert.equal(size.exec('P FMassQuery size optional')[2], 'FMassQuery');
+});

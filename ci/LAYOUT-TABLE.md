@@ -193,7 +193,11 @@ the same key list, one per build, key by key: same, moved, changed (size or
 bool mask), missing, added, unresolved. A renamed member counts as missing.
 It exits 3 when anything moved, changed or went missing, 0 otherwise.
 
-A `native-keys.txt` line may also carry an anchor, `<plugin> <Class::Member>
+A `native-keys.txt` line `<plugin> <ClassName> [size] [optional]` (no `::`) names an
+unreflected struct whose size the plugin needs: `--layout` reads it from the PDB and
+`field-rows.mjs` writes it as a class-key row on every build (ci/MAP-MODE.md, step 28).
+
+A `native-keys.txt` member line may also carry an anchor, `<plugin> <Class::Member>
 <file-suffix>:<regex>`, where `@` stands for the number the plugin source holds
 (hex or decimal) and `~` for `\s*`. `apply-proposals.mjs offsets` finds the
 number with the anchor and compares it with the PDB of the checked build. States:
