@@ -7,10 +7,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { addBuild, emit, emptyMap } from './version-map.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -99,7 +101,8 @@ test('publish lock: a test run never reaches the release key, whatever state/aut
   // The chain states explicitly whether it is a test: the dispatch input, its own flag or the decision.
   assert.match(mm, /\n {6}test: \$\{\{ steps\.chain\.outputs\.test \}\}\n/);
   assert.match(mm, /TEST_INPUT: \$\{\{ inputs\.test_autopilot == true \}\}/);
-  assert.ok(mm.includes(`is_test="$(node -p "String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || JSON.parse(require('fs').readFileSync('decision.json','utf8')).test === true)")"\n          echo "test=$is_test" >> "$GITHUB_OUTPUT"`));
+  // A held candidate (decision not M) counts as a test as far as publishing goes.
+  assert.ok(mm.includes(`is_test="$(node -p "const d = JSON.parse(require('fs').readFileSync('decision.json','utf8')); String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || d.test === true || (d.candidate === true && d.decision !== 'M'))")"\n          echo "test=$is_test" >> "$GITHUB_OUTPUT"`));
   const pub = job('publish');
   assert.match(pub, /needs\.map-mode\.outputs\.test == 'false'/, 'the job needs an explicit non-test run');
   // A second lock in the job: the input and the chain's own marks, before anything is signed.
@@ -123,12 +126,12 @@ test('field-rows: a missing reference layout is never named, and only a refusal 
 
 test('alert: a failed job or a HOLD other than "nothing new" opens or updates one issue per branch', () => {
   const a = job('alert');
-  assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish\]/);
+  assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate\]/);
   assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
   assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
   assert.ok(a.includes('result === "failure"'));
-  assert.ok(a.includes('gh issue create --title "$title" --body-file alert.md'));
+  assert.ok(a.includes('gh issue create --title "$TITLE" --body-file alert.md --label pipeline-alert --assignee "$OWNER"'));
   assert.ok(a.includes('gh issue comment "$number" --body-file alert.md'));
   // The caller's ceiling must grant issues: write, or GitHub rejects the call.
   const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -236,4 +239,1221 @@ test('map step: plugins that report another name than their repo (Waila, AxRuptu
   const scans = JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans;
   const tracked = Object.fromEntries(scans.map((s) => [s.owner, s.tracked]));
   assert.deepEqual(tracked, { ModLoader: true, AxRuptureTimer: true, BetterCheats: true, MiniMap: true, Waila: true });
+});
+
+// ------------------------------------------------------------ candidate chain and the loader push
+
+const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
+// The run block of a named step, as the shell receives it.
+const runOf = (j, name) => {
+  const at = j.indexOf(`- name: ${name}\n`);
+  assert.ok(at >= 0, `step "${name}" exists`);
+  const next = j.indexOf('\n      - ', at + 1);
+  const stepText = j.slice(at, next < 0 ? undefined : next);
+  const m = stepText.match(/\n {8}run: \|\n((?: {10}.*\n?|\n)+)/);
+  assert.ok(m, `step "${name}" has a run block`);
+  return m[1].replace(/^ {10}/gm, '');
+};
+// Git's bash on Windows (never the WSL launcher in System32), plain bash elsewhere.
+const bash = process.platform === 'win32' ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'].find(existsSync) : 'bash';
+
+test('candidate: a disabled autopilot holds publishing only; the chain still exports, signs, stages and plans', () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}CANDIDATE: \$\{\{ inputs\.map_mode == true && inputs\.publish != true && inputs\.test_autopilot != true \}\}\n/);
+  assert.ok(mm.includes('[ "$CANDIDATE" = true ] && test_flag=(--candidate)'));
+  // The chain runs on past a HOLD that only the autopilot caused, and stops on any other.
+  assert.ok(mm.includes('elif [ "$CANDIDATE" = true ] && [ "$decision" = HOLD ] && [ "$would" = M ]; then'));
+  assert.ok(mm.includes('elif [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi'));
+  assert.ok(mm.indexOf('elif [ "$CANDIDATE" = true ]') < mm.indexOf('version-map.mjs export-feed'), 'the candidate check comes before the export');
+  // The held plan is a test plan: marked, and never publishable.
+  assert.ok(mm.includes('promote_flag=(--test-autopilot)'));
+  assert.ok(mm.includes('--out promote-plan.json "${promote_flag[@]}"'));
+  // Publish stays out of reach while the decision is HOLD, and a candidate never runs with publish on.
+  const pub = job('publish');
+  assert.match(pub, /needs\.map-mode\.outputs\.decision == 'M'/);
+  assert.match(pub, /needs\.map-mode\.outputs\.test == 'false'/);
+  assert.match(pub, /inputs\.publish == true/);
+  assert.ok(!/CANDIDATE|candidate/.test(pub.replace(/^ *#.*$/gm, '')), 'the publish job knows nothing of the candidate path');
+  assert.ok(!/\n {6}publish:/.test(watch.slice(watch.indexOf('  client-check:\n'))), 'sr-watch never passes publish');
+});
+
+test('push-loader: the key, the environment and the target are named, and the allowlist runs before the key is used', () => {
+  const j = job('push-loader');
+  assert.match(j, /\n {4}environment: fork-push\n/);
+  assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.match(j, /\n {4}needs: \[map-mode\]\n/);
+  assert.match(j, /needs\.map-mode\.result == 'success' && needs\.map-mode\.outputs\.staged == 'true' && inputs\.test_autopilot != true && inputs\.loader_repo == 'msantoro12\/StarRupture-ModLoader'/);
+  assert.match(j, /\n {4}outputs:\n {6}branch: \$\{\{ steps\.push\.outputs\.branch \}\}\n {6}sha: \$\{\{ steps\.push\.outputs\.sha \}\}\n/);
+  assert.ok(!/continue-on-error/.test(j), 'no step of the push job may fail quietly');
+  // The key is read by name, in two steps only, and no other secret is touched.
+  assert.equal(j.match(/secrets\.[A-Z_]+/g).join(' '), 'secrets.SR_DEPLOYKEY_MODLOADER secrets.SR_DEPLOYKEY_MODLOADER');
+  // The key check comes first, before anything is fetched.
+  assert.ok(j.indexOf('- name: Check the deploy key') < j.indexOf('- name: Check out the push tool'));
+  // Pushes go through staging.mjs push: no git push, tag or force in the workflow.
+  assert.ok(!/git (-C \S+ )?push|--force|--tags|refs\/tags/.test(j));
+  assert.ok(j.includes('node tool/ci/staging.mjs target --repo "$LOADER_REPO" --plan chain/stage-plan.json'));
+  assert.ok(j.indexOf('staging.mjs target') < j.indexOf('- name: Commit the header and push the branch'), 'the allowlist runs before the key is written');
+  assert.match(j, /repository: msantoro12\/StarRupture-ModLoader\n\s+ref: \$\{\{ steps\.base\.outputs\.sha \}\}/, 'the checkout is the fork at the commit the rows were read from, not a moving ref');
+  // The map-mode job tells the push job when there is something to push.
+  assert.match(job('map-mode'), /\n {6}staged: \$\{\{ steps\.chain\.outputs\.staged \}\}\n/);
+  assert.ok(job('map-mode').includes('echo "staged=true" >> "$GITHUB_OUTPUT"'));
+  // The secret is declared by the called workflow (not required: the job explains its absence) and passed by name by sr-watch.
+  assert.match(call, /\n {6}SR_DEPLOYKEY_MODLOADER:\n {8}description: [^\n]+\n {8}required: false\n/);
+  assert.ok(watch.includes('      SR_DEPLOYKEY_MODLOADER: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}\n'));
+});
+
+test('push-loader: with the secret empty the first step exits 1 and names the secret and the environment', { skip: !bash }, () => {
+  const script = runOf(job('push-loader'), 'Check the deploy key');
+  for (const key of [undefined, '']) {
+    const env = { ...process.env, GITHUB_REPOSITORY: 'msantoro12/starrupture-ci' };
+    if (key === undefined) delete env.DEPLOY_KEY; else env.DEPLOY_KEY = key;
+    const r = spawnSync(bash, ['-c', script], { encoding: 'utf8', env, windowsHide: true });
+    assert.equal(r.status, 1, `exit code for ${JSON.stringify(key)}: ${r.stderr}`);
+    assert.match(r.stdout, /::error title=Loader deploy key missing::/);
+    assert.match(r.stdout, /SR_DEPLOYKEY_MODLOADER/);
+    assert.match(r.stdout, /environment fork-push of msantoro12\/starrupture-ci/);
+  }
+  const ok = spawnSync(bash, ['-c', script], { encoding: 'utf8', env: { ...process.env, DEPLOY_KEY: 'x' }, windowsHide: true });
+  assert.equal(ok.status, 0, 'a set key passes the check');
+});
+
+// ------------------------------------------------------------ leg B1: candidate loader, loader and scanner tests
+
+const stepsOf = (j) => [...j.matchAll(/\n {6}- name: ([^\n]+)\n/g)].map((m) => m[1]);
+const stepText = (j, name) => {
+  const at = j.indexOf(`- name: ${name}\n`);
+  assert.ok(at >= 0, `step "${name}" exists`);
+  const next = j.indexOf('\n      - ', at + 1);
+  return j.slice(at, next < 0 ? undefined : next);
+};
+
+test('candidate-loader: builds the commit push-loader pushed, with a keyless job, and fails the chain when it cannot', () => {
+  const j = job('candidate-loader');
+  assert.match(j, /\n {4}needs: \[push-loader\]\n/);
+  assert.match(j, /\n {4}if: \$\{\{ !cancelled\(\) && needs\.push-loader\.result == 'success' \}\}\n/);
+  assert.match(j, /\n {4}runs-on: windows-latest\n/);
+  assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.ok(!/\n {4}environment:/.test(j), 'no environment');
+  assert.ok(!/secrets\./.test(j.replace(/^ *#.*$/gm, '')), 'no secret is read');
+  assert.ok(!/continue-on-error/.test(j), 'no step may fail quietly');
+  // The commit is the output of push-loader, in a checkout of the fork only, and the checkout is verified.
+  assert.match(j, /LOADER_SHA: \$\{\{ needs\.push-loader\.outputs\.sha \}\}/);
+  assert.match(j, /repository: msantoro12\/StarRupture-ModLoader\n\s+ref: \$\{\{ needs\.push-loader\.outputs\.sha \}\}\n(?:.*\n)*?\s+submodules: recursive\n/);
+  assert.match(runOf(j, 'Check it is that commit'), /git rev-parse HEAD[\s\S]*-ne \$env:LOADER_SHA\) \{ throw/);
+  assert.match(runOf(j, 'Name the build'), /-notmatch '\^\[0-9a-f\]\{40\}\$'\) \{ throw/);
+  // The same shared build action as sr-build-all, Client Release, checked out after the loader.
+  const order = stepsOf(j);
+  assert.ok(order.indexOf('Check out the loader at the pushed commit') < order.indexOf('Check out the build action'));
+  const build = stepText(j, 'Build Client Release');
+  assert.match(build, /uses: \.\/ci-actions\/\.github\/actions\/build-loader\n\s+with:\n\s+configuration: Client Release\n\s+build_tag: \$\{\{ steps\.tag\.outputs\.tag \}\}\n/);
+  assert.ok(!/msbuild .*StarRupture-ModLoader\.sln/.test(j), 'the solution build lives in the action only');
+});
+
+test('candidate-loader: runs VersionMapTests and LayoutCheckTests on that commit before anything is uploaded', () => {
+  const j = job('candidate-loader');
+  const order = stepsOf(j);
+  const at = (n) => order.indexOf(n);
+  assert.ok(at('Build Client Release') < at('VersionMapTests') && at('VersionMapTests') < at('LayoutCheckTests') && at('LayoutCheckTests') < at('Check the build') && at('Check the build') < at('Upload the candidate'));
+  for (const [name, proj, exe] of [['VersionMapTests', 'VersionMapTests', 'version_map_tests'], ['LayoutCheckTests', 'LayoutCheckTests', 'layout_check_tests']]) {
+    const run = runOf(j, name);
+    assert.ok(run.includes(`msbuild "Tests\\${proj}\\${proj}.vcxproj" /p:Configuration="Client Release" /p:Platform=x64`), `${name}: built from its project file`);
+    assert.ok(run.includes(`& "build\\tests\\${exe}.exe"`), `${name}: the test exe is run`);
+    assert.equal(run.match(/if \(\$LASTEXITCODE -ne 0\) \{ throw /g)?.length, 2, `${name}: the build and the run both throw on a nonzero exit`);
+  }
+  // Both tests report even when the first fails; the checks and the upload only run when everything passed.
+  assert.match(stepText(j, 'LayoutCheckTests'), /\n {8}if: \$\{\{ !cancelled\(\) \}\}\n/);
+  for (const n of ['VersionMapTests', 'Check the build', 'Upload the candidate', 'Name the candidate']) assert.ok(!/\n {8}if:/.test(stepText(j, n)), `${n}: runs only when every step before it passed`);
+});
+
+test('candidate-loader: the artifact is a rig candidate (flat dwmapi.dll and ModLoader/*.dll, no plugins, a name the rig accepts)', () => {
+  const j = job('candidate-loader');
+  const up = stepText(j, 'Upload the candidate');
+  assert.match(up, /name: \$\{\{ env\.ARTIFACT \}\}\n/);
+  assert.match(up, /path: \|\n {12}build\/Client Release\/dwmapi\.dll\n {12}build\/Client Release\/ModLoader\/\*\.dll\n {10}if-no-files-found: error\n/);
+  assert.ok(!/Plugins/.test(up.replace(/^ *#.*$/gm, '')), 'no plugin DLL is uploaded');
+  // The same two paths sr-build-all uploads as loader-client, which the rig already takes.
+  const buildAll = readFileSync(join(here, '..', '.github', 'workflows', 'sr-build-all.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(buildAll.includes('build/${{ matrix.config }}/dwmapi.dll\n            build/${{ matrix.config }}/ModLoader/*.dll'));
+  // One live artifact per name in the run: the name carries the branch, so two calls of one run never collide, and it is a plain name for the rig.
+  assert.match(j, /ARTIFACT: loader-candidate-\$\{\{ inputs\.branch \}\}\n/);
+  for (const branch of ['public', 'public_test_branch']) assert.match(`loader-candidate-${branch}`, /^[A-Za-z0-9._-]{1,100}$/);
+  assert.ok(!/loader-client\b/.test(j.replace(/^ *#.*$/gm, '')), 'it does not reuse the name sr-build-all uploads in the same run');
+  // The rig takes only a candidate whose layout it knows; the same script that checks it.
+  const rig = readFileSync(join(here, 'client-rig-set.ps1'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(rig, /\$LoaderFiles = @\('StarRupture-ModLoader-Core\.dll'/);
+  assert.ok(rig.includes("if ($rel -ieq 'dwmapi.dll') { $kind = 'loader' }"));
+  assert.ok(rig.includes("elseif ($rel -imatch '^ModLoader/') {\n            if ($rel -imatch '\\.(dll|exe)$') { $kind = 'loader' }"));
+});
+
+test('candidate-loader: the version it names is the string the loader logs and the verdict script compares', () => {
+  const j = job('candidate-loader');
+  const name = runOf(j, 'Name the build');
+  assert.ok(name.includes('"tag=cand-$($env:GITHUB_RUN_ID)-$($env:LOADER_SHA.Substring(0, 7))"'));
+  // A made-up run id and commit through the same shape.
+  const tag = `cand-${42380000001}-${'0123456789abcdef'.slice(0, 7)}`;
+  // The rig's expect grammar (Name=value) takes it as it is.
+  const rig = readFileSync(join(here, 'client-rig-set.ps1'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(rig.includes("'^([A-Za-z0-9_.-]+)=([A-Za-z0-9][A-Za-z0-9._+-]*)$'"), 'the grammar this test applies');
+  assert.match(`Loader=${tag}`, /^([A-Za-z0-9_.-]+)=([A-Za-z0-9][A-Za-z0-9._+-]*)$/);
+  // The verdict script reads the tag from the loader's [init] line: "[init] Build: <MODLOADER_BUILD_TAG> (client), PID <n>".
+  const verdict = readFileSync(join(here, 'verdict.ps1'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(verdict.includes("'\\[init\\] Build: (.+?) \\(client\\), PID'"), 'the regex this test applies');
+  const m = `[2026-11-07 12:00:00] [INFO] [init] Build: ${tag} (client), PID 4242`.match(/\[init\] Build: (.+?) \(client\), PID/);
+  assert.equal(m[1], tag);
+  assert.ok(verdict.includes("($logLoader -ceq $loaderExpect)"), 'compared exactly, case-sensitive');
+  // The job outputs the string both ways and checks it is compiled into the DLL before it uploads.
+  assert.match(j, /outputs:\n {6}artifact: \$\{\{ steps\.out\.outputs\.artifact \}\}\n {6}version: \$\{\{ steps\.out\.outputs\.version \}\}\n {6}expect: \$\{\{ steps\.out\.outputs\.expect \}\}\n {6}sha: \$\{\{ steps\.out\.outputs\.sha \}\}\n/);
+  const out = runOf(j, 'Name the candidate');
+  assert.ok(out.includes('"version=$($env:TAG)"') && out.includes('"expect=Loader=$($env:TAG)"'));
+  const check = runOf(j, 'Check the build');
+  assert.ok(check.includes("Contains($env:TAG, [StringComparison]::Ordinal)") && check.includes('StarRupture-ModLoader-Core.dll'));
+});
+
+test('build-scanner: the scanner branch\'s ObservedTests are built and run against the loader checkout, and a failure fails the job', () => {
+  const j = job('build');
+  const order = stepsOf(j);
+  const at = (n) => order.indexOf(n);
+  const name = "Build and run the scanner's tests (ObservedTests)";
+  assert.ok(at('Read the required CL and the SDK offsets') < at(name), 'after the scanner source is copied into the loader tree');
+  assert.ok(at('Build sr-aobscan (Client Release)') < at(name) && at(name) < at('Hash the scanner') && at(name) < at('Upload the scanner'), 'before the scanner is handed on');
+  const step = stepText(j, name);
+  assert.match(step, /\n {8}working-directory: loader\n/);
+  assert.ok(!/continue-on-error|\n {8}if:/.test(step), 'it always runs and cannot fail quietly');
+  const run = runOf(j, name);
+  assert.ok(run.includes('msbuild "tools\\AobScan\\ObservedTests\\ObservedTests.vcxproj"') && run.includes('/p:Configuration="Client Release"'));
+  assert.ok(run.includes('& "build\\tests\\observed_tests.exe"'));
+  assert.equal(run.match(/if \(\$LASTEXITCODE -ne 0\) \{ throw /g)?.length, 2, 'the build and the run both throw on a nonzero exit');
+  // The checkouts it uses are the inputs the scan uses: the scanner source from scanner_ref, the loader at loader_ref.
+  assert.match(j, /ref: \$\{\{ inputs\.scanner_ref \}\}\n\s+path: scanner-src\n\s+sparse-checkout: tools\/AobScan\n/);
+  assert.match(j, /ref: \$\{\{ inputs\.loader_ref \}\}\n\s+path: loader\n/);
+});
+
+test('public: a build first seen on public is staged too, so it is pushed and gets a candidate', () => {
+  const mm = job('map-mode');
+  assert.ok(!/if \[ "\$BRANCH" != public \]; then\n\s+node tool\/ci\/staging\.mjs stage/.test(mm), 'the stage step is not skipped for public');
+  const stage = mm.indexOf('node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json');
+  assert.ok(stage > 0);
+  assert.ok(mm.indexOf('echo "staged=true" >> "$GITHUB_OUTPUT"') > stage);
+  // A public scan is recorded once: the reference build is the public exe only for a beta branch.
+  assert.ok(mm.includes('if (r.reference?.status === "used" && process.env.BRANCH !== "public") scans.push('));
+  // push-loader has no branch condition either.
+  assert.ok(!/inputs\.branch/.test(job('push-loader').match(/\n {4}if: [^\n]+\n/)[0]));
+  // A public build reaches the candidate job through push-loader.
+  assert.match(job('candidate-loader'), /needs: \[push-loader\]/);
+});
+
+test('loader key: only push-loader reads it, in the fork-push environment; it is declared by the call and passed by name by sr-watch', () => {
+  const readers = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /secrets\.SR_DEPLOYKEY_MODLOADER/.test(job(n)));
+  assert.deepEqual(readers, ['push-loader']);
+  assert.match(job('push-loader'), /\n {4}environment: fork-push\n/);
+  assert.match(call, /\n {6}SR_DEPLOYKEY_MODLOADER:\n {8}description: [^\n]+\n {8}required: false\n/);
+  // Same mechanism as the Steam login (called-login.test.mjs): the calling job has no environment of its own and passes the secret by name.
+  const caller = watch.slice(watch.indexOf('  client-check:\n'));
+  assert.ok(!/\n {4}environment:/.test(caller), 'the calling job sets no environment');
+  assert.ok(caller.includes('\n      SR_DEPLOYKEY_MODLOADER: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}\n'));
+  assert.ok(!/secrets: inherit/.test(watch));
+  // The push job's if names no secret, so a missing key reaches the first step, which fails with the cause.
+  assert.ok(!/secrets\./.test(job('push-loader').match(/\n {4}if: [^\n]+\n/)[0]));
+});
+
+// ------------------------------------------------------------ leg B2: expected refusals per branch
+
+test('expect_refused: the map-mode job outputs the plugins the loader refuses on the branch\'s build, before the chain can stop', () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}expect_refused: \$\{\{ steps\.chain\.outputs\.expect_refused \}\}\n/);
+  const at = mm.indexOf('expect_refused="$(node -p');
+  assert.ok(at > 0, 'the step reads decision.json');
+  // Set right after the decision is read, ahead of the exit 0 that ends a chain whose decision is not M.
+  assert.ok(at > mm.indexOf('echo "decision=$decision"') && at < mm.indexOf('nothing exported or signed'));
+  assert.ok(mm.includes('echo "expect_refused=$expect_refused" >> "$GITHUB_OUTPUT"'));
+  // A rig input is never fed to a shell: the value is checked against the rig's name grammar first.
+  assert.ok(mm.includes("grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'"));
+});
+
+test('expect_refused: the step turns decision.json into the rig input (names separated by spaces, empty when none)', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          expect_refused="$(node -p');
+  const end = mm.indexOf('\n', mm.indexOf('echo "expect_refused=$expect_refused"')) + 1;
+  const snippet = mm.slice(start, end).replace(/^ {10}/gm, '');
+  assert.ok(snippet.length > 100);
+  const run = (decision) => {
+    const dir = mkdtempSync(join(tmpdir(), 'expect-refused-'));
+    writeFileSync(join(dir, 'decision.json'), JSON.stringify(decision));
+    const r = spawnSync(bash, ['-c', snippet], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, BRANCH: 'public_test_branch', GITHUB_OUTPUT: join(dir, 'out.txt') } });
+    return { status: r.status, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '' };
+  };
+  assert.deepEqual(run({ decision: 'HOLD', expectRefused: ['MiniMap'] }), { status: 0, out: 'expect_refused=MiniMap\n' });
+  assert.equal(run({ decision: 'M', expectRefused: ['Codex', 'MiniMap'] }).out, 'expect_refused=Codex MiniMap\n');
+  assert.equal(run({ decision: 'M', expectRefused: [] }).out, 'expect_refused=\n');
+  assert.equal(run({ decision: 'HOLD' }).out, 'expect_refused=\n', 'a decision written before the list existed');
+  const bad = run({ decision: 'M', expectRefused: ['Mini Map; rm'] });
+  assert.equal(bad.status, 2);
+  assert.equal(bad.out, '');
+});
+
+// ------------------------------------------------------------ leg B3: the client rig is a required gate
+
+// Evaluates a job's `if: ${{ ... }}` with the expression syntax these workflows use (a JS subset:
+// && || ! == != and string literals), against fake needs and inputs.
+const jobIf = (name) => job(name).match(/\n {4}if: (\$\{\{ .* \}\})\n/)[1];
+const evalExpr = (expr, ctx) => {
+  const inner = expr.replace(/^\$\{\{ /, '').replace(/ \}\}$/, '');
+  const js = inner
+    .replace(/!cancelled\(\)|always\(\)/g, 'true')
+    .replace(/needs\.([\w-]+)\./g, 'needs["$1"].')
+    .replace(/!=/g, '!==').replace(/([^=!<>])==(?!=)/g, '$1===');
+  return new Function('needs', 'inputs', `return (${js});`)(ctx.needs, ctx.inputs);
+};
+const okNeeds = () => ({
+  'map-mode': { result: 'success', outputs: { test: 'false', decision: 'M', publishable: 'true', staged: 'true', expect_refused: '' } },
+  'candidate-loader': { result: 'success', outputs: { artifact: 'loader-candidate-public', version: 'cand-1-abcdef0', expect: 'Loader=cand-1-abcdef0', sha: 'a'.repeat(40) } },
+  'rig-branch': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public-x-1-1' } },
+  'rig-other': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public_test_branch-x-1-1' } },
+  check: { result: 'success', outputs: {} },
+});
+const okInputs = () => ({ publish: true, test_autopilot: false, branch: 'public', loader_repo: 'msantoro12/StarRupture-ModLoader', map_mode: true });
+// The `with:` and `secrets:` maps of a call job, as written (values are the raw expressions).
+const mapOf = (j, key) => {
+  const at = j.indexOf(`\n    ${key}:\n`);
+  assert.ok(at >= 0, `${key}: block exists`);
+  const out = {};
+  for (const line of j.slice(at + 1).split('\n').slice(1)) {
+    const m = line.match(/^ {6}(\w+): (.*)$/);
+    if (!m) break;
+    out[m[1]] = m[2];
+  }
+  return out;
+};
+const RIG_JOBS = ['rig-branch', 'rig-other'];
+
+test('rig gate: two jobs call the reusable rig, with the keyless call shape (no runner, no environment, both Steam secrets by name)', () => {
+  for (const n of RIG_JOBS) {
+    const j = job(n);
+    assert.match(j, /\n {4}uses: \.\/\.github\/workflows\/sr-client-rig\.yml\n/, `${n} calls the rig`);
+    assert.ok(!/\n {4}(runs-on|environment|steps|continue-on-error):/.test(j), `${n}: a call job has no runner, environment, steps or continue-on-error`);
+    assert.match(j, /\n {4}permissions:\n {6}contents: read\n {6}actions: read\n/, `${n}: the rig's own permissions`);
+    assert.deepEqual(mapOf(j, 'secrets'), { STEAM_CI_USERNAME: '${{ secrets.STEAM_CI_USERNAME }}', STEAM_CI_LOGIN_CACHE: '${{ secrets.STEAM_CI_LOGIN_CACHE }}' }, `${n}: both secrets by name, nothing else`);
+    assert.ok(!/secrets: inherit/.test(j));
+    assert.match(j, /\n {4}needs: \[map-mode, candidate-loader/, `${n} needs the map job and the candidate loader`);
+  }
+  // The rig is called twice in the file, by these two jobs.
+  assert.equal(wf.match(/uses: \.\/\.github\/workflows\/sr-client-rig\.yml/g)?.length, 2);
+});
+
+test('rig gate: the second rig follows the first, even when the first fails (the rig keeps one pending run per group)', () => {
+  assert.match(job('rig-branch'), /\n {4}needs: \[map-mode, candidate-loader\]\n/);
+  assert.match(job('rig-other'), /\n {4}needs: \[map-mode, candidate-loader, rig-branch\]\n/);
+  const n = okNeeds();
+  assert.equal(evalExpr(jobIf('rig-branch'), { needs: n, inputs: okInputs() }), true);
+  assert.equal(evalExpr(jobIf('rig-other'), { needs: n, inputs: okInputs() }), true);
+  // The first rig failed, was cancelled or skipped: the second still runs.
+  for (const result of ['failure', 'cancelled', 'skipped']) {
+    n['rig-branch'] = { result, outputs: { verdict: result === 'failure' ? 'FAIL' : '' } };
+    assert.equal(evalExpr(jobIf('rig-other'), { needs: n, inputs: okInputs() }), true, `second rig runs after a first that is ${result}`);
+  }
+  // No candidate loader or no map job: neither runs (nothing to test).
+  for (const dead of ['map-mode', 'candidate-loader']) {
+    const m = okNeeds();
+    m[dead].result = 'skipped';
+    for (const r of RIG_JOBS) assert.equal(evalExpr(jobIf(r), { needs: m, inputs: okInputs() }), false, `${r} does not run when ${dead} was skipped`);
+  }
+  // The queue is the rig's own concurrency group; the call jobs add none.
+  assert.ok(!/concurrency:\n {6}group: sr-client-rig/.test(wf), 'the call jobs add no group of their own');
+});
+
+test('rig gate: the candidate, the run id and the expect come from candidate-loader; the tags the check read; no extra inputs', () => {
+  const a = mapOf(job('rig-branch'), 'with');
+  const b = mapOf(job('rig-other'), 'with');
+  assert.deepEqual(Object.keys(a).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused', 'tags']);
+  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused', 'tags']);
+  for (const w of [a, b]) {
+    assert.equal(w.candidate_run_id, '${{ github.run_id }}');
+    assert.equal(w.candidate_artifact, '${{ needs.candidate-loader.outputs.artifact }}');
+    assert.equal(w.expect, '${{ needs.candidate-loader.outputs.expect }}');
+    // The releases the check read and declared the refusals for: both rigs run exactly these (empty: each repo's Latest release, nothing declared).
+    assert.equal(w.tags, '${{ needs.map-mode.outputs.rig_tags }}');
+  }
+  assert.ok(!/remove_plugins/.test(job('rig-branch') + job('rig-other')));
+});
+
+test('rig gate: the first rig runs on the branch of this check, the second on the other one', () => {
+  assert.equal(mapOf(job('rig-branch'), 'with').branch, '${{ inputs.branch }}');
+  const other = mapOf(job('rig-other'), 'with').branch;
+  for (const [mine, theirs] of [['public', 'public_test_branch'], ['public_test_branch', 'public']]) {
+    assert.equal(evalExpr(other, { needs: okNeeds(), inputs: { branch: mine } }), theirs, `${mine} -> ${theirs}`);
+  }
+  // The job name follows the same rule, so the Actions list says which branch each rig is.
+  assert.match(job('rig-branch'), /\n {4}name: client rig \(\$\{\{ inputs\.branch \}\}\)\n/);
+  assert.equal(job('rig-other').match(/\n {4}name: client rig \((\$\{\{ .* \}\})\)\n/)[1], other);
+});
+
+test('rig gate: each rig declares the refusals the loader rule predicts for the build ITS branch runs, and the rule is written down', () => {
+  assert.equal(mapOf(job('rig-branch'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused }}');
+  assert.equal(mapOf(job('rig-other'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused_other }}');
+  const comment = wf.slice(wf.indexOf('  # ---- Client rig: the candidate loader'), wf.indexOf('\n  rig-branch:\n')).replace(/\n\s*#\s*/g, ' ');
+  assert.match(comment, /rig-other\s+the other Steam branch[^.]*the refusals the loader's own rule predicts for THAT branch's current build/);
+  assert.match(comment, /any refusal it does not predict is a fail/);
+  const readme = readFileSync(join(here, '..', '.github', 'sr-pipeline', 'README.md'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(readme, /the loader's own rule predicts for the other branch's current build/);
+  assert.match(readme, /any refusal the rule does not predict is a fail/);
+  assert.ok(!/the other branch gets no `expect_refused`/.test(readme), 'the old rule is gone');
+});
+
+test('rig gate: publish needs both rigs with result success and verdict PASS, and every old condition still applies', () => {
+  assert.match(job('publish'), /\n {4}needs: \[check, map-mode, rig-branch, rig-other\]\n/);
+  const run = (mut = () => {}, inputs = okInputs()) => {
+    const n = okNeeds();
+    mut(n);
+    return evalExpr(jobIf('publish'), { needs: n, inputs });
+  };
+  assert.equal(run(), true, 'both rigs pass: it runs');
+  for (const r of RIG_JOBS) {
+    assert.equal(run((n) => { n[r] = { result: 'failure', outputs: { verdict: 'FAIL' } }; }), false, `${r} FAIL`);
+    assert.equal(run((n) => { n[r] = { result: 'skipped', outputs: { verdict: '' } }; }), false, `${r} skipped is not a pass`);
+    assert.equal(run((n) => { n[r] = { result: 'cancelled', outputs: { verdict: '' } }; }), false, `${r} cancelled`);
+    assert.equal(run((n) => { n[r].outputs.verdict = ''; }), false, `${r} success without a verdict`);
+    assert.equal(run((n) => { n[r].outputs.verdict = 'FAIL'; }), false, `${r} success result with a FAIL verdict`);
+    assert.equal(run((n) => { n[r] = { result: 'failure', outputs: { verdict: 'PASS' } }; }), false, `${r} a failed job is not a pass whatever it says`);
+  }
+  // The old conditions are all still there.
+  assert.equal(run(() => {}, { ...okInputs(), publish: false }), false, 'publish input off');
+  assert.equal(run(() => {}, { ...okInputs(), test_autopilot: true }), false, 'test run');
+  assert.equal(run(() => {}, { ...okInputs(), branch: 'public_test_branch' }), false, 'only public publishes');
+  assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; }), false, 'a HOLD decision (autopilot off)');
+  assert.equal(run((n) => { n['map-mode'].outputs.publishable = 'false'; }), false);
+  assert.equal(run((n) => { n['map-mode'].outputs.test = 'true'; }), false);
+});
+
+test('rig gate: the promote step only writes a plan, so the publish job is the one gate', () => {
+  // promote.mjs plan runs inside map-mode and uploads nothing; the one job that signs with the release key or writes the feed is publish.
+  assert.ok(job('map-mode').includes('promote.mjs plan'));
+  assert.ok(!/promote\.mjs (apply|publish|run)/.test(wf));
+  const writers = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /gh release upload|vmap-sign\.mjs sign [^\n]*--key-id k2/.test(job(n)));
+  assert.deepEqual(writers, ['publish']);
+});
+
+test('rig gate: a rig failure fails the chain visibly (the gate job is red unless both pass), and the autopilot stays untouched', () => {
+  const g = job('rig-gate');
+  assert.match(g, /\n {4}needs: \[map-mode, candidate-loader, rig-branch, rig-other\]\n/);
+  assert.match(g, /process\.exit\(1\)/);
+  assert.ok(!/continue-on-error/.test(g));
+  // It runs for what the chain staged and pushed (push-loader's cue), also when a rig failed or never ran.
+  const cond = (needs, inputs) => evalExpr(jobIf('rig-gate'), { needs, inputs });
+  assert.equal(cond(okNeeds(), okInputs()), true);
+  const failed = okNeeds();
+  failed['rig-branch'] = { result: 'failure', outputs: { verdict: 'FAIL' } };
+  failed['rig-other'] = { result: 'skipped', outputs: {} };
+  assert.equal(cond(failed, okInputs()), true, 'a failed first rig still gets a gate verdict');
+  const notStaged = okNeeds();
+  notStaged['map-mode'].outputs.staged = 'false';
+  assert.equal(cond(notStaged, okInputs()), false, 'nothing staged: nothing to test');
+  assert.equal(cond(okNeeds(), { ...okInputs(), test_autopilot: true }), false, 'a test run pushes nothing');
+  assert.equal(cond(okNeeds(), { ...okInputs(), loader_repo: 'AlienXAXS/StarRupture-ModLoader' }), false, 'another loader repository is never pushed');
+  // The autopilot decides publishing only; the rig runs either way (a HOLD with the autopilot off is still a candidate).
+  assert.ok(!/state\/autopilot/.test(wf.slice(wf.indexOf('  rig-branch:'), wf.indexOf('  alert:'))));
+});
+
+test('rig gate: the summary carries both verdicts, reasons and the logs artifact, and the job exits 1 unless both pass', { skip: !bash }, () => {
+  const g = job('rig-gate');
+  const head = '        run: |\n';
+  const script = g.slice(g.indexOf(head) + head.length).replace(/^ {10}/gm, '');
+  const base = {
+    RUN_URL: 'https://github.com/o/r/actions/runs/7', DECISION: 'HOLD', PUBLISHABLE: 'false', CANDIDATE_RESULT: 'success', CANDIDATE_VERSION: 'cand-7-abcdef0', CANDIDATE_SHA: 'abcdef0123456789abcdef0123456789abcdef01',
+    BRANCH_NAME: 'public_test_branch', BRANCH_RESULT: 'success', BRANCH_VERDICT: 'PASS', BRANCH_REASON: 'All 41 checks passed', BRANCH_ARTIFACT: 'sr-client-rig-public_test_branch-cand-7-1', BRANCH_EXPECT_REFUSED: 'MiniMap',
+    OTHER_NAME: 'public', OTHER_RESULT: 'success', OTHER_VERDICT: 'PASS', OTHER_REASON: 'All 41 checks passed', OTHER_ARTIFACT: 'sr-client-rig-public-cand-7-1',
+  };
+  const run = (over = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'rig-gate-'));
+    const summary = join(dir, 'summary.md');
+    writeFileSync(summary, '');
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...base, ...over, GITHUB_STEP_SUMMARY: summary } });
+    return { status: r.status, out: r.stdout, md: readFileSync(summary, 'utf8') };
+  };
+  const ok = run();
+  assert.equal(ok.status, 0);
+  assert.match(ok.md, /### Client rig gate: PASS/);
+  assert.match(ok.md, /Decision HOLD, not publishable\. Candidate loader cand-7-abcdef0 \(loader commit abcdef0\)/);
+  assert.match(ok.md, /\*\*public_test_branch\*\*: PASS - All 41 checks passed\. Must be refused here: MiniMap\./);
+  assert.match(ok.md, /\*\*public\*\*: PASS - All 41 checks passed\. No refusals expected: its current build must keep working/);
+  // The other rig's declared refusals are named, with the rule that any other refusal fails.
+  assert.match(run({ OTHER_EXPECT_REFUSED: 'MiniMap' }).md, /\*\*public\*\*: PASS - All 41 checks passed\. Must be refused here \(the loader rule for the build this branch runs\): MiniMap\. Any other refusal is a fail\./);
+  assert.match(ok.md, /artifact `sr-client-rig-public-cand-7-1` of https:\/\/github\.com\/o\/r\/actions\/runs\/7/);
+  const bad = run({ OTHER_RESULT: 'failure', OTHER_VERDICT: 'FAIL', OTHER_REASON: 'plugin_not_refused_MiniMap: FOUND' });
+  assert.equal(bad.status, 1);
+  assert.match(bad.md, /### Client rig gate: FAIL/);
+  assert.match(bad.md, /\*\*public\*\*: FAIL - plugin_not_refused_MiniMap: FOUND/);
+  assert.match(bad.out, /::error title=Client rig gate::public did not pass; the feed is not published\./);
+  // A rig that never ran for a staged candidate is not a pass.
+  const skipped = run({ BRANCH_RESULT: 'skipped', BRANCH_VERDICT: '', BRANCH_REASON: '', BRANCH_ARTIFACT: '', CANDIDATE_RESULT: 'failure' });
+  assert.equal(skipped.status, 1);
+  assert.match(skipped.md, /\*\*public_test_branch\*\*: did not run - candidate loader job: failure/);
+  assert.match(skipped.md, /no logs artifact/);
+  const cancelled = run({ OTHER_RESULT: 'cancelled', OTHER_VERDICT: '', OTHER_REASON: '' });
+  assert.equal(cancelled.status, 1);
+  assert.match(cancelled.md, /\*\*public\*\*: cancelled/);
+  // A success result with a verdict that is not PASS fails too.
+  assert.equal(run({ BRANCH_VERDICT: '' }).status, 1);
+  // No expected refusals says so.
+  assert.match(run({ BRANCH_EXPECT_REFUSED: '' }).md, /No refusals expected\./);
+});
+
+test('rig gate: the nested call fits its callers (permissions ceiling, depth, main-only environment)', () => {
+  const caller = watch.slice(watch.indexOf('  client-check:\n'));
+  const grants = (text) => Object.fromEntries([...text.matchAll(/ {6}([a-z-]+): (read|write)\b/g)].map((m) => [m[1], m[2]]));
+  const ceiling = grants(caller.match(/\n {4}permissions:\n((?: {6}[a-z-]+: .*\n)+)/)[1]);
+  assert.equal(ceiling.actions, 'read', "sr-watch grants the rig its actions: read (a nested call is checked against the top caller)");
+  for (const n of RIG_JOBS) {
+    const asked = grants(job(n).match(/\n {4}permissions:\n((?: {6}[a-z-]+: .*\n)+)/)[1]);
+    for (const [k, v] of Object.entries(asked)) assert.ok(ceiling[k] === v || (v === 'read' && ceiling[k] === 'write'), `${n}: ${k}: ${v} fits sr-watch's ceiling`);
+  }
+  // sr-watch -> sr-client-check -> sr-client-rig: the rig itself calls nothing, and its one environment serves main only.
+  const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(!/\n {4}uses: /.test(rig));
+  assert.match(rig, /\n {4}environment: steam-client\n/);
+});
+
+// ------------------------------------------------------------ leg C1: loud alerts, the stale update PR, the plugin fork keys
+
+// The alert job's two bash steps, run for real: the step's run block in a temp directory, with the
+// files the earlier steps leave (res/, chain/, failed-jobs.jsonl, logs/) and the env GitHub would set.
+const ALERT_ENV = {
+  BRANCH: 'public_test_branch', BUILDID: '26461198', OWNER: 'msantoro12', RUN_ID: '9', GH_REPO: 'o/r', PR: '26',
+  RUN_URL: 'https://github.com/o/r/actions/runs/9',
+  BUILD_RESULT: 'success', PLAN_RESULT: 'success', CHECK_RESULT: 'success', MAP_MODE_RESULT: 'success', PUBLISH_RESULT: 'skipped',
+  STAGED_EXPECTED: 'true', PUSH_RESULT: 'success', CANDIDATE_RESULT: 'success', RIG_GATE_RESULT: 'success',
+  BRANCH_RIG_NAME: 'public_test_branch', BRANCH_RIG_RESULT: 'success', BRANCH_RIG_VERDICT: 'PASS', BRANCH_RIG_REASON: 'All 41 checks passed', BRANCH_RIG_ARTIFACT: 'sr-client-rig-public_test_branch-1',
+  OTHER_RIG_NAME: 'public', OTHER_RIG_RESULT: 'success', OTHER_RIG_VERDICT: 'PASS', OTHER_RIG_REASON: 'All 41 checks passed', OTHER_RIG_ARTIFACT: 'sr-client-rig-public-1',
+};
+const AUTOPILOT_HOLD = 'autopilot is disabled (enabled is not true)';
+const HOLD_ONLY_AUTOPILOT = { decision: 'HOLD', cl: 129402, candidate: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] };
+// A fake `gh`: logs every call, answers from files in its own directory. Nothing leaves the temp directory.
+const FAKE_GH = `#!/bin/bash
+printf '%s\\n' "$*" >> "$FAKE_DIR/calls.log"
+reply() { [ -f "$FAKE_DIR/$1" ] && cat "$FAKE_DIR/$1"; return 0; }
+case "$1 $2" in
+  "pr list") reply pr.json ;;
+  "pr view") case "$*" in *title*) echo "Game build 26461198 on public_test_branch" ;; *) reply pr-chain-labels.txt ;; esac ;;
+  "issue list") reply issue-number.txt ;;
+  "api repos/"*) case "$2" in */comments) reply comment-times.txt ;; *) reply issue-body-time.txt ;; esac ;;
+esac
+exit 0
+`;
+const runBash = (script, { cwd, env, files = {} }) => {
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(cwd, name)), { recursive: true });
+    writeFileSync(join(cwd, name), typeof content === 'string' ? content : JSON.stringify(content));
+  }
+  const bin = join(cwd, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'gh'), FAKE_GH);
+  chmodSync(join(bin, 'gh'), 0o755);
+  return spawnSync(bash, ['-c', script], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env, FAKE_DIR: cwd, RUNNER_TEMP: cwd, PATH: bin + delimiter + process.env.PATH } });
+};
+const calls = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
+const alertRun = ({ env = {}, result, decision, jobs = [], logs = {}, noChain = false } = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'alert-'));
+  const files = { 'out.txt': '' };
+  if (result) files['res/result.json'] = result;
+  if (decision) files['chain/decision.json'] = decision;
+  else if (!noChain) files['chain/map-mode-report.json'] = {};
+  if (jobs.length) files['failed-jobs.jsonl'] = jobs.map((j) => JSON.stringify(j)).join('\n') + '\n';
+  for (const [id, text] of Object.entries(logs)) files[`logs/${id}.txt`] = text;
+  const script = runOf(job('alert'), 'Work out what needs attention');
+  const r = runBash(script, { cwd: dir, env: { ...ALERT_ENV, ...env, GITHUB_OUTPUT: join(dir, 'out.txt') }, files });
+  const read = (n) => (existsSync(join(dir, n)) ? readFileSync(join(dir, n), 'utf8') : null);
+  const outputs = Object.fromEntries((read('out.txt') ?? '').split('\n').filter(Boolean).map((l) => l.split('=')));
+  return { status: r.status, stderr: r.stderr, outputs, md: read('alert.md'), ready: read('ready.md') };
+};
+const goodDecision = { decision: 'M', cl: 129402 };
+
+test('alert (leg C1): a run in which every job and gate passed raises nothing, and is marked passed', { skip: !bash }, () => {
+  const a = alertRun({ decision: goodDecision });
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.md, null);
+  assert.deepEqual(a.outputs, { alert: 'false', passed: 'true', ready: 'false' });
+});
+
+test('alert (leg C1): a failed job is a line with its cause, from the check result, the jobs API and the first error line of its log', { skip: !bash }, () => {
+  // check: the reason its result.json recorded.
+  const noLogin = alertRun({ env: { CHECK_RESULT: 'failure', MAP_MODE_RESULT: 'skipped', STAGED_EXPECTED: 'false' }, result: { status: 'no-login', reason: 'the Steam login secrets reached the called check empty' } });
+  assert.equal(noLogin.outputs.alert, 'true');
+  assert.match(noLogin.md, /- job \*\*check\*\* failed\n  - cause: no Steam login \(status no-login\): the Steam login secrets reached the called check empty/);
+  // check: no result artifact at all, and a failed step from the jobs API.
+  const noResult = alertRun({
+    env: { CHECK_RESULT: 'failure', MAP_MODE_RESULT: 'skipped', STAGED_EXPECTED: 'false' },
+    jobs: [{ id: 11, name: 'client-check (public_test_branch) / check', step: 'Download the client build' }],
+    logs: { 11: '﻿2026-11-07T13:29:38.4Z group\n2026-11-07T13:29:43.8Z ##[error]steamcmd exited 5: login failed\n2026-11-07T13:29:43.9Z ##[error]Process completed with exit code 1.\n' },
+  });
+  assert.match(noResult.md, /- job \*\*check\*\* failed\n  - cause: no check result artifact; step "Download the client build": steamcmd exited 5: login failed/);
+  // The job of the other branch's matrix entry is not mistaken for this one.
+  const other = alertRun({ env: { CHECK_RESULT: 'failure', MAP_MODE_RESULT: 'skipped', STAGED_EXPECTED: 'false' }, jobs: [{ id: 12, name: 'client-check (public) / check', step: 'Not this one' }, { id: 13, name: 'client-check (public_test_branch) / check', step: 'This one' }] });
+  assert.match(other.md, /step "This one"/);
+  assert.ok(!/Not this one/.test(other.md));
+  // map mode: names the failing step and says when its artifact is missing.
+  const mm = alertRun({
+    env: { MAP_MODE_RESULT: 'failure', STAGED_EXPECTED: 'false' }, noChain: true,
+    jobs: [{ id: 21, name: 'map mode', step: 'Write the update into the header' }],
+    logs: { 21: '2026-11-07T13:29:43.8Z ##[error]map mode refused the update (exit 2); see the log and map-mode-report.json\n2026-11-07T13:29:43.9Z ##[error]Process completed with exit code 2.\n' },
+  });
+  assert.match(mm.md, /- job \*\*map mode\*\* failed\n  - the map-mode artifact is missing/);
+  assert.match(mm.md, /cause: step "Write the update into the header": map mode refused the update \(exit 2\)/);
+  // With the artifact there, the missing-artifact line is not written.
+  const mm2 = alertRun({ env: { MAP_MODE_RESULT: 'failure', STAGED_EXPECTED: 'false' }, jobs: [{ id: 21, name: 'map mode', step: 'Export' }] });
+  assert.ok(!/artifact is missing/.test(mm2.md));
+  // The others: build-scanner, plugin-plan, publish.
+  for (const [env, name] of [[{ BUILD_RESULT: 'failure' }, 'build-scanner'], [{ PLAN_RESULT: 'failure' }, 'plugin-plan'], [{ PUBLISH_RESULT: 'failure' }, 'publish the feed']]) {
+    assert.match(alertRun({ env, decision: goodDecision }).md, new RegExp(`- job \\*\\*${name}\\*\\* failed`), name);
+  }
+  // Every alert names the owner, so GitHub notifies him.
+  assert.match(noLogin.md, /^@msantoro12 branch `public_test_branch`, build 26461198, \[run\]\(https:\/\/github\.com\/o\/r\/actions\/runs\/9\)\./);
+});
+
+test('alert (leg C1): a check that did not run (status skipped or no-login) is a line even when the check job succeeded', { skip: !bash }, () => {
+  const skipped = alertRun({ result: { status: 'skipped', reason: 'no Steam login is configured' }, decision: goodDecision });
+  assert.equal(skipped.outputs.alert, 'true');
+  assert.equal(skipped.outputs.passed, 'false');
+  assert.match(skipped.md, /- client check \*\*did not run\*\* \(status skipped\): no Steam login is configured/);
+  const noLogin = alertRun({ result: { status: 'no-login', reason: 'environment steam-client has no STEAM_CI_USERNAME' }, decision: goodDecision });
+  assert.match(noLogin.md, /- client check \*\*did not run\*\* \(status no-login\): environment steam-client has no STEAM_CI_USERNAME/);
+  // A skipped result without a reason still says so.
+  assert.match(alertRun({ result: { status: 'skipped' }, decision: goodDecision }).md, /\(status skipped\): no reason recorded/);
+  // A normal pass and a new build are not.
+  assert.equal(alertRun({ result: { status: 'pass' }, decision: goodDecision }).outputs.alert, 'false');
+});
+
+test('alert (leg C1): a new build is information in an alert, never an alert by itself', { skip: !bash }, () => {
+  const result = { status: 'new-build', checks: { exe: { cl: 129402, productVersion: '1.0.0.129402', requiredCl: 'no row' } } };
+  assert.deepEqual(alertRun({ result, decision: goodDecision }).outputs, { alert: 'false', passed: 'true', ready: 'false' });
+  const withFault = alertRun({ result, decision: goodDecision, env: { PUBLISH_RESULT: 'failure' } });
+  assert.match(withFault.md, /New build \*\*CL-129402\*\* \(1\.0\.0\.129402\), measured by map mode: the loader does not run on it yet \(no row\); this is not a failure\./);
+});
+
+test('alert (leg C1): a HOLD is a line with its reasons, except "nothing new" and the autopilot switch alone', { skip: !bash }, () => {
+  const held = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G4: 2 required patterns missed', 'G5: 3 used classes changed'] } });
+  assert.equal(held.outputs.alert, 'true');
+  assert.match(held.md, /- decide: \*\*HOLD\*\* on CL-129402\n  - G4: 2 required patterns missed\n  - G5: 3 used classes changed/);
+  assert.equal(alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G3: CL-129402 is not newer than CL-129402'] } }).outputs.alert, 'false');
+  // The autopilot switch beside another reason is still an alert, and lists both.
+  const both = alertRun({ decision: { decision: 'HOLD', cl: 129402, candidate: true, reasons: [AUTOPILOT_HOLD, 'G1 compile: failed'] } });
+  assert.equal(both.outputs.alert, 'true');
+  assert.match(both.md, /  - autopilot is disabled \(enabled is not true\)\n  - G1 compile: failed/);
+  // No decision from a map-mode job that succeeded.
+  assert.match(alertRun({ noChain: true }).md, /map mode finished without a decision \(and the map-mode artifact is missing\)/);
+});
+
+test('alert (leg C1): a HOLD whose only reason is "autopilot is disabled", every gate and job passing, raises no issue and writes the ready note', { skip: !bash }, () => {
+  const a = alertRun({ decision: HOLD_ONLY_AUTOPILOT });
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.md, null, 'no alert.md, so the issue step is skipped');
+  assert.deepEqual(a.outputs, { alert: 'false', passed: 'true', ready: 'true' });
+  assert.equal(a.ready, '<!-- sr-ready-held:public_test_branch -->\n**Ready, publish held (autopilot off).** CL-129402 on `public_test_branch`: every gate and job passed, [run](https://github.com/o/r/actions/runs/9).\n');
+  assert.equal(a.ready.trim().split('\n').length - 1, 1, 'one line besides the marker');
+  // A test run (dispatch) says nothing on a PR.
+  assert.equal(alertRun({ decision: { ...HOLD_ONLY_AUTOPILOT, test: true, candidate: undefined } }).outputs.ready, 'false');
+  // With the autopilot as the only decide reason but a job failing, it is an alert and no note.
+  const failing = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { CANDIDATE_RESULT: 'failure', BRANCH_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', BRANCH_RIG_REASON: '', OTHER_RIG_RESULT: 'skipped', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '', RIG_GATE_RESULT: 'failure' } });
+  assert.equal(failing.outputs.alert, 'true');
+  assert.equal(failing.ready, null);
+  // The step that opens the issue runs only for an alert.
+  assert.match(step(job('alert'), 'Open or update the issue'), /\n {8}if: steps\.what\.outputs\.alert == 'true'\n/);
+});
+
+test('alert (leg C1): a missing or failed push, a failed candidate build or test, and a rig that did not pass are lines with the cause', { skip: !bash }, () => {
+  const push = alertRun({
+    decision: HOLD_ONLY_AUTOPILOT,
+    env: { PUSH_RESULT: 'failure', CANDIDATE_RESULT: 'skipped', RIG_GATE_RESULT: 'failure', BRANCH_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', BRANCH_RIG_REASON: '', OTHER_RIG_RESULT: 'skipped', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '' },
+    jobs: [{ id: 31, name: 'client-check (public_test_branch) / push the map rows to the loader fork', step: 'Check the deploy key' }],
+    logs: { 31: '2026-11-07T13:29:43.8Z ##[error]Loader deploy key missing: the secret SR_DEPLOYKEY_MODLOADER is not set\n' },
+  });
+  assert.match(push.md, /- the staged map rows were \*\*not pushed\*\* to the loader fork \(push-loader failed\)\n  - cause: step "Check the deploy key": Loader deploy key missing/);
+  assert.match(push.md, /- \*\*client rig gate\*\* failed/);
+  assert.match(push.md, /  - rig public_test_branch: did not run - candidate loader job: skipped/);
+  // A push that never ran although the chain staged is a missing push.
+  const skipped = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { PUSH_RESULT: 'skipped', CANDIDATE_RESULT: 'skipped' } });
+  assert.match(skipped.md, /\(push-loader ended skipped\)\n  - cause: a job before it did not finish/);
+  // Nothing staged (or a test run): no push is expected, so none is missing.
+  assert.equal(alertRun({ decision: goodDecision, env: { STAGED_EXPECTED: 'false', PUSH_RESULT: 'skipped', CANDIDATE_RESULT: 'skipped', RIG_GATE_RESULT: 'skipped', BRANCH_RIG_RESULT: 'skipped', OTHER_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', OTHER_RIG_VERDICT: '' } }).outputs.alert, 'false');
+  // The candidate build or its tests.
+  const cand = alertRun({
+    decision: HOLD_ONLY_AUTOPILOT, env: { CANDIDATE_RESULT: 'failure', RIG_GATE_RESULT: 'failure', BRANCH_RIG_RESULT: 'skipped', BRANCH_RIG_VERDICT: '', BRANCH_RIG_REASON: '', OTHER_RIG_RESULT: 'skipped', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '' },
+    jobs: [{ id: 32, name: 'client-check (public_test_branch) / candidate loader', step: 'Run VersionMapTests' }],
+    logs: { 32: '2026-11-07T13:30:00.0Z ##[error]VersionMapTests: 2 failed\n' },
+  });
+  assert.match(cand.md, /- the \*\*candidate loader\*\* did not build and pass its tests \(candidate-loader failed\)\n  - cause: step "Run VersionMapTests": VersionMapTests: 2 failed/);
+  // A rig FAIL carries its verdict reason and logs artifact; the other rig passing is not listed.
+  const rig = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { RIG_GATE_RESULT: 'failure', OTHER_RIG_RESULT: 'failure', OTHER_RIG_VERDICT: 'FAIL', OTHER_RIG_REASON: 'plugin_not_refused_MiniMap: FOUND' } });
+  assert.match(rig.md, /- \*\*client rig gate\*\* failed: the feed is published only when both rigs pass\n  - rig public: FAIL - plugin_not_refused_MiniMap: FOUND \(logs: artifact sr-client-rig-public-1\)\n/);
+  assert.ok(!/rig public_test_branch/.test(rig.md));
+  // A rig job that ended success without a PASS verdict is not a pass, and neither is a cancelled one.
+  assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { BRANCH_RIG_VERDICT: '' , BRANCH_RIG_REASON: '' } }).md, /rig public_test_branch: success - no verdict; see the rig job/);
+  assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { OTHER_RIG_RESULT: 'cancelled', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '' } }).md, /rig public: cancelled - no verdict/);
+  // A failed gate job alone (rigs fine) is still a line.
+  assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { RIG_GATE_RESULT: 'failure' } }).md, /- \*\*client rig gate\*\* failed/);
+});
+
+test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the owner on create; a re-alert comments on the open issue', { skip: !bash }, () => {
+  const script = runOf(job('alert'), 'Open or update the issue');
+  const dir = mkdtempSync(join(tmpdir(), 'alert-issue-'));
+  const created = runBash(script, { cwd: dir, env: ALERT_ENV, files: { 'alert.md': 'x' } });
+  assert.equal(created.status, 0, created.stderr);
+  const c = calls(dir);
+  assert.ok(c.includes('label create pipeline-alert --color B60205 --description A pipeline run or a game-update PR needs the owner --force'), c.join('\n'));
+  assert.ok(c.includes('issue create --title SR map mode: public_test_branch needs attention --body-file alert.md --label pipeline-alert --assignee msantoro12'), c.join('\n'));
+  assert.ok(!c.some((l) => l.startsWith('issue comment')));
+  // An open issue for the branch: comment on that one, and make sure it is labelled and assigned.
+  const dir2 = mkdtempSync(join(tmpdir(), 'alert-issue-'));
+  const again = runBash(script, { cwd: dir2, env: ALERT_ENV, files: { 'alert.md': 'x', 'issue-number.txt': '27\n' } });
+  assert.equal(again.status, 0, again.stderr);
+  const c2 = calls(dir2);
+  assert.ok(c2.includes('issue comment 27 --body-file alert.md'), c2.join('\n'));
+  assert.ok(c2.includes('issue edit 27 --add-label pipeline-alert --add-assignee msantoro12'), c2.join('\n'));
+  assert.ok(!c2.some((l) => l.startsWith('issue create')));
+  // The lookup is by exact title.
+  assert.ok(c2.some((l) => l.startsWith('issue list --state open --search SR map mode: public_test_branch needs attention in:title')));
+});
+
+test('alert (leg C1): the PR gets the chain-passed label after a clean run, loses it after an alert, and one ready note that is edited in place', { skip: !bash }, () => {
+  const s = step(job('alert'), 'Mark the pull request');
+  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' \}\}\n/);
+  const script = runOf(job('alert'), 'Mark the pull request');
+  const run = (env, files = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'alert-pr-'));
+    const r = runBash(script, { cwd: dir, env: { ...ALERT_ENV, ...env }, files: { 'ready.md': 'note\n', ...files } });
+    assert.equal(r.status, 0, r.stderr);
+    return calls(dir);
+  };
+  const passed = run({ ALERT: 'false', PASSED: 'true', READY: 'false' });
+  assert.ok(passed.includes('pr edit 26 --add-label chain-passed-public_test_branch'), passed.join('\n'));
+  assert.ok(passed.some((l) => l.startsWith('label create chain-passed-public_test_branch ')));
+  assert.ok(!passed.some((l) => l.startsWith('pr comment') || l.includes('PATCH')));
+  const alerted = run({ ALERT: 'true', PASSED: 'false', READY: 'false' });
+  assert.ok(alerted.includes('pr edit 26 --remove-label chain-passed-public_test_branch'), alerted.join('\n'));
+  // Nothing alerted but not passed (no decision, map mode off): the label is left as it was.
+  const neither = run({ ALERT: 'false', PASSED: 'false', READY: 'false' });
+  assert.ok(!neither.some((l) => l.startsWith('pr edit')));
+  // The ready note: a new comment, or the existing marked one edited.
+  const fresh = run({ ALERT: 'false', PASSED: 'true', READY: 'true' });
+  assert.ok(fresh.includes('pr comment 26 --body-file ready.md'), fresh.join('\n'));
+  const edited = run({ ALERT: 'false', PASSED: 'true', READY: 'true' }, { 'comment-times.txt': '555\n' });
+  assert.ok(edited.includes('api -X PATCH repos/o/r/issues/comments/555 -F body=@ready.md'), edited.join('\n'));
+  assert.ok(!edited.some((l) => l.startsWith('pr comment')));
+});
+
+// ---- sr-watch: the stale game-update PR
+
+// A step of a job, as written.
+const step = (j, name) => {
+  const at = j.indexOf(`- name: ${name}\n`);
+  assert.ok(at >= 0, `step "${name}" exists`);
+  const next = j.indexOf('\n      - ', at + 1);
+  return j.slice(at, next < 0 ? undefined : next);
+};
+
+const NOW = Date.parse('2026-11-07T20:00:00Z') / 1000;
+const hoursAgo = (h) => new Date((NOW - h * 3600) * 1000).toISOString().replace('.000Z', 'Z');
+const staleRun = ({ ageH, labels = [], matrix = '[{"branch":"public","buildid":"1"},{"branch":"public_test_branch","buildid":"2"}]', issue, issueBodyTime, commentTimes, noPr = false }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'stale-'));
+  const pr = { number: 26, headRefName: 'game-update/client-public_test_branch-26461198', title: 'Game build 26461198 on public_test_branch', createdAt: hoursAgo(ageH), labels: ['game-update', ...labels].map((name) => ({ name })) };
+  const files = {};
+  if (!noPr) files['pr.json'] = JSON.stringify(pr);
+  if (issue) files['issue-number.txt'] = `${issue}\n`;
+  if (issueBodyTime) files['issue-body-time.txt'] = `${issueBodyTime}\n`;
+  if (commentTimes) files['comment-times.txt'] = commentTimes.join('\n') + '\n';
+  const script = runOf(poll, 'Alert on a stale game-update PR');
+  const r = runBash(script, { cwd: dir, env: { MATRIX: matrix, STALE_HOURS: '6', OWNER: 'msantoro12', GH_REPO: 'o/r', NOW_EPOCH: String(NOW), GITHUB_SERVER_URL: 'https://github.com' }, files });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const c = calls(dir);
+  const body = existsSync(join(dir, 'stale.md')) ? readFileSync(join(dir, 'stale.md'), 'utf8') : null;
+  return { calls: c, creates: c.filter((l) => l.startsWith('issue create')), comments: c.filter((l) => l.startsWith('issue comment')), edits: c.filter((l) => l.startsWith('issue edit')), body, out: r.stdout };
+};
+const watchJob = (name) => {
+  const rest = watch.slice(watch.indexOf(`\n  ${name}:\n`) + 1);
+  const next = rest.slice(1).search(/\n {2}[a-z][\w-]*:\n/);
+  return next < 0 ? rest : rest.slice(0, next + 1);
+};
+const poll = watchJob('poll');
+
+test('stale PR (leg C1): the step runs on the skip path only, and the poll job may write issues', () => {
+  const s = step(poll, 'Alert on a stale game-update PR');
+  assert.match(s, /\n {8}if: steps\.pr\.outputs\.skip == 'true'\n/);
+  assert.match(poll, /\n {4}permissions:\n(?: {6}.*\n)*? {6}issues: write/);
+  assert.match(s, /STALE_HOURS: '6'/);
+  assert.match(s, /MATRIX: \$\{\{ steps\.poll\.outputs\.client_matrix \}\}/);
+  // It comes after the PR step, whose skip path it reads.
+  assert.ok(poll.indexOf('- name: Alert on a stale game-update PR') > poll.indexOf('- name: Open or update the game-update PR'));
+  // A refreshed PR drops its chain-passed labels, so the old pass does not stand for the new build.
+  assert.match(poll, /select\(startswith\("chain-passed-"\)\)[\s\S]*--remove-label "\$l"/);
+});
+
+test('stale PR (leg C1): a game-update PR open over 6 hours without the chain-passed label opens the branch alert issue, labelled and assigned', { skip: !bash }, () => {
+  const r = staleRun({ ageH: 7 });
+  assert.equal(r.creates.length, 2, r.calls.join('\n'));
+  assert.ok(r.creates.includes('issue create --title SR map mode: public needs attention --body-file ' + r.calls.find((l) => l.startsWith('issue create')).split('--body-file ')[1].split(' --label')[0] + ' --label pipeline-alert --assignee msantoro12'), r.creates.join('\n'));
+  assert.ok(r.creates.some((l) => l.startsWith('issue create --title SR map mode: public_test_branch needs attention')));
+  assert.ok(r.calls.some((l) => l.startsWith('label create pipeline-alert ')));
+  assert.match(r.body, /^<!-- sr-stale-pr:26 -->\n@msantoro12 game-update PR #26 \(Game build 26461198 on public_test_branch\) has been open 7 hours and the client chain has not passed for `public_test_branch`: the PR has no `chain-passed-public_test_branch` label\./);
+  assert.match(r.body, /gh workflow run sr-watch\.yml --ref main -f force=true/);
+});
+
+test('stale PR (leg C1): under 6 hours, with every chain-passed label, with no client branch, or with no open PR it raises nothing', { skip: !bash }, () => {
+  const none = (r, why) => { assert.ok(!r.calls.some((l) => l.startsWith('issue ') && !l.startsWith('issue list')), `${why}: ${r.calls.join('\n')}`); assert.ok(!r.calls.some((l) => l.startsWith('label create')), why); };
+  none(staleRun({ ageH: 5.5 }), 'under 6 hours');
+  none(staleRun({ ageH: 30, labels: ['chain-passed-public', 'chain-passed-public_test_branch'] }), 'both branches passed');
+  none(staleRun({ ageH: 30, matrix: '[]' }), 'no client branch, nothing to pass');
+  none(staleRun({ ageH: 30, matrix: '' }), 'no matrix');
+  none(staleRun({ ageH: 30, noPr: true }), 'no open update PR');
+  // Exactly the limit counts as stale.
+  assert.equal(staleRun({ ageH: 6 }).creates.length, 2);
+});
+
+test('stale PR (leg C1): only the branch that has not passed is raised', { skip: !bash }, () => {
+  const r = staleRun({ ageH: 12, labels: ['chain-passed-public'] });
+  assert.equal(r.creates.length, 1);
+  assert.match(r.creates[0], /SR map mode: public_test_branch needs attention/);
+});
+
+test('stale PR (leg C1): at most once per 6 hours, by the marker in the issue body or a comment', { skip: !bash }, () => {
+  // Raised 2 hours ago (a comment): nothing now.
+  const recent = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(20), hoursAgo(2)] });
+  assert.equal(recent.comments.length, 0, recent.calls.join('\n'));
+  assert.equal(recent.creates.length, 0);
+  assert.match(recent.out, /Already raised for public/);
+  // Raised 7 hours ago: a new comment on the same issue, labelled and assigned again.
+  const old = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(7)] });
+  assert.equal(old.comments.length, 1);
+  assert.match(old.comments[0], /^issue comment 40 --body-file /);
+  assert.deepEqual(old.edits, ['issue edit 40 --add-label pipeline-alert --add-assignee msantoro12']);
+  assert.equal(old.creates.length, 0);
+  // The issue this step opened (marker in the body) counts as the last raise.
+  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, issueBodyTime: hoursAgo(1) }).comments.length, 0);
+  // An open issue with no marker anywhere (the alert job's own) gets a comment right away.
+  const plain = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40 });
+  assert.equal(plain.comments.length, 1);
+  // Just inside and just outside the window.
+  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(5.9)] }).comments.length, 0);
+  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(6.1)] }).comments.length, 1);
+});
+
+// ---- the plugin fork deploy keys
+
+const FORK_KEYS = ['BETTERCHEATS', 'BETTERDRONE', 'WAILA', 'CODEX', 'COMPASS', 'PRODUCTIONVIEWER', 'RUPTURETIMER', 'WAVEOPTIMISER', 'CAMERACONTROLS'].map((n) => `SR_DEPLOYKEY_${n}`);
+
+test('plugin keys (leg C1): sr-watch passes the nine fork keys by name; the client check declares them (not required); only auto-apply reads them', () => {
+  const caller = watch.slice(watch.indexOf('  client-check:\n'));
+  for (const k of FORK_KEYS) {
+    assert.ok(caller.includes(`\n      ${k}: \${{ secrets.${k} }}\n`) || caller.endsWith(`\n      ${k}: \${{ secrets.${k} }}`), `sr-watch passes ${k} by name`);
+    assert.match(call, new RegExp(`\\n {6}${k}:\\n {8}description: [^\\n]+\\n {8}required: false\\n`), `${k} is declared, not required`);
+  }
+  assert.ok(!/secrets: inherit/.test(watch));
+  // The auto-apply job names exactly these nine and no other key.
+  const names = [...new Set(job('auto-apply').match(/secrets\.[A-Z_]+/g))].map((x) => x.slice(8)).sort();
+  assert.deepEqual(names, [...FORK_KEYS].sort());
+  // No other job reads a fork key, and the release key stays out of both.
+  for (const n of [...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((x) => x !== 'auto-apply')) {
+    const body = job(n).replace(/^ *#.*$/gm, '');
+    assert.ok(!FORK_KEYS.some((k) => body.includes(k)), `${n} does not read a plugin fork key`);
+  }
+  assert.ok(!/VMAP_SIGN_KEY:/.test(call) && !/VMAP_SIGN_KEY:/.test(caller));
+  // The nine are the ones the auto-apply name check admits.
+  const allowed = job('auto-apply').match(/\^\(([A-Za-z|]+)\)\$/)[1].split('|').map((n) => `SR_DEPLOYKEY_${n.toUpperCase()}`).sort();
+  assert.deepEqual(allowed, [...FORK_KEYS].sort());
+});
+
+// ------------------------------------------------------------ leg C2: expected refusals on the other branch, pinned third-party plugins
+
+const OTHER_STEP_FROM = '          other_branch=public; [ "$BRANCH" = public ] && other_branch=public_test_branch\n';
+const otherStep = () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf(OTHER_STEP_FROM);
+  const end = mm.indexOf('\n', mm.indexOf("its rig expects no refusals\"; fi", start)) + 1;
+  assert.ok(start > 0 && end > start, 'the step that finds the other branch\'s CL exists');
+  return mm.slice(start, end).replace(/^ {10}/gm, '');
+};
+
+test('other branch: map-mode finds the other branch\'s CL, hands it to decide, and outputs the rig input before the chain can stop', () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}expect_refused_other: \$\{\{ steps\.chain\.outputs\.expect_refused_other \}\}\n/);
+  assert.match(mm, /\n {6}OTHER_BUILDID: \$\{\{ inputs\.other_buildid \}\}\n/);
+  const find = mm.indexOf(OTHER_STEP_FROM);
+  const decideAt = mm.indexOf('node tool/ci/decide.mjs');
+  assert.ok(find > 0 && find < decideAt, 'the CL is found before decide runs');
+  assert.match(mm.slice(decideAt, decideAt + 500), /"\$\{test_flag\[@\]\}" "\$\{other_flag\[@\]\}"/);
+  const out = mm.indexOf('echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"');
+  assert.ok(out > mm.indexOf('echo "expect_refused=$expect_refused"') && out < mm.indexOf('nothing exported or signed'), 'set ahead of the exit that ends a chain whose decision is not M');
+  assert.ok(mm.includes("grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'"));
+  // The watcher hands the id over, from the poll; both triggers of the check declare the input.
+  assert.match(watch, /\n {6}other_buildid: \$\{\{ matrix\.other_buildid \}\}\n/);
+  assert.match(call, /\n {6}other_buildid:\n {8}description: [^\n]*\n {8}type: string\n {8}default: ''\n/);
+  assert.match(dispatch, /\n {6}other_buildid:\n {8}description: [^\n]*\n {8}type: string\n {8}default: ''\n/);
+});
+
+test('other branch: the CL comes from the watcher\'s build id through the candidate map\'s build rows, else from the recorded state', { skip: !bash }, () => {
+  const header = (() => {
+    const m = emptyMap('loader', 127004);
+    addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
+    addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
+    return emit(m);
+  })();
+  const run = ({ branch, otherBuildid = '', state = { apps: { 1631270: { branches: { public: { buildid: '25646882' }, public_test_branch: { buildid: '26271156' } } } } } }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'other-cl-'));
+    cpSync(here, join(dir, 'tool', 'ci'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
+    mkdirSync(join(dir, 'tool', 'state'), { recursive: true });
+    if (state) writeFileSync(join(dir, 'tool', 'state', 'steam.json'), JSON.stringify(state));
+    writeFileSync(join(dir, 'version_map.generated.h'), header);
+    const script = `set -euo pipefail\nheader=version_map.generated.h\n${otherStep()}\nprintf 'cl=[%s] flag=[%s] id=[%s]\\n' "$other_cl" "\${other_flag[*]}" "$other_buildid"`;
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, BRANCH: branch, OTHER_BUILDID: otherBuildid } });
+    return { status: r.status, out: r.stdout, err: r.stderr };
+  };
+  // A public check, the watcher saw the test branch on build 26271156 (CL-129402).
+  const a = run({ branch: 'public', otherBuildid: '26271156' });
+  assert.equal(a.status, 0, a.err);
+  assert.match(a.out, /cl=\[129402\] flag=\[--other-cl 129402\] id=\[26271156\]/);
+  assert.match(a.out, /public_test_branch runs build 26271156 = CL-129402/);
+  // A test-branch check without the input: public's recorded build is the id, and its row is CL-127004.
+  const b = run({ branch: 'public_test_branch' });
+  assert.equal(b.status, 0, b.err);
+  assert.match(b.out, /cl=\[127004\] flag=\[--other-cl 127004\] id=\[25646882\]/);
+  // The input wins over the recorded state.
+  assert.match(run({ branch: 'public', otherBuildid: '25646882' }).out, /cl=\[127004\]/);
+  // A build the map has never measured, a non-number and a missing state name no CL: nothing is declared.
+  for (const odd of [{ otherBuildid: '999' }, { otherBuildid: 'not-a-build' }, { otherBuildid: '', state: null }, { otherBuildid: '', state: {} }]) {
+    const r = run({ branch: 'public', ...odd });
+    assert.equal(r.status, 0, r.err);
+    assert.match(r.out, /cl=\[\] flag=\[\]/, JSON.stringify(odd));
+    assert.match(r.out, /::notice title=Other branch unknown::public_test_branch build/);
+  }
+});
+
+test('other branch: the step turns decision.json into the other rig\'s input, and refuses a name outside the rig\'s grammar', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          expect_refused_other="$(node -p');
+  const end = mm.indexOf('\n', mm.indexOf('Loader refuses on CL::expected refusals on $other_branch')) + 1;
+  assert.ok(start > 0 && end > start);
+  const snippet = mm.slice(start, end).replace(/^ {10}/gm, '');
+  const run = (decision) => {
+    const dir = mkdtempSync(join(tmpdir(), 'expect-other-'));
+    writeFileSync(join(dir, 'decision.json'), JSON.stringify(decision));
+    const r = spawnSync(bash, ['-c', `other_branch=public_test_branch; other_cl=129402\n${snippet}`], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_OUTPUT: join(dir, 'out.txt') } });
+    return { status: r.status, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '', log: r.stdout };
+  };
+  const a = run({ decision: 'HOLD', expectRefused: [], expectRefusedOther: ['MiniMap'] });
+  assert.deepEqual([a.status, a.out], [0, 'expect_refused_other=MiniMap\n']);
+  assert.match(a.log, /expected refusals on public_test_branch \(CL-129402\): MiniMap/);
+  assert.equal(run({ decision: 'M', expectRefusedOther: ['Codex', 'MiniMap'] }).out, 'expect_refused_other=Codex MiniMap\n');
+  assert.equal(run({ decision: 'M', expectRefusedOther: [] }).out, 'expect_refused_other=\n');
+  assert.equal(run({ decision: 'M', expectRefused: ['MiniMap'] }).out, 'expect_refused_other=\n', 'no prediction for the other branch means nothing is declared there');
+  const bad = run({ decision: 'M', expectRefusedOther: ['Mini Map; rm'] });
+  assert.deepEqual([bad.status, bad.out], [2, '']);
+});
+
+test('other branch: a plugin the rule does not predict is never declared, and the rig verdict still fails it', () => {
+  // The workflow feeds the rig exactly decide\'s list: nothing is added by hand, nothing is read from a name list.
+  const mm = job('map-mode');
+  assert.ok(!/expect_refused_other="[A-Za-z]/.test(mm), 'no literal plugin name in the output');
+  assert.ok(!/MiniMap/.test(otherStep()), 'the CL step names no plugin');
+  // verdict.ps1: a refusal line for a plugin whose expectRefused is false fails plugin_not_refused_<plugin>;
+  // ci/test-verdict.ps1 (refused_not_loaded, refused_plugin_unlisted) runs that.
+  const verdict = readFileSync(join(here, 'verdict.ps1'), 'utf8');
+  assert.match(verdict, /Add-Check "plugin_not_refused_\$\(\$s\.Repo\)"/);
+  assert.match(verdict, /Add-Check 'no_unexpected_refusal'/);
+});
+
+test('review alert: a pinned plugin with a newer release is a loud line, deduplicated, and it neither fails the chain nor withholds the passed mark', { skip: !bash }, () => {
+  const line = (n, t) => `- new ${n} release ${t} waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in \`ci/plugin-names.json\``;
+  const a = alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0', OTHER_RIG_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.equal(a.status, 0, a.stderr);
+  assert.ok(a.md.includes(line('MiniMap', 'v1.3.0') + '\n'), a.md);
+  assert.equal(a.md.split(line('MiniMap', 'v1.3.0')).length, 2, 'once, though both rigs reported it');
+  assert.match(a.md, /^@msantoro12 branch `public_test_branch`/);
+  // Loud: an alert is raised. Not a failure: the chain still counts as passed.
+  assert.deepEqual(a.outputs, { alert: 'true', passed: 'true', ready: 'false' });
+  // Two plugins, and tokens outside the grammar are dropped.
+  const b = alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0 Other=2.0.0 bad;rm=1 =x', OTHER_RIG_REVIEW: '' } });
+  assert.ok(b.md.includes(line('MiniMap', 'v1.3.0')) && b.md.includes(line('Other', '2.0.0')));
+  assert.ok(!b.md.includes('bad;rm') && !b.md.includes('=x'), b.md);
+  // A real problem next to it still fails the chain (passed false) and keeps its own line.
+  const c = alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0', OTHER_RIG_RESULT: 'failure', OTHER_RIG_VERDICT: 'FAIL', OTHER_RIG_REASON: 'plugin_not_refused_MiniMap: FOUND', RIG_GATE_RESULT: 'failure' } });
+  assert.deepEqual(c.outputs, { alert: 'true', passed: 'false', ready: 'false' });
+  assert.match(c.md, /client rig gate\*\* failed/);
+  assert.ok(c.md.includes(line('MiniMap', 'v1.3.0')));
+  // With the autopilot off and everything passing, the ready note is still written beside the review line.
+  const d = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.deepEqual(d.outputs, { alert: 'true', passed: 'true', ready: 'true' });
+  assert.match(d.ready, /Ready, publish held/);
+  // No review output, no line.
+  assert.equal(alertRun({ decision: goodDecision, env: { BRANCH_RIG_REVIEW: '', OTHER_RIG_REVIEW: '' } }).outputs.alert, 'false');
+});
+
+test('review alert: the alert job reads the review output of both rigs', () => {
+  const al = job('alert');
+  assert.match(al, /\n {6}BRANCH_RIG_REVIEW: \$\{\{ needs\.rig-branch\.outputs\.review \}\}\n/);
+  assert.match(al, /\n {6}OTHER_RIG_REVIEW: \$\{\{ needs\.rig-other\.outputs\.review \}\}\n/);
+});
+
+// ------------------------------------------------------------ fix round: the plan reads the pins, the rig's DLLs are read, publish is not wired
+
+// The plan step, run for real under Windows PowerShell with stand-ins for the releases API and git: the
+// step's run block beside a tool/ci/plugin-names.json, and the outputs GitHub would collect.
+const PLAN_NAMES = JSON.parse(readFileSync(join(here, 'plugin-names.json'), 'utf8'));
+const MINIMAP = PLAN_NAMES.find((n) => n.Name === 'MiniMap');
+const PIN_TAG = MINIMAP.Pin.Tag;
+const PIN_DIGEST = MINIMAP.Pin.Digest;
+const MINIMAP_REPO = 'LetMeInside/StarRupture-Plugin-MiniMap';
+// latest: the tag the API names as MiniMap's newest release. pinDigest: the digest its assets carry at the pinned tag.
+// pinAssets: 'client' (the client DLL beside a zip), 'zip' (no DLL) or 'two' (two client DLLs).
+const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.3.0', pinDigest = PIN_DIGEST, pinAssets = 'client' }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'plan-'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  writeFileSync(join(dir, 'tool', 'ci', 'plugin-names.json'), JSON.stringify(names));
+  writeFileSync(join(dir, 'plan.ps1'), '\ufeff' + runOf(job('plugin-plan'), 'Check the plugin list'));
+  const out = join(dir, 'github-output.txt');
+  const uris = join(dir, 'uris.txt');
+  const assets = {
+    client: "@(@{ name = 'MiniMap-Client.dll'; state = 'uploaded'; digest = $digest; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-Client.dll\" }, @{ name = 'MiniMap-v1.zip'; state = 'uploaded'; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-v1.zip\" })",
+    zip: "@(@{ name = 'MiniMap-v1.zip'; state = 'uploaded'; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-v1.zip\" })",
+    two: "@(@{ name = 'Foo-Client.dll'; state = 'uploaded'; digest = $digest; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-Client.dll\" }, @{ name = 'Other-Client.dll'; state = 'uploaded'; digest = $digest; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/Other-Client.dll\" })",
+  }[pinAssets];
+  writeFileSync(join(dir, 'run.ps1'), '\ufeff' + [
+    "$ErrorActionPreference = 'Stop'",
+    'function Invoke-RestMethod { param($Headers, $Uri, $TimeoutSec)',
+    `  Add-Content -LiteralPath '${uris}' -Value $Uri`,
+    "  if ($Uri -notmatch '/repos/([^/]+)/([^/]+)/releases/(latest|tags/(.+))$') { throw \"unexpected $Uri\" }",
+    '  $owner = $Matches[1]; $repo = $Matches[2]',
+    "  if ($repo -eq 'StarRupture-Plugin-MiniMap') {",
+    `    $tag = if ($Matches[4]) { $Matches[4] } else { '${latest}' }`,
+    `    $digest = if ($tag -ceq '${PIN_TAG}') { '${pinDigest}' } else { 'sha256:' + ('b' * 64) }`,
+    `    $assets = ${assets}`,
+    '  } else {',
+    "    $tag = 'v2.0.0'",
+    "    $assets = @(@{ name = \"$repo-Client.dll\"; state = 'uploaded'; digest = 'sha256:' + ('c' * 64); browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/$repo-Client.dll\" })",
+    '  }',
+    '  [pscustomobject]@{ tag_name = $tag; assets = @($assets | ForEach-Object { [pscustomobject]$_ }) }',
+    '}',
+    // The tag's commit: one line for the ref asked about.
+    'function git { $global:LASTEXITCODE = 0; ("a" * 40) + [char]9 + $args[2] }',
+    `$env:GITHUB_OUTPUT = '${out}'`,
+    "$env:GH_TOKEN = 'x'; $env:PLUGIN_SDK_REPO = 'AlienXAXS/StarRupture-Plugin-SDK'; $env:GAME_SDK_REPO = 'AlienXAXS/StarRupture-Game-SDK'",
+    "$env:EXCLUDE = ''; $env:TEST_AUTOPILOT = 'false'; $env:PUBLISH = 'false'; $env:MAP_MODE = 'true'",
+    `$env:PLUGINS = '${plugins}'`,
+    `Set-Location '${dir}'`,
+    "& (Join-Path (Get-Location) 'plan.ps1')",
+  ].join('\n'));
+  const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(dir, 'run.ps1')], { encoding: 'utf8', windowsHide: true });
+  const read = (f) => {
+    if (!existsSync(f)) return '';
+    const b = readFileSync(f);
+    return b[0] === 0xff && b[1] === 0xfe ? b.toString('utf16le').slice(1) : b.toString('utf8'); // Windows PowerShell 5.1 writes UTF-16 with >>
+  };
+  const outputs = Object.fromEntries(read(out).split(/\r?\n/).filter(Boolean).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  return { r, text: `${r.stdout}\n${r.stderr}`, outputs, matrix: outputs.matrix ? JSON.parse(outputs.matrix) : null, uris: read(uris).split(/\r?\n/).filter(Boolean) };
+};
+const PLAN_PLUGINS = `${MINIMAP_REPO}@latest-release AlienXAXS/StarRupture-Plugin-WAILA@latest-release`;
+const planEntry = (p, name) => p.matrix.find((e) => e.name === name);
+
+test('B1 plan: a plugin of another author is the reviewed release (tag and digest), a newer one is only reported', { skip: !powershell }, () => {
+  const p = planRun({ plugins: PLAN_PLUGINS });
+  assert.equal(p.r.status, 0, p.text);
+  const m = planEntry(p, 'MiniMap');
+  assert.equal(m.release, PIN_TAG, 'scanned at the Pin, not at the newest release (v1.3.0)');
+  assert.equal(m.ref, PIN_TAG);
+  assert.equal(m.source, 'release');
+  assert.equal(m.error, '');
+  assert.equal(m.dll, 'MiniMap-Client.dll', 'the rig\'s pick: the client DLL, not the zip');
+  assert.equal(m.asset, `https://github.com/${MINIMAP_REPO}/releases/download/${PIN_TAG}/MiniMap-Client.dll`);
+  assert.equal(m.assetSha256, PIN_DIGEST.slice('sha256:'.length), 'the reviewed digest is the one the download is compared with');
+  assert.ok(p.uris.includes(`https://api.github.com/repos/${MINIMAP_REPO}/releases/tags/${PIN_TAG}`), p.uris.join('\n'));
+  assert.equal(p.outputs.review, 'MiniMap=v1.3.0');
+  // The plugins of the trusted owners still follow their latest release.
+  const w = planEntry(p, 'WAILA');
+  assert.equal(w.release, 'v2.0.0');
+  assert.ok(p.uris.includes('https://api.github.com/repos/AlienXAXS/StarRupture-Plugin-WAILA/releases/latest'));
+  assert.ok(!p.uris.some((u) => /WAILA\/releases\/tags\//.test(u)));
+});
+
+test('B1 plan: no newer release, no review line', { skip: !powershell }, () => {
+  const p = planRun({ plugins: PLAN_PLUGINS, latest: PIN_TAG });
+  assert.equal(p.r.status, 0, p.text);
+  assert.equal(p.outputs.review, '');
+  assert.equal(planEntry(p, 'MiniMap').release, PIN_TAG);
+});
+
+test('B1 plan: a pinned release whose DLL changed, has no client DLL, or has two never runs, and is never built from source', { skip: !powershell }, () => {
+  const changed = planRun({ plugins: PLAN_PLUGINS, pinDigest: 'sha256:' + 'd'.repeat(64) });
+  assert.equal(changed.r.status, 0, changed.text);
+  const m = planEntry(changed, 'MiniMap');
+  assert.match(m.error, /digest/);
+  assert.match(m.error, /changed after review/);
+  assert.deepEqual([m.dll, m.asset, m.assetSha256], ['', '', ''], 'nothing to scan');
+  assert.notEqual(m.source, 'build', 'a reviewed release is never built from source');
+  assert.equal(planEntry(changed, 'WAILA').error, '', 'the other plugins are not affected');
+  for (const pinAssets of ['zip', 'two']) {
+    const p = planRun({ plugins: PLAN_PLUGINS, pinAssets });
+    assert.equal(p.r.status, 0, p.text);
+    const e = planEntry(p, 'MiniMap');
+    assert.match(e.error, /client DLL assets \(exactly one is needed\)/, pinAssets);
+    assert.notEqual(e.source, 'build', pinAssets);
+    assert.equal(e.asset, '', pinAssets);
+  }
+});
+
+test('B1 plan: another author\'s plugin without a usable Pin is not fetched at all, and only @latest-release is allowed for it', { skip: !powershell }, () => {
+  const strip = (pin) => PLAN_NAMES.map((n) => (n.Name === 'MiniMap' ? (pin === undefined ? Object.fromEntries(Object.entries(n).filter(([k]) => k !== 'Pin')) : { ...n, Pin: pin }) : n));
+  for (const [what, names] of [['no Pin', strip(undefined)], ['a bad digest', strip({ Tag: PIN_TAG, Digest: 'sha256:abc' })], ['a bad tag', strip({ Tag: '../x', Digest: PIN_DIGEST })]]) {
+    const p = planRun({ plugins: PLAN_PLUGINS, names });
+    assert.equal(p.r.status, 0, `${what}: ${p.text}`);
+    const m = planEntry(p, 'MiniMap');
+    assert.notEqual(m.error, '', what);
+    assert.match(m.error, /Pin/, what);
+    assert.equal(m.asset, '', what);
+    assert.ok(!p.uris.some((u) => u.includes('StarRupture-Plugin-MiniMap')), `${what}: no release of it was read: ${p.uris}`);
+  }
+  // A branch or a commit of another author's plugin would be built and run next to the login.
+  const branch = planRun({ plugins: `${MINIMAP_REPO}@main` });
+  assert.notEqual(branch.r.status, 0);
+  assert.match(branch.text.replace(/\s+/g, ' '), /allowed only as owner\/repo@latest-release, which is its reviewed release/);
+});
+
+test('B1 plan: the job reads the pins from the repository, with a read-only token, and outputs the review list', () => {
+  const j = job('plugin-plan');
+  assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.match(j, /\n {6}review: \$\{\{ steps\.plan\.outputs\.review \}\}\n/);
+  const co = stepText(j, 'Check out the plugin pins');
+  assert.ok(co.includes('path: tool') && co.includes('sparse-checkout: ci/plugin-names.json') && co.includes('persist-credentials: false'));
+  assert.ok(j.indexOf('- name: Check out the plugin pins') < j.indexOf('- name: Check the plugin list'), 'the pins are there before the plan reads them');
+  const al = job('alert');
+  assert.match(al, /\n {6}PLAN_REVIEW: \$\{\{ needs\.plugin-plan\.outputs\.review \}\}\n/);
+  assert.ok(al.includes('[e.PLAN_REVIEW, e.BRANCH_RIG_REVIEW, e.OTHER_RIG_REVIEW]'));
+});
+
+test('B1 alert: a newer release the plan saw raises the review line once, though the rigs saw it too', { skip: !bash }, () => {
+  const a = alertRun({ decision: goodDecision, env: { PLAN_REVIEW: 'MiniMap=v1.3.0', BRANCH_RIG_REVIEW: 'MiniMap=v1.3.0', OTHER_RIG_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.equal(a.status, 0, a.stderr);
+  const line = '- new MiniMap release v1.3.0 waiting for review';
+  assert.equal(a.md.split(line).length, 2, a.md);
+  const b = alertRun({ decision: goodDecision, env: { PLAN_REVIEW: 'MiniMap=v1.3.0' } });
+  assert.ok(b.md.includes(line), 'the plan alone is enough');
+  assert.deepEqual(b.outputs, { alert: 'true', passed: 'true', ready: 'false' });
+});
+
+// ---- S1: the DLLs the rig runs are read by the check job and decide declares the refusals from them
+
+test('S1 check: the rig\'s own set is resolved, fetched through the rig\'s cache and read before the layouts', () => {
+  const j = job('check');
+  const names = ['Check out the rig\'s set script', 'Resolve the rig\'s plugin set', 'Restore the rig\'s release files', 'Download what the cache lacks', 'Save the rig\'s release files', 'Read the rig\'s plugin DLLs'];
+  const at = names.map((n) => j.indexOf(`- name: ${n}\n`));
+  assert.ok(at.every((x, i) => x > 0 && (i === 0 || x > at[i - 1])), `in this order: ${at}`);
+  assert.ok(at[5] < j.indexOf('# ---- Layouts from the PDBs'), 'before the layout steps');
+  // The rig's own script and its names file, from this repository.
+  const tool = stepText(j, names[0]);
+  assert.ok(tool.includes('ci/client-rig-set.ps1') && tool.includes('ci/plugin-names.json') && tool.includes('persist-credentials: false'));
+  const res = stepText(j, names[1]);
+  assert.ok(res.includes('-Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER'));
+  assert.ok(res.includes("MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}"), 'the rig\'s default owner');
+  assert.ok(!res.includes('-Tags'), 'the check resolves what the rig would resolve with no tags');
+  // The same cache the rig uses: path and key (the cache version depends on the path).
+  const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(rig.includes('DOWNLOAD_DIR: D:\\rig-dl') && rig.includes('key: sr-client-rig-dl-${{ steps.res.outputs.key }}'));
+  const restore = stepText(j, names[2]);
+  assert.ok(restore.includes('path: D:\\rig-dl') && restore.includes('key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}') && restore.includes('restore-keys: sr-client-rig-dl-'));
+  assert.ok(stepText(j, names[3]).includes('-Mode Fetch'));
+  assert.ok(stepText(j, names[4]).includes('key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}'));
+  // Each step may fail without failing the check: the facts are then unknown and nothing is declared.
+  for (const n of names.slice(0, 4).concat(names[5])) assert.match(stepText(j, n), /continue-on-error: true/, n);
+});
+
+test('S1 check: each DLL is read with the scanner, and one that cannot be read gets an error row, never a guess', () => {
+  const run = runOf(job('check'), 'Read the rig\'s plugin DLLs');
+  assert.ok(run.includes('$SCANNER_SHA256') || run.includes('$env:SCANNER_SHA256'), 'the scanner is the verified one');
+  assert.ok(run.includes('--plugin $file --json'));
+  assert.ok(run.includes("$e.asset.digest -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $e.asset.digest"), 'the file is the digest the release gives');
+  assert.ok(run.includes("throw \"sr-aobscan could not read its plugin facts (exit $code)\""));
+  assert.ok(run.includes('$r.error = $_.Exception.Message'), 'a failed read is an error row');
+  assert.ok(run.includes('out\\rig-plugins.json') && !/out\\plugin-/.test(run), 'not named like a scan of the build: map mode reads every out/plugin-*.json');
+  assert.ok(job('check').includes('out/rig-plugins.json\n          if-no-files-found: warn'), 'in the artifact map mode downloads');
+});
+
+const rigChain = () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          rig_flag=()\n');
+  const end = mm.indexOf('echo "rig_tags=$rig_tags" >> "$GITHUB_OUTPUT"\n', start) + 'echo "rig_tags=$rig_tags" >> "$GITHUB_OUTPUT"\n'.length;
+  assert.ok(start > 0 && end > start, 'map mode reads the rig facts before decide');
+  return mm.slice(start, end).replace(/^ {10}/gm, '');
+};
+
+test('S1 map mode: decide gets the rig facts, and both rigs the resolved tags', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}rig_tags: \$\{\{ steps\.chain\.outputs\.rig_tags \}\}\n/);
+  assert.ok(mm.indexOf('rig_flag=(--rig-plugins res/rig-plugins.json)') < mm.indexOf('node tool/ci/decide.mjs'), 'before decide');
+  assert.match(mm.slice(mm.indexOf('node tool/ci/decide.mjs'), mm.indexOf('node tool/ci/decide.mjs') + 600), /"\$\{other_flag\[@\]\}" "\$\{rig_flag\[@\]\}"/);
+  for (const rig of RIG_JOBS) assert.match(job(rig), /\n {6}tags: \$\{\{ needs\.map-mode\.outputs\.rig_tags \}\}\n/, `${rig} runs the releases the check read`);
+  const run = (files) => {
+    const dir = mkdtempSync(join(tmpdir(), 'rig-chain-'));
+    for (const [n, c] of Object.entries(files)) { mkdirSync(dirname(join(dir, n)), { recursive: true }); writeFileSync(join(dir, n), c); }
+    const r = spawnSync(bash, ['-c', `set -euo pipefail\n${rigChain()}\necho "flag=[\${rig_flag[*]}] tags=[$rig_tags]"`], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_OUTPUT: join(dir, 'out.txt') } });
+    return { status: r.status, out: r.stdout, err: r.stderr, outputs: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '' };
+  };
+  const good = run({ 'res/rig-plugins.json': JSON.stringify({ tags: 'Codex=v1.0.0 MiniMap=v1.2.0', plugins: [] }) });
+  assert.equal(good.status, 0, good.err);
+  assert.match(good.out, /flag=\[--rig-plugins res\/rig-plugins\.json\] tags=\[Codex=v1\.0\.0 MiniMap=v1\.2\.0\]/);
+  assert.equal(good.outputs, 'rig_tags=Codex=v1.0.0 MiniMap=v1.2.0\n');
+  // With the BOM Windows PowerShell writes.
+  assert.match(run({ 'res/rig-plugins.json': '\ufeff' + JSON.stringify({ tags: 'Codex=v1.0.0', plugins: [] }) }).out, /tags=\[Codex=v1\.0\.0\]/);
+  // No file: nothing is declared, nothing is passed to the rigs, and it is said so.
+  const none = run({});
+  assert.equal(none.status, 0, none.err);
+  assert.match(none.out, /flag=\[\] tags=\[\]/);
+  assert.match(none.out, /::notice title=Rig plugins unknown::/);
+  assert.equal(none.outputs, 'rig_tags=\n');
+  // A tags value outside the rig's grammar stops the chain.
+  const bad = run({ 'res/rig-plugins.json': JSON.stringify({ tags: 'Codex=v1.0.0; rm -rf', plugins: [] }) });
+  assert.equal(bad.status, 2);
+  assert.match(bad.out, /::error::the rig's tags are not Name=tag pairs/);
+});
+
+// ---- S2: an enabled autopilot publishes nothing on the unattended path, and the summary says so
+
+test('S2 summary: the unattended chain\'s M says publish is not wired, a held or dispatched decision does not', () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf("          node -e '\n            const d = JSON.parse(require(\"fs\").readFileSync(\"decision.json\"");
+  const end = mm.indexOf("\n          '\n", start);
+  assert.ok(start > 0 && end > start, 'the summary script exists');
+  const script = mm.slice(start, end).replace(/^ {10}node -e '\n/, '').replace(/^ {12}/gm, '');
+  const run = (decision) => {
+    const dir = mkdtempSync(join(tmpdir(), 'summary-'));
+    writeFileSync(join(dir, 'decision.json'), JSON.stringify({ plugins: [], reasons: [], notes: [], ...decision }));
+    const r = spawnSync(process.execPath, ['-e', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_STEP_SUMMARY: join(dir, 'summary.md') } });
+    assert.equal(r.status, 0, r.stderr);
+    return readFileSync(join(dir, 'summary.md'), 'utf8');
+  };
+  const SAID = 'publish not wired on the unattended path';
+  // Autopilot on: the candidate chain decides M, and nothing publishes it.
+  assert.ok(run({ decision: 'M', cl: 129402, candidate: true, wouldBe: 'M' }).includes(SAID));
+  // Autopilot off: HOLD, which says the autopilot holds it; the line about wiring is not added.
+  assert.ok(!run({ decision: 'HOLD', cl: 129402, candidate: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] }).includes(SAID));
+  // A dispatch with publish on is not the unattended path.
+  assert.ok(!run({ decision: 'M', cl: 129402 }).includes(SAID));
+  // A test run never.
+  assert.ok(!run({ decision: 'HOLD', cl: 129402, test: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] }).includes(SAID));
+});
+
+test('S2 docs: re-enabling the autopilot is said to need the publish wiring, and the deploy key setup is step 26', () => {
+  for (const f of [join(here, 'MAP-MODE.md'), join(here, '..', '.github', 'sr-pipeline', 'README.md')]) {
+    const text = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\s+/g, ' ');
+    assert.match(text, /publish wiring/, f);
+    assert.match(text, /publish not wired on the unattended path/, f);
+    assert.match(text, /an enabled autopilot (does nothing extra|changes nothing)/, f);
+    assert.match(text, /step 26/, f);
+    assert.ok(!/it publishes on its own/.test(text) && !/pipeline publishes on its own/.test(text), `${f}: no claim that the autopilot publishes by itself`);
+  }
+});
+
+// ---- N2: "ready, publish held" only for a chain that staged a candidate and ran the rigs
+
+test('N2 alert: a dispatch with publish on that the autopilot held (no candidate) is not "ready"', { skip: !bash }, () => {
+  const a = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: [AUTOPILOT_HOLD] }, env: { STAGED_EXPECTED: 'false', CANDIDATE_RESULT: 'skipped', RIG_GATE_RESULT: 'skipped' } });
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.outputs.ready, 'false');
+  assert.equal(a.ready, null, 'no ready note is written');
+  // The candidate chain's hold is still ready.
+  assert.equal(alertRun({ decision: HOLD_ONLY_AUTOPILOT }).outputs.ready, 'true');
 });

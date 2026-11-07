@@ -27,7 +27,7 @@ on:
         type: string
         default: public
       tags:
-        description: 'Release tags to take instead of each repo''s Latest, as Name=tag (space separated). Names: Loader, BetterCheats, BetterDrone, CameraControls, Codex, Compass, ProductionViewer, RuptureTimer, WAILA, WaveOptimiser'
+        description: 'Release tags to take instead of each repo''s Latest, as Name=tag (space separated). Names: Loader, BetterCheats, BetterDrone, CameraControls, Codex, Compass, MiniMap, ProductionViewer, RuptureTimer, WAILA, WaveOptimiser. MiniMap (another author) accepts only its reviewed tag, the Pin in ci/plugin-names.json'
         type: string
         default: ''
       candidate_run_id:
@@ -90,6 +90,9 @@ on:
       artifact:
         description: Name of the artifact holding the scrubbed logs (empty if none was uploaded)
         value: ${{ jobs.rig.outputs.artifact }}
+      review:
+        description: 'Plugins of other authors with a newer release than the reviewed one the rig runs, as Name=tag separated by spaces (empty if none)'
+        value: ${{ jobs.rig.outputs.review }}
     # Environment secrets of steam-client. Unpassed, they read as empty with no error;
     # required, a caller that leaves them out fails at the call.
     secrets:
@@ -118,6 +121,7 @@ jobs:
       verdict: ${{ steps.final.outputs.verdict }}
       reason: ${{ steps.final.outputs.reason }}
       artifact: ${{ steps.final.outputs.artifact }}
+      review: ${{ steps.res.outputs.review }}
     env:
       BRANCH: ${{ inputs.branch }}
       TAGS: ${{ inputs.tags }}
@@ -126,6 +130,10 @@ jobs:
       REMOVE_PLUGINS: ${{ inputs.remove_plugins }}
       MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
       DOWNLOAD_DIR: D:\rig-dl
+      # One name per rig run. A caller's run id is the top-level run's, so the several rigs of one run (the
+      # client check runs two per call, sr-watch up to two calls) need the branch and the candidate
+      # artifact in the name: artifact names are unique within a run.
+      ARTIFACT_NAME: sr-client-rig-${{ inputs.branch }}-${{ inputs.candidate_artifact || 'release' }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       # Without the login there is nothing to test: fail with that reason, never skip green.
       - name: Check the Steam login secrets are set
@@ -327,7 +335,7 @@ jobs:
         if: always() && steps.leak.outcome == 'success' && hashFiles('out/*') != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sr-client-rig-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: |
             out/modloader.log
             out/proxy.log
@@ -350,7 +358,6 @@ jobs:
           LEAK: ${{ steps.leak.outcome }}
           CLEANUP: ${{ steps.cleanup.outcome }}
           UPLOAD: ${{ steps.upload.outcome }}
-          ARTIFACT_NAME: sr-client-rig-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $verdict = 'FAIL'; $reason = ''; $publish = $false
           $vj = 'out/verdict.json'

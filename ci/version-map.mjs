@@ -381,6 +381,14 @@ export function buildIdOf(source) {
   return m ? m[1] : null;
 }
 
+// The CL the map holds for a Steam build id, or null when no build row carries that id (a build the
+// map has not measured, or an id that is not a plain number).
+export function clOfBuild(map, buildid) {
+  if (!/^\d+$/.test(String(buildid ?? ''))) return null;
+  const hits = (map.builds ?? []).filter((b) => buildIdOf(b.source) === String(buildid));
+  return hits.length === 1 ? hits[0].cl : null;
+}
+
 // Why two build rows for one CL are not the same build, or null when they are.
 // A build is its CL, Steam build id, image stamp and image size; the label's
 // branch word is not part of it.

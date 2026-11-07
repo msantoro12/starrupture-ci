@@ -8,30 +8,126 @@ Map mode puts what a game update changes into the loader's version map
 plugin's source. A plugin repo gets no commit for a game update; the loader
 fork's `auto/update-<CL>` branch gets one.
 
-## Step 26: the loader fork's deploy key and ruleset (a gate, not done here)
+## Step 26: the loader fork's deploy key and ruleset (the owner sets it up once)
 
-The push of `auto/update-<CL>` to the loader fork needs a credential. That is
-repo-admin setup with the owner's `gh` auth, so it is a checklist, not code. It
-follows the procedure the plugin forks use (`drafts/ci-auto-apply-detail.md`,
-"Deploy keys"):
+The `push-loader` job of `sr-client-check.yml` pushes `auto/update-<CL>` to the
+loader fork (msantoro12/StarRupture-ModLoader). It needs a credential, and the
+credential is repo-admin setup with the owner's `gh` auth, so the owner runs it
+himself, once. It follows the procedure the plugin forks use
+(`drafts/ci-auto-apply-detail.md`, "Deploy keys"):
 
-1. Make an ed25519 key pair. Never print or log the private half.
+1. Make an ed25519 key pair in a temporary directory. Never print or log the
+   private half.
 2. Add the public half to the loader fork as a write deploy key titled
    `starrupture-ci auto-apply`.
-3. Store the private half as an environment secret in `fork-push` on
-   msantoro12/starrupture-ci (for example `SR_DEPLOYKEY_MODLOADER`), from stdin,
-   and in the Bitwarden Secrets Manager project `dev`.
-4. Add two rulesets to the loader fork, as on the plugin forks:
+3. Store the private half as the environment secret `SR_DEPLOYKEY_MODLOADER` in
+   `fork-push` on msantoro12/starrupture-ci, from the file, and delete the key
+   from the machine. (The Bitwarden Secrets Manager copy, project `dev`, is by
+   hand.)
+4. Add two rulesets to the loader fork, mirrored from a plugin fork:
    "auto-apply deploy keys: auto/** only" (a deploy key may write `auto/**`
    only) and "auto-apply deploy keys: no tags". The admin role bypasses them.
-5. Name the secret in the workflow's push job (the job holds the key and no game
-   files, as on the plugin forks).
+5. The workflow side is in this repo: `sr-watch.yml` passes
+   `SR_DEPLOYKEY_MODLOADER` by name, `sr-client-check.yml` declares it
+   (`required: false`), and only the `push-loader` job reads it (environment
+   `fork-push`; the job holds the key and no game files, as on the plugin
+   forks).
 
 Accept: a push to `auto/test` with the key succeeds, and a push to any other ref
 is rejected. Delete `auto/test` afterwards.
 
-Nothing in this repo refers to the key yet. Until step 5 is done, map mode runs
-and writes the header on the runner, and the push job has nothing to push with.
+What the job does. It reads the stage plan and `build.json` from the
+`map-mode-<branch>` artifact and checks the repository (only
+msantoro12/StarRupture-ModLoader) and the branch name (only `auto/update-<CL>`,
+optionally with `-<run id>-<attempt>`) against the allowlist in `ci/staging.mjs`.
+It checks out the loader commit the header was read from (the head of
+`loader_ref` that run used), adds one commit that changes only
+`version_map.generated.h`, and pushes it. It never pushes a tag and never forces.
+A branch that already holds the same tree is left alone; one that holds another
+tree stays as it is, and the push goes to `auto/update-<CL>-<run id>-<attempt>`.
+The job outputs `branch` and `sha` for the next steps (the `candidate-loader` job,
+below, and the client rig). A missing key fails the job with "Loader deploy key missing",
+naming the secret and the environment; it is never skipped quietly. The job runs
+for a build the chain carried through to staging: not a `test_autopilot` run, and the
+loader repository must be the fork. A build first seen on `public` is pushed too: it gets its
+own `auto/update-<CL>` and a candidate like any other (it is not entered in the
+staged index, since public is what a staged build is promoted to).
+
+### The candidate loader and its tests
+
+The `candidate-loader` job of `sr-client-check.yml` follows `push-loader` and
+builds the loader from the exact commit that job pushed: Client Release, with the
+build action shared with `sr-build-all.yml` (`.github/actions/build-loader`) and the
+build tag `cand-<run id>-<sha7>`. It then builds and runs the loader's
+`VersionMapTests` and `LayoutCheckTests` on that commit (each project built from its
+vcxproj, the exit code is the verdict), so a pushed row set that breaks the map's own
+checks fails the chain. It checks that the tag is compiled into
+`StarRupture-ModLoader-Core.dll` and uploads `dwmapi.dll` and `ModLoader/*.dll` as the
+artifact `loader-candidate-<branch>` (7 days), the layout the client rig takes as a
+candidate. Outputs: `artifact`, `version` (the tag), `expect` (`Loader=<tag>`, the
+rig's `expect` value) and `sha`; the candidate run id is this run's `github.run_id`.
+The `build-scanner` job also builds and runs the scanner's `ObservedTests` before it
+hashes the scanner. The alert job watches these two jobs (a push that did not happen, a
+candidate that failed to build or pass its tests) and the rigs, and names the cause in the
+issue it raises (see "Alerts" below).
+
+### The client rig gate
+
+The client rig is a required gate on the unattended path (owner: version updates are
+verified and deployed with the GitHub rig). After `candidate-loader`, the jobs `rig-branch`
+and `rig-other` call `sr-client-rig.yml` with the candidate (`candidate_run_id` = this run,
+`candidate_artifact` and `expect` from `candidate-loader`), the default plugin set (the
+Latest releases of the nine plugins of msantoro12 and AlienXAXS, and the reviewed release of
+MiniMap) and both Steam secrets by name. They run
+one after the other, `rig-other` after `rig-branch` whatever its result, because the rig's
+concurrency group keeps one pending run. `rig-branch` runs on the Steam branch the check is
+for and gets `map-mode`'s `expect_refused`; `rig-other` runs on the other branch and gets
+`expect_refused_other`: exactly the refusals the loader's own rule predicts for that
+branch's current build, so any refusal the rule does not predict is a fail (that branch's
+current build must keep working with the same DLLs). `rig-gate` writes both verdicts,
+reasons and logs artifacts into the run summary
+and is red unless both passed. `publish` needs both rig jobs at verdict `PASS`; the promote
+step above is only a plan. With the autopilot off, publish is held and the rigs still run.
+Details: `.github/sr-pipeline/README.md`, "Client test rig".
+
+Policy (owner), in plain words:
+
+- The client rig is a required gate on the unattended path: the CI's own candidate loader,
+  both Steam branches, the same DLLs. A rig fail blocks publish and raises the alert.
+- Graphics are not a gate. The rig runs `-nullrhi` to the main menu: no rendering, overlay,
+  DX11 or in-world checks. Graphical problems get small fixes after a release.
+- Autopilot off means build everything, publish nothing. Switching it on again does not
+  publish by itself: the unattended chain never calls the `publish` job, so today an enabled
+  autopilot does nothing extra (the decision reads `M`, and the run summary says "publish not
+  wired on the unattended path"). Re-enabling the autopilot also needs the publish wiring
+  (sr-watch calling the check with publish on, or a publish step after a green `rig-gate`,
+  signed with the release key), which is separate work and the owner's call. The staged
+  branch push needs the loader fork's deploy key (step 26). It stays off until the owner has
+  approved the first full run.
+- The rig runs only candidates built in this repository from our own branches.
+- Expected refusals on the other branch: `expect_refused_other` is `decision.json`'s
+  `expectRefusedOther`, which `decide.mjs` computes from `--other-cl N` (the CL the other
+  branch's Steam build id has in the candidate map's build rows; the watcher passes the id
+  as `other_buildid`, a dispatched check reads it from `state/steam.json`). Unknown CL:
+  nothing is declared, so a refusal there is a loud fail. A plugin of interface v72 or later
+  that is not built here has no known migration flag and is not predicted.
+- Plugins of other authors are pinned. A rig plugin whose owner is neither msantoro12 nor
+  AlienXAXS (MiniMap) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
+  in the client check as well as in the rig: the check's `plugin-plan` reads the same Pin,
+  fetches that tag and never builds such a plugin from source; a digest mismatch, a missing or
+  malformed Pin fails the plugin (FETCH-FAILED) and the rig. A newer release does not change
+  anything that is scanned, run or predicted: the alert job adds "new <plugin> release <tag>
+  waiting for review", which blocks nothing.
+- The refusals declared to a rig come from the DLLs that rig runs. The check job resolves the
+  rig's set with `ci/client-rig-set.ps1` (Latest released plugins plus the pinned third-party
+  one), fetches it through the rig's download cache, reads each DLL with `sr-aobscan --plugin`
+  into `out/rig-plugins.json`, and `decide.mjs --rig-plugins res/rig-plugins.json` applies the
+  loader's rule (`loaderRefusal`) to those facts, for `expect_refused` and
+  `expect_refused_other`. The resolved tags go to both rigs as `tags` (output `rig_tags`).
+  The `gss/plugin-work` builds still produce the map rows and the verdicts, but declare
+  nothing. A DLL whose facts cannot be read, or no `rig-plugins.json` at all, declares
+  nothing (a note in the decision), so a refusal there is a loud fail.
+- No player-facing text mentions the test branch.
 
 ## Step 27: `map-mode.mjs write`
 
@@ -152,10 +248,10 @@ rows are `required`. A scan whose `plugin.name` is not the `owner` is refused.
 `sr-client-check.yml` runs both commands in its `map-mode` job when the input
 `map_mode` is true: it takes the check job's scans and the loader's header at
 `loader_ref`, and uploads the rewritten header and the report as the artifact
-`map-mode-<branch>`. Not yet wired: the scans of each tracked component's
-previous release (`rank: previous`), the key lists (`--keys`), and the push of the
-header to the loader fork (step 26). So today the job feeds the current releases
-only, and prunes nothing.
+`map-mode-<branch>`; the `push-loader` job then pushes the staged header to the
+loader fork (step 26). Not yet wired: the scans of each tracked component's
+previous release (`rank: previous`) and the key lists (`--keys`). So today the job
+feeds the current releases only, and prunes nothing.
 
 A build the loader does not run on yet is the case this job exists for. With
 `map_mode` on, the check records a failed loader version gate as a new build
@@ -272,11 +368,58 @@ table. Only a verdict decide does not know, and the loader's own gates (G1 to G4
 globals, a loader key), hold the whole update. `pluginsOk` is false only
 then, and the promote re-scan (`verify.json`) reads it.
 
+A plugin is judged against the candidate map, and against the loader's own rule. The
+probe's planned stop (`the probe ended PluginInit there, as planned ... (0xC0000005)`) is
+not a crash: a FAIL plugin whose refusals are all for rows the field-rows report wrote
+(`fields.rows`) is `updated`, and only what the candidate does not fix holds it alone (a
+pattern still MISSING, a refusal for a key with no row, or a FAIL with nothing listed). A
+plugin the loader refuses on the build is `held`, whatever its scan says, with the reason
+`refused by the loader on CL-<n>: plugin interface v<x>, needs its author's update`. The
+rule is `VersionMap::OffBuildRefusal` (the loader's `memory_scanner/version_map.cpp`, called
+from `plugin_manager.cpp` at DLL load, before the plugin scans): a plugin is judged
+against the build its SDK came from. Interface v70 and v71 have no game-build tail and
+count as built on CL-127004; v72 and newer name their build. Off that build the plugin is
+refused unless it is v72 or newer and declares `PLUGIN_MAP_MIGRATED`. The pipeline reads
+the interface version and build from the scanner's `plugin` block in `plugins.json`
+(`interfaceVersion`, `gameBuild`), and the migrated flag from `rule3.migrated` (plugins
+built here; a released DLL has none), else from the probe `note`, where the scanner puts
+the loader's own refusal text (`Needs an update to run on CL-<n>: ...`). The autofix patch
+for another author's plugin (verdict `PATCH`) stays a patch: no row is ever written for
+it, and a refused plugin lists no degraded patterns.
+
+`decision.json` `expectRefused` lists, sorted, the plugins the loader refuses on this
+branch's build (the rule above, and the scanner's own REFUSED verdict). The map-mode job
+exposes it as the output `expect_refused`: log names separated by single spaces, empty
+when there are none, written whenever decide ran (held or not). It is the client rig's
+`expect_refused` input as `client-rig-set.ps1` reads it (`Read-Names`: tokens of
+`[A-Za-z0-9_.-]`). For CL-129402 on `public_test_branch` it is `MiniMap`; on `public`
+(CL-127004) it is empty.
+
+With `--other-cl N` (the CL the other Steam branch runs) decide also writes `otherCl` and
+`expectRefusedOther`: the plugins the loader rule refuses on CL-N, from the same plugin
+metadata. Only the loader rule counts there: the scanner's REFUSED verdict and a probe note
+are about the scanned CL, not another build. The map-mode job exposes it as
+`expect_refused_other`, the `expect_refused` input of `rig-other`. Without `--other-cl`
+the field is absent and the other rig expects no refusal.
+
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
 same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,
 or for another CL) holds whatever moved, on every path: the native members get their
 rows from the same run. `state/autopilot.json` ships with `enabled: false`: until it
 is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
+
+The autopilot gates publishing only, not the candidate. `--candidate` (the
+unattended chain: `map_mode` on, `publish` off, not a `test_autopilot` run, which
+is what `sr-watch.yml` calls) keeps that `HOLD` and its reason, and adds `wouldBe`
+and `candidate: true`. When `wouldBe` is `M`, the only thing that held it was the
+autopilot, and the chain runs on: export, TEST-key signing and verify, staging (and
+the push of the staged branch), and `promote.mjs plan --test-autopilot`, which plans
+past the switch and marks the plan `test`. Every other `HOLD` reason (a gate, a
+plugin verdict, the field rows, the path list, a rate limit, an unreadable
+autopilot file) leaves `wouldBe` at `HOLD` and stops the chain before the export.
+The decision stays `HOLD` while the autopilot is off, and the map-mode `test` output
+is `true` for it, so the publish job cannot run. With the autopilot on, `--candidate`
+changes nothing.
 
 `--test-autopilot` (the client check's dispatch-only `test_autopilot` input, refused
 with `publish` on, absent from sr-watch's calls) keeps that `HOLD` and adds `wouldBe`,
@@ -335,13 +478,16 @@ switches off scheduled workflows in a public repository after 60 days of no acti
 ## Staging and promotion (dry run)
 
 A beta build that passed the chain is staged, and promoted when public flips to the
-same build. Both are plan printers: the `map-mode` job of `sr-client-check.yml` runs
+same build. A build first seen on `public` is pushed to the loader fork but is not
+staged (nothing to promote it to). Both are plan printers: the `map-mode` job of `sr-client-check.yml` runs
 them (below), and nothing is signed with the release key, published or released
 from them. The staged index is not kept between runs, so a plan is all they produce.
 
 ```
 node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
 node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
+node ci/staging.mjs target --repo <owner/name> --plan <stage-plan.json>
+node ci/staging.mjs push --repo <owner/name> --plan <stage-plan.json> --build <build.json> --header <file> --checkout <dir> --run-id <n> --run-attempt <n>
 node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json> --history <history.json> --last-seq <N> --now <ISO time> [--verify <verify.json>] [--roll-forward] [--out <plan.json>]
 ```
 
@@ -350,8 +496,10 @@ node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilo
   message carries the record, and `state/staged.json` is the readable index of those
   branches. The index holds pointers; the rows live in the header. `stage` is handed
   only a branch push and an index write, so it cannot reach signing, the feed or a
-  release. The push itself waits for the deploy key above, so the command line records
-  it in the plan and writes only the index.
+  release. `stage` only plans the push (`done: false`, in the map-mode job, which holds
+  no key). The real push is `staging.mjs push`, run by the `push-loader` job that holds
+  the deploy key (step 26): one commit on the loader commit the header was read from,
+  changing only the header.
 - **Promotion** matches the public build against the index by build id, exe SHA-256
   and CL. The same build is re-scanned and promoted. The same CL on another exe is
   re-verified key by key. Either needs a passing result (`--verify`, `{ ok: true }`)
@@ -399,8 +547,10 @@ no plugin code, no game file.
    client check alone decides; no dedicated-server scan is read), G5 the classes
    the layout diff moved, changed or lost, the plugin verdicts (`plugins.json`), then
    the field rows, and the history on the `vmap-feed` release for the rate limits.
-4. On path M only: `export-feed`, sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and
-   verify it, `staging.mjs stage` for a beta build, and `promote.mjs plan`. All dry runs.
+4. On path M, or on the HOLD that only the autopilot caused (the candidate chain, above):
+   `export-feed`, sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and verify it,
+   `staging.mjs stage` for a beta build, and `promote.mjs plan`. All dry runs. Then, for
+   a staged build, the `push-loader` job pushes `auto/update-<CL>` to the loader fork.
    The chain writes `verify.json` from this run's re-scan and marks the run publishable
    for a promotion, or for `public`'s own build on a new CL with nothing staged (the
    normal flow).
@@ -414,16 +564,47 @@ no plugin code, no game file.
    release key k2 above it, verifies it without the TEST key, and uploads it with the
    history to the `vmap-feed` release. `sr-watch.yml` does not pass `publish`, and passes
    only the Steam login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, by name, so the called
-   `check` job reads them from `steam-client`) and `VMAP_SIGN_KEY_TEST` (no `secrets: inherit`,
-   no release key, no deploy key). Its `client-check` job grants
+   `check` job reads them from `steam-client`), `VMAP_SIGN_KEY_TEST` and the loader fork's
+   deploy key `SR_DEPLOYKEY_MODLOADER` and the nine plugin forks' deploy keys
+   (`SR_DEPLOYKEY_<PLUGIN>`, read by the `auto-apply` job in `fork-push`); no `secrets: inherit`,
+   no release key. Its `client-check` job grants
    `contents: write` as a ceiling: GitHub checks every called job against the caller's
    permissions when it parses the call, so `publish` could not be called otherwise; each
    called job still sets its own, and only `publish` asks for write.
 
-Until the loader fork's deploy key exists (step 26), the header is an artifact only and
-the staging record names the loader commit the header was read from.
+The header is always an artifact too. Until the loader fork's deploy key exists
+(step 26), the `push-loader` job fails with its cause, and the staging record in
+the artifact still names the loader commit the header was read from.
 
 Offline replay (2026-11-01, run 41272795133, CL-128786, a throwaway key): the loader's
 header pruned to CL-127004 gives 102 rows written, 557 field rows with 5 absent,
 decide M (autopilot copy enabled), a signed and verified feed, a staged
 `auto/update-128786` and a promote plan with a seq.
+
+## Alerts
+
+A stuck or failing update has to reach the owner through GitHub's own notifications, with
+the cause in the alert. The `alert` job of `sr-client-check.yml` opens (or comments on)
+the issue "SR map mode: <branch> needs attention", labelled `pipeline-alert`, assigned to
+`msantoro12` and mentioning him. Its lines, each with its cause:
+
+- a failed job (build-scanner, plugin-plan, check, map mode, publish the feed): the cause
+  is the check's `result.json` reason, else the failed step and the first `##[error]` line
+  of its log (jobs API); a map mode that never uploaded its artifact says so;
+- a client check that did not run: `result.json` status `skipped` or `no-login`, with the
+  reason it recorded;
+- a map-mode HOLD, with the decide reasons, except "nothing new" (G3) and the autopilot switch
+  alone;
+- staged rows that were not pushed (`push-loader`), a candidate loader that did not build or
+  pass its tests (`candidate-loader`);
+- the rig gate failing, or a rig job that did not end with `success` and verdict `PASS`, with
+  the rig's verdict reason and logs artifact.
+
+A HOLD whose only reason is "autopilot is disabled" with everything else passing is the
+normal waiting state, not an alert: the PR gets one "Ready, publish held (autopilot off)"
+comment (edited in place) and no issue is opened. A run with no alert line labels the PR
+`chain-passed-<branch>`. `sr-watch.yml`, when it skips a build because its game-update PR
+is open, checks that PR: open over 6 hours and no `chain-passed-<branch>` label for a changed
+client branch means the branch's alert issue gets a comment (or is opened), at most once per
+6 hours (a `<!-- sr-stale-pr:N -->` marker in the issue or its comments dates the last one).
+A PR refreshed by a new build loses its labels.

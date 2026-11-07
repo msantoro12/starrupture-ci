@@ -61,6 +61,10 @@ on:
         description: 'Build id the watcher saw (compared with what Steam installs)'
         type: string
         default: ''
+      other_buildid:
+        description: 'Build id of the other client branch (public or public_test_branch) as the watcher saw it; its CL decides which refusals the rig of that branch expects'
+        type: string
+        default: ''
       pr:
         description: 'Pull request number to post the result on'
         type: string
@@ -108,9 +112,11 @@ on:
     # by name (the calling job cannot set an environment; the value comes from
     # the environment of the called job that reads it). Unpassed, it reads as
     # empty, with no error. The Steam login is required, so a caller that leaves
-    # it out fails at the call instead of checking nothing. The fork deploy keys
-    # and the release key (fork-push, vmap-sign) are not declared, so a call
-    # gives auto-apply and publish no key; sr-watch keeps publish off.
+    # it out fails at the call instead of checking nothing. The release key
+    # (vmap-sign) is not declared, so a call gives publish no key; sr-watch keeps
+    # publish off. The deploy keys of the loader fork and of the nine plugin forks
+    # (environment fork-push) are declared but not required, so a missing one fails
+    # the push-loader or auto-apply job with its cause, not the call.
     secrets:
       STEAM_CI_USERNAME:
         description: 'Steam CI account name (environment steam-client); pass it by name'
@@ -121,6 +127,36 @@ on:
       VMAP_SIGN_KEY_TEST:
         description: 'TEST signing key (k1) for the map-mode dry run'
         required: false
+      SR_DEPLOYKEY_MODLOADER:
+        description: 'Write deploy key of the loader fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_BETTERCHEATS:
+        description: 'Write deploy key of the BetterCheats fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_BETTERDRONE:
+        description: 'Write deploy key of the BetterDrone fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_WAILA:
+        description: 'Write deploy key of the WAILA fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_CODEX:
+        description: 'Write deploy key of the Codex fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_COMPASS:
+        description: 'Write deploy key of the Compass fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_PRODUCTIONVIEWER:
+        description: 'Write deploy key of the ProductionViewer fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_RUPTURETIMER:
+        description: 'Write deploy key of the RuptureTimer fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_WAVEOPTIMISER:
+        description: 'Write deploy key of the WaveOptimiser fork (environment fork-push); pass it by name'
+        required: false
+      SR_DEPLOYKEY_CAMERACONTROLS:
+        description: 'Write deploy key of the CameraControls fork (environment fork-push); pass it by name'
+        required: false
   workflow_dispatch:
     inputs:
       branch:
@@ -130,6 +166,10 @@ on:
         default: public
       buildid:
         description: 'Build id the watcher saw (blank: what Steam installs); map mode names the build row with it'
+        type: string
+        default: ''
+      other_buildid:
+        description: 'Build id of the other client branch (blank: the one recorded in state/steam.json on main); its CL decides which refusals the rig of that branch expects'
         type: string
         default: ''
       pr:
@@ -290,6 +330,23 @@ jobs:
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The scanner's own tests (the locator it reports for a registry row,
+      # against the loader's VersionMap::ResolveLoaderEntry). A manual test
+      # project of the scanner branch: built from its project file in the loader
+      # checkout above, which supplies the version map code and the test doubles.
+      # Its exit code is its verdict, so a failure fails this job and with it the check.
+      - name: Build and run the scanner's tests (ObservedTests)
+        shell: pwsh
+        working-directory: loader
+        run: |
+          msbuild "tools\AobScan\ObservedTests\ObservedTests.vcxproj" `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "ObservedTests did not build (exit $LASTEXITCODE)" }
+          & "build\tests\observed_tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "ObservedTests failed (exit $LASTEXITCODE)" }
+
       - name: Hash the scanner
         id: hash
         shell: pwsh
@@ -319,13 +376,25 @@ jobs:
     if: inputs.branch && inputs.branch != 'expiry-only'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       hosted: ${{ steps.plan.outputs.hosted }}
       any: ${{ steps.plan.outputs.any }}
       anyHosted: ${{ steps.plan.outputs.anyHosted }}
+      # <Plugin>=<tag> for each plugin of another author whose newest release is not the reviewed one: the alert's "waiting for review" line.
+      review: ${{ steps.plan.outputs.review }}
     steps:
+      # The one list of the reviewed releases of other authors' plugins (Pin in ci/plugin-names.json), which the rig reads too.
+      - name: Check out the plugin pins
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci/plugin-names.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the plugin list
         id: plan
         shell: pwsh
@@ -356,26 +425,56 @@ jobs:
           # job itself and never becomes an artifact. A latest release that
           # cannot be resolved costs only that plugin (FETCH-FAILED), never
           # the plan.
+          # A plugin whose owner is neither msantoro12 nor AlienXAXS (MiniMap) is not taken at its
+          # latest release: it is the reviewed release in its Pin in ci/plugin-names.json (tag, and the
+          # sha256 of its client DLL), the one release the rig runs too. A newer release is only
+          # reported for review (the `review` output) and changes nothing that is scanned or predicted.
+          # Such a plugin is never built from source here.
+          $names = @(Get-Content -LiteralPath 'tool/ci/plugin-names.json' -Raw | ConvertFrom-Json | ForEach-Object { $_ })
+          $trusted = @('msantoro12', 'AlienXAXS')
+          $review = [Collections.Generic.List[string]]::new()
           $list = [Collections.Generic.List[object]]::new()
           $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
-            $owner = $Matches[1]; $repo = "$($Matches[1])/$($Matches[2])"; $ref = $Matches[3]
-            $e = [ordered]@{ name = ($Matches[2] -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
+            $owner = $Matches[1]; $short = $Matches[2]; $repo = "$($Matches[1])/$short"; $ref = $Matches[3]
+            $e = [ordered]@{ name = ($short -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
                              release = ''; dll = ''; asset = ''; assetSha256 = ''; error = ''; hosted = ($owner -eq 'msantoro12') }
             if ($ref -eq 'latest-release') { try {
               $e.source = 'release'; $e.hosted = $false
-              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers $api -TimeoutSec 60 }
-              catch { throw "$repo has no latest release ($($_.Exception.Message))" }
+              $pin = $null; $entry = $null; $relPath = 'latest'
+              if ($owner -cnotin $trusted) {
+                $entry = @($names | Where-Object { $_.Repo -ceq $short -and $_.PSObject.Properties['Owner'] -and $_.Owner -ceq $owner }) | Select-Object -First 1
+                $pin = if ($entry -and $entry.PSObject.Properties['Pin']) { $entry.Pin } else { $null }
+                if (-not $pin) { throw "$repo is another author's plugin and runs only at a reviewed release: add a Pin (Tag and Digest) for it to ci/plugin-names.json" }
+                $pinTag = if ($pin.PSObject.Properties['Tag']) { [string]$pin.Tag } else { '' }
+                $pinDigest = if ($pin.PSObject.Properties['Digest']) { [string]$pin.Digest } else { '' }
+                if ($pinTag -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]*$') { throw "${repo}: the Pin tag '$pinTag' is not a release tag" }
+                if ($pinDigest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "${repo}: the Pin digest '$pinDigest' is not sha256:<64 lower-case hex digits>" }
+                $relPath = "tags/$pinTag"
+              }
+              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$relPath" -Headers $api -TimeoutSec 60 }
+              catch { throw "$repo has no $(if ($pin) { "release $pinTag" } else { 'latest release' }) ($($_.Exception.Message))" }
               $tag = [string]$rel.tag_name
               if ($tag -notmatch '^[A-Za-z0-9._-]+$') { throw "$repo's latest release tag '$tag' is not a plain tag name" }
+              if ($pin -and $tag -cne $pinTag) { throw "$repo's release for the Pin is tagged '$tag', not '$pinTag'" }
               $tagRefs = @(git ls-remote "https://github.com/$repo" "refs/tags/$tag" "refs/tags/$tag^{}")
               if ($LASTEXITCODE -ne 0) { throw "git ls-remote $repo failed (exit $LASTEXITCODE)" }
               # An annotated tag's commit is on its peeled line.
               $line = @(@($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag^{}" }) + @($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag" })) | Select-Object -First 1
               if (-not $line) { throw "$repo has no tag '$tag'" }
               $e.ref = $tag; $e.release = $tag; $e.sha = ($line -split '\s+')[0]
-              $dlls = @($rel.assets | Where-Object { $_.name -match '\.dll$' -and $_.state -eq 'uploaded' })
+              # The Pin's release: the rig's own pick, <Asset>-Client.dll (else the one -Client.dll), and its digest is the reviewed one.
+              $dlls = if ($pin) {
+                $named = @($rel.assets | Where-Object { $_.name -ieq "$($entry.Asset)-Client.dll" -and $_.state -eq 'uploaded' })
+                if ($named.Count) { $named } else { @($rel.assets | Where-Object { $_.name -match '-Client\.dll$' -and $_.state -eq 'uploaded' }) }
+              } else { @($rel.assets | Where-Object { $_.name -match '\.dll$' -and $_.state -eq 'uploaded' }) }
+              $dlls = @($dlls)
+              if ($pin) {
+                if ($dlls.Count -ne 1) { throw "$repo $tag has $($dlls.Count) client DLL assets (exactly one is needed); a reviewed release is never built from source" }
+                $got = if ($dlls[0].PSObject.Properties['digest']) { "$($dlls[0].digest)" } else { '' }
+                if ($got -cne $pinDigest) { throw "$repo ${tag}: the release's $($dlls[0].name) has the digest '$got', not the reviewed $pinDigest; the asset changed after review, so it is not checked" }
+              }
               if ($dlls.Count -eq 1 -and $dlls[0].browser_download_url -match ('^https://github\.com/' + [regex]::Escape($repo) + '/releases/download/' + [regex]::Escape($tag) + '/[A-Za-z0-9._-]+\.dll$')) {
                 # The URL pattern above is what later steps rely on for the asset name.
                 $e.dll = [string]$dlls[0].name; $e.asset = [string]$dlls[0].browser_download_url
@@ -384,13 +483,24 @@ jobs:
                 else { Write-Host "::notice title=Plugin $($e.name)::GitHub recorded no SHA-256 for $($e.dll), so the download is not compared with one" }
                 Write-Host "::notice title=Plugin $($e.name)::latest release $tag, checking its DLL $($e.dll)"
               } else {
+                if ($pin) { throw "$repo ${tag}: the client DLL's download URL is not the release's own asset" }
                 $e.source = 'build'; $e.hosted = ($owner -eq 'msantoro12')
                 Write-Host "::notice title=Plugin $($e.name)::latest release $tag has $($dlls.Count) usable DLL assets (exactly one is needed), so its source at the tag is built"
+              }
+              if ($pin) {
+                # A newer release is reported for review and never scanned. Failing to ask is not a failure of the plan.
+                try { $latestTag = [string](Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers $api -TimeoutSec 60).tag_name }
+                catch { $latestTag = ''; Write-Host "::warning title=Latest release not read::$($e.name): $($_.Exception.Message)" }
+                if ($latestTag -and $latestTag -cne $pinTag) {
+                  $shown = if ($latestTag -cmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$') { $latestTag } else { 'unreadable-tag' }
+                  $review.Add("$($e.name)=$shown")
+                  Write-Host "::warning title=New release waiting for review::new $($e.name) release $shown waiting for review; the check scans the reviewed $pinTag"
+                }
               }
             } catch {
               $e.error = $_.Exception.Message
               Write-Host "::warning title=Plugin $($e.name)::$($e.error)"
-            } } elseif ($owner -eq 'LetMeInside') { throw "plugin '$p': LetMeInside is allowed only as owner/repo@latest-release" }
+            } } elseif ($owner -cnotin $trusted) { throw "plugin '$p': $owner is allowed only as owner/repo@latest-release, which is its reviewed release" }
             $list.Add($e)
           }
           # Each ref is resolved to its commit here, before any plugin code
@@ -423,6 +533,7 @@ jobs:
           "hosted=$(ConvertTo-Json -InputObject @($hosted) -Compress)" >> $env:GITHUB_OUTPUT
           "any=$(if ($list.Count) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
           "anyHosted=$(if ($hosted.Count) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+          "review=$($review -join ' ')" >> $env:GITHUB_OUTPUT
           $json
 
   plugins:
@@ -1193,6 +1304,123 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # ---- The rig's plugin DLLs: read before the rig runs --------------------
+      # The rig does not run the plugin builds scanned above: it runs the Latest released plugins
+      # (MOD_OWNER's, AlienXAXS by default) and the reviewed release of each plugin of another
+      # author (the Pin in ci/plugin-names.json). Which of them the loader refuses on a build has to
+      # be declared to the rig before it runs, so the exact set is resolved here by the rig's own
+      # script, fetched through the rig's own cache (asset id and digest in the key: the rig then
+      # downloads nothing), and each DLL is read by the scanner (interface version, the build it was
+      # made on, and the loader's note on this build). Nothing of it is a verdict on the plugin: the
+      # facts go to decide's expect_refused, and the tags go to both rigs so they run these very
+      # releases. A DLL whose facts cannot be read has no row, and then nothing is declared for it.
+      - name: Check out the rig's set script
+        id: rigtool
+        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-rig
+          sparse-checkout: |
+            ci/client-rig-set.ps1
+            ci/plugin-names.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Resolve the rig's plugin set
+        id: rigset
+        if: always() && steps.rigtool.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
+        run: ./ci-rig/ci/client-rig-set.ps1 -Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER -PlanPath (Join-Path $env:RUNNER_TEMP 'rig-plan.json')
+
+      - name: Restore the rig's release files
+        id: rigcache
+        if: always() && steps.rigset.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # The rig's own path and key: the cache is shared with it.
+          path: D:\rig-dl
+          key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}
+          restore-keys: sr-client-rig-dl-
+
+      - name: Download what the cache lacks
+        id: rigfetch
+        if: always() && steps.rigset.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PLAN_PATH: ${{ runner.temp }}\rig-plan.json
+        run: ./ci-rig/ci/client-rig-set.ps1 -Mode Fetch -PlanPath $env:PLAN_PATH -DownloadDir 'D:\rig-dl'
+
+      - name: Save the rig's release files
+        if: always() && steps.rigfetch.outcome == 'success' && steps.rigcache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: D:\rig-dl
+          key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}
+
+      - name: Read the rig's plugin DLLs
+        id: rigdlls
+        if: always() && steps.rigfetch.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+        run: |
+          # out/rig-plugins.json: { tags: "Name=tag ...", plugins: [{ name, tag, plugin, verdict, note? } or { name, tag, error }] }.
+          # `plugin` is the scanner's block for the DLL, as in the plugin rows above; map mode reads the
+          # facts and never the verdict. The scanner's own files stay out of out/ (map mode reads every
+          # out/plugin-*.json as a scan of the build).
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          New-Item -ItemType Directory -Force out | Out-Null
+          $plan = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-plan.json') -Raw | ConvertFrom-Json
+          $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          $work = Join-Path $env:RUNNER_TEMP 'rig-scan'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          $tagRx = '^[A-Za-z0-9][A-Za-z0-9._+-]*$'
+          $tags = [Collections.Generic.List[string]]::new()
+          $rows = foreach ($e in @($plan.plugins | Where-Object { $_.asset })) {
+            $r = [ordered]@{ name = $e.name; tag = $e.tag }
+            try {
+              if ($e.tag -cnotmatch $tagRx) { throw "its release tag '$($e.tag)' is not a plain tag" }
+              $tags.Add("$($e.name)=$($e.tag)")
+              # The rig's cache layout (client-rig-set.ps1 Get-AssetPath).
+              $file = Join-Path 'D:\rig-dl' (Join-Path "$($e.repo)\$($e.tag)\$($e.asset.id)" ([IO.Path]::GetFileName($e.asset.name)))
+              if (-not (Test-Path -LiteralPath $file)) { throw "$($e.asset.name) is not in the downloaded files" }
+              if ($e.asset.digest -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $e.asset.digest) { throw "$($e.asset.name) does not match the digest the release gives" }
+              $stem = Join-Path $work $e.name
+              $ErrorActionPreference = 'Continue'
+              & $scanner $exe.FullName --plugin $file --json > "$stem.json" 2> "$stem.txt"
+              $code = $LASTEXITCODE
+              $ErrorActionPreference = 'Stop'
+              $scan = if ($code -ne 2 -and (Test-Path -LiteralPath "$stem.json") -and (Get-Item -LiteralPath "$stem.json").Length) { Get-Content -LiteralPath "$stem.json" -Raw | ConvertFrom-Json } else { $null }
+              if (-not $scan -or -not $scan.PSObject.Properties['plugin'] -or -not $scan.plugin.PSObject.Properties['interfaceVersion']) { throw "sr-aobscan could not read its plugin facts (exit $code)" }
+              $r.plugin = $scan.plugin
+              $r.verdict = $scan.verdict
+              if ($scan.PSObject.Properties['note']) { $r.note = $scan.note }
+            } catch {
+              $r.error = $_.Exception.Message
+              Write-Host "::warning title=Rig plugin $($e.name)::$($r.error); nothing is declared for it, so a refusal of it fails the rig"
+            }
+            $r
+          }
+          [ordered]@{ branch = $env:BRANCH; tags = ($tags -join ' '); plugins = @($rows) } |
+            ConvertTo-Json -Depth 8 | Set-Content out\rig-plugins.json -Encoding utf8
+          foreach ($r in @($rows)) { "$($r.name) $($r.tag): $(if ($r.Contains('plugin')) { 'interface ' + $r.plugin.interfaceVersion } else { $r.error })" }
+
       # ---- Layouts from the PDBs: what each component reads, on both builds --
       - name: Read the used layouts from the PDBs
         id: layout
@@ -1482,7 +1710,7 @@ jobs:
               $r.tree = [string](git -C "$d\src" write-tree); Invoke-Native 'git write-tree'
               $r.patch = "autofix-$($p.name).patch"
               git -C "$d\src" diff --cached > "out\$($r.patch)"; Invoke-Native 'git diff'
-              if ($p.source -eq 'release') { $r.verdict = 'PATCH'; $r.reasons = @("another author's released plugin: the patch only"); $results.Add($r); continue }
+              if ($p.source -eq 'release') { $r.verdict = 'PATCH'; $r.reasons = @("another author's released plugin: information only, nothing is pushed or built from it"); $results.Add($r); continue }
 
               # Rebuilt exactly as the plugins job built the scanned DLL.
               if ($meta.loaderRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$' -or $meta.loaderInterface -notmatch '^[0-9a-f]{40}$') { throw 'plugin.json does not name the loader interface it was built against' }
@@ -1607,6 +1835,7 @@ jobs:
             out/layout-keys.txt
             out/layout-uses.txt
             out/offsets-*.json
+            out/rig-plugins.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -1620,11 +1849,13 @@ jobs:
   # Reads only artifacts, the header and the vmap-feed release: no Steam login,
   # no plugin code, no game files. The release key signs only in the publish
   # job below, and only when the publish input says so.
-  # TODO(step 26, needs the owner): pushing the header to the loader fork's
-  # auto/update-<CL> needs the fork deploy key and the auto/** ruleset (checklist
-  # in ci/MAP-MODE.md). Until then the header is an artifact only, the staging
-  # record names the loader commit the header was read from, and the staged
-  # index is not kept between runs (a plan only).
+  # The candidate chain does not wait for the autopilot: a disabled autopilot
+  # holds PUBLISHING only (decide --candidate; the decision stays HOLD with the
+  # reason, so the publish job cannot run). Every other HOLD reason still stops
+  # the chain before the export. The staged header is pushed to the loader
+  # fork's auto/update-<CL> by the push-loader job, the only job with the fork
+  # deploy key (setup: ci/MAP-MODE.md, step 26). The staged index is not kept
+  # between runs (a plan only).
   # TODO: the scans of the previous release of each tracked component
   # (rank previous) are not run yet, so a changed fp adds its set only once a
   # release carrying it is the current one. With current scans only, map-mode
@@ -1647,9 +1878,23 @@ jobs:
       publishable: ${{ steps.chain.outputs.publishable }}
       # 'false' only for a run that is explicitly not a test; the publish job needs exactly that.
       test: ${{ steps.chain.outputs.test }}
+      # 'true' when the chain staged a build (stage-plan.json exists and the header is the candidate): the push-loader job's cue.
+      staged: ${{ steps.chain.outputs.staged }}
+      # The plugins the loader is expected to refuse on this branch's build, as the client rig's
+      # expect_refused input takes them: log names separated by spaces, empty when none. Set
+      # whenever decide ran, held or not.
+      expect_refused: ${{ steps.chain.outputs.expect_refused }}
+      # The same for the OTHER Steam branch's current build: what the loader's rule predicts refused
+      # there (decide --other-cl). Empty when that build's CL is not in the candidate map, so every
+      # refusal on that branch is unexpected.
+      expect_refused_other: ${{ steps.chain.outputs.expect_refused_other }}
+      # The releases the rigs run, as the rig's tags input takes them (Name=tag, space separated; empty when the check could not
+      # resolve them, and then the rigs resolve the Latest themselves and nothing is declared for them).
+      rig_tags: ${{ steps.chain.outputs.rig_tags }}
     env:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
+      OTHER_BUILDID: ${{ inputs.other_buildid }}
       PLUGINS: ${{ inputs.plugins }}
       LOADER_REF: ${{ inputs.loader_ref }}
       BUILD_RESULT: ${{ needs.build.result }}
@@ -1660,6 +1905,9 @@ jobs:
       TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && inputs.publish != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
       # The raw dispatch input: a test run for the publish gate, however TEST_AUTOPILOT came out.
       TEST_INPUT: ${{ inputs.test_autopilot == true }}
+      # The unattended chain (and a dispatch that is neither a test run nor a publish): a disabled
+      # autopilot holds publishing only, so the candidate is still exported, TEST-signed, staged and pushed.
+      CANDIDATE: ${{ inputs.map_mode == true && inputs.publish != true && inputs.test_autopilot != true }}
     steps:
       - name: Check out the map tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1821,31 +2069,84 @@ jobs:
           echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
           test_flag=()
           [ "$TEST_AUTOPILOT" = true ] && test_flag=(--test-autopilot)
+          [ "$CANDIDATE" = true ] && test_flag=(--candidate)
+          # The other Steam branch's current build: its id from the watcher (else the id recorded on
+          # main), its CL from the build rows of the candidate map (the row this run just wrote
+          # included). Unknown means no --other-cl: no refusal is expected there and any one fails.
+          other_branch=public; [ "$BRANCH" = public ] && other_branch=public_test_branch
+          other_buildid="$OTHER_BUILDID"
+          if [ -z "$other_buildid" ]; then
+            other_buildid="$(node -p "JSON.parse(require('fs').readFileSync('tool/state/steam.json','utf8')).apps?.['1631270']?.branches?.[process.argv[1]]?.buildid ?? ''" "$other_branch" 2>/dev/null || true)"
+          fi
+          other_cl="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parse, clOfBuild } from "./tool/ci/version-map.mjs";
+            const cl = clOfBuild(parse(readFileSync(process.argv[1], "utf8"), "the header"), process.argv[2]);
+            if (cl !== null) process.stdout.write(String(cl));
+          ' "$header" "$other_buildid")"
+          other_flag=()
+          if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "$other_branch runs build $other_buildid = CL-$other_cl"
+          else echo "::notice title=Other branch unknown::$other_branch build '${other_buildid:-unknown}' has no row in the candidate map: its rig expects no refusals"; fi
+          # The DLLs the rigs will run (out/rig-plugins.json of the check): the refusals declared to a rig are
+          # predicted from their own facts, not from the plugin builds this check judged. Without the file
+          # nothing is declared and any refusal fails the rig.
+          rig_flag=()
+          rig_tags=""
+          if [ -f res/rig-plugins.json ]; then
+            rig_flag=(--rig-plugins res/rig-plugins.json)
+            rig_tags="$(node -p "JSON.parse(require('fs').readFileSync('res/rig-plugins.json','utf8').replace(/^\uFEFF/, '')).tags ?? ''")"
+            if [ -n "$rig_tags" ] && ! printf '%s' "$rig_tags" | grep -Eq '^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*( [A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*)*$'; then
+              echo "::error::the rig's tags are not Name=tag pairs the rig takes: $rig_tags"; exit 2
+            fi
+          else
+            echo "::notice title=Rig plugins unknown::the check could not read the DLLs the rigs run: no refusal is declared for them, and the rigs take the Latest releases"
+          fi
+          echo "rig_tags=$rig_tags" >> "$GITHUB_OUTPUT"
           d=0
           node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
             --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json --fields field-rows.json \
-            --history history.json --out decision.json "${test_flag[@]}" || d=$?
+            --history history.json --out decision.json "${test_flag[@]}" "${other_flag[@]}" "${rig_flag[@]}" || d=$?
           decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
           would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
           echo "publishable=false" >> "$GITHUB_OUTPUT"
+          # The plugins the loader refuses on this build (decide's expectRefused), in the rig's grammar.
+          expect_refused="$(node -p "(JSON.parse(require('fs').readFileSync('decision.json','utf8')).expectRefused ?? []).join(' ')")"
+          if [ -n "$expect_refused" ] && ! printf '%s' "$expect_refused" | grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'; then
+            echo "::error::expectRefused is not a list of plugin names the rig takes: $expect_refused"; exit 2
+          fi
+          echo "expect_refused=$expect_refused" >> "$GITHUB_OUTPUT"
+          [ -z "$expect_refused" ] || echo "::notice title=Loader refuses on CL::expected refusals on $BRANCH: $expect_refused"
+          expect_refused_other="$(node -p "(JSON.parse(require('fs').readFileSync('decision.json','utf8')).expectRefusedOther ?? []).join(' ')")"
+          if [ -n "$expect_refused_other" ] && ! printf '%s' "$expect_refused_other" | grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'; then
+            echo "::error::expectRefusedOther is not a list of plugin names the rig takes: $expect_refused_other"; exit 2
+          fi
+          echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"
+          [ -z "$expect_refused_other" ] || echo "::notice title=Loader refuses on CL::expected refusals on $other_branch (CL-$other_cl): $expect_refused_other"
           # A test run by the dispatch input, the chain's own flag or the decision itself.
-          is_test="$(node -p "String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || JSON.parse(require('fs').readFileSync('decision.json','utf8')).test === true)")"
+          # A candidate that is not M (the autopilot holds it) is never publishable either.
+          is_test="$(node -p "const d = JSON.parse(require('fs').readFileSync('decision.json','utf8')); String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || d.test === true || (d.candidate === true && d.decision !== 'M'))")"
           echo "test=$is_test" >> "$GITHUB_OUTPUT"
           # Each plugin: updated, updated and degraded (what turns off), or held.
           node -e '
             const d = JSON.parse(require("fs").readFileSync("decision.json", "utf8"));
-            const md = [`### Map mode: ${d.decision}${d.test ? ` (test run; would be ${d.wouldBe})` : ""}`, "", "| Plugin | Status | Off on this CL | Why |", "|---|---|---|---|"];
+            const md = [`### Map mode: ${d.decision}${d.test ? ` (test run; would be ${d.wouldBe})` : d.candidate && d.decision !== "M" ? ` (publish held; would be ${d.wouldBe})` : ""}`, "", "| Plugin | Status | Off on this CL | Why |", "|---|---|---|---|"];
             for (const p of d.plugins ?? []) {
               const off = p.degraded.map((x) => `${x.key}${x.severity === "high" ? " **(high)**" : ""}`).join(", ");
               const status = p.status === "updated" && p.degraded.length ? "updated, degraded" : p.status;
               md.push(`| ${p.name} | ${status} | ${off} | ${[...p.reasons, ...p.degraded.map((x) => x.why)].join("; ").replace(/[|]/g, "/")} |`);
             }
             md.push("", ...d.reasons.map((r) => `- HOLD: ${r}`), ...d.notes.map((n) => `- ${n}`));
+            // The unattended chain (candidate) never publishes: no job takes its M to the feed, whatever the autopilot says.
+            if (d.candidate === true && d.decision === "M") md.push("- **publish not wired on the unattended path**: the autopilot is on, but this chain only builds, signs with the TEST key and stages; the feed is published only by a dispatch with publish on");
             require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
           '
+          promote_flag=()
           if [ "$TEST_AUTOPILOT" = true ] && [ "$decision" = HOLD ] && [ "$would" = M ]; then
             echo "decide: HOLD (autopilot disabled); test run: it would be M, so the chain runs on with nothing publishable"
+          elif [ "$CANDIDATE" = true ] && [ "$decision" = HOLD ] && [ "$would" = M ]; then
+            echo "decide: HOLD (autopilot disabled); publish is held, the candidate chain runs on: export, TEST-sign, stage; nothing is publishable"
+            promote_flag=(--test-autopilot)
           elif [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
 
           # Path M: the feed, signed with the TEST key and verified.
@@ -1866,7 +2167,7 @@ jobs:
             const hex = (n) => "0x" + n.toString(16).toUpperCase().padStart(8, "0");
             const buildid = String(r.download?.buildid || process.env.BUILDID);
             const scans = [{ exe: process.env.BRANCH, buildid, ok: true }];
-            if (r.reference?.status === "used") scans.push({ exe: "public", buildid: String(r.reference.buildid), ok: true });
+            if (r.reference?.status === "used" && process.env.BRANCH !== "public") scans.push({ exe: "public", buildid: String(r.reference.buildid), ok: true });
             const build = { cl, branch: process.env.BRANCH, buildid, productVersion: r.checks.exe.productVersion, exeSha256: r.checks.exe.sha256,
               imageStamp: hex(row.stamp), size: row.size, run: Number(process.env.RUN_ID), scans,
               repo: { sha: process.env.LOADER_SHA, tree: process.env.LOADER_TREE, verdict: "FIXED" } };
@@ -1880,13 +2181,15 @@ jobs:
             writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && d.pluginsOk === true, exe: process.env.BRANCH, buildid }));
           '
           if [ -f tool/state/staged.json ]; then cp tool/state/staged.json staged.json; else echo '{}' > staged.json; fi
-          if [ "$BRANCH" != public ]; then
-            node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json
-            node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("stage-plan.json","utf8")); if (p.index) fs.writeFileSync("staged.json", JSON.stringify(p.index, null, 1));'
-          fi
+          # A beta build is staged (branch and index entry). A build first seen on public gets the
+          # same branch for its candidate loader and the rig, with no index entry (ci/staging.mjs).
+          node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json
+          node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("stage-plan.json","utf8")); if (p.index) fs.writeFileSync("staged.json", JSON.stringify(p.index, null, 1));'
+          echo "staged=true" >> "$GITHUB_OUTPUT"
+          [ "$TEST_AUTOPILOT" = true ] && promote_flag=(--test-autopilot)
           p=0
           node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
-            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${test_flag[@]}" || p=$?
+            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${promote_flag[@]}" || p=$?
           IS_TEST="$is_test" node --input-type=module -e '
             import { appendFileSync, readFileSync } from "node:fs";
             import { isPublishable } from "./tool/ci/promote.mjs";
@@ -1927,16 +2230,19 @@ jobs:
   # ---- Publish: the feed signed with the release key ---------------------
   # Only with the publish input (default off; the owner turns it on), only for
   # public, and only when decide chose M and the chain marked it publishable
-  # (a promotion, or public's own new CL with nothing staged). The only job
-  # that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
-  # environment, deployments from main only). Reads the live feed's seq again
+  # (a promotion, or public's own new CL with nothing staged), and only when both
+  # client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
+  # loader: a failed, cancelled or skipped rig keeps the feed unsigned. The promote
+  # step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
+  # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in
+  # the vmap-sign environment, deployments from main only). Reads the live feed's seq again
   # right before signing (one publish at a time), signs above it, verifies
   # with no TEST key allowed, and uploads it with the updated history to the
   # vmap-feed release.
   publish:
     name: publish the feed
-    needs: [check, map-mode]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' }}
+    needs: [check, map-mode, rig-branch, rig-other]
+    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -2000,32 +2306,407 @@ jobs:
           gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
           gh release upload vmap-feed version-map-client.v1.txt vmap-history.json --clobber
 
-  # ---- Alert: a failed or held run is visible without opening Actions ----
+  # ---- Push: the staged map rows to the loader fork -----------------------
+  # The only job that reads the loader fork's deploy key (SR_DEPLOYKEY_MODLOADER,
+  # environment fork-push), limited on the fork by a ruleset to auto/**. It runs
+  # no plugin code and no action but actions/checkout: it takes the header the
+  # map-mode job wrote and the loader commit that job read it from, adds one
+  # commit that changes only that header, and pushes auto/update-<CL> (ci/staging.mjs
+  # push: one repository, one branch pattern, never a tag, never a force). The
+  # branch is the input of the next steps: the candidate-loader job and the client rig.
+  # A missing key fails the job with its name; it never skips quietly. A run that
+  # targets another loader repository, a test run and a run whose chain held
+  # have nothing to push and skip. A build first seen on public is pushed too.
+  push-loader:
+    name: push the map rows to the loader fork
+    needs: [map-mode]
+    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: fork-push
+    permissions:
+      contents: read
+    outputs:
+      branch: ${{ steps.push.outputs.branch }}
+      sha: ${{ steps.push.outputs.sha }}
+    env:
+      LOADER_REPO: ${{ inputs.loader_repo }}
+    steps:
+      - name: Check the deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error title=Loader deploy key missing::the secret SR_DEPLOYKEY_MODLOADER is not set in the environment fork-push of $GITHUB_REPOSITORY (or the caller does not pass it by name); the candidate map rows cannot be pushed to the loader fork. Setup: ci/MAP-MODE.md, step 26."
+            exit 1
+          fi
+
+      - name: Check out the push tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the chain
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: map-mode-${{ inputs.branch }}
+          path: chain
+
+      - name: Check the target
+        id: base
+        run: |
+          set -euo pipefail
+          # The repository and the branch name come from the chain; both are checked against the allowlist before a key is used.
+          node tool/ci/staging.mjs target --repo "$LOADER_REPO" --plan chain/stage-plan.json
+          sha="$(node -p "JSON.parse(require('fs').readFileSync('chain/build.json','utf8')).repo.sha")"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::build.json names no loader commit'; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the loader at the commit the rows were read from
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: msantoro12/StarRupture-ModLoader
+          ref: ${{ steps.base.outputs.sha }}
+          path: loader
+          persist-credentials: false
+
+      - name: Commit the header and push the branch
+        id: push
+        env:
+          DEPLOY_KEY: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          ssh_dir="$RUNNER_TEMP/ssh"
+          mkdir -m 700 "$ssh_dir"
+          trap 'rm -f "$ssh_dir/key"' EXIT
+          (umask 077; printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key")
+          # GitHub's published host keys, not trust on first use.
+          curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
+          out="$(node tool/ci/staging.mjs push --repo "$LOADER_REPO" --plan chain/stage-plan.json --build chain/build.json \
+            --header chain/version_map.generated.h --checkout loader --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT")"
+          echo "$out" >> "$GITHUB_OUTPUT"
+          echo "Loader fork: $(echo $out)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- Candidate loader: the pushed rows, built and tested ----------------
+  # Builds the loader from exactly the commit push-loader pushed (the loader
+  # with the candidate map rows) the way sr-build-all.yml does (Client Release,
+  # the same build action, a build tag), runs the loader's VersionMapTests and
+  # LayoutCheckTests on that commit, and uploads the build in the layout the
+  # client rig takes as a candidate (dwmapi.dll and ModLoader/*.dll, no plugins).
+  # A failing build or test fails the job, so nothing downstream gets a candidate.
+  # No secrets and no environment: it runs loader code from the owner's fork,
+  # which is what the push job just wrote. The build tag is the exact string the
+  # loader prints as "[init] Build: <tag> (client)" in ModLoader.log (the verdict
+  # script's loader_build_line check compares it with the rig's expect=Loader=...),
+  # and the job checks it is compiled into the built DLL before it uploads.
+  candidate-loader:
+    name: candidate loader
+    needs: [push-loader]
+    if: ${{ !cancelled() && needs.push-loader.result == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.out.outputs.artifact }}
+      version: ${{ steps.out.outputs.version }}
+      expect: ${{ steps.out.outputs.expect }}
+      sha: ${{ steps.out.outputs.sha }}
+    env:
+      LOADER_SHA: ${{ needs.push-loader.outputs.sha }}
+      ARTIFACT: loader-candidate-${{ inputs.branch }}
+    steps:
+      - name: Name the build
+        id: tag
+        shell: pwsh
+        run: |
+          # The commit is push-loader's output; nothing else is built here.
+          if ($env:LOADER_SHA -notmatch '^[0-9a-f]{40}$') { throw "push-loader named no loader commit ('$($env:LOADER_SHA)')" }
+          # Unique per run and commit, and a plain token: the rig's expect value takes letters, digits and . _ + -
+          "tag=cand-$($env:GITHUB_RUN_ID)-$($env:LOADER_SHA.Substring(0, 7))" >> $env:GITHUB_OUTPUT
+
+      - name: Check out the loader at the pushed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: msantoro12/StarRupture-ModLoader
+          ref: ${{ needs.push-loader.outputs.sha }}
+          # The Game SDK is the loader's own submodule: the build uses the commit the loader pins.
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check it is that commit
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          if ($head -ne $env:LOADER_SHA) { throw "checked out $head, push-loader pushed $($env:LOADER_SHA)" }
+          "Loader msantoro12/StarRupture-ModLoader at $head"
+
+      # After the loader checkout, so its clean step does not remove it.
+      - name: Check out the build action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-actions
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Build Client Release
+        uses: ./ci-actions/.github/actions/build-loader
+        with:
+          configuration: Client Release
+          build_tag: ${{ steps.tag.outputs.tag }}
+          manifest_url: ${{ github.server_url }}/msantoro12/StarRupture-ModLoader/releases/latest/download/manifest-client.json
+
+      # The loader's test projects are not part of the solution build; each is
+      # built from its project file, as Tests/README.md says, and its exit code is its verdict.
+      - name: VersionMapTests
+        shell: pwsh
+        run: |
+          msbuild "Tests\VersionMapTests\VersionMapTests.vcxproj" /p:Configuration="Client Release" /p:Platform=x64 /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "VersionMapTests did not build (exit $LASTEXITCODE)" }
+          & "build\tests\version_map_tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "VersionMapTests failed (exit $LASTEXITCODE)" }
+
+      - name: LayoutCheckTests
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          msbuild "Tests\LayoutCheckTests\LayoutCheckTests.vcxproj" /p:Configuration="Client Release" /p:Platform=x64 /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "LayoutCheckTests did not build (exit $LASTEXITCODE)" }
+          & "build\tests\layout_check_tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "LayoutCheckTests failed (exit $LASTEXITCODE)" }
+
+      - name: Check the build
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $dir = 'build\Client Release'
+          foreach ($f in 'dwmapi.dll', 'ModLoader\StarRupture-ModLoader-Core.dll') {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) { throw "the build has no $f" }
+          }
+          # The loader prints its compiled-in build tag; it must be the one named above.
+          $core = [IO.File]::ReadAllBytes((Join-Path $dir 'ModLoader\StarRupture-ModLoader-Core.dll'))
+          if (-not [Text.Encoding]::Latin1.GetString($core).Contains($env:TAG, [StringComparison]::Ordinal)) {
+            throw "the build tag $($env:TAG) is not compiled into StarRupture-ModLoader-Core.dll"
+          }
+          "Build tag $($env:TAG) is in the Core DLL."
+
+      - name: Upload the candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACT }}
+          # Same files as the loader-client artifact of sr-build-all.yml: dwmapi.dll and ModLoader/*.dll at the root, no plugins.
+          path: |
+            build/Client Release/dwmapi.dll
+            build/Client Release/ModLoader/*.dll
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Name the candidate
+        id: out
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          "artifact=$($env:ARTIFACT)" >> $env:GITHUB_OUTPUT
+          "version=$($env:TAG)" >> $env:GITHUB_OUTPUT
+          "expect=Loader=$($env:TAG)" >> $env:GITHUB_OUTPUT
+          "sha=$($env:LOADER_SHA)" >> $env:GITHUB_OUTPUT
+          "Candidate loader $($env:TAG): artifact $($env:ARTIFACT) of run $($env:GITHUB_RUN_ID), loader commit $($env:LOADER_SHA)" >> $env:GITHUB_STEP_SUMMARY
+
+  # ---- Client rig: the candidate loader in the real game, on both branches ----
+  # A REQUIRED gate on the unattended path (owner: "we will do auto verify and
+  # deploy with the github rig for version updates"). Two calls of the reusable
+  # sr-client-rig.yml, each launching the real client under the real Steam client
+  # with the candidate loader (candidate-loader's artifact, this run's id) laid over
+  # the plugin releases the check read (the `tags` input: the Latest released plugins and
+  # the reviewed release of MiniMap, resolved and read once in the check job):
+  #   rig-branch  the Steam branch this check is for, with map-mode's expect_refused:
+  #               the plugins the loader refuses on that build must be refused, and
+  #               every other plugin must load.
+  #   rig-other   the other Steam branch (public <-> public_test_branch) with the refusals
+  #               the loader's own rule predicts for THAT branch's current build
+  #               (map-mode's expect_refused_other: decide's loaderRefusal on the other
+  #               branch's CL, the CL found through its build id in the candidate map).
+  #               Its current build must keep working with the same DLLs: a refusal the
+  #               rule predicts there (a v70 plugin on a newer build) is declared, and any
+  #               refusal it does not predict is a fail. Public is never excused by hand:
+  #               when that CL cannot be named, nothing is declared and a refusal fails.
+  # They run one after the other: the rig's concurrency group keeps only one pending run,
+  # so a second queued call would cancel the first. rig-other waits for rig-branch whatever
+  # its result (!cancelled() keeps it running after a failure), so a failing first rig does
+  # not hide the second one's verdict. A rig fails its job on a FAIL verdict.
+  # The call jobs set no environment (the rig's job runs in steam-client, which serves main
+  # only, so the whole run must be on main). Each passes both Steam secrets by name and asks
+  # for the rig's own permissions (contents: read, actions: read); sr-watch's client-check
+  # job grants the same ceiling. Nesting: sr-watch -> sr-client-check -> sr-client-rig.
+  rig-branch:
+    name: client rig (${{ inputs.branch }})
+    needs: [map-mode, candidate-loader]
+    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.candidate-loader.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/sr-client-rig.yml
+    with:
+      branch: ${{ inputs.branch }}
+      candidate_run_id: ${{ github.run_id }}
+      candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
+      expect: ${{ needs.candidate-loader.outputs.expect }}
+      tags: ${{ needs.map-mode.outputs.rig_tags }}
+      expect_refused: ${{ needs.map-mode.outputs.expect_refused }}
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+
+  rig-other:
+    name: client rig (${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }})
+    needs: [map-mode, candidate-loader, rig-branch]
+    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.candidate-loader.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/sr-client-rig.yml
+    with:
+      branch: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      candidate_run_id: ${{ github.run_id }}
+      candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
+      expect: ${{ needs.candidate-loader.outputs.expect }}
+      tags: ${{ needs.map-mode.outputs.rig_tags }}
+      expect_refused: ${{ needs.map-mode.outputs.expect_refused_other }}
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+
+  # ---- Rig gate: both verdicts in the run summary, and the chain's visible result ----
+  # Runs for every candidate the chain staged (the same cue as push-loader) and writes
+  # the decision, the candidate and both rigs' verdict, reason and logs artifact into the
+  # run summary. It fails unless both rigs passed, so a rig that failed, was cancelled or
+  # never ran for a staged candidate is a red job, never a skipped green. The publish job
+  # reads the two rigs itself; this job is what a person reads. With the autopilot off the
+  # rigs still run on the candidate and publish stays held.
+  rig-gate:
+    name: rig gate
+    needs: [map-mode, candidate-loader, rig-branch, rig-other]
+    if: ${{ always() && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      DECISION: ${{ needs.map-mode.outputs.decision }}
+      PUBLISHABLE: ${{ needs.map-mode.outputs.publishable }}
+      CANDIDATE_RESULT: ${{ needs.candidate-loader.result }}
+      CANDIDATE_VERSION: ${{ needs.candidate-loader.outputs.version }}
+      CANDIDATE_SHA: ${{ needs.candidate-loader.outputs.sha }}
+      BRANCH_NAME: ${{ inputs.branch }}
+      BRANCH_RESULT: ${{ needs.rig-branch.result }}
+      BRANCH_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
+      BRANCH_REASON: ${{ needs.rig-branch.outputs.reason }}
+      BRANCH_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
+      BRANCH_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused }}
+      OTHER_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused_other }}
+      OTHER_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      OTHER_RESULT: ${{ needs.rig-other.result }}
+      OTHER_VERDICT: ${{ needs.rig-other.outputs.verdict }}
+      OTHER_REASON: ${{ needs.rig-other.outputs.reason }}
+      OTHER_ARTIFACT: ${{ needs.rig-other.outputs.artifact }}
+    steps:
+      - name: Judge both rigs
+        run: |
+          set -euo pipefail
+          node -e '
+            const e = process.env;
+            const one = (p, name, rule) => {
+              const result = e[p + "_RESULT"], verdict = e[p + "_VERDICT"];
+              const pass = result === "success" && verdict === "PASS";
+              const state = pass ? "PASS" : verdict === "FAIL" ? "FAIL" : result === "skipped" ? "did not run" : result === "cancelled" ? "cancelled" : "no verdict (" + result + ")";
+              const why = (e[p + "_REASON"] || (pass ? "" : result === "skipped" ? "candidate loader job: " + e.CANDIDATE_RESULT : "see the rig job")).replace(/\s+/g, " ").trim();
+              const logs = e[p + "_ARTIFACT"] ? "artifact `" + e[p + "_ARTIFACT"] + "` of " + e.RUN_URL : "no logs artifact, run " + e.RUN_URL;
+              return { name, pass, line: "- **" + name + "**: " + state + (why ? " - " + why : "") + ". " + rule + " Logs: " + logs + "." };
+            };
+            const a = one("BRANCH", e.BRANCH_NAME, e.BRANCH_EXPECT_REFUSED ? "Must be refused here: " + e.BRANCH_EXPECT_REFUSED + "." : "No refusals expected.");
+            const b = one("OTHER", e.OTHER_NAME, e.OTHER_EXPECT_REFUSED ? "Must be refused here (the loader rule for the build this branch runs): " + e.OTHER_EXPECT_REFUSED + ". Any other refusal is a fail." : "No refusals expected: its current build must keep working with the same DLLs.");
+            const ok = a.pass && b.pass;
+            const md = ["### Client rig gate: " + (ok ? "PASS" : "FAIL"), "",
+              "Decision " + (e.DECISION || "none") + (e.PUBLISHABLE === "true" ? ", publishable" : ", not publishable") + ". Candidate loader " + (e.CANDIDATE_VERSION || "none") + (e.CANDIDATE_SHA ? " (loader commit " + e.CANDIDATE_SHA.slice(0, 7) + ")" : "") + ", job " + e.CANDIDATE_RESULT + ". The feed is published only when both rigs pass.", "", a.line, b.line];
+            require("fs").appendFileSync(e.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+            if (!ok) {
+              console.log("::error title=Client rig gate::" + [a, b].filter((x) => !x.pass).map((x) => x.name).join(" and ") + " did not pass; the feed is not published.");
+              process.exit(1);
+            }
+          '
+
+  # ---- Alert: a failed, stuck or held run reaches the owner through GitHub ----
   # One issue per branch, opened on the first problem and commented on for every
-  # later one (the same mechanism as vmap-watchdog.yml). Alerts: a job of this
-  # run that failed, and a map-mode decision of HOLD for any reason but
-  # "nothing new" (the CL is not newer than the one the header was built for).
-  # A test run's expected HOLD (autopilot disabled, it would be M) is not an alert.
+  # later one (the same mechanism as vmap-watchdog.yml). The issue carries the
+  # label pipeline-alert and is assigned to the owner, and the body mentions him,
+  # so GitHub notifies him; every line says its cause (the failing gate or job and
+  # its first error line or verdict reason). Alert lines: a failed job; a client
+  # check that did not run (status skipped or no-login, a missing Steam login);
+  # a map-mode decision of HOLD for any reason but "nothing new" (the CL is not
+  # newer than the one the header was built for) or "autopilot is disabled" alone;
+  # staged map rows that were not pushed to the loader fork (push-loader), a
+  # candidate loader that failed to build or pass its tests (candidate-loader),
+  # and a client rig that did not end with success and PASS (rig-gate, rig-branch,
+  # rig-other).
+  # A HOLD whose only reason is "autopilot is disabled", with every gate and job
+  # passing, is not an alert: the run is ready and only the publish is held, which
+  # is one line on the PR (a comment carrying <!-- sr-ready-held:<branch> -->, kept up to
+  # date), no issue. A run with no alert line labels the PR chain-passed-<branch>;
+  # sr-watch.yml reads those labels to tell a game-update PR that stalled.
+  # The cause of a failed job comes from artifacts and the run's own job list, which
+  # exist when the job failed: the check job's result.json, the map-mode artifact
+  # (reported missing when the job never uploaded it), the jobs API (failed step and
+  # the first ##[error] line of its log) and the rig jobs' verdict outputs.
   alert:
     name: alert
-    needs: [build, plugin-plan, check, map-mode, publish]
+    needs: [build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate]
     if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       issues: write
+      pull-requests: write   # the chain-passed label and the ready note on the update PR
+      actions: read          # the failed steps and logs of this run's jobs
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      OWNER: msantoro12
+      RUN_ID: ${{ github.run_id }}
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
+      PR: ${{ inputs.pr }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       BUILD_RESULT: ${{ needs.build.result }}
       PLAN_RESULT: ${{ needs.plugin-plan.result }}
+      PLAN_REVIEW: ${{ needs.plugin-plan.outputs.review }}
       CHECK_RESULT: ${{ needs.check.result }}
       MAP_MODE_RESULT: ${{ needs.map-mode.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
+      # The cue that staged map rows should have been pushed, built and put through the rigs.
+      STAGED_EXPECTED: ${{ needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' }}
+      PUSH_RESULT: ${{ needs.push-loader.result }}
+      CANDIDATE_RESULT: ${{ needs.candidate-loader.result }}
+      RIG_GATE_RESULT: ${{ needs.rig-gate.result }}
+      BRANCH_RIG_NAME: ${{ inputs.branch }}
+      BRANCH_RIG_RESULT: ${{ needs.rig-branch.result }}
+      BRANCH_RIG_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
+      BRANCH_RIG_REASON: ${{ needs.rig-branch.outputs.reason }}
+      BRANCH_RIG_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
+      BRANCH_RIG_REVIEW: ${{ needs.rig-branch.outputs.review }}
+      OTHER_RIG_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      OTHER_RIG_RESULT: ${{ needs.rig-other.result }}
+      OTHER_RIG_VERDICT: ${{ needs.rig-other.outputs.verdict }}
+      OTHER_RIG_REASON: ${{ needs.rig-other.outputs.reason }}
+      OTHER_RIG_ARTIFACT: ${{ needs.rig-other.outputs.artifact }}
+      OTHER_RIG_REVIEW: ${{ needs.rig-other.outputs.review }}
     steps:
       - name: Download the map-mode chain
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -2041,6 +2722,17 @@ jobs:
           name: client-check-${{ inputs.branch }}
           path: res
 
+      # Best effort: a failed job's step name and the log lines of this run, for the cause.
+      - name: Read why the jobs failed
+        run: |
+          mkdir -p logs
+          : > failed-jobs.jsonl
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | {id, name, step: ([.steps[] | select(.conclusion == "failure")][0].name // "")}' > failed-jobs.jsonl || true
+          for id in $(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --jq '.jobs[] | select(.conclusion == "failure") | .id' || true); do
+            gh api "repos/$GH_REPO/actions/jobs/$id/logs" 2>/dev/null | head -c 4000000 > "logs/$id.txt" || true
+          done
+
       - name: Work out what needs attention
         id: what
         run: |
@@ -2049,37 +2741,140 @@ jobs:
             const fs = require("fs");
             const e = process.env;
             const lines = [];
-            const jobs = { "build-scanner": e.BUILD_RESULT, "plugin-plan": e.PLAN_RESULT, "check": e.CHECK_RESULT, "map mode": e.MAP_MODE_RESULT, "publish the feed": e.PUBLISH_RESULT };
-            for (const [name, result] of Object.entries(jobs)) if (result === "failure") lines.push("- job **" + name + "** failed");
-            let r = null;
-            try { r = JSON.parse(fs.readFileSync("res/result.json", "utf8")); } catch {}
-            if (e.CHECK_RESULT === "failure") lines.push("  - cause: " + (r?.reason || (r?.status ? "check status " + r.status : "no check result; see the run log")));
-            if (r?.status === "new-build") lines.push("- new build **CL-" + (r.checks?.exe?.cl ?? "?") + "** (" + (r.checks?.exe?.productVersion ?? "unknown ProductVersion") + "), measured by map mode: the loader does not run on it yet (" + (r.checks?.exe?.requiredCl ?? "unknown") + "); this is not a failure");
-            let d = null;
-            try { d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8")); } catch {}
-            if (!d && e.MAP_MODE_RESULT === "success") lines.push("- map mode finished without a decision");
+            const info = [];
+            const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
+            const clip = (s, n = 300) => { s = String(s ?? "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 3) + "..." : s; };
+            // Failed jobs of this run (jobs API), with the first error line of each log.
+            const failed = [];
+            try { for (const l of fs.readFileSync("failed-jobs.jsonl", "utf8").split("\n")) if (l.trim()) { try { failed.push(JSON.parse(l)); } catch {} } } catch {}
+            const errorLine = (id) => {
+              let t = "";
+              try { t = fs.readFileSync("logs/" + id + ".txt", "utf8"); } catch { return ""; }
+              const errs = t.split("\n").map((l) => l.replace(/\r$/, "").replace(/^\S+Z /, "")).filter((l) => l.startsWith("##[error]")).map((l) => l.slice(9));
+              return errs.find((l) => !/^Process completed with exit code/.test(l)) ?? errs[0] ?? "";
+            };
+            // A job of this workflow is listed as "<name>", or "<caller job> / <name>" when sr-watch calls it.
+            const apiCause = (name) => {
+              const mine = failed.filter((j) => j.name === name || j.name.endsWith(" / " + name));
+              const j = mine.find((x) => x.name.includes("(" + e.BRANCH + ")")) ?? mine[0];
+              if (!j) return "";
+              const err = errorLine(j.id);
+              return (j.step ? "step \"" + j.step + "\"" : "") + (err ? (j.step ? ": " : "") + clip(err) : "");
+            };
+            const why = (name) => { const c = apiCause(name); return c ? ["  - cause: " + c] : []; };
+            const r = readJson("res/result.json");
+            const d = readJson("chain/decision.json");
+            const chainThere = fs.existsSync("chain") && fs.readdirSync("chain").length > 0;
+
+            for (const [label, name, result] of [["build-scanner", "build-scanner", e.BUILD_RESULT], ["plugin-plan", "plugin-plan", e.PLAN_RESULT], ["publish the feed", "publish the feed", e.PUBLISH_RESULT]]) {
+              if (result === "failure") lines.push("- job **" + label + "** failed", ...why(name));
+            }
+            if (e.CHECK_RESULT === "failure") {
+              lines.push("- job **check** failed");
+              if (r?.reason) lines.push("  - cause: " + (r.status === "no-login" ? "no Steam login (status no-login): " : "") + clip(r.reason));
+              else {
+                const st = r?.status ? "check status " + r.status + (r.download?.reason ? " (" + r.download.reason + ")" : "") : "no check result artifact";
+                const c = apiCause("check");
+                lines.push("  - cause: " + st + (c ? "; " + c : ""));
+              }
+            } else if (r && (r.status === "skipped" || r.status === "no-login")) {
+              lines.push("- client check **did not run** (status " + r.status + "): " + clip(r.reason ?? "no reason recorded"));
+            }
+            if (r?.status === "new-build") info.push("New build **CL-" + (r.checks?.exe?.cl ?? "?") + "** (" + (r.checks?.exe?.productVersion ?? "unknown ProductVersion") + "), measured by map mode: the loader does not run on it yet (" + (r.checks?.exe?.requiredCl ?? "unknown") + "); this is not a failure.");
+            if (e.MAP_MODE_RESULT === "failure") {
+              lines.push("- job **map mode** failed");
+              if (!chainThere) lines.push("  - the map-mode artifact is missing: the job stopped before it uploaded one, so no gate or decision is available");
+              lines.push(...why("map mode"));
+            }
+            if (!d && e.MAP_MODE_RESULT === "success") lines.push("- map mode finished without a decision" + (chainThere ? "" : " (and the map-mode artifact is missing)"));
+            const AUTOPILOT = "autopilot is disabled (enabled is not true)";
+            let readyHold = false;
             if (d && d.decision === "HOLD") {
               const reasons = d.reasons ?? [];
-              const nothingNew = reasons.some((r) => /^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/.test(r));
-              const expectedTest = d.test === true && d.wouldBe === "M";
-              if (!nothingNew && !expectedTest) lines.push("- decide: **HOLD** on CL-" + (d.cl ?? "?"), ...reasons.map((r) => "  - " + r));
+              const nothingNew = reasons.some((x) => /^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/.test(x));
+              const autopilotOnly = reasons.length === 1 && reasons[0] === AUTOPILOT;
+              // Ready only when the chain went on to stage and run the rigs (the candidate chain); a dispatch with publish on stops at the HOLD.
+              if (autopilotOnly) readyHold = d.candidate === true && d.test !== true;
+              else if (!nothingNew) lines.push("- decide: **HOLD** on CL-" + (d.cl ?? "?"), ...reasons.map((x) => "  - " + x));
             }
-            if (!lines.length) { console.log("Nothing to alert on."); process.exit(0); }
-            const md = ["Branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, "", "Details are in the run summary and the map-mode artifact. The watcher does not check a build again while its update PR is open; once the cause is fixed: `gh workflow run sr-watch.yml --ref main -f force=true`."];
+            const expected = e.STAGED_EXPECTED === "true";
+            if (expected && e.PUSH_RESULT !== "success") {
+              lines.push("- the staged map rows were **not pushed** to the loader fork (push-loader " + (e.PUSH_RESULT === "failure" ? "failed" : "ended " + e.PUSH_RESULT) + ")");
+              lines.push(...(e.PUSH_RESULT === "failure" ? why("push the map rows to the loader fork") : ["  - cause: a job before it did not finish"]));
+            }
+            if (expected && e.PUSH_RESULT === "success" && e.CANDIDATE_RESULT !== "success") {
+              lines.push("- the **candidate loader** did not build and pass its tests (candidate-loader " + (e.CANDIDATE_RESULT === "failure" ? "failed" : "ended " + e.CANDIDATE_RESULT) + ")", ...why("candidate loader"));
+            }
+            const rigs = ["BRANCH", "OTHER"].map((p) => ({ name: e[p + "_RIG_NAME"], result: e[p + "_RIG_RESULT"], verdict: e[p + "_RIG_VERDICT"], reason: e[p + "_RIG_REASON"], artifact: e[p + "_RIG_ARTIFACT"] }));
+            const badRigs = expected ? rigs.filter((x) => !(x.result === "success" && x.verdict === "PASS")) : [];
+            if (e.RIG_GATE_RESULT === "failure" || badRigs.length) {
+              lines.push("- **client rig gate** failed: the feed is published only when both rigs pass");
+              for (const x of badRigs) {
+                const state = x.verdict || (x.result === "skipped" ? "did not run" : x.result);
+                const cause = x.reason ? clip(x.reason) : x.result === "skipped" ? "candidate loader job: " + e.CANDIDATE_RESULT : "no verdict; see the rig job";
+                lines.push("  - rig " + x.name + ": " + state + " - " + cause + (x.artifact ? " (logs: artifact " + x.artifact + ")" : ""));
+              }
+            }
+
+            // A newer release of a plugin by another author than the reviewed one the plan and the rig used. Both kept
+            // using the reviewed release, so nothing failed: the line is loud, but it neither blocks the
+            // gate nor takes the chain-passed mark away.
+            const review = [...new Set([e.PLAN_REVIEW, e.BRANCH_RIG_REVIEW, e.OTHER_RIG_REVIEW].flatMap((t) => String(t ?? "").split(/\s+/)).filter((t) => /^[A-Za-z0-9_.-]+=[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(t)))]
+              .map((t) => "- new " + t.split("=")[0] + " release " + t.split("=")[1] + " waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in `ci/plugin-names.json`");
+
+            const out = (kv) => fs.appendFileSync(e.GITHUB_OUTPUT, Object.entries(kv).map(([k, v]) => k + "=" + v + "\n").join(""));
+            const passed = lines.length === 0 && d !== null;
+            if (passed && readyHold) fs.writeFileSync("ready.md", "<!-- sr-ready-held:" + e.BRANCH + " -->\n**Ready, publish held (autopilot off).** CL-" + (d.cl ?? "?") + " on `" + e.BRANCH + "`: every gate and job passed, [run](" + e.RUN_URL + ").\n");
+            if (!lines.length && !review.length) {
+              console.log("Nothing to alert on.");
+              out({ alert: "false", passed: String(passed), ready: String(passed && readyHold) });
+              process.exit(0);
+            }
+            const md = ["@" + e.OWNER + " branch `" + e.BRANCH + "`, build " + (e.BUILDID || "unknown") + ", [run](" + e.RUN_URL + ").", "", ...lines, ...review, ...(info.length ? ["", ...info] : []), "", "Details are in the run summary and the map-mode artifact. The watcher does not check a build again while its update PR is open; once the cause is fixed: `gh workflow run sr-watch.yml --ref main -f force=true`."];
             fs.writeFileSync("alert.md", md.join("\n") + "\n");
-            fs.appendFileSync(e.GITHUB_OUTPUT, "alert=true\n");
+            out({ alert: "true", passed: String(passed), ready: String(passed && readyHold) });
           '
 
       - name: Open or update the issue
         if: steps.what.outputs.alert == 'true'
         run: |
           set -euo pipefail
-          title="SR map mode: $BRANCH needs attention"
-          number="$(gh issue list --state open --search "$title in:title" --json number,title | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')"
+          export TITLE="SR map mode: $BRANCH needs attention"
+          gh label create pipeline-alert --color B60205 --description 'A pipeline run or a game-update PR needs the owner' --force
+          number="$(gh issue list --state open --search "$TITLE in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
           if [ -n "$number" ]; then
             gh issue comment "$number" --body-file alert.md
+            gh issue edit "$number" --add-label pipeline-alert --add-assignee "$OWNER"
           else
-            gh issue create --title "$title" --body-file alert.md
+            gh issue create --title "$TITLE" --body-file alert.md --label pipeline-alert --assignee "$OWNER"
+          fi
+
+      # The PR carries what the chain concluded: chain-passed-<branch> only after a
+      # run with no alert line (sr-watch reads it), and one line when the only thing
+      # holding the publish is the autopilot switch.
+      - name: Mark the pull request
+        if: ${{ !cancelled() && steps.what.outcome == 'success' && inputs.pr != '' }}
+        env:
+          ALERT: ${{ steps.what.outputs.alert }}
+          PASSED: ${{ steps.what.outputs.passed }}
+          READY: ${{ steps.what.outputs.ready }}
+        run: |
+          set -euo pipefail
+          label="chain-passed-$BRANCH"
+          gh label create "$label" --color 0E8A16 --description "The client chain passed for $BRANCH on this update" --force
+          if [ "$PASSED" = true ]; then
+            gh pr edit "$PR" --add-label "$label"
+          elif [ "$ALERT" = true ]; then
+            gh pr edit "$PR" --remove-label "$label" || true
+          fi
+          if [ "$READY" = true ]; then
+            export MARKER="<!-- sr-ready-held:$BRANCH -->"
+            id="$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate --jq '.[] | select(.body | contains(env.MARKER)) | .id' | tail -n 1)"
+            if [ -n "$id" ]; then
+              gh api -X PATCH "repos/$GH_REPO/issues/comments/$id" -F body=@ready.md
+            else
+              gh pr comment "$PR" --body-file ready.md
+            fi
           fi
 
   # ---- Auto-apply, part 2: push the verified fixes to the owner's forks ----
@@ -2389,7 +3184,7 @@ jobs:
             $md.Add('|---|---|---|---|---|---|')
             foreach ($p in @($af.plugins)) {
               $where = '-'
-              if ($p.verdict -eq 'PATCH') { $where = "patch only: ``$($p.patch)`` in the run's artifact" }
+              if ($p.verdict -eq 'PATCH') { $where = "information only: ``$($p.patch)`` in the run's artifact, not pushed" }
               elseif ($p.verdict -in 'FIXED', 'PARTIAL' -and $p.repo -match '^msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+$') {
                 $where = 'not pushed (see the auto-apply job)'
                 # The fallback name carries the attempt that pushed it, which may be an earlier one.

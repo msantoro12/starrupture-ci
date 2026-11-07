@@ -10,7 +10,8 @@ name: SR Steam watch
 # "handled" and advances the baseline on main.
 #
 # Only writes: the first baseline commit to main, and game-update/* branches,
-# plus the alert issue the client check opens when a run fails or holds.
+# plus the alert issue the client check opens when a run fails or holds, and the
+# same issue for a game-update PR that stays open six hours without passing the chain.
 # No tags, no releases.
 
 on:
@@ -37,6 +38,7 @@ jobs:
     permissions:
       contents: write        # baseline commit to main, game-update/* branches
       pull-requests: write   # open and update the update PR, create its label
+      issues: write          # the stale-PR alert issue and its label
     outputs:
       changed: ${{ steps.poll.outputs.changed }}
       client_matrix: ${{ steps.poll.outputs.client_matrix }}
@@ -116,8 +118,76 @@ jobs:
             number="${url##*/}"
           else
             gh pr edit "$number" --title "$title" --body-file "$sr/pr-body.md"
+            # A refreshed PR is checked again: the earlier chain-passed labels no longer stand.
+            for l in $(gh pr view "$number" --json labels --jq '.labels[].name | select(startswith("chain-passed-"))'); do
+              gh pr edit "$number" --remove-label "$l"
+            done
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      # The build was skipped because its game-update PR is open. If that PR has been
+      # open longer than STALE_HOURS and the client chain has not passed for every
+      # changed client branch (the alert job of sr-client-check.yml labels the PR
+      # chain-passed-<branch> after a run with no alert line), the branch's alert issue
+      # ("SR map mode: <branch> needs attention", the one that job uses) gets a comment,
+      # or is opened, at most once per STALE_HOURS: a marker in the issue body or a
+      # comment says when it was last raised. The issue is labelled pipeline-alert and
+      # assigned to the owner, so GitHub notifies him. A PR with no client branch has
+      # no chain to pass and is not stale. NOW_EPOCH is for tests; unset here.
+      - name: Alert on a stale game-update PR
+        if: steps.pr.outputs.skip == 'true'
+        env:
+          MATRIX: ${{ steps.poll.outputs.client_matrix }}
+          STALE_HOURS: '6'
+          OWNER: msantoro12
+        run: |
+          set -euo pipefail
+          now="${NOW_EPOCH:-$(date -u +%s)}"
+          pr="$(gh pr list --state open --limit 100 --json number,headRefName,title,createdAt,labels \
+            --jq '[.[] | select(.headRefName | startswith("game-update/"))][0] // empty')"
+          [ -n "$pr" ] || exit 0
+          stale="$(PR="$pr" NOW="$now" node -e '
+            const e = process.env;
+            const pr = JSON.parse(e.PR);
+            const hours = (Number(e.NOW) * 1000 - Date.parse(pr.createdAt)) / 3600000;
+            let branches = [];
+            try { branches = JSON.parse(e.MATRIX).map((x) => x.branch); } catch {}
+            const have = new Set(pr.labels.map((l) => l.name));
+            const missing = branches.filter((b) => /^[A-Za-z0-9_]+$/.test(b) && !have.has("chain-passed-" + b));
+            if (hours >= Number(e.STALE_HOURS) && missing.length) console.log(pr.number + " " + Math.floor(hours) + " " + missing.join(","));
+          ')"
+          [ -n "$stale" ] || { echo "No stale update PR."; exit 0; }
+          read -r number hours missing <<< "$stale"
+          title="$(gh pr view "$number" --json title --jq .title)"
+          gh label create pipeline-alert --color B60205 --description 'A pipeline run or a game-update PR needs the owner' --force
+          export MARKER="<!-- sr-stale-pr:$number -->"
+          for b in ${missing//,/ }; do
+            export TITLE="SR map mode: $b needs attention"
+            issue="$(gh issue list --state open --search "$TITLE in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
+            last=""
+            if [ -n "$issue" ]; then
+              last="$({
+                gh api "repos/$GH_REPO/issues/$issue" --jq 'select((.body // "") | contains(env.MARKER)) | .created_at'
+                gh api "repos/$GH_REPO/issues/$issue/comments" --paginate --jq '.[] | select((.body // "") | contains(env.MARKER)) | .created_at'
+              } | sort | tail -n 1)"
+            fi
+            if [ -n "$last" ] && [ $(( now - $(date -u -d "$last" +%s) )) -lt $(( STALE_HOURS * 3600 )) ]; then
+              echo "Already raised for $b at $last; next in $STALE_HOURS hours."
+              continue
+            fi
+            cat > "$RUNNER_TEMP/stale.md" <<EOF
+          $MARKER
+          @$OWNER game-update PR #$number ($title) has been open $hours hours and the client chain has not passed for \`$b\`: the PR has no \`chain-passed-$b\` label. It was last checked when the PR opened or was last forced, so the cause is in the earlier alerts on this issue, the PR's "Client build check" comment, or the latest runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-watch.yml
+          PR: $GITHUB_SERVER_URL/$GH_REPO/pull/$number
+          Once the cause is fixed: \`gh workflow run sr-watch.yml --ref main -f force=true\`. This is raised at most once every $STALE_HOURS hours while the PR is stale.
+          EOF
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body-file "$RUNNER_TEMP/stale.md"
+              gh issue edit "$issue" --add-label pipeline-alert --add-assignee "$OWNER"
+            else
+              gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/stale.md" --label pipeline-alert --assignee "$OWNER"
+            fi
+          done
 
   build:
     name: build-all
@@ -144,24 +214,41 @@ jobs:
     # sees it only when it is passed here by name (this job cannot set an
     # environment; the called check job reads the value from steam-client).
     # Unpassed, it would read as empty and the check could not log in. The
-    # TEST key signs the map-mode chain's dry-run feed. The fork deploy keys
-    # and the release key are not passed, and neither is publish: no feed is
-    # published and nothing is pushed to a fork from here.
+    # TEST key signs the map-mode chain's dry-run feed. The loader fork's
+    # deploy key is passed too (the push-loader job pushes auto/update-<CL>
+    # with it, in environment fork-push), and so are the nine plugin forks' keys
+    # (the auto-apply job pushes the verified fixes with them, also in fork-push).
+    # The release key is not passed, and neither is publish: no feed is published
+    # from here.
     # These permissions are a ceiling, not a grant: GitHub checks every called
     # job against them when it parses the call, before any if. Each called job
     # sets its own, and only publish (vmap-sign environment, main only, publish
-    # input on) asks for contents: write.
+    # input on) asks for contents: write. actions: read is the client rig's
+    # (sr-client-check calls sr-client-rig, which reads the candidate run's
+    # artifacts); without it here the nested call would not parse.
     permissions:
       contents: write
       pull-requests: write
       issues: write    # the alert job of the called workflow
+      actions: read    # the client rig, called by the called workflow
     uses: ./.github/workflows/sr-client-check.yml
     with:
       branch: ${{ matrix.branch }}
       buildid: ${{ matrix.buildid }}
+      other_buildid: ${{ matrix.other_buildid }}
       pr: ${{ needs.poll.outputs.pr }}
       map_mode: true
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
       VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+      SR_DEPLOYKEY_MODLOADER: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}
+      SR_DEPLOYKEY_BETTERCHEATS: ${{ secrets.SR_DEPLOYKEY_BETTERCHEATS }}
+      SR_DEPLOYKEY_BETTERDRONE: ${{ secrets.SR_DEPLOYKEY_BETTERDRONE }}
+      SR_DEPLOYKEY_WAILA: ${{ secrets.SR_DEPLOYKEY_WAILA }}
+      SR_DEPLOYKEY_CODEX: ${{ secrets.SR_DEPLOYKEY_CODEX }}
+      SR_DEPLOYKEY_COMPASS: ${{ secrets.SR_DEPLOYKEY_COMPASS }}
+      SR_DEPLOYKEY_PRODUCTIONVIEWER: ${{ secrets.SR_DEPLOYKEY_PRODUCTIONVIEWER }}
+      SR_DEPLOYKEY_RUPTURETIMER: ${{ secrets.SR_DEPLOYKEY_RUPTURETIMER }}
+      SR_DEPLOYKEY_WAVEOPTIMISER: ${{ secrets.SR_DEPLOYKEY_WAVEOPTIMISER }}
+      SR_DEPLOYKEY_CAMERACONTROLS: ${{ secrets.SR_DEPLOYKEY_CAMERACONTROLS }}
