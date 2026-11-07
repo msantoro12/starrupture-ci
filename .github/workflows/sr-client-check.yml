@@ -855,6 +855,7 @@ jobs:
           REQUIRED_CL: ${{ needs.build.outputs.required_cl }}
           SDK_OFFSETS: ${{ needs.build.outputs.sdk_offsets }}
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+          MAP_MODE: ${{ inputs.map_mode }}
         run: |
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
@@ -937,9 +938,16 @@ jobs:
                         match = $match; informational = $byDesign }
           }
 
-          $fail = (-not $clOk) -or ($scanCode -ne 0)
+          # A build the loader does not run on yet is what map mode exists to
+          # measure: with map mode on, a version gate that says no, on a build
+          # that names its CL, is a new build and not a failure. Without map
+          # mode the released loader cannot run it, and the check fails. No
+          # gate found at all, or a ProductVersion without a CL, stays a
+          # failure either way, and so does every other gate.
+          $newBuild = ($env:MAP_MODE -eq 'true') -and ($gates.Count -gt 0) -and ($gates -contains $false) -and ($pv -match 'CL-(\d+)$')
+          $fail = ((-not $clOk) -and (-not $newBuild)) -or ($scanCode -ne 0)
           [ordered]@{
-            exe = [ordered]@{ productVersion = $pv; cl = $(if ($pv -match 'CL-(\d+)$') { $Matches[1] } else { '' }); requiredCl = $requiredCl; clOk = $clOk; sha256 = $sha }
+            exe = [ordered]@{ productVersion = $pv; cl = $(if ($pv -match 'CL-(\d+)$') { $Matches[1] } else { '' }); requiredCl = $requiredCl; clOk = $clOk; newBuild = $newBuild; sha256 = $sha }
             reference = $(if ($refExe) { [ordered]@{ productVersion = $refPv; cl = $(if ($refPv -match 'CL-(\d+)$') { $Matches[1] } else { '' }) } } else { $null })
             scan = [ordered]@{ exitCode = $scanCode; summary = $scan.summary; notOk = $notOk
                      suggest = $(if ($scan.PSObject.Properties['suggest']) { $scan.suggest } else { $null }) }
@@ -948,7 +956,8 @@ jobs:
             fail = $fail
           } | ConvertTo-Json -Depth 12 | Set-Content out\checks.json -Encoding utf8
           foreach ($w in $warnings) { Write-Host "::warning::$w" }
-          if (-not $clOk) { Write-Host "::error::ProductVersion '$pv' is not a build the loader runs on ($requiredCl)" }
+          if ($newBuild) { Write-Host "::notice title=New build::ProductVersion '$pv' is not a build the loader runs on yet ($requiredCl); map mode measures it." }
+          elseif (-not $clOk) { Write-Host "::error::ProductVersion '$pv' is not a build the loader runs on ($requiredCl)" }
           if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code $scanCode ($($scan.summary.requiredFailing) required patterns failing)" }
           if ($fail) { exit 1 }
 
@@ -1575,6 +1584,7 @@ jobs:
             elseif (-not $dl.installed) { 'download-failed' }
             elseif (-not $ck) { 'error' }
             elseif ($ck.fail) { 'fail' }
+            elseif ($ck.exe.newBuild) { 'new-build' }
             elseif (@($ck.warnings).Count -gt 0) { 'pass-with-warnings' }
             else { 'pass' }
           $r | ConvertTo-Json -Depth 12 | Set-Content out\result.json -Encoding utf8
@@ -2040,6 +2050,7 @@ jobs:
             let r = null;
             try { r = JSON.parse(fs.readFileSync("res/result.json", "utf8")); } catch {}
             if (e.CHECK_RESULT === "failure") lines.push("  - cause: " + (r?.reason || (r?.status ? "check status " + r.status : "no check result; see the run log")));
+            if (r?.status === "new-build") lines.push("- new build **CL-" + (r.checks?.exe?.cl ?? "?") + "** (" + (r.checks?.exe?.productVersion ?? "unknown ProductVersion") + "), measured by map mode: the loader does not run on it yet (" + (r.checks?.exe?.requiredCl ?? "unknown") + "); this is not a failure");
             let d = null;
             try { d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8")); } catch {}
             if (!d && e.MAP_MODE_RESULT === "success") lines.push("- map mode finished without a decision");
@@ -2226,6 +2237,10 @@ jobs:
           if ($status -eq 'no-login') {
             $md.Add("The client build was not checked: $($r.reason).")
           } elseif ($r) {
+            if ($status -eq 'new-build') {
+              $md.Add("**New build, measured by map mode.** The loader does not run on CL-$($r.checks.exe.cl) yet; that is the case map mode exists for, not a failure. Every other check below passed, and the map-mode job decides what the build needs.")
+              $md.Add('')
+            }
             $dl = $r.download; $ck = $r.checks
             $md.Add('| Check | Result |')
             $md.Add('|---|---|')
@@ -2249,7 +2264,7 @@ jobs:
               $md.Add("| Reference (public) | $(if ($rf.status -eq 'used') { "build $($rf.buildid), CL-$($rf.cl)" } else { "none: $($rf.reason)$(if ($rf.PSObject.Properties['buildid'] -and $rf.buildid) { " (build $($rf.buildid), branch '$($rf.betaKey)')" })" }) |")
             }
             if ($ck) {
-              $md.Add(('| ProductVersion | `{0}`, loader requires `{1}`: {2} |' -f $ck.exe.productVersion, $ck.exe.requiredCl, $(if ($ck.exe.clOk) { 'match' } else { '**MISMATCH**' })))
+              $md.Add(('| ProductVersion | `{0}`, loader requires `{1}`: {2} |' -f $ck.exe.productVersion, $ck.exe.requiredCl, $(if ($ck.exe.clOk) { 'match' } elseif ($ck.exe.newBuild) { '**new build** (not supported yet; map mode measures it)' } else { '**MISMATCH**' })))
               $s = $ck.scan.summary
               $md.Add("| Pattern scan | $($s.total) patterns: $($s.ok) OK, $($s.missing) missing, $($s.ambiguous) ambiguous, $($s.other) other; **$($s.requiredFailing) required failing** |")
               foreach ($p in @($ck.scan.notOk)) { $md.Add("| - $($p.name) | $($p.result)$(if ($p.required) { ' (required)' }) |") }

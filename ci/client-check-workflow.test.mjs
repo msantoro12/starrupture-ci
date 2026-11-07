@@ -8,6 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -141,4 +142,79 @@ test('build label: the map-mode step labels a build "steam_build <build id>" and
   assert.match(line, /source: "steam_build " \+ process\.argv\[1\]/);
   assert.ok(!/BRANCH|branch/.test(line), 'the label is built from the build id only');
   assert.ok(!/source: [^,]*test_branch/.test(wf), 'no workflow step labels a build with the test branch');
+});
+
+// ---- New builds: map mode measures what the loader does not run on yet ----
+
+// The gate lines of the check step, run for real: the version gate's verdicts in, the
+// check's fail flag and new-build flag out. Skipped where no PowerShell is installed.
+const powershell = ['pwsh', 'powershell'].find((exe) => spawnSync(exe, ['-NoProfile', '-Command', '1'], { windowsHide: true }).status === 0);
+const gateSnippet = () => {
+  const text = job('check');
+  const from = text.indexOf('          $newBuild = ');
+  const to = text.indexOf('\n', text.indexOf('          $fail = ', from));
+  assert.ok(from > 0 && to > from, 'the check step decides newBuild and fail');
+  return text.slice(from, to);
+};
+const runGate = ({ mapMode, gates, pv, scanCode = 0 }) => {
+  const script = [
+    "$ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest",
+    `$env:MAP_MODE = '${mapMode}'`,
+    `$gates = [Collections.Generic.List[bool]]::new(); foreach ($g in @(${gates.map((g) => (g ? '$true' : '$false')).join(',')})) { $gates.Add($g) }`,
+    '$clOk = $gates.Count -gt 0 -and -not ($gates -contains $false)',
+    `$pv = '${pv}'; $scanCode = ${scanCode}`,
+    gateSnippet(),
+    'Write-Output "newBuild=$newBuild fail=$fail"',
+  ].join('\n');
+  const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim();
+};
+const NEW = '++Earth20+Kobalt-PTR2-CL-129402';
+
+test('new build: with map mode on, a version gate that says no is a new build and the check passes', { skip: !powershell }, () => {
+  assert.equal(runGate({ mapMode: 'true', gates: [false], pv: NEW }), 'newBuild=True fail=False');
+  assert.equal(runGate({ mapMode: 'true', gates: [true, false], pv: NEW }), 'newBuild=True fail=False');
+});
+
+test('new build: with map mode off the same build still fails the check', { skip: !powershell }, () => {
+  assert.equal(runGate({ mapMode: 'false', gates: [false], pv: NEW }), 'newBuild=False fail=True');
+  assert.equal(runGate({ mapMode: '', gates: [false], pv: NEW }), 'newBuild=False fail=True');
+});
+
+test('new build: a supported build is not a new build, and no other gate is excused by one', { skip: !powershell }, () => {
+  assert.equal(runGate({ mapMode: 'true', gates: [true], pv: NEW }), 'newBuild=False fail=False');
+  assert.equal(runGate({ mapMode: 'true', gates: [false], pv: NEW, scanCode: 1 }), 'newBuild=True fail=True', 'a failing pattern scan still fails');
+  assert.equal(runGate({ mapMode: 'true', gates: [], pv: NEW }), 'newBuild=False fail=True', 'no version gate found still fails');
+  assert.equal(runGate({ mapMode: 'true', gates: [false], pv: '1.0.0.0' }), 'newBuild=False fail=True', 'a ProductVersion without a CL still fails');
+});
+
+test('new build: the check step reads map_mode, records the flag and keeps the other gates failing', () => {
+  const check = job('check');
+  const scan = check.slice(check.indexOf('      - name: Check the client build'), check.indexOf('      # Plugin code never runs'));
+  assert.match(scan, /\n {10}MAP_MODE: \$\{\{ inputs\.map_mode \}\}\n/);
+  assert.ok(scan.includes('$fail = ((-not $clOk) -and (-not $newBuild)) -or ($scanCode -ne 0)'), 'the scan exit code is not excused');
+  assert.ok(scan.includes('clOk = $clOk; newBuild = $newBuild;'), 'checks.json records the new build next to clOk');
+  assert.ok(scan.includes('if ($scanCode -ne 0) { Write-Host "::error::sr-aobscan exit code'));
+  assert.ok(scan.includes('if ($fail) { exit 1 }'));
+  // The exe gate sits before the version gate and is untouched by it.
+  assert.ok(scan.includes("throw 'no *-Win64-Shipping.exe in the install'"));
+  assert.match(check, /elseif \(\$ck\.fail\) \{ 'fail' \}\n\s+elseif \(\$ck\.exe\.newBuild\) \{ 'new-build' \}/, 'a failing check is never reported as a new build');
+});
+
+test('new build: map mode runs after a passing check only, so a real gate failure still blocks it', () => {
+  assert.match(job('map-mode'), /if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' \}\}/);
+  assert.match(job('map-mode'), /put\("g2\.json", \{ ok: r\.checks\?\.fail === false \}\);/, 'G2 still reads the fail flag of the check');
+});
+
+test('new build: the PR comment and the alert name it "new build, measured by map mode", not a failure', () => {
+  const report = job('report');
+  assert.ok(report.includes("if ($status -eq 'new-build') {"));
+  assert.ok(report.includes('**New build, measured by map mode.**'));
+  assert.ok(report.includes("elseif ($ck.exe.newBuild) { '**new build** (not supported yet; map mode measures it)' }"));
+  assert.ok(report.includes("else { '**MISMATCH**' }"), 'with map mode off the mismatch is still shown');
+  const alert = job('alert');
+  assert.ok(alert.includes('r?.status === "new-build"'));
+  assert.ok(alert.includes('measured by map mode: the loader does not run on it yet'));
+  assert.ok(alert.includes('this is not a failure'));
 });
