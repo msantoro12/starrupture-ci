@@ -107,6 +107,10 @@ on:
       plugin_exclude:
         type: string
         default: ''
+      key_sources:
+        description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on gss/plugin-work. They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
+        type: string
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build:bfd12a08506a494a89d07a139e734c96101abbff'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
         type: string
@@ -227,6 +231,10 @@ on:
         description: 'Plugin names left out of this run (from plugins), space-separated, e.g. MiniMap'
         type: string
         default: ''
+      key_sources:
+        description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on gss/plugin-work. They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
+        type: string
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build:bfd12a08506a494a89d07a139e734c96101abbff'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied (medium only for a replay)'
         type: choice
@@ -699,13 +707,272 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ---- Key sources: fork builds scanned for map keys only -------------------
+  # Map mode learns the function keys a plugin requests only by scanning its DLL
+  # (sr-aobscan --plugin), and the field and size keys only from the source of a
+  # built plugin. The plugins above are the released line, so a key that only the
+  # owner's fork builds request never got a row. A key source is such a build,
+  # built and scanned for its keys alone (input key_sources, msantoro12 repositories
+  # only, ref pinned to a commit except the nine plugins' gss/plugin-work).
+  # It is a source of observations for map mode and nothing else: it is not in
+  # `plugins` (so never in plugins.json and decide's verdicts, expect_refused, the
+  # rig's set, rule 3, auto-apply, staging or the feed), its artifact is
+  # keysrc-<branch>-<name> (not plugin-<branch>-*, which the check job reads as the
+  # plugin builds), and it is never released or published: the artifact only hands the
+  # DLL to the check job, which scans it on the downloaded exe. Nothing here holds a
+  # secret. A key source that fails to build or to scan fails map mode with its cause.
+  key-sources-plan:
+    name: key-sources-plan
+    if: ${{ inputs.map_mode == true && inputs.branch && inputs.branch != 'expiry-only' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      any: ${{ steps.resolve.outputs.any }}
+    steps:
+      - name: Check the key source list
+        env:
+          KEY_SOURCES: ${{ inputs.key_sources }}
+          PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
+          PLUGIN_SDK_REF: ${{ inputs.plugin_sdk_ref }}
+          GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
+          LOADER_REPO: ${{ inputs.loader_repo }}
+        run: |
+          # Key source code is built here and run by the check job after the Steam login cache is
+          # removed, so it only comes from the owner's own repositories and branches.
+          node -e '
+            // The list is the only input that names code to run; each entry is checked before any of it is fetched.
+            const fs = require("fs");
+            const NINE = ["BetterCheats", "BetterDrone", "WAILA", "Codex", "Compass", "ProductionViewer", "RuptureTimer", "WaveOptimiser", "CameraControls"];
+            const WORK = "gss/plugin-work";
+            // A repository that is not built the way the nine are: MiniMap needs Unreal Engine headers for its
+            // readback adapter, so its key-scan build (MiniMapKeyScanOnly, no engine) is used, on the Plugin SDK
+            // commit it was written against.
+            const RECIPES = {
+              MiniMap: { recipe: "keyscan", pluginSdkRepo: "AlienXAXS/StarRupture-Plugin-SDK", pluginSdkRef: "d66217e63aeb80917656800c42a1a107e3be238d" },
+            };
+            const fail = (why) => { console.log("::error title=Key sources::" + why); process.exit(1); };
+            const env = process.env;
+            if (!/^(msantoro12|AlienXAXS)\/StarRupture-Plugin-SDK$/.test(env.PLUGIN_SDK_REPO || "")) fail(`plugin_sdk_repo "${env.PLUGIN_SDK_REPO}" is not allowed`);
+            if (!/^(msantoro12|AlienXAXS)\/StarRupture-Game-SDK$/.test(env.GAME_SDK_REPO || "")) fail(`game_sdk_repo "${env.GAME_SDK_REPO}" is not allowed`);
+            if (!/^(msantoro12|AlienXAXS)\/StarRupture-ModLoader$/.test(env.LOADER_REPO || "")) fail(`loader_repo "${env.LOADER_REPO}" is not allowed`);
+            const part = "[A-Za-z0-9][A-Za-z0-9._-]*";
+            const re = new RegExp("^msantoro12/StarRupture-Plugin-([A-Za-z0-9_-]+)@(" + part + "(?:/" + part + ")*)(?::([0-9a-f]{40}))?$");
+            const seen = new Set();
+            const entries = [];
+            for (const item of (env.KEY_SOURCES || "").split(/\s+/).filter(Boolean)) {
+              const m = re.exec(item);
+              if (!m) fail(`key source "${item}" is not msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]`);
+              const [, name, branch, pin] = m;
+              // A branch name only: a pull request ref, a tag or a commit is never a key source.
+              if (/^(refs|pull)\//.test(branch) || branch.includes("..") || /(\.lock|\.)$/.test(branch)) fail(`key source "${item}": "${branch}" is not a branch name`);
+              if (!pin && !(NINE.includes(name) && branch === WORK)) fail(`key source "${item}" has no commit pin; a ref without one is allowed only for the nine plugins on ${WORK}`);
+              if (seen.has(name)) fail(`key source ${name} is listed more than once`);
+              seen.add(name);
+              const repo = "msantoro12/StarRupture-Plugin-" + name;
+              const r = RECIPES[name];
+              entries.push({ name, repo, branch, pin: pin || "", tag: repo + "@" + branch, component: name + "@" + branch,
+                recipe: r ? r.recipe : "standard", pluginSdkRepo: r ? r.pluginSdkRepo : env.PLUGIN_SDK_REPO, pluginSdkRef: r ? r.pluginSdkRef : env.PLUGIN_SDK_REF });
+            }
+            fs.writeFileSync("key-sources-unresolved.json", JSON.stringify(entries));
+            console.log(entries.length + " key source(s) accepted");
+          '
+
+      # Each branch is resolved to its commit here, before any key source code runs: the
+      # key-sources job builds exactly that commit and the check job scans exactly that build.
+      - name: Resolve the branches to commits
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e '
+            // Branch to commit, and the pin must lie in the branch.
+            const fs = require("fs");
+            const { execFileSync } = require("child_process");
+            const run = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
+            const fail = (why) => { console.log("::error title=Key sources::" + why); process.exit(1); };
+            const entries = JSON.parse(fs.readFileSync("key-sources-unresolved.json", "utf8"));
+            for (const e of entries) {
+              let line = "";
+              try { line = run("git", ["ls-remote", "https://github.com/" + e.repo, "refs/heads/" + e.branch]); } catch (x) { fail(`git ls-remote ${e.repo} failed: ${x.message}`); }
+              const [head, ref] = line.split(/\s+/);
+              if (line.includes("\n") || ref !== "refs/heads/" + e.branch || !/^[0-9a-f]{40}$/.test(head)) fail(`${e.repo} has no branch ${e.branch}`);
+              if (e.pin) {
+                // The pin must be the branch itself or in its history: a commit that only some other ref (a pull request) carries is refused.
+                if (e.pin !== head) {
+                  let status = "";
+                  try { status = run("gh", ["api", `repos/${e.repo}/compare/${e.pin}...${head}`, "--jq", ".status"]); } catch (x) { fail(`${e.tag}: cannot compare the pin ${e.pin} with the branch: ${x.message}`); }
+                  if (status !== "ahead" && status !== "identical") fail(`${e.tag}: the pin ${e.pin} is not in the branch's history (compare says ${status})`);
+                }
+                e.sha = e.pin;
+              } else e.sha = head;
+              delete e.pin;
+              console.log(`::notice title=Key source ${e.name}::${e.tag} = ${e.sha}${e.sha !== head ? " (pinned; the branch is at " + head + ")" : ""}`);
+            }
+            const json = JSON.stringify(entries);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "matrix=" + json + "\nany=" + (entries.length ? "true" : "false") + "\n");
+            console.log(json);
+          '
+
+  key-sources:
+    name: key source ${{ matrix.name }}
+    needs: key-sources-plan
+    if: ${{ needs.key-sources-plan.outputs.any == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.key-sources-plan.outputs.matrix) }}
+    # Unlike the plugins job, a step that fails fails the job: map mode needs every key source,
+    # and the map-mode job stops with the cause when one is missing.
+    steps:
+      - name: Check out the key source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.sha }}
+          path: plugin
+          persist-credentials: false
+
+      - name: Check out the Plugin SDK
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.pluginSdkRepo }}
+          ref: ${{ matrix.pluginSdkRef }}
+          path: plugin-sdk
+          # The key-scan build reads the Game SDK that the Plugin SDK pins.
+          submodules: ${{ matrix.recipe == 'keyscan' && 'recursive' || 'false' }}
+          persist-credentials: false
+
+      - name: Check out the Game SDK
+        if: matrix.recipe == 'standard'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.game_sdk_repo }}
+          ref: ${{ inputs.game_sdk_ref }}
+          path: game-sdk
+          persist-credentials: false
+
+      - name: Check out the loader's plugin interface
+        if: matrix.recipe == 'standard'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.loader_ref }}
+          path: loader-interface
+          sparse-checkout: StarRupture-ModLoader-Core/plugins/plugin_interface.h
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+
+      # The way the plugins job builds one (Rule3Check off: this build is only scanned for keys).
+      - name: Build the key source (Client Release)
+        if: matrix.recipe == 'standard'
+        shell: pwsh
+        working-directory: plugin
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Built against the interface of the loader being checked, as it is in game.
+          Copy-Item ..\loader-interface\StarRupture-ModLoader-Core\plugins\plugin_interface.h ..\plugin-sdk\include\plugin_interface.h -Force
+          $sln = @(Get-ChildItem -File -Filter *.sln)
+          if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          $tag = if (Test-Path version) { (Get-Content version -Raw).Trim() } else { 'dev' }
+          msbuild $sln[0].Name `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /p:PostBuildEventUseInBuild=false `
+            /p:Rule3Check=false `
+            /p:ModLoaderBuildTag="$tag" `
+            /p:GameSDKRoot="$env:GITHUB_WORKSPACE\game-sdk" `
+            /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem 'build\Client Release\Plugins' -File -Filter *.dll)
+          if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
+          New-Item -ItemType Directory -Force ..\out | Out-Null
+          Copy-Item $dll[0].FullName ..\out\
+
+      # MiniMap cannot build on a hosted runner (its readback adapter needs the Unreal Engine headers).
+      # MiniMapKeyScanOnly leaves the adapter out for a stub: the DLL reports <version>-keyscan and refuses
+      # at PluginInit, but its key requests all run, which is what the scan reads. It is never installed,
+      # never a candidate and never in the rig's set.
+      - name: Build the key-scan build (Client Release)
+        if: matrix.recipe == 'keyscan'
+        shell: pwsh
+        working-directory: plugin
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The game build the Game SDK was generated from, when it says (the SDK commit pinned by the Plugin SDK).
+          $clFile = Join-Path $env:GITHUB_WORKSPACE 'plugin-sdk\StarRupture SDK\Client\build_cl.txt'
+          $cl = if (Test-Path $clFile) { (Get-Content $clFile -Raw).Trim() } else { '' }
+          $clArgs = if ($cl -match '^\d+$') { @("/p:PluginGameBuiltCL=$cl") } else { Write-Host '::notice::the Game SDK names no build; the project default CL is used'; @() }
+          msbuild MiniMap.sln `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /p:MiniMapKeyScanOnly=true `
+            /p:StarRupturePluginSDKRoot="$env:GITHUB_WORKSPACE\plugin-sdk\" `
+            @clArgs `
+            /m /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem 'bin\x64\Client Release\plugins' -File -Filter *.dll)
+          if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
+          # The plugin's own version string (in its PluginInfo, not the file's version resource) ends -keyscan.
+          $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($dll[0].FullName))
+          if ($text -notmatch '\d+\.\d+\.\d+-keyscan') { throw "$($dll[0].Name) does not carry a -keyscan version: it would not refuse in game, so it is not taken" }
+          New-Item -ItemType Directory -Force ..\out | Out-Null
+          Copy-Item $dll[0].FullName ..\out\
+
+      - name: Record the key source
+        shell: pwsh
+        env:
+          NAME: ${{ matrix.name }}
+          REPO: ${{ matrix.repo }}
+          BRANCH: ${{ matrix.branch }}
+          SHA: ${{ matrix.sha }}
+          TAG: ${{ matrix.tag }}
+          RECIPE: ${{ matrix.recipe }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = @(Get-ChildItem out -File -Filter *.dll)
+          if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
+          $head = git -C plugin rev-parse HEAD
+          if ($head -cne $env:SHA) { throw "checked out $head, not the planned commit $($env:SHA)" }
+          [ordered]@{ name = $env:NAME; repo = $env:REPO; branch = $env:BRANCH; sha = $head; tag = $env:TAG; recipe = $env:RECIPE; dll = $dll[0].Name
+                      pluginSdk = (git -C plugin-sdk rev-parse HEAD)
+                      sha256 = (Get-FileHash $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() } |
+            ConvertTo-Json | Set-Content out\key-source.json -Encoding utf8
+          Get-Content out\key-source.json
+
+      - name: Upload the key source (for the scan in the check job only)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: keysrc-${{ inputs.branch }}-${{ matrix.name }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Name the failed key source
+        if: failure()
+        shell: pwsh
+        env:
+          TAG: ${{ matrix.tag }}
+        run: |
+          Write-Host "::error title=Key source $($env:TAG)::it did not build; map mode stops, since the keys it requests would get no rows on this build"
+
   # ---- Job A: Steam login, download, offline checks ------------------------
   # The only job that can read the login secret: environment steam-client,
   # contents: read. The login cache is deleted from the runner before the
   # scanner runs; the only checkout is this repository's apply tool, after it.
   check:
     name: check
-    needs: [build, plugin-plan, plugins]
+    needs: [build, plugin-plan, plugins, key-sources-plan, key-sources]
     # A plugin that does not build fails only itself, not the client check.
     if: ${{ !cancelled() && needs.build.result == 'success' && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
@@ -1315,6 +1582,80 @@ jobs:
           # The verdicts are in plugins.json; the last scanner's exit code is not the step's result.
           exit 0
 
+      # Key sources (map mode): see the key-sources job. They are scanned here, on the downloaded
+      # exe, after the login cache is gone, like the plugins; the result is out/keysrc.json and the scans
+      # out/keysrc-<name>.json, which only the map-mode job's scans builder reads. Nothing below reads
+      # them: not plugins.json, the rig's set, rule 3, decide or the staging.
+      - name: Download the key sources
+        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && needs.key-sources-plan.outputs.any == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: keysrc-${{ inputs.branch }}-*
+          path: keysrc
+
+      - name: Scan the key sources
+        id: keysrc
+        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && needs.key-sources-plan.outputs.any == 'true'
+        # The map-mode job stops with the cause of a key source that failed; the client check itself is not changed by one.
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
+          PLAN: ${{ needs.key-sources-plan.outputs.matrix }}
+          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+        run: |
+          # Per key source: sr-aobscan --plugin, for the keys it requests. Its verdict is not graded (a key-scan
+          # build refuses at PluginInit by design); only a scan that did not run, or a plugin that crashed
+          # before it had asked for everything, makes it fail.
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          New-Item -ItemType Directory -Force out | Out-Null
+          $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
+          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
+          $suggest = @('--suggest')
+          $refExe = if ($env:REFERENCE_DIR) {
+            Get-ChildItem -Path $env:REFERENCE_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
+              Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1 }
+          if ($refExe) { $suggest += @('--reference', $refExe.FullName) }
+          $scanner = 'scanner\sr-aobscan-client.exe'
+          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          $rows = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
+            $r = [ordered]@{ name = $p.name; repo = $p.repo; branch = $p.branch; sha = $p.sha; tag = $p.tag; component = $p.component; recipe = $p.recipe; status = 'failed'; keys = 0 }
+            try {
+              $dir = "keysrc\keysrc-$($env:BRANCH)-$($p.name)"
+              if (-not (Test-Path "$dir\key-source.json")) { throw 'it did not build (no artifact)' }
+              $meta = Get-Content "$dir\key-source.json" -Raw | ConvertFrom-Json
+              if ($meta.sha -cne $p.sha) { throw "the artifact was built from $($meta.sha), not the planned $($p.sha)" }
+              $dll = Join-Path $dir $meta.dll
+              if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the key-sources job made" }
+              $stem = "out\keysrc-$($p.name)"
+              $ErrorActionPreference = 'Continue'
+              & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
+              $code = $LASTEXITCODE
+              $ErrorActionPreference = 'Stop'
+              Get-Content "$stem.txt" | Write-Host
+              $scan = if ($code -ne 2 -and (Test-Path "$stem.json") -and (Get-Item "$stem.json").Length) { Get-Content "$stem.json" -Raw | ConvertFrom-Json } else { $null }
+              if (-not $scan) { throw "sr-aobscan could not run it (exit $code); see out/keysrc-$($p.name).txt" }
+              $r.verdict = $scan.verdict
+              if ($scan.verdict -eq 'CRASH') { throw "OnPluginLoadHooks crashed ($($scan.crash)); the keys it had not yet asked for are missing" }
+              $r.keys = @($scan.patterns | Where-Object { $_.PSObject.Properties['key'] -and $_.key }).Count
+              if (-not $r.keys) { Write-Host "::warning title=Key source $($p.tag)::its scan has no keyed request, so it adds no rows" }
+              $r.status = 'ok'
+              Write-Host "$($p.tag) @ $($p.sha): $($r.keys) keyed requests ($($scan.verdict))"
+            } catch {
+              $r.error = $_.Exception.Message
+              Write-Host "::error title=Key source $($p.tag)::$($r.error)"
+            }
+            $r
+          }
+          [ordered]@{ sources = @($rows) } | ConvertTo-Json -Depth 6 | Set-Content out\keysrc.json -Encoding utf8
+          # The step's result is in keysrc.json; the map-mode job reads it.
+          exit 0
+
       # ---- Auto-apply, part 1: build and scan the proposed fixes -----------
       # The apply tool is this workflow's own code at the same commit.
       - name: Check out the apply tool
@@ -1531,7 +1872,32 @@ jobs:
             Set-Content "$work\uses-$p.txt" '' -Encoding ascii
             $components.Add($p)
           }
-          $all = $components | ForEach-Object { Get-Content "$work\keys-$_.txt" } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
+          # Key sources (map mode, out/keysrc.json): the keys their sources request, read from the same Game SDK.
+          # Each is a component of its own that is not in $components, so layout.json, its pdb-diff and the
+          # gate that reads them never see it; only the key list and the uses file below do. The result is
+          # recorded in keysrc.json (layout: ok), which the map-mode job requires.
+          $keysrc = if (Test-Path out\keysrc.json) { Get-Content out\keysrc.json -Raw | ConvertFrom-Json } else { $null }
+          $keyParts = [Collections.Generic.List[object]]::new()
+          if ($keysrc) {
+            foreach ($s in @($keysrc.sources | Where-Object { $_.status -eq 'ok' })) {
+              try {
+                if ($s.repo -cnotmatch '^msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+$' -or $s.sha -cnotmatch '^[0-9a-f]{40}$' -or $s.name -cnotmatch '^[A-Za-z0-9_-]+$') { throw 'keysrc.json names a repository or commit that is not allowed' }
+                $stem = "ks-$($s.name)"
+                Get-Source $s.repo $s.sha "$work\src-$stem"
+                node $lt gen "$sdk\Client\Assertions.inl" --cl $(if ($cl) { $cl } else { 1 }) --src "$work\src-$stem" --sdk "$sdk\Client\SDK" --granularity 2 --out "$work\table-$stem.h" --uses-out "$work\uses-$stem.txt"; Invoke-Native "gen ($($s.tag))"
+                node $lt keys "$work\table-$stem.h" --out "$work\keys-$stem.txt"; Invoke-Native "keys ($($s.tag))"
+                if ($native.ContainsKey($s.name)) { Add-Content "$work\keys-$stem.txt" $native[$s.name] }
+                $keyParts.Add([pscustomobject]@{ component = $s.component; stem = $stem })
+                $s | Add-Member -NotePropertyName layout -NotePropertyValue 'ok' -Force
+              } catch {
+                $s | Add-Member -NotePropertyName layout -NotePropertyValue "failed: $($_.Exception.Message)" -Force
+                Write-Host "::error title=Key source $($s.tag)::its keys could not be read: $($_.Exception.Message)"
+              }
+            }
+            [ordered]@{ sources = @($keysrc.sources) } | ConvertTo-Json -Depth 6 | Set-Content out\keysrc.json -Encoding utf8
+          }
+          $files = @($components | ForEach-Object { "$work\keys-$_.txt" }) + @($keyParts | ForEach-Object { "$work\keys-$($_.stem).txt" })
+          $all = $files | ForEach-Object { Get-Content $_ } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
           Copy-Item "$work\keys-all.txt" out\layout-keys.txt
           # Per component: its keys, requests, lazy lookups and size uses
@@ -1540,6 +1906,10 @@ jobs:
             Get-Content "$work\keys-$c.txt" | Where-Object { $_ } | ForEach-Object { "$c key $_" }
             Get-Content "$work\uses-$c.txt" | Where-Object { $_ } | ForEach-Object { "$c $_" }
           }
+          $uses = @($uses) + @(foreach ($k in $keyParts) {
+            Get-Content "$work\keys-$($k.stem).txt" | Where-Object { $_ } | ForEach-Object { "$($k.component) key $_" }
+            Get-Content "$work\uses-$($k.stem).txt" | Where-Object { $_ } | ForEach-Object { "$($k.component) $_" }
+          })
           Set-Content out\layout-uses.txt $uses -Encoding ascii
 
           $reports = @{}
@@ -1860,6 +2230,9 @@ jobs:
             out/scanner.json
             out/plugin-*.json
             out/plugin-*.txt
+            out/keysrc.json
+            out/keysrc-*.json
+            out/keysrc-*.txt
             out/autofix-*
             out/layout*.json
             out/layout-keys.txt
@@ -1892,7 +2265,7 @@ jobs:
   # prunes nothing: the sets the previous release still reads are kept.
   map-mode:
     name: map mode
-    needs: [build, plugins, check]
+    needs: [build, plugins, check, key-sources-plan, key-sources]
     if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1964,6 +2337,34 @@ jobs:
           name: client-check-${{ inputs.branch }}
           path: res
 
+      # A key source that did not build, scan or have its keys read leaves the keys only it requests without
+      # rows on this build, and the update would go out missing them: stop here with the cause.
+      - name: Require the key sources
+        env:
+          KEY_PLAN: ${{ needs.key-sources-plan.result }}
+          KEY_ANY: ${{ needs.key-sources-plan.outputs.any }}
+          KEY_BUILD: ${{ needs.key-sources.result }}
+        run: |
+          set -euo pipefail
+          if [ "$KEY_PLAN" != success ]; then echo "::error title=Key sources::the key source list was refused or could not be resolved (key-sources-plan: $KEY_PLAN); map mode stops"; exit 2; fi
+          if [ "$KEY_ANY" != true ]; then echo "::notice title=Key sources::none listed"; exit 0; fi
+          if [ "$KEY_BUILD" != success ]; then echo "::error title=Key sources::a key source did not build (key-sources: $KEY_BUILD); map mode stops, since the keys it requests would get no rows"; exit 2; fi
+          node -e '
+            // keysrc.json is written by the check job, one entry per key source.
+            const fs = require("fs");
+            if (!fs.existsSync("res/keysrc.json")) { console.log("::error title=Key sources::the check job recorded no key source result (res/keysrc.json), so none was scanned"); process.exit(2); }
+            const { sources } = JSON.parse(fs.readFileSync("res/keysrc.json", "utf8"));
+            let bad = 0;
+            for (const s of sources) {
+              const why = s.status !== "ok" ? (s.error || "it was not scanned")
+                : s.layout === "ok" ? ""
+                : s.layout ? "its keys were not read: " + s.layout : "its keys were not read (the layout step stopped before the key sources)";
+              if (why) { bad++; console.log(`::error title=Key source ${s.tag}::${why}`); }
+              else console.log(`${s.tag} ${s.sha}: ${s.keys} keyed requests`);
+            }
+            if (bad) { console.log(`::error title=Key sources::${bad} of ${sources.length} failed; map mode stops, since the keys they request would get no rows`); process.exit(2); }
+          '
+
       - name: Write the update into the header
         id: write
         env:
@@ -2005,6 +2406,19 @@ jobs:
               if (!name) continue;
               const tracked = built.includes(name);
               scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
+            }
+            // Key sources (res/keysrc.json, from the check job; every one is ok, the step above checked):
+            // fork builds scanned for their keys only. After the released scans, so a key both ask for stays one
+            // row and the released plugin's row comes first in map-mode's order; the tag names where a row came from.
+            if (fs.existsSync("res/keysrc.json")) {
+              for (const k of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) {
+                if (k.status !== "ok" || !/^[A-Za-z0-9_-]+$/.test(k.name)) continue;
+                const file = "res/keysrc-" + k.name + ".json";
+                const owner = JSON.parse(fs.readFileSync(file, "utf8")).plugin?.name;
+                if (!owner) continue;
+                for (const x of scans) if (x.owner === owner) x.tracked = true;
+                scans.push({ owner, tracked: true, tag: k.tag, rank: "current", file });
+              }
             }
             fs.writeFileSync("scans.json", JSON.stringify({ source: "steam_build " + process.argv[1], scans }));
           ' "$buildid"
