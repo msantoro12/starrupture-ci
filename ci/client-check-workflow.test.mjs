@@ -1566,7 +1566,7 @@ test('bases: auto-apply cuts the plugin fork\'s branch from the plugin repositor
 });
 
 test('native-keys: the layout step accepts every line of ci/native-keys.txt and the size line form, and rejects a malformed one', () => {
-  const m = /if \(\$line -notmatch '([^']+)' -and \$line -notmatch '([^']+)'\) \{ throw "native-keys\.txt: malformed line/.exec(wf);
+  const m = /if \(\$line -cnotmatch '([^']+)' -and \$line -cnotmatch '([^']+)'\) \{ throw "native-keys\.txt: malformed line/.exec(wf);
   assert.ok(m, 'the step checks a member form and a size form');
   const [member, size] = [new RegExp(m[1]), new RegExp(m[2])];
   const ok = (line) => member.test(line) || size.test(line);
