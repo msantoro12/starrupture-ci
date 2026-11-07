@@ -14,6 +14,10 @@ name: SR client rig
 # scrubbed text logs and the JSON the verdict wrote are uploaded, after the leak gate.
 
 on:
+  push:
+    branches: [test/replay-update2]
+    paths:
+      - '.github/workflows/sr-client-rig.yml'
   workflow_dispatch:
     inputs:
       branch:
@@ -88,11 +92,36 @@ on:
 permissions: {}
 
 jobs:
+  # Test branch only: the Spike 4 fix build, repacked into the layout the rig takes.
+  prep:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fix-Codex
+          run-id: 42355577745
+          github-token: ${{ github.token }}
+          path: src
+      - run: |
+          mkdir -p cand/ModLoader/Plugins
+          cp src/Codex.dll cand/ModLoader/Plugins/Codex.dll
+          ls -R cand
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: candidate-codex
+          path: cand
+          retention-days: 3
+          if-no-files-found: error
+
   rig:
     name: Client rig
     runs-on: windows-latest
     timeout-minutes: 100
-    environment: steam-client
+    environment: steam-client-replay
     permissions:
       contents: read
       actions: read
@@ -104,11 +133,13 @@ jobs:
       reason: ${{ steps.final.outputs.reason }}
       artifact: ${{ steps.final.outputs.artifact }}
     env:
-      BRANCH: ${{ inputs.branch }}
-      TAGS: ${{ inputs.tags }}
-      EXPECT: ${{ inputs.expect }}
-      EXPECT_REFUSED: ${{ inputs.expect_refused }}
-      REMOVE_PLUGINS: ${{ inputs.remove_plugins }}
+      BRANCH: ${{ inputs.branch || 'public' }}
+      TEST_CAND_RUN: ${{ inputs.candidate_run_id || '' }}
+      TEST_CAND_ART: ${{ inputs.candidate_artifact || '' }}
+      TAGS: ${{ inputs.tags || '' }}
+      EXPECT: ${{ inputs.expect || '' }}
+      EXPECT_REFUSED: ${{ inputs.expect_refused || '' }}
+      REMOVE_PLUGINS: ${{ inputs.remove_plugins || '' }}
       MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
       DOWNLOAD_DIR: D:\rig-dl
     steps:
@@ -138,13 +169,13 @@ jobs:
       # A candidate is code that runs beside the live login: only a run of this repository
       # whose head is in this repository (no fork) may supply it.
       - name: Check the candidate run
-        if: inputs.candidate_run_id != '' || inputs.candidate_artifact != ''
+        if: env.TEST_CAND_RUN != '' || env.TEST_CAND_ART != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ inputs.candidate_run_id }}
-          ARTIFACT: ${{ inputs.candidate_artifact }}
+          RUN_ID: ${{ env.TEST_CAND_RUN }}
+          ARTIFACT: ${{ env.TEST_CAND_ART }}
         run: |
           $ErrorActionPreference = 'Stop'
           function Stop-Rig([string]$m) {
@@ -164,11 +195,11 @@ jobs:
           "Candidate: run $env:RUN_ID (head $($run.head_sha.Substring(0, 8)) on $($run.head_branch)), artifact $env:ARTIFACT"
 
       - name: Download the candidate artifact
-        if: inputs.candidate_run_id != '' || inputs.candidate_artifact != ''
+        if: env.TEST_CAND_RUN != '' || env.TEST_CAND_ART != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ${{ inputs.candidate_artifact }}
-          run-id: ${{ inputs.candidate_run_id }}
+          name: ${{ env.TEST_CAND_ART }}
+          run-id: ${{ env.TEST_CAND_RUN }}
           github-token: ${{ github.token }}
           path: candidate
 
