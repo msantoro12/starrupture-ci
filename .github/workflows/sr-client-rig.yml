@@ -1,0 +1,338 @@
+name: SR client rig
+
+# Launches the real StarRupture client on a GitHub-hosted Windows runner, under the real
+# Steam client signed in as the CI account, with a given loader and plugin set, and judges
+# the loader's log with ci/verdict.ps1 -Client: do the mods load.
+#
+# Dispatch it by hand, or call it from another workflow in this repository with `uses:`.
+# The job runs in environment `steam-client`, which serves branch main only, so a caller
+# must be on main. There is no schedule and no pull_request trigger. Details and a caller
+# example: .github/sr-pipeline/README.md ("Client test rig").
+#
+# One game session per account: runs queue, they are never cancelled.
+# Game files, engine logs, dumps and Steam config files never leave the runner. Only the
+# scrubbed text logs and the JSON the verdict wrote are uploaded, after the leak gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Steam branch to install: public or public_test_branch'
+        type: string
+        default: public
+      tags:
+        description: 'Release tags to take instead of each repo''s Latest, as Name=tag (space separated). Names: Loader, BetterCheats, BetterDrone, CameraControls, Codex, Compass, ProductionViewer, RuptureTimer, WAILA, WaveOptimiser'
+        type: string
+        default: ''
+      candidate_run_id:
+        description: 'Optional: id of a run in this repository whose artifact is laid over the release set'
+        type: string
+        default: ''
+      candidate_artifact:
+        description: 'Name of that run''s artifact (dwmapi.dll, ModLoader/..., ModLoader/Plugins/*.dll)'
+        type: string
+        default: ''
+      expect:
+        description: 'Versions the log must show instead of the release tag, as Name=version. Required for every DLL the candidate replaces; an unknown Name is an extra plugin to expect'
+        type: string
+        default: ''
+      expect_refused:
+        description: 'Plugins that must be refused on this build (they pass only if refused)'
+        type: string
+        default: ''
+      remove_plugins:
+        description: 'Plugins taken out of the install but still expected, so they must show as missing'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      branch:
+        description: 'Steam branch to install: public or public_test_branch'
+        type: string
+        default: public
+      tags:
+        description: 'Release tags to take instead of each repo''s Latest, as Name=tag (space separated)'
+        type: string
+        default: ''
+      candidate_run_id:
+        description: 'Optional: id of a run in this repository whose artifact is laid over the release set'
+        type: string
+        default: ''
+      candidate_artifact:
+        description: 'Name of that run''s artifact'
+        type: string
+        default: ''
+      expect:
+        description: 'Versions the log must show instead of the release tag, as Name=version'
+        type: string
+        default: ''
+      expect_refused:
+        description: 'Plugins that must be refused on this build'
+        type: string
+        default: ''
+      remove_plugins:
+        description: 'Plugins taken out of the install but still expected'
+        type: string
+        default: ''
+    outputs:
+      verdict:
+        description: PASS or FAIL
+        value: ${{ jobs.rig.outputs.verdict }}
+      reason:
+        description: One sentence naming the first failures, or why the rig stopped
+        value: ${{ jobs.rig.outputs.reason }}
+      artifact:
+        description: Name of the artifact holding the scrubbed logs (empty if none was uploaded)
+        value: ${{ jobs.rig.outputs.artifact }}
+
+permissions: {}
+
+jobs:
+  rig:
+    name: Client rig
+    runs-on: windows-latest
+    timeout-minutes: 100
+    environment: steam-client
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: sr-client-rig
+      cancel-in-progress: false
+    outputs:
+      verdict: ${{ steps.final.outputs.verdict }}
+      reason: ${{ steps.final.outputs.reason }}
+      artifact: ${{ steps.final.outputs.artifact }}
+    env:
+      BRANCH: ${{ inputs.branch }}
+      TAGS: ${{ inputs.tags }}
+      EXPECT: ${{ inputs.expect }}
+      EXPECT_REFUSED: ${{ inputs.expect_refused }}
+      REMOVE_PLUGINS: ${{ inputs.remove_plugins }}
+      MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
+      DOWNLOAD_DIR: D:\rig-dl
+    steps:
+      # Without the login there is nothing to test: fail with that reason, never skip green.
+      - name: Check the Steam login secrets are set
+        id: gate
+        shell: pwsh
+        env:
+          HAS_LOGIN: ${{ secrets.STEAM_CI_LOGIN_CACHE != '' && secrets.STEAM_CI_USERNAME != '' }}
+        run: |
+          if ($env:HAS_LOGIN -ne 'true') {
+            $m = 'The Steam login is not configured: environment steam-client has no STEAM_CI_USERNAME or STEAM_CI_LOGIN_CACHE. Run steam-ci-login.ps1 once to set it up.'
+            Write-Host "::error title=Steam login::$m"
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-reason.txt') -Value $m -Encoding utf8
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Before any login, so a script bug costs a minute, not a run.
+      - name: Check the script helpers
+        shell: pwsh
+        run: ./ci/client-rig-launch.ps1 -Check
+
+      # A candidate is code that runs beside the live login: only a run of this repository
+      # whose head is in this repository (no fork) may supply it.
+      - name: Check the candidate run
+        if: inputs.candidate_run_id != '' || inputs.candidate_artifact != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.candidate_run_id }}
+          ARTIFACT: ${{ inputs.candidate_artifact }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Stop-Rig([string]$m) {
+            Write-Host "::error::$m"
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-reason.txt') -Value $m -Encoding utf8
+            exit 1
+          }
+          if (-not $env:RUN_ID -or -not $env:ARTIFACT) { Stop-Rig 'candidate_run_id and candidate_artifact go together' }
+          if ($env:RUN_ID -notmatch '^\d{1,15}$') { Stop-Rig 'candidate_run_id is not a run id' }
+          if ($env:ARTIFACT -notmatch '^[A-Za-z0-9._-]{1,100}$') { Stop-Rig 'candidate_artifact is not a plain artifact name' }
+          $run = gh api "repos/$env:REPO/actions/runs/$env:RUN_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $run) { Stop-Rig "run $env:RUN_ID is not a run of $env:REPO" }
+          $head = $run.head_repository
+          if (-not $head -or $head.full_name -ne $env:REPO -or $head.fork) { Stop-Rig "run $env:RUN_ID did not run code from $env:REPO itself (head repository: $(if ($head) { $head.full_name } else { 'none' })); a fork's build is refused" }
+          $arts = @((gh api "repos/$env:REPO/actions/runs/$env:RUN_ID/artifacts" --paginate | ConvertFrom-Json).artifacts | Where-Object { $_.name -ceq $env:ARTIFACT -and -not $_.expired })
+          if ($arts.Count -ne 1) { Stop-Rig "run $env:RUN_ID has no live artifact named $env:ARTIFACT" }
+          "Candidate: run $env:RUN_ID (head $($run.head_sha.Substring(0, 8)) on $($run.head_branch)), artifact $env:ARTIFACT"
+
+      - name: Download the candidate artifact
+        if: inputs.candidate_run_id != '' || inputs.candidate_artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.candidate_artifact }}
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+
+      # Validates every input and the candidate, resolves the releases, and fails here, not
+      # after a 16 GB install, on a bad one.
+      - name: Resolve the set
+        id: res
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $cand = if (Test-Path candidate) { 'candidate' } else { '' }
+          ./ci/client-rig-set.ps1 -Mode Resolve -Branch $env:BRANCH -Tags $env:TAGS -Expect $env:EXPECT `
+            -ExpectRefused $env:EXPECT_REFUSED -RemovePlugins $env:REMOVE_PLUGINS -Owner $env:MOD_OWNER -CandidateDir $cand
+
+      # Repeat runs download nothing: the owner reads the public download counts.
+      - name: Restore the release files
+        id: dlcache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DOWNLOAD_DIR }}
+          key: sr-client-rig-dl-${{ steps.res.outputs.key }}
+          restore-keys: sr-client-rig-dl-
+
+      - name: Download what the cache lacks
+        shell: pwsh
+        run: ./ci/client-rig-set.ps1 -Mode Fetch -DownloadDir $env:DOWNLOAD_DIR
+
+      - name: Save the release files
+        if: steps.dlcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.DOWNLOAD_DIR }}
+          key: sr-client-rig-dl-${{ steps.res.outputs.key }}
+
+      - name: Install the game client
+        id: dl
+        timeout-minutes: 40
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+        run: ./ci/client-rig-launch.ps1 -Phase Install -Branch $env:BRANCH
+
+      - name: Install the loader and plugins
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          $cand = if (Test-Path candidate) { 'candidate' } else { '' }
+          ./ci/client-rig-set.ps1 -Mode Install -DownloadDir $env:DOWNLOAD_DIR -InstallDir $env:INSTALL_DIR -OutDir out -CandidateDir $cand
+
+      - name: Launch the game client
+        id: launch
+        timeout-minutes: 45
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+        run: ./ci/client-rig-launch.ps1 -Phase Launch -Branch $env:BRANCH -InstallDir $env:INSTALL_DIR -OutDir out
+
+      # Right after the launch, ahead of the verdict, so a later failure cannot leave the
+      # login on the runner. Runs on a failed or cancelled run too.
+      - name: Remove Steam and the login from the runner
+        id: cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          Stop-Service 'Steam Client Service' -Force -ErrorAction SilentlyContinue
+          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(steam|gameoverlayui|StarRupture|UnrealCEF|CrashReport|WerFault)' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          $left = 0
+          foreach ($d in 'C:\steamcmd', (Join-Path ${env:ProgramFiles(x86)} 'Steam'), (Join-Path $env:LOCALAPPDATA 'Steam')) {
+            Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $d) { Write-Host "::error::$d could not be removed"; $left++ }
+          }
+          if ($left) { exit 1 }
+          'steamcmd, the Steam client and the login are removed from the runner.'
+
+      # Fails the step on a FAIL verdict; the job is failed by the last step, after the
+      # leak gate and the upload have run.
+      - name: Judge the launch
+        id: verdict
+        if: always() && steps.launch.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: ./ci/verdict.ps1 -OutDir out -Client
+
+      - name: Leak gate
+        id: leak
+        if: always() && steps.gate.outcome == 'success'
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+        run: |
+          $user = "$env:STEAM_USER".Trim()
+          if (-not $user) { Write-Host '::error::No account name to check against'; exit 1 }
+          # The name, every long value in the login, and the IDs and persona the launch met.
+          $terms = @($user)
+          $vdf = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("$env:STEAM_CACHE".Trim()))
+          foreach ($m in [regex]::Matches($vdf, '"[^"\r\n]*"[ \t]+"([^"\r\n]{16,})"')) { $terms += $m.Groups[1].Value }
+          $extra = Join-Path $env:RUNNER_TEMP 'rig-gate-terms.txt'
+          if (Test-Path -LiteralPath $extra) { $terms += @(Get-Content -LiteralPath $extra | Where-Object { $_ }); Remove-Item -LiteralPath $extra -Force }
+          $bad = 0
+          if (Test-Path out) {
+            foreach ($f in Get-ChildItem out -Recurse -File) {
+              $t = [IO.File]::ReadAllText($f.FullName)
+              $hit = $t -match '7656119\d{10}|\[U:1:\d+\]'
+              foreach ($term in $terms) { if ($t.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $hit = $true } }
+              if ($hit) {
+                Write-Host "::error::Account data found in $($f.Name)"
+                $bad++
+              }
+            }
+          }
+          if ($bad) { exit 1 }
+          'No account data in the output folder.'
+
+      - name: Upload the scrubbed logs
+        id: upload
+        if: always() && steps.leak.outcome == 'success' && hashFiles('out/*') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sr-client-rig-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/modloader.log
+            out/proxy.log
+            out/autoupdate.log
+            out/verdict.json
+            out/set.json
+            out/boot.json
+          retention-days: 3
+          if-no-files-found: warn
+
+      # The job's outputs, then the job's own result: a FAIL verdict, a leak or a runner that
+      # could not be cleaned all fail it, and the outputs say so.
+      - name: Outputs and result
+        id: final
+        if: always()
+        shell: pwsh
+        env:
+          LEAK: ${{ steps.leak.outcome }}
+          CLEANUP: ${{ steps.cleanup.outcome }}
+          UPLOAD: ${{ steps.upload.outcome }}
+          ARTIFACT_NAME: sr-client-rig-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          $verdict = 'FAIL'; $reason = ''
+          $vj = 'out/verdict.json'
+          $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'
+          if ($env:LEAK -eq 'failure') { $reason = 'The leak gate found account data in the output; nothing was uploaded.' }
+          elseif ($env:CLEANUP -eq 'failure') { $reason = 'The runner could not be cleaned of Steam and the login.' }
+          elseif (Test-Path -LiteralPath $vj) {
+            $j = Get-Content -LiteralPath $vj -Raw | ConvertFrom-Json
+            $verdict = $j.verdict; $reason = $j.reason
+          }
+          elseif (Test-Path -LiteralPath $why) { $reason = (Get-Content -LiteralPath $why -Raw).Trim() }
+          else { $reason = 'The rig stopped before the verdict ran; see the failed step.' }
+          $reason = ($reason -replace '\s+', ' ').Trim()
+          if ($reason.Length -gt 600) { $reason = $reason.Substring(0, 597) + '...' }
+          $artifact = if ($env:UPLOAD -eq 'success') { $env:ARTIFACT_NAME } else { '' }
+          "verdict=$verdict" >> $env:GITHUB_OUTPUT
+          "reason=$reason" >> $env:GITHUB_OUTPUT
+          "artifact=$artifact" >> $env:GITHUB_OUTPUT
+          "### Client rig: $verdict`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($verdict -ne 'PASS') { Write-Host "::error title=Client rig::$reason"; exit 1 }
