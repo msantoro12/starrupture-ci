@@ -271,6 +271,20 @@ function Get-Assets {
         if ($magic -ne $want) { Remove-Item -LiteralPath $file -Force; throw "$($d.name) is not a $want file" }
     }
     Write-Host "Release assets downloaded in this run: $fetched"
+
+    # The cache may come back from a restore key, holding other tags' files. Install reads
+    # only the paths above, so they are harmless there, but they would be saved again under
+    # the new key and pile up. Keep exactly this set.
+    $keep = @($plan.downloads | ForEach-Object { ([IO.Path]::GetFullPath((Get-AssetPath $_))).ToLowerInvariant() })
+    $pruned = 0
+    if (Test-Path -LiteralPath $DownloadDir) {
+        foreach ($f in Get-ChildItem -LiteralPath $DownloadDir -Recurse -File -Force) {
+            if ($f.FullName.ToLowerInvariant() -notin $keep) { Remove-Item -LiteralPath $f.FullName -Force; $pruned++ }
+        }
+        Get-ChildItem -LiteralPath $DownloadDir -Recurse -Directory -Force | Sort-Object { $_.FullName.Length } -Descending |
+            Where-Object { -not (Get-ChildItem -LiteralPath $_.FullName -Force) } | Remove-Item -Force
+    }
+    Write-Host "Files from other releases removed from the cache folder: $pruned"
 }
 
 function Install-Set {
