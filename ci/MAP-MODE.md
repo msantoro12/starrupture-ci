@@ -77,15 +77,41 @@ The client rig is a required gate on the unattended path (owner: version updates
 verified and deployed with the GitHub rig). After `candidate-loader`, the jobs `rig-branch`
 and `rig-other` call `sr-client-rig.yml` with the candidate (`candidate_run_id` = this run,
 `candidate_artifact` and `expect` from `candidate-loader`), the default plugin set (the
-Latest releases of ten plugins, MiniMap included) and both Steam secrets by name. They run
+Latest releases of the nine plugins of msantoro12 and AlienXAXS, and the reviewed release of
+MiniMap) and both Steam secrets by name. They run
 one after the other, `rig-other` after `rig-branch` whatever its result, because the rig's
 concurrency group keeps one pending run. `rig-branch` runs on the Steam branch the check is
 for and gets `map-mode`'s `expect_refused`; `rig-other` runs on the other branch and gets
-none, so any refusal there is a fail: that branch's current build must keep working with the
-same DLLs. `rig-gate` writes both verdicts, reasons and logs artifacts into the run summary
+`expect_refused_other`: exactly the refusals the loader's own rule predicts for that
+branch's current build, so any refusal the rule does not predict is a fail (that branch's
+current build must keep working with the same DLLs). `rig-gate` writes both verdicts,
+reasons and logs artifacts into the run summary
 and is red unless both passed. `publish` needs both rig jobs at verdict `PASS`; the promote
 step above is only a plan. With the autopilot off, publish is held and the rigs still run.
 Details: `.github/sr-pipeline/README.md`, "Client test rig".
+
+Policy (owner), in plain words:
+
+- The client rig is a required gate on the unattended path: the CI's own candidate loader,
+  both Steam branches, the same DLLs. A rig fail blocks publish and raises the alert.
+- Graphics are not a gate. The rig runs `-nullrhi` to the main menu: no rendering, overlay,
+  DX11 or in-world checks. Graphical problems get small fixes after a release.
+- Autopilot off means build everything, publish nothing. When it is switched on again the
+  pipeline publishes on its own once every gate passes. It stays off until the owner has
+  approved the first full run.
+- The rig runs only candidates built in this repository from our own branches.
+- Expected refusals on the other branch: `expect_refused_other` is `decision.json`'s
+  `expectRefusedOther`, which `decide.mjs` computes from `--other-cl N` (the CL the other
+  branch's Steam build id has in the candidate map's build rows; the watcher passes the id
+  as `other_buildid`, a dispatched check reads it from `state/steam.json`). Unknown CL:
+  nothing is declared, so a refusal there is a loud fail. A plugin of interface v72 or later
+  that is not built here has no known migration flag and is not predicted.
+- Plugins of other authors are pinned. A rig plugin whose owner is neither msantoro12 nor
+  AlienXAXS (MiniMap) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`;
+  a digest mismatch on the pinned tag fails the rig. A newer release does not change the run:
+  the rig keeps the pinned one and the alert job adds "new <plugin> release <tag> waiting for
+  review", which blocks nothing.
+- No player-facing text mentions the test branch.
 
 ## Step 27: `map-mode.mjs write`
 
@@ -352,6 +378,13 @@ when there are none, written whenever decide ran (held or not). It is the client
 `expect_refused` input as `client-rig-set.ps1` reads it (`Read-Names`: tokens of
 `[A-Za-z0-9_.-]`). For CL-129402 on `public_test_branch` it is `MiniMap`; on `public`
 (CL-127004) it is empty.
+
+With `--other-cl N` (the CL the other Steam branch runs) decide also writes `otherCl` and
+`expectRefusedOther`: the plugins the loader rule refuses on CL-N, from the same plugin
+metadata. Only the loader rule counts there: the scanner's REFUSED verdict and a probe note
+are about the scanned CL, not another build. The map-mode job exposes it as
+`expect_refused_other`, the `expect_refused` input of `rig-other`. Without `--other-cl`
+the field is absent and the other rig expects no refusal.
 
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
 same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,
