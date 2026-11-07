@@ -145,7 +145,7 @@ It reports:
   in the code);
 - a `native` key with built values whose row on `kBuiltCL` disagrees with them.
 
-A `field` key needs rows only where it moved or was renamed: reflection gives its
+A `field` key needs rows only where it moved or was renamed (a class-key row, a struct's size, is also written on every build for each size a component requests): reflection gives its
 offset live on any build.
 
 ## Format

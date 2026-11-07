@@ -312,7 +312,7 @@ The gate is per plugin, over what that plugin requests. `--uses` is the client c
 `layout-uses.txt`: per component, its keys (`key`), the members its code requests
 (`request`: `SR_FIELD`, its two-argument wrappers, a hand-written `"Class::Member"`), the
 members it looks up by name on first use (`lazy`, a `PluginLazyField`) and the classes it
-depends on the whole size of (`size <Class> check|compiled`) or reads live (`size <Class> live`). The plugin tables are built
+depends on the whole size of (`size <Class> check|compiled|live`) or reads live (`size <Class> live`). The plugin tables are built
 with `layout-table.mjs gen --granularity 2 --uses-out`, so a struct lists only the members
 a plugin uses or requests, as a UClass already did.
 
@@ -330,7 +330,7 @@ a plugin uses or requests, as a UClass already did.
   that uses the compiled size with no check (`sizeof`, a `TArray` of it by value, a copy)
   holds the update: the loader cannot see the change, so that code misreads it, and
   nothing in the feed turns one plugin off. The fix is `SR_SIZE_CHECK` in that plugin.
-  The class-key row for the new size is written either way (see above).
+  A refused class writes no header, so no class-key row ships with it.
   Without `--uses`, every class is taken to be used by its compiled size.
 - A class that is gone degrades every plugin with a key in it.
 - A row that is not verified never ships: a native key the report has no entry for, or

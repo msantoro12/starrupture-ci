@@ -57,7 +57,7 @@ A plugin in `plugins` is built on a Windows runner: the repository root has exac
 
 Both sources run on the runner that held the Steam login, so the same trust applies as to the scanner (`scanner_ref`): only the owners above.
 
-An optional second list, `ci/native-keys.txt`, names game members a plugin reads at a fixed offset (`<plugin name> Class::Member [file-suffix:regex]`). They are compared with the PDB layout of the checked build and the public one (see "Check the fixed offsets" in the table above); a mismatch fails the plugin as `OFFSETS`.
+An optional second list, `ci/native-keys.txt`, names game members a plugin reads at a fixed offset (`<plugin name> Class::Member [file-suffix:regex]`; `<plugin name> ClassName [size] [optional]` names an unreflected struct whose size is written as a class-key row). They are compared with the PDB layout of the checked build and the public one (see "Check the fixed offsets" in the table above); a mismatch fails the plugin as `OFFSETS`.
 
 ### What CI checks on each game build
 

@@ -239,13 +239,13 @@ export function planFieldRows(keys, next, base, cl, uses = null) {
       if (diff) {
         for (const m of [...diff.moved, ...diff.changed]) {
           if (REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: PDB size is the register's; no row`); covered.add(classOf(m.key)); continue; }
-          if (!m.key.includes('::')) { resized(m); continue; }
+          if (isClassKey(m.key)) { resized(m); continue; }
           if (!Number.isInteger(m.next.offset)) { problems.push(`${m.key}: the new report gives no offset`); continue; }
           rows.push(rowOf(m.key, cl, m.next));
           covered.add(classOf(m.key));
         }
         for (const m of diff.missing) {
-          if (m.key.includes('::')) { gone(m.key, 'field', 'resolves on the reference build only (removed or renamed)'); continue; }
+          if (!isClassKey(m.key)) { gone(m.key, 'field', 'resolves on the reference build only (removed or renamed)'); continue; }
           // A class that is gone: its member keys get their absent rows above;
           // every plugin with a key in it loses what it reads from it.
           const owners = ownersOf(m.key);

@@ -1496,7 +1496,7 @@ jobs:
           foreach ($line in Get-Content 'ci-tool\ci\native-keys.txt') {
             if ($line -match '^\s*(#|$)') { continue }
             # `<plugin> <Class::Member> ...`, or `<plugin> <Class> [size] [optional]`: the struct's own size.
-            if ($line -notmatch '^(\S+)\s+(\S+::\S+)(\s+\S.*)?$' -and $line -notmatch '^(\S+)\s+([A-Za-z_]\w*)(\s+size)?(\s+optional)?$') { throw "native-keys.txt: malformed line '$line'" }
+            if ($line -cnotmatch '^(\S+)\s+(\S+::\S+)(\s+\S.*)?$' -and $line -cnotmatch '^(\S+)\s+([A-Za-z_]\w*)(\s+size)?(\s+optional)?$') { throw "native-keys.txt: malformed line '$line'" }
             if (-not $native.ContainsKey($Matches[1])) { $native[$Matches[1]] = [Collections.Generic.List[string]]::new() }
             if (-not $native[$Matches[1]].Contains($Matches[2])) { $native[$Matches[1]].Add($Matches[2]) }
           }

@@ -2,7 +2,8 @@
 # no name for them (Dumper-7 folds them into Pad_* bytes: not reflected).
 # sr-client-check reads each one from the PDB of every build it checks,
 # beside the plugin's used classes. Format: <plugin name> <Class::Member>,
-# the key naming the member the plugin's source comment already names.
+# the key naming the member the plugin's source comment already names, or
+# <plugin name> <ClassName> for an unreflected struct's size (see below).
 BetterCheats UCrGameInstance::ServerSessionName
 BetterCheats UCrEnviroWaveTimerSubsystem::NextWaveTimer
 BetterCheats UCrEnviroWaveTimerSubsystem::bWaitingForNextWave
