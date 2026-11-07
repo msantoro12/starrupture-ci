@@ -616,6 +616,71 @@ test('test autopilot: a disabled autopilot still holds, and wouldBe names the pa
   assert.equal(bad.wouldBe, 'HOLD');
 });
 
+// ------------------------------------------------------------ candidate (the unattended chain)
+
+const apOff = ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 });
+const holdsOnlyForAutopilot = (r) => {
+  holds(r, /autopilot is disabled/);
+  assert.equal(r.wouldBe, 'M', 'every other check reached M, so only the autopilot holds');
+  assert.equal(r.candidate, true);
+  assert.equal(r.test, undefined, 'a candidate is not a dispatched test run');
+  assert.equal(r.path, 'M');
+  assert.deepEqual(r.reasons, ['autopilot is disabled (enabled is not true)']);
+};
+
+test('candidate: a disabled autopilot holds publishing only, and says so', () => {
+  holdsOnlyForAutopilot(decide(base({ autopilot: apOff, candidate: true })));
+  // Without the flag the same inputs say nothing of a path: the chain stops.
+  const plain = decide(base({ autopilot: apOff }));
+  holds(plain, /autopilot is disabled/);
+  assert.equal(plain.wouldBe, undefined);
+  assert.equal(plain.candidate, undefined);
+});
+
+test('candidate: an enabled autopilot decides as always, and the result is still not a test run', () => {
+  const r = decide(base({ candidate: true }));
+  assert.equal(r.decision, 'M');
+  assert.equal(r.ship, true);
+  assert.equal(r.test, undefined);
+});
+
+test('candidate: every other HOLD reason still blocks the candidate (wouldBe is not M)', () => {
+  const g = (over) => decide(base({ autopilot: apOff, candidate: true, ...over }));
+  const blocked = (r, re) => {
+    holds(r, re);
+    assert.equal(r.wouldBe, 'HOLD', 'the candidate does not continue');
+    assert.match(r.reasons.join(' | '), /autopilot is disabled/, 'the autopilot reason is still listed');
+  };
+  blocked(g({ g1: ok({ ok: false }) }), /G1 compile/);
+  blocked(g({ g2: ok({ ok: false }) }), /G2 interface/);
+  blocked(g({ g3: ok({ ok: true, cl: '127004', previousCl: '127004' }) }), /G3/);
+  blocked(g({ g4: ok(aob([aobRow('GetWorld')], { noGlobals: true })) }), /SDK global offsets not resolved/);
+  blocked(g({ g5: ok(layout('UFoo')) }), /path C held/);
+  blocked(g({ plugins: ok({ status: 'fail', plugins: [{ name: 'WAILA', verdict: 'MYSTERY' }] }) }), /not verified/);
+  blocked(g({ history: ok({ releases: [{ repo: 'ModLoader', cl: '127999', at: ago(60 * 30) }], attempts: {} }) }), /already released for CL-127999/);
+  blocked(g({ fields: ok({ written: false, cl: 127999, added: 0, absent: [], covered: [], notes: [], problems: ['field UFoo::Core: gone'] }) }), /field rows/);
+  blocked(g({ autopilot: ok({ schema: 1, enabled: false, paths: ['B'], max_releases_per_day: 2 }) }), /path M is not enabled in autopilot\.paths/);
+});
+
+test('candidate: an unreadable or malformed autopilot file is never excused', () => {
+  for (const autopilot of [{ ok: false, error: 'cannot read' }, ok({ schema: 1, enabled: 'no', paths: ['M'], max_releases_per_day: 2 }), ok({ schema: 1, enabled: false, paths: ['X'], max_releases_per_day: 2 })]) {
+    const r = decide(base({ autopilot, candidate: true }));
+    assert.equal(r.decision, 'HOLD');
+    assert.equal(r.wouldBe, 'HOLD');
+  }
+});
+
+test('cli: --candidate with a disabled autopilot exits 1 (HOLD) and names the M it would take', () => {
+  const r = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 } }), ['--candidate']);
+  assert.equal(r.status, 1);
+  assert.equal(r.out.decision, 'HOLD');
+  assert.equal(r.out.wouldBe, 'M');
+  assert.equal(r.out.candidate, true);
+  assert.equal(r.out.ship, false);
+  const hold = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 }, g2: { ok: false } }), ['--candidate']);
+  assert.equal(hold.out.wouldBe, 'HOLD');
+});
+
 test('HOLD: plugin verdicts missing, malformed or with a status that disagrees', () => {
   const b = base();
   delete b.plugins;

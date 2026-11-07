@@ -144,9 +144,11 @@ jobs:
     # sees it only when it is passed here by name (this job cannot set an
     # environment; the called check job reads the value from steam-client).
     # Unpassed, it would read as empty and the check could not log in. The
-    # TEST key signs the map-mode chain's dry-run feed. The fork deploy keys
-    # and the release key are not passed, and neither is publish: no feed is
-    # published and nothing is pushed to a fork from here.
+    # TEST key signs the map-mode chain's dry-run feed. The loader fork's
+    # deploy key is passed too (the push-loader job pushes auto/update-<CL>
+    # with it, in environment fork-push). The plugin fork deploy keys and the
+    # release key are not passed, and neither is publish: no feed is published
+    # from here.
     # These permissions are a ceiling, not a grant: GitHub checks every called
     # job against them when it parses the call, before any if. Each called job
     # sets its own, and only publish (vmap-sign environment, main only, publish
@@ -165,3 +167,4 @@ jobs:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
       VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+      SR_DEPLOYKEY_MODLOADER: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}

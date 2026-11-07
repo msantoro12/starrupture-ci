@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -99,7 +99,8 @@ test('publish lock: a test run never reaches the release key, whatever state/aut
   // The chain states explicitly whether it is a test: the dispatch input, its own flag or the decision.
   assert.match(mm, /\n {6}test: \$\{\{ steps\.chain\.outputs\.test \}\}\n/);
   assert.match(mm, /TEST_INPUT: \$\{\{ inputs\.test_autopilot == true \}\}/);
-  assert.ok(mm.includes(`is_test="$(node -p "String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || JSON.parse(require('fs').readFileSync('decision.json','utf8')).test === true)")"\n          echo "test=$is_test" >> "$GITHUB_OUTPUT"`));
+  // A held candidate (decision not M) counts as a test as far as publishing goes.
+  assert.ok(mm.includes(`is_test="$(node -p "const d = JSON.parse(require('fs').readFileSync('decision.json','utf8')); String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || d.test === true || (d.candidate === true && d.decision !== 'M'))")"\n          echo "test=$is_test" >> "$GITHUB_OUTPUT"`));
   const pub = job('publish');
   assert.match(pub, /needs\.map-mode\.outputs\.test == 'false'/, 'the job needs an explicit non-test run');
   // A second lock in the job: the input and the chain's own marks, before anything is signed.
@@ -236,4 +237,80 @@ test('map step: plugins that report another name than their repo (Waila, AxRuptu
   const scans = JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans;
   const tracked = Object.fromEntries(scans.map((s) => [s.owner, s.tracked]));
   assert.deepEqual(tracked, { ModLoader: true, AxRuptureTimer: true, BetterCheats: true, MiniMap: true, Waila: true });
+});
+
+// ------------------------------------------------------------ candidate chain and the loader push
+
+const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
+// The run block of a named step, as the shell receives it.
+const runOf = (j, name) => {
+  const at = j.indexOf(`- name: ${name}\n`);
+  assert.ok(at >= 0, `step "${name}" exists`);
+  const next = j.indexOf('\n      - ', at + 1);
+  const stepText = j.slice(at, next < 0 ? undefined : next);
+  const m = stepText.match(/\n {8}run: \|\n((?: {10}.*\n?|\n)+)/);
+  assert.ok(m, `step "${name}" has a run block`);
+  return m[1].replace(/^ {10}/gm, '');
+};
+// Git's bash on Windows (never the WSL launcher in System32), plain bash elsewhere.
+const bash = process.platform === 'win32' ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'].find(existsSync) : 'bash';
+
+test('candidate: a disabled autopilot holds publishing only; the chain still exports, signs, stages and plans', () => {
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}CANDIDATE: \$\{\{ inputs\.map_mode == true && inputs\.publish != true && inputs\.test_autopilot != true \}\}\n/);
+  assert.ok(mm.includes('[ "$CANDIDATE" = true ] && test_flag=(--candidate)'));
+  // The chain runs on past a HOLD that only the autopilot caused, and stops on any other.
+  assert.ok(mm.includes('elif [ "$CANDIDATE" = true ] && [ "$decision" = HOLD ] && [ "$would" = M ]; then'));
+  assert.ok(mm.includes('elif [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi'));
+  assert.ok(mm.indexOf('elif [ "$CANDIDATE" = true ]') < mm.indexOf('version-map.mjs export-feed'), 'the candidate check comes before the export');
+  // The held plan is a test plan: marked, and never publishable.
+  assert.ok(mm.includes('promote_flag=(--test-autopilot)'));
+  assert.ok(mm.includes('--out promote-plan.json "${promote_flag[@]}"'));
+  // Publish stays out of reach while the decision is HOLD, and a candidate never runs with publish on.
+  const pub = job('publish');
+  assert.match(pub, /needs\.map-mode\.outputs\.decision == 'M'/);
+  assert.match(pub, /needs\.map-mode\.outputs\.test == 'false'/);
+  assert.match(pub, /inputs\.publish == true/);
+  assert.ok(!/CANDIDATE|candidate/.test(pub.replace(/^ *#.*$/gm, '')), 'the publish job knows nothing of the candidate path');
+  assert.ok(!/\n {6}publish:/.test(watch.slice(watch.indexOf('  client-check:\n'))), 'sr-watch never passes publish');
+});
+
+test('push-loader: the key, the environment and the target are named, and the allowlist runs before the key is used', () => {
+  const j = job('push-loader');
+  assert.match(j, /\n {4}environment: fork-push\n/);
+  assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.match(j, /\n {4}needs: \[map-mode\]\n/);
+  assert.match(j, /needs\.map-mode\.result == 'success' && needs\.map-mode\.outputs\.staged == 'true' &&inputs\.test_autopilot != true && inputs\.loader_repo == 'msantoro12\/StarRupture-ModLoader'/);
+  assert.match(j, /\n {4}outputs:\n {6}branch: \$\{\{ steps\.push\.outputs\.branch \}\}\n {6}sha: \$\{\{ steps\.push\.outputs\.sha \}\}\n/);
+  assert.ok(!/continue-on-error/.test(j), 'no step of the push job may fail quietly');
+  // The key is read by name, in two steps only, and no other secret is touched.
+  assert.equal(j.match(/secrets\.[A-Z_]+/g).join(' '), 'secrets.SR_DEPLOYKEY_MODLOADER secrets.SR_DEPLOYKEY_MODLOADER');
+  // The key check comes first, before anything is fetched.
+  assert.ok(j.indexOf('- name: Check the deploy key') < j.indexOf('- name: Check out the push tool'));
+  // Pushes go through staging.mjs push: no git push, tag or force in the workflow.
+  assert.ok(!/git (-C \S+ )?push|--force|--tags|refs\/tags/.test(j));
+  assert.ok(j.includes('node tool/ci/staging.mjs target --repo "$LOADER_REPO" --plan chain/stage-plan.json'));
+  assert.ok(j.indexOf('staging.mjs target') < j.indexOf('- name: Commit the header and push the branch'), 'the allowlist runs before the key is written');
+  assert.match(j, /repository: msantoro12\/StarRupture-ModLoader\n\s+ref: \$\{\{ steps\.base\.outputs\.sha \}\}/, 'the checkout is the fork at the commit the rows were read from, not a moving ref');
+  // The map-mode job tells the push job when there is something to push.
+  assert.match(job('map-mode'), /\n {6}staged: \$\{\{ steps\.chain\.outputs\.staged \}\}\n/);
+  assert.ok(job('map-mode').includes('echo "staged=true" >> "$GITHUB_OUTPUT"'));
+  // The secret is declared by the called workflow (not required: the job explains its absence) and passed by name by sr-watch.
+  assert.match(call, /\n {6}SR_DEPLOYKEY_MODLOADER:\n {8}description: [^\n]+\n {8}required: false\n/);
+  assert.ok(watch.includes('      SR_DEPLOYKEY_MODLOADER: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}\n'));
+});
+
+test('push-loader: with the secret empty the first step exits 1 and names the secret and the environment', { skip: !bash }, () => {
+  const script = runOf(job('push-loader'), 'Check the deploy key');
+  for (const key of [undefined, '']) {
+    const env = { ...process.env, GITHUB_REPOSITORY: 'msantoro12/starrupture-ci' };
+    if (key === undefined) delete env.DEPLOY_KEY; else env.DEPLOY_KEY = key;
+    const r = spawnSync(bash, ['-c', script], { encoding: 'utf8', env, windowsHide: true });
+    assert.equal(r.status, 1, `exit code for ${JSON.stringify(key)}: ${r.stderr}`);
+    assert.match(r.stdout, /::error title=Loader deploy key missing::/);
+    assert.match(r.stdout, /SR_DEPLOYKEY_MODLOADER/);
+    assert.match(r.stdout, /environment fork-push of msantoro12\/starrupture-ci/);
+  }
+  const ok = spawnSync(bash, ['-c', script], { encoding: 'utf8', env: { ...process.env, DEPLOY_KEY: 'x' }, windowsHide: true });
+  assert.equal(ok.status, 0, 'a set key passes the check');
 });

@@ -11,7 +11,7 @@
 // means do not ship.
 //
 // Decision table (the first row that applies wins):
-//   autopilot unreadable, malformed or enabled != true  -> HOLD
+//   autopilot unreadable, malformed or enabled != true  -> HOLD (see --candidate and --test-autopilot below)
 //   a gate result missing, unreadable, malformed, or reporting an error -> HOLD
 //   G1 compile or G2 interface not ok                    -> HOLD
 //   a plugin that is unverified or the loader would refuse -> that plugin is held alone, the rest proceed
@@ -26,6 +26,15 @@
 //   an SDK global moved (rva != sdkRva) on a path but M  -> HOLD (on M it is a note)
 //   chosen path not in autopilot.paths                   -> HOLD
 //   rate limit hit (section 8 of the design)             -> HOLD
+//
+// --candidate (the unattended map-mode chain, which never publishes): a disabled
+// autopilot holds PUBLISHING only. The decision is still HOLD with the reason
+// "autopilot is disabled (enabled is not true)", and `wouldBe` names the path every
+// other check reached, so the caller can tell "only the autopilot holds" (wouldBe M)
+// from a real hold (wouldBe HOLD). The caller then builds the candidate (feed, stage,
+// push) but nothing of it is publishable: the decision is not M. An unreadable or
+// malformed autopilot file, and every other HOLD reason, hold as always.
+// --test-autopilot is the same for a dispatched test run and also marks the result `test`.
 //
 // Gate result shapes:
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
@@ -344,8 +353,9 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
 }
 
 // inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, plugins, fields?, history }, each a loadJson()
-// result, and testAutopilot (a dispatched test run: the decision is still HOLD while autopilot is disabled,
-// and `wouldBe` says what it would be with autopilot on).
+// result, testAutopilot (a dispatched test run: the decision is still HOLD while autopilot is disabled,
+// and `wouldBe` says what it would be with autopilot on) and candidate (the unattended chain: the same,
+// without the `test` mark).
 export function decide(inputs) {
   const reasons = [];
   const notes = [];
@@ -358,8 +368,9 @@ export function decide(inputs) {
       reasons, notes, plugins: perPlugin,
       pluginsOk: perPlugin.length > 0 && perPlugin.every((p) => p.status === 'updated' || p.heldAlone === true),
     };
-    if (inputs.testAutopilot) {
-      r.test = true;
+    if (inputs.testAutopilot || inputs.candidate) {
+      if (inputs.testAutopilot) r.test = true;
+      else r.candidate = true;
       r.wouldBe = decision;
       if (disabled) {
         r.decision = 'HOLD';
@@ -375,7 +386,7 @@ export function decide(inputs) {
 
   const ap = checkAutopilot(inputs.autopilot);
   if (ap.error) fail(ap.error);
-  else if (!ap.enabled && inputs.testAutopilot) disabled = true;
+  else if (!ap.enabled && (inputs.testAutopilot || inputs.candidate)) disabled = true;
   else if (!ap.enabled) fail('autopilot is disabled (enabled is not true)');
 
   const g1 = checkSimpleGate('G1 compile', inputs.g1);
@@ -467,17 +478,18 @@ function main() {
   let args;
   try {
     const argv = process.argv.slice(2);
-    args = parseArgs(argv.filter((a) => a !== '--test-autopilot'));
+    args = parseArgs(argv.filter((a) => a !== '--test-autopilot' && a !== '--candidate'));
     args.testAutopilot = argv.includes('--test-autopilot');
+    args.candidate = argv.includes('--candidate');
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--test-autopilot]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--test-autopilot | --candidate]`);
     process.exit(2);
   }
   let result;
   try {
     const now = args.now === undefined ? Date.now() : Date.parse(args.now);
     result = decide({
-      repo: args.repo, now, testAutopilot: args.testAutopilot,
+      repo: args.repo, now, testAutopilot: args.testAutopilot, candidate: args.candidate,
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
       g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),
