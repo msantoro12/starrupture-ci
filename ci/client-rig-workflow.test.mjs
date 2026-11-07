@@ -266,7 +266,7 @@ test('persona: read from what Steam wrote, and a run that cannot tell holds back
   assert.match(launch, /rig-hold\.txt/);
   assert.match(launch, /Add-Secret \$n -Gate/);
   // The gate refuses to pass on a hold, the upload needs the gate, the last step says why.
-  assert.match(step('Leak gate'), /\n {8}run: \.\/ci\/leak-gate\.ps1 -Path out -AllowMissing$/);
+  assert.match(step('Leak gate'), /\.\/ci\/leak-gate\.ps1 -Path out -AllowMissing\n\s+exit \$LASTEXITCODE$/);
   assert.match(leakGate, /\$hold = Join-Path \$env:RUNNER_TEMP 'rig-hold\.txt'\nif \(Test-Path -LiteralPath \$hold\) \{[^\n]*exit 1 \}/);
   assert.ok(leakGate.indexOf('rig-hold.txt') < leakGate.indexOf('$user ='), 'checked before anything else');
   assert.match(steps[indexOfStep('upload')], /if: always\(\) && steps\.leak\.outcome == 'success'/);
@@ -327,7 +327,7 @@ test('order: verdict before upload, leak gate before upload, upload only when th
   assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:'))), 'named files, no wildcard');
   // The gate scans what would be uploaded, for the account name, the login values and the IDs.
   const gate = step('Leak gate');
-  assert.match(gate, /\n {8}run: \.\/ci\/leak-gate\.ps1 -Path out -AllowMissing$/);
+  assert.match(gate, /\.\/ci\/leak-gate\.ps1 -Path out -AllowMissing\n\s+exit \$LASTEXITCODE$/);
   assert.match(leakGate, /Get-ChildItem -LiteralPath \$Path -Recurse -File/);
   assert.match(leakGate, /7656119\\d\{10\}\|\\\[U:1:\\d\+\\\]/);
   assert.match(leakGate, /rig-gate-terms\.txt/);

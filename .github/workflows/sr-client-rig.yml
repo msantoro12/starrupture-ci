@@ -289,7 +289,10 @@ jobs:
         env:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
-        run: ./ci/leak-gate.ps1 -Path out -AllowMissing
+        run: |
+          if (-not (Test-Path ./ci/leak-gate.ps1)) { 'The sources were not checked out, so nothing was run.'; exit 0 }
+          ./ci/leak-gate.ps1 -Path out -AllowMissing
+          exit $LASTEXITCODE
 
       - name: Upload the scrubbed logs
         id: upload

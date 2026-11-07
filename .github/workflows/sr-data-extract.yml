@@ -10,7 +10,8 @@ name: SR data extract
 #   Call it from another workflow in this repository with `uses:`, from main only (the job
 #   runs in environment steam-client, which serves main). Or dispatch it by hand.
 #   inputs
-#     branch         Steam branch to install (letters, digits, underscore)
+#     branch         Steam branch to install (letters, digits, underscore, hyphen; the launch
+#                    script itself accepts letters, digits and underscore)
 #     buildid        the Steam build id that branch must be on; the job fails if Steam
 #                    installs another one, so the usmap and the extract are for the build asked for
 #     extractor_ref  commit sha (40 hex) of GoodStuffSoftware/star-rupture-planner whose
@@ -25,7 +26,9 @@ name: SR data extract
 #   secrets (pass both by name; an unpassed environment secret reads as empty)
 #     STEAM_CI_USERNAME, STEAM_CI_LOGIN_CACHE
 #   outputs
-#     artifact_name  sr-data-<buildid>, or empty if nothing was uploaded
+#     artifact_name  sr-data-<branch>-<buildid>, or empty if nothing was uploaded. The branch
+#                    is in the name because a build promoted from the test branch to public
+#                    keeps its build id: a consumer dedupes on branch + buildid.
 #     status         ok | login-failed | usmap-failed | extract-failed.
 #                    login-failed: Steam did not accept the saved CI login (rejected,
 #                    rate-limited, Guard code asked, client never signed in): the login needs
@@ -36,8 +39,10 @@ name: SR data extract
 #                    before the game started for another reason (install, build id mismatch,
 #                    Steam client start); the job result is failure. The job fails unless the
 #                    status is ok; the outputs are still set.
-#   artifact sr-data-<buildid>, kept 30 days
-#     pipeline.json   buildid, branch, extractor_ref, Dumper-7 commit, status
+#   artifact sr-data-<branch>-<buildid>, kept 30 days
+#     pipeline.json   buildid, branch, run id and attempt, workflow ref and sha (of the run's
+#                     top-level workflow), extractor_ref, Dumper-7 commit, status
+#                     (the extractor's own manifest.json is its output and is not touched)
 #     usmap/<name>.usmap
 #     extract/        the extractor's output: manifest.json, the raw JSON, localization/, icons/*.png
 #   Nothing else goes in: no log, no game file, nothing from the Steam login (the leak gate checks).
@@ -61,15 +66,18 @@ name: SR data extract
 # It is trusted because the build job proves that extractor_ref is an ancestor of (or equal to)
 # planner main, with the GitHub compare API (repos/GoodStuffSoftware/star-rupture-planner/
 # compare/<sha>...main, status ahead or identical; anything else, and any API error, fails),
-# so only code that went through the planner's review and merge runs here. A commit that
-# exists only on a branch or in a fork is refused. A build-only run (a pull request, a
-# dispatch) skips that check: it holds no secret, so compiling any sha there is safe.
+# so only code that someone with write access pushed to planner main runs here. A commit that
+# exists only on a branch or in a fork is refused. That is as strong as the planner's main
+# branch protection: today main is unprotected (no ruleset, no required review), so the check
+# keeps out forks and unmerged branches, not a bad push to main. A build-only run (a pull
+# request, a dispatch) skips the check: it holds no secret, so compiling any sha there is safe.
 #
 # WHY NOT A SEPARATE, SECRET-FREE EXTRACTOR JOB. Considered and not adopted: it would have to
 # carry the game's pakchunk0-Windows.ucas (45.5 GB), .utoc (15 MB) and .pak (277 MB) and
 # global.utoc/.ucas (4 MB) through a run artifact. This is a public repository, so that artifact
 # would be a download of the game's files for any signed-in GitHub user while it lives (the
-# shortest retention is 1 day). GitHub documents no per-artifact size limit, but a 45.5 GB
+# shortest retention is 1 day; the tools artifact here keeps 3 days so a re-run of only the
+# failed extract job can still find it). GitHub documents no per-artifact size limit, but a 45.5 GB
 # upload and download has not been tried here, and it would add two transfers of that size
 # to a job of 25 to 40 minutes. The reachability check bounds the risk at its source instead.
 #
@@ -140,7 +148,7 @@ on:
         required: true
     outputs:
       artifact_name:
-        description: 'sr-data-<buildid>, or empty if nothing was uploaded'
+        description: 'sr-data-<branch>-<buildid>, or empty if nothing was uploaded'
         value: ${{ jobs.extract.outputs.artifact_name }}
       status:
         description: 'ok, login-failed, usmap-failed or extract-failed; empty if the job failed before the game started'
@@ -180,7 +188,10 @@ jobs:
       BRANCH: ${{ inputs.branch }}
       BUILDID: ${{ inputs.buildid }}
       BUILD_ONLY: ${{ inputs.build_only || github.event_name == 'pull_request' }}
-      TOOLS_ARTIFACT: sr-data-tools-${{ github.run_id }}
+      # The run id is the top-level run's, so a caller that starts this workflow once per branch
+      # needs the branch and build in the name; no attempt number, so a re-run of only the
+      # failed extract job still finds it.
+      TOOLS_ARTIFACT: sr-data-tools-${{ github.run_id }}-${{ inputs.branch }}-${{ inputs.buildid }}
     steps:
       - name: Check the inputs
         id: pins
@@ -188,7 +199,7 @@ jobs:
         run: |
           if ($env:EXTRACTOR_REF -notmatch '^[0-9a-f]{40}$') { throw 'extractor_ref is required and must be a full commit sha (40 hex characters)' }
           if ($env:BUILD_ONLY -ne 'true') {
-            if ($env:BRANCH -notmatch '^[A-Za-z0-9_]{1,64}$') { throw 'branch must be letters, digits and underscore' }
+            if ($env:BRANCH -notmatch '^[A-Za-z0-9_-]{1,64}$') { throw 'branch must be letters, digits, underscore and hyphen' }
             if ($env:BUILDID -notmatch '^[0-9]{1,12}$') { throw 'buildid must be digits' }
           }
           # The extract job reads these three from here, so no value is written twice.
@@ -196,8 +207,8 @@ jobs:
           "extractor_ref=$env:EXTRACTOR_REF" >> $env:GITHUB_OUTPUT
           "dumper7_commit=$env:DUMPER7_COMMIT" >> $env:GITHUB_OUTPUT
 
-      # The extractor runs in the job that holds the Steam login, so it must be reviewed code:
-      # a commit on planner main. compare/<sha>...main reports main relative to the sha:
+      # The extractor runs in the job that holds the Steam login, so it must be code that is on
+      # planner main (see TRUST in the header for how far that trust goes). compare/<sha>...main reports main relative to the sha:
       # "identical" (the sha is main) or "ahead" (main has moved on past it) mean the sha is in
       # main's history. "behind" (the sha is past main, e.g. an unmerged branch), "diverged" (a
       # fork or branch commit) and a 404 (unknown sha) all stop the run, and so does any API error.
@@ -294,7 +305,7 @@ jobs:
         with:
           name: ${{ env.TOOLS_ARTIFACT }}
           path: stage-tools
-          retention-days: 1
+          retention-days: 3
           overwrite: true
           if-no-files-found: error
 
@@ -346,6 +357,15 @@ jobs:
         with:
           name: ${{ env.TOOLS_ARTIFACT }}
           path: tools
+
+      # The binaries are the ones the build job built for this call (the artifact name carries
+      # the run id, branch and build; this also catches a mix-up of two builds).
+      - name: Check the built tools
+        shell: pwsh
+        run: |
+          $t = Get-Content -LiteralPath tools/tools.json -Raw | ConvertFrom-Json
+          if ($t.extractor_ref -ne $env:EXTRACTOR_REF -or $t.dumper7_commit -ne $env:DUMPER7_COMMIT) { throw 'the downloaded tools were not built from this call''s extractor_ref and Dumper-7 pin' }
+          foreach ($f in 'tools/dumper/Dumper-7.dll', 'tools/extractor/GameExtract.exe') { if (-not (Test-Path -LiteralPath $f)) { throw "$f is missing from the downloaded tools" } }
 
       # Before any login, so a script bug costs a minute, not a run.
       - name: Check the script helpers
@@ -437,7 +457,7 @@ jobs:
           New-Item -ItemType Directory -Force stage/usmap | Out-Null
           Copy-Item -LiteralPath $env:USMAP -Destination stage/usmap/
           if (Test-Path extract-out) { Copy-Item -LiteralPath extract-out -Destination stage/extract -Recurse }
-          [ordered]@{ buildid = $env:BUILDID; branch = $env:BRANCH; extractor_ref = $env:EXTRACTOR_REF; dumper7_commit = $env:DUMPER7_COMMIT; status = $status } |
+          [ordered]@{ buildid = $env:BUILDID; branch = $env:BRANCH; run_id = $env:GITHUB_RUN_ID; run_attempt = $env:GITHUB_RUN_ATTEMPT; workflow_ref = $env:GITHUB_WORKFLOW_REF; workflow_sha = $env:GITHUB_WORKFLOW_SHA; extractor_ref = $env:EXTRACTOR_REF; dumper7_commit = $env:DUMPER7_COMMIT; status = $status } |
             ConvertTo-Json | Set-Content stage/pipeline.json -Encoding utf8
           "status=$status" >> $env:GITHUB_OUTPUT
 
@@ -456,9 +476,10 @@ jobs:
         if: always() && steps.leak.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sr-data-${{ env.BUILDID }}
+          name: sr-data-${{ env.BRANCH }}-${{ env.BUILDID }}
           path: stage
           retention-days: 30
+          overwrite: true
           if-no-files-found: error
 
       - name: Outputs and result
@@ -484,7 +505,7 @@ jobs:
           } elseif ($started) {
             $status = if ($env:USMAP_OK -ne 'true') { 'usmap-failed' } elseif ($env:UPLOAD -ne 'success') { 'extract-failed' } else { $env:STAGE_STATUS }
           }
-          $artifact = if ($env:UPLOAD -eq 'success') { "sr-data-$env:BUILDID" } else { '' }
+          $artifact = if ($env:UPLOAD -eq 'success') { "sr-data-$env:BRANCH-$env:BUILDID" } else { '' }
           "status=$status" >> $env:GITHUB_OUTPUT
           "artifact_name=$artifact" >> $env:GITHUB_OUTPUT
           $why = Join-Path $env:RUNNER_TEMP 'rig-reason.txt'

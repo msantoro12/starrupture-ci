@@ -167,8 +167,10 @@ test('the workflow is honest about the secrets: trust comes from the reachabilit
 // ---- S2: a re-run of only the failed extract job ------------------------------------------------
 
 test('the tools artifact is named by the run id alone and handed on as a build output', () => {
-  assert.ok(!/run_attempt/.test(extract), 'no attempt number in any name');
-  assert.match(buildJob, /TOOLS_ARTIFACT: sr-data-tools-\$\{\{ github\.run_id \}\}\n/);
+  assert.ok(!/github\.run_attempt/.test(extract), 'no attempt number in any name');
+  // The run id is the top-level run's: the name also carries the call's branch and build.
+  assert.match(buildJob, /TOOLS_ARTIFACT: sr-data-tools-\$\{\{ github\.run_id \}\}-\$\{\{ inputs\.branch \}\}-\$\{\{ inputs\.buildid \}\}\n/);
+  assert.match(stepOf(extractJob, 'Check the built tools'), /tools\.json/);
   assert.match(buildJob, /tools_artifact: \$\{\{ steps\.pins\.outputs\.tools_artifact \}\}/);
   assert.match(extractJob, /TOOLS_ARTIFACT: \$\{\{ needs\.build\.outputs\.tools_artifact \}\}/);
   assert.match(extractJob, /EXTRACTOR_REF: \$\{\{ needs\.build\.outputs\.extractor_ref \}\}/);
@@ -185,6 +187,9 @@ test('login failures leave a marker in the launch script and surface as login-fa
   for (const m of ['Steam rejected the saved CI login', 'Steam asked for a Guard code', 'The Steam client did not sign in', 'Steam rate-limited the CI login']) {
     assert.match(launch, new RegExp(`Stop-WithLogin [^\\n]*${m}`), `${m} is a login failure`);
   }
+  // Both sign-in sites of the Install phase (steamcmd) and the three of the Launch phase use the marker.
+  assert.equal(launch.match(/Stop-WithLogin '|Stop-WithLogin "/g).length, 5);
+  assert.ok(!/throw '[^']*(saved CI login|Guard code|rate-limited the CI login)/.test(launch), 'no login failure is a plain throw');
   assert.match(extract, /ok \| login-failed \| usmap-failed \| extract-failed/);
   assert.match(extract, /ok, login-failed, usmap-failed or extract-failed/);
 });
@@ -252,4 +257,26 @@ test('the rig and the data extract call the same cleanup and leak-gate scripts',
   const pr = header.slice(header.indexOf('pull_request:'), header.indexOf('workflow_dispatch:'));
   assert.match(pr, /- ci\/steam-cleanup\.ps1/);
   assert.match(pr, /- ci\/leak-gate\.ps1/);
+});
+
+// ---- the artifact is named by branch and build -------------------------------------------------
+
+test('the artifact is sr-<branch>-<buildid>, the branch is validated first, and pipeline.json records the run', () => {
+  assert.match(extractJob, /name: sr-data-\$\{\{ env\.BRANCH \}\}-\$\{\{ env\.BUILDID \}\}\n/);
+  assert.match(extractJob, /"sr-data-\$env:BRANCH-\$env:BUILDID"/);
+  assert.ok(!/sr-data-\$\{\{ env\.BUILDID \}\}|sr-data-\$env:BUILDID/.test(extract), 'no name without the branch');
+  assert.match(stepOf(extractJob, 'Upload the usmap and the extract'), /overwrite: true/, 'a re-run of the failed job may upload again');
+  // The branch is checked in the build job (which the extract job needs) before it is used in a name.
+  assert.match(stepOf(buildJob, 'Check the inputs'), /\$env:BRANCH -notmatch '\^\[A-Za-z0-9_-\]\{1,64\}\$'/);
+  const stage = stepOf(extractJob, 'Assemble the artifact');
+  for (const k of ['buildid', 'branch', 'run_id', 'run_attempt', 'workflow_ref', 'workflow_sha', 'extractor_ref', 'dumper7_commit', 'status']) {
+    assert.match(stage, new RegExp(`${k} = `), `pipeline.json records ${k}`);
+  }
+  assert.match(stage, /run_id = \$env:GITHUB_RUN_ID/);
+  assert.match(stage, /workflow_ref = \$env:GITHUB_WORKFLOW_REF/);
+});
+
+test('the comments do not call planner main reviewed', () => {
+  assert.ok(!/reviewed code|review and merge/i.test(extract));
+  assert.match(extract, /main\n# branch protection: today main is unprotected/);
 });
