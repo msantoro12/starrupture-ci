@@ -6,7 +6,8 @@ name: SR client rig
 #
 # Dispatch it by hand, or call it from another workflow in this repository with `uses:`.
 # The job runs in environment `steam-client`, which serves branch main only, so a caller
-# must be on main. There is no schedule and no pull_request trigger. Details and a caller
+# must be on main, and it must pass STEAM_CI_USERNAME and STEAM_CI_LOGIN_CACHE by name: a
+# called job sees an environment secret only when its caller passes it. There is no schedule and no pull_request trigger. Details and a caller
 # example: .github/sr-pipeline/README.md ("Client test rig").
 # The Steam login is live while candidate code runs: run only candidates built from our own
 # branches (msantoro12 and AlienXAXS repos), never a fork PR or anything built from issue text.
@@ -89,6 +90,15 @@ on:
       artifact:
         description: Name of the artifact holding the scrubbed logs (empty if none was uploaded)
         value: ${{ jobs.rig.outputs.artifact }}
+    # Environment secrets of steam-client. Unpassed, they read as empty with no error;
+    # required, a caller that leaves them out fails at the call.
+    secrets:
+      STEAM_CI_USERNAME:
+        description: 'Steam CI account name (environment steam-client); pass it by name'
+        required: true
+      STEAM_CI_LOGIN_CACHE:
+        description: 'Saved steamcmd login cache (environment steam-client); pass it by name'
+        required: true
 
 permissions: {}
 
@@ -123,9 +133,14 @@ jobs:
         shell: pwsh
         env:
           HAS_LOGIN: ${{ secrets.STEAM_CI_LOGIN_CACHE != '' && secrets.STEAM_CI_USERNAME != '' }}
+          CALLED: ${{ !contains(github.workflow_ref, '/.github/workflows/sr-client-rig.yml@') }}
         run: |
           if ($env:HAS_LOGIN -ne 'true') {
-            $m = 'The Steam login is not configured: environment steam-client has no STEAM_CI_USERNAME or STEAM_CI_LOGIN_CACHE. Run steam-ci-login.ps1 once to set it up.'
+            $m = if ($env:CALLED -eq 'true') {
+              'The Steam login secrets reached the called rig empty: the calling job must pass STEAM_CI_USERNAME and STEAM_CI_LOGIN_CACHE by name under secrets:, and environment steam-client must hold them.'
+            } else {
+              'The Steam login is not configured: environment steam-client has no STEAM_CI_USERNAME or STEAM_CI_LOGIN_CACHE. Run steam-ci-login.ps1 once to set it up.'
+            }
             Write-Host "::error title=Steam login::$m"
             Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-reason.txt') -Value $m -Encoding utf8
             exit 1

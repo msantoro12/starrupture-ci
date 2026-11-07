@@ -405,7 +405,9 @@ no plugin code, no game file.
    reads the live feed's seq again right before signing, signs the exported feed with the
    release key k2 above it, verifies it without the TEST key, and uploads it with the
    history to the `vmap-feed` release. `sr-watch.yml` does not pass `publish`, and passes
-   only `VMAP_SIGN_KEY_TEST` (no `secrets: inherit`). Its `client-check` job grants
+   only the Steam login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, by name, so the called
+   `check` job reads them from `steam-client`) and `VMAP_SIGN_KEY_TEST` (no `secrets: inherit`,
+   no release key, no deploy key). Its `client-check` job grants
    `contents: write` as a ceiling: GitHub checks every called job against the caller's
    permissions when it parses the call, so `publish` could not be called otherwise; each
    called job still sets its own, and only `publish` asks for write.

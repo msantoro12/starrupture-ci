@@ -97,7 +97,8 @@ jobs:
             exit 0
           fi
           if [ -n "$number" ] && [ "$branch" = "$want" ] && [ "$FORCE" != "true" ]; then
-            # Same build already proposed: do not re-alert or rebuild.
+            # Same build already proposed: do not re-alert or rebuild. A failed
+            # check is run again by a dispatch with force (see the README).
             echo "Update PR #$number already covers this build."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -139,11 +140,13 @@ jobs:
       max-parallel: 1    # one Steam login on the CI account at a time
       matrix:
         include: ${{ fromJSON(needs.poll.outputs.client_matrix) }}
-    # The Steam login, the fork deploy keys and the release key are environment
-    # secrets, read only by the one called job in that environment. The only
-    # secret passed is the TEST key the map-mode chain signs its dry-run feed
-    # with. publish is not passed, so it stays off: no feed is published from
-    # here.
+    # The Steam login is an environment secret of steam-client. A called job
+    # sees it only when it is passed here by name (this job cannot set an
+    # environment; the called check job reads the value from steam-client).
+    # Unpassed, it would read as empty and the check could not log in. The
+    # TEST key signs the map-mode chain's dry-run feed. The fork deploy keys
+    # and the release key are not passed, and neither is publish: no feed is
+    # published and nothing is pushed to a fork from here.
     # These permissions are a ceiling, not a grant: GitHub checks every called
     # job against them when it parses the call, before any if. Each called job
     # sets its own, and only publish (vmap-sign environment, main only, publish
@@ -159,4 +162,6 @@ jobs:
       pr: ${{ needs.poll.outputs.pr }}
       map_mode: true
     secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
       VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
