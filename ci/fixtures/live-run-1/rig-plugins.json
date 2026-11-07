@@ -1,0 +1,146 @@
+{
+  "branch": "public_test_branch",
+  "tags": "BetterCheats=v0.23.0 BetterDrone=v0.23.0 CameraControls=v0.2.0 Codex=v1.0.0 Compass=v0.21.0 MiniMap=v1.2.0 ProductionViewer=v0.17.0 RuptureTimer=v0.11.0 WAILA=v0.20.0 WaveOptimiser=v0.13.0",
+  "plugins": [
+    {
+      "name": "BetterCheats",
+      "tag": "v0.23.0",
+      "plugin": {
+        "file": "BetterCheats-Client.dll",
+        "name": "BetterCheats",
+        "version": "v0.23.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "BetterDrone",
+      "tag": "v0.23.0",
+      "plugin": {
+        "file": "BetterDrone-Client.dll",
+        "name": "BetterDrone",
+        "version": "v0.23.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "CameraControls",
+      "tag": "v0.2.0",
+      "plugin": {
+        "file": "CameraControls-Client.dll",
+        "name": "CameraControls",
+        "version": "v0.2.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "Codex",
+      "tag": "v1.0.0",
+      "plugin": {
+        "file": "Codex-Client.dll",
+        "name": "Codex",
+        "version": "v1.0.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "Compass",
+      "tag": "v0.21.0",
+      "plugin": {
+        "file": "Compass_Plugin-Client.dll",
+        "name": "Compass",
+        "version": "v0.21.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "MiniMap",
+      "tag": "v1.2.0",
+      "plugin": {
+        "file": "MiniMap-Client.dll",
+        "name": "MiniMap",
+        "version": "1.2.0",
+        "interfaceVersion": 70,
+        "gameBuild": "CL-127004 (none declared)",
+        "hasLoadHooks": true
+      },
+      "verdict": "FAIL",
+      "note": "Needs an update to run on CL-129402: it was built for plugin interface v70, before the version map, so it would read this game's data where CL-127004 had it. It loads on CL-127004.; second run, scan cache warm: 31/31 rows the same"
+    },
+    {
+      "name": "ProductionViewer",
+      "tag": "v0.17.0",
+      "plugin": {
+        "file": "ProductionViewer-Client.dll",
+        "name": "ProductionViewer",
+        "version": "v0.17.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "RuptureTimer",
+      "tag": "v0.11.0",
+      "plugin": {
+        "file": "RuptureTimer-Client.dll",
+        "name": "AxRuptureTimer",
+        "version": "v0.11.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "WAILA",
+      "tag": "v0.20.0",
+      "plugin": {
+        "file": "Waila-Client.dll",
+        "name": "Waila",
+        "version": "v0.20.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    },
+    {
+      "name": "WaveOptimiser",
+      "tag": "v0.13.0",
+      "plugin": {
+        "file": "WaveOptimiser-Client.dll",
+        "name": "WaveOptimiser",
+        "version": "v0.13.0",
+        "interfaceVersion": 75,
+        "gameBuild": "CL-127004",
+        "hasLoadHooks": true
+      },
+      "verdict": "REFUSED",
+      "note": "interface 75 is outside the loader's [70, 74], so the loader does not load it"
+    }
+  ]
+}

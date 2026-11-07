@@ -904,11 +904,13 @@ test('other branch: the same CL on both branches gives the same list as the chec
   assert.deepEqual(refused.expectRefusedOther, ['WAILA']);
 });
 
-test('other branch: only the loader rule predicts a refusal; what is specific to the scanned build predicts none', () => {
-  // The scanner's REFUSED verdict and a probe note are about the scanned CL (129402), not another build.
+test('other branch: the loader rule and the interface range predict a refusal; a probe note about the scanned build predicts none', () => {
+  // A probe note is about the scanned CL (129402), not another build.
   const noted = v('Noted', 74, 'CL-129402', { note: "Needs an update to run on CL-129402: it does not declare PLUGIN_MAP_MIGRATED, so it would read this game's data where CL-127004 had it." });
-  const refused = { name: 'Refused', verdict: 'REFUSED', plugin: { interfaceVersion: 74, gameBuild: 'CL-129402' } };
-  assert.deepEqual(expectedRefusals([noted, refused], 128000), []);
+  // REFUSED is the interface outside the candidate loader's range: both rigs run that loader, so it holds on any CL.
+  const refused = { name: 'Refused', verdict: 'REFUSED', plugin: { interfaceVersion: 75, gameBuild: 'CL-129402' } };
+  assert.deepEqual(expectedRefusals([noted, refused], 128000), ['Refused']);
+  assert.deepEqual(expectedRefusals([refused], 0), [], 'no CL, no prediction');
   assert.deepEqual(expectedRefusals([noted], 129402), ['Noted'], 'its own CL: the loader note says so');
   // A v72+ plugin of unknown migrated flag, off its build: not predicted, so a refusal there stays unexpected.
   assert.deepEqual(expectedRefusals([v('Unknown', 74, 'CL-127004')], 129402), []);
@@ -995,11 +997,11 @@ test('rig plugins: a DLL whose facts could not be read is not declared, the othe
   assert.match(r.notes.join(' '), /rig plugins: no facts for Broken, NoBlock; no refusal is declared for them, so a refusal fails the rig/);
 });
 
-test('rig plugins: the scanner\'s REFUSED verdict counts on the scanned build only', () => {
+test('rig plugins: the scanner\'s REFUSED verdict (interface outside the candidate loader\'s range) counts on both branches', () => {
   const rows = [{ name: 'Far', verdict: 'REFUSED', plugin: { interfaceVersion: 99, gameBuild: 'CL-129402' } }];
   const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), rigPlugins: rigOf(rows), otherCl: 127004 }));
   assert.deepEqual(r.expectRefused, ['Far']);
-  assert.deepEqual(r.expectRefusedOther, []);
+  assert.deepEqual(r.expectRefusedOther, ['Far']);
 });
 
 test('cli: --rig-plugins feeds the lists, and a missing or broken file declares nothing', () => {
@@ -1015,4 +1017,32 @@ test('cli: --rig-plugins feeds the lists, and a missing or broken file declares 
   writeFileSync(broken, '{ not json');
   assert.deepEqual(runCli(files, ['--rig-plugins', broken]).out.expectRefused, []);
   assert.deepEqual(runCli(files).out.expectRefused, [], 'no flag: no file given');
+});
+
+// ------------------------------------------------------------ live run 1 (run 42393906454, CL-129402, test branch)
+// The real rig-plugins.json of that run: AlienX's Latest releases are interface v75, made on CL-127004, and the
+// candidate loader (gss/loader-work) accepts [70, 74], so the scanner gave REFUSED for nine of them; MiniMap v1.2.0
+// is v70, refused off CL-127004 by the loader's own rule.
+const liveRig = JSON.parse(readFileSync(join(here, 'fixtures', 'live-run-1', 'rig-plugins.json'), 'utf8').replace(/^\uFEFF/, ''));
+const NINE = ['BetterCheats', 'BetterDrone', 'CameraControls', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WAILA', 'WaveOptimiser'];
+
+test('live run 1: the facts are read as the scanner gave them, and all ten are refused on CL-129402', () => {
+  for (const p of liveRig.plugins.filter((x) => NINE.includes(x.name))) {
+    assert.equal(p.plugin.interfaceVersion, 75, p.name);
+    assert.equal(p.plugin.gameBuild, 'CL-127004', p.name);
+    assert.equal(p.verdict, 'REFUSED', p.name);
+    assert.match(p.note, /^interface 75 is outside the loader's \[70, 74\]/, p.name);
+  }
+  const mini = liveRig.plugins.find((x) => x.name === 'MiniMap');
+  assert.equal(mini.plugin.interfaceVersion, 70);
+  assert.equal(loaderRefusal(mini, 129402), "plugin interface v70, needs its author's update");
+  assert.deepEqual(expectedRefusals(liveRig.plugins, 129402), [...NINE, 'MiniMap'].sort());
+});
+
+test('live run 1: the other branch (public, CL-127004) expects the nine the candidate loader refuses by interface, not MiniMap', () => {
+  // Before the fix the list was empty: rig-other would have failed on nine refusals nobody declared.
+  assert.deepEqual(expectedRefusals(liveRig.plugins, 127004), NINE);
+  const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), otherCl: 127004, rigPlugins: ok(liveRig) }));
+  assert.deepEqual(r.expectRefused, [...NINE, 'MiniMap'].sort());
+  assert.deepEqual(r.expectRefusedOther, NINE);
 });

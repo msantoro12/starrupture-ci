@@ -10,7 +10,8 @@ name: SR Steam watch
 # "handled" and advances the baseline on main.
 #
 # Only writes: the first baseline commit to main, and game-update/* branches,
-# plus the alert issue the client check opens when a run fails or holds, and the
+# plus the alert issue the client check (or the alert job, for the rest of the
+# chain) opens when a run fails or holds, and the
 # same issue for a game-update PR that stays open six hours without passing the chain.
 # No tags, no releases.
 
@@ -231,6 +232,7 @@ jobs:
       pull-requests: write
       issues: write    # the alert job of the called workflow
       actions: read    # the client rig, called by the called workflow
+      checks: read     # the alert job reads the failed jobs' annotations
     uses: ./.github/workflows/sr-client-check.yml
     with:
       branch: ${{ matrix.branch }}
@@ -252,3 +254,49 @@ jobs:
       SR_DEPLOYKEY_RUPTURETIMER: ${{ secrets.SR_DEPLOYKEY_RUPTURETIMER }}
       SR_DEPLOYKEY_WAVEOPTIMISER: ${{ secrets.SR_DEPLOYKEY_WAVEOPTIMISER }}
       SR_DEPLOYKEY_CAMERACONTROLS: ${{ secrets.SR_DEPLOYKEY_CAMERACONTROLS }}
+
+  # ---- Alert: a failed job of this chain outside the client check ----
+  # The client check alerts on its own jobs. This covers the rest of the chain: the
+  # poll and the compile check (sr-build-all.yml, called as build-all). The cause
+  # lines and the issue come from the same script as the client check's alert
+  # (ci/pipeline-alert.mjs), so the failure reaches each changed client branch's
+  # issue ("SR map mode: <branch> needs attention", label pipeline-alert, assigned
+  # to the owner), or one chain issue when no client branch changed.
+  alert:
+    name: alert
+    needs: [poll, build]
+    if: ${{ always() && (needs.poll.result == 'failure' || needs.build.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read    # the failed steps and logs of this run's jobs
+      checks: read     # their failure annotations (the first error line)
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      OWNER: msantoro12
+      RUN_ID: ${{ github.run_id }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      MATRIX: ${{ needs.poll.outputs.client_matrix }}
+    steps:
+      - name: Check out the alert script
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Open or update the issue
+        run: |
+          set -euo pipefail
+          node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl || true
+          node ci/pipeline-alert.mjs outside --causes failed-jobs.jsonl --owner "$OWNER" --run-url "$RUN_URL" --out alert.md
+          [ -s alert.md ] || exit 0
+          branches="$(node -e 'let b = []; try { b = JSON.parse(process.env.MATRIX).map((x) => x.branch); } catch {} console.log(b.filter((x) => /^[A-Za-z0-9_]+$/.test(x)).join(" "))')"
+          if [ -z "$branches" ]; then
+            node ci/pipeline-alert.mjs raise --title "SR watch: the update chain needs attention" --body-file alert.md --owner "$OWNER"
+          fi
+          for b in $branches; do
+            node ci/pipeline-alert.mjs raise --title "SR map mode: $b needs attention" --body-file alert.md --owner "$OWNER"
+          done

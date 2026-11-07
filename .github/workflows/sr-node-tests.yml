@@ -6,10 +6,10 @@ name: SR node tests
 
 on:
   pull_request:
-    paths: ['ci/**', 'state/autopilot.json', '.github/workflows/sr-node-tests.yml']
+    paths: ['ci/**', 'state/autopilot.json', '.github/workflows/**', '.github/actions/**']
   push:
     branches: [main]
-    paths: ['ci/**', 'state/autopilot.json', '.github/workflows/sr-node-tests.yml']
+    paths: ['ci/**', 'state/autopilot.json', '.github/workflows/**', '.github/actions/**']
   workflow_dispatch:
 
 permissions:
@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: lts/*
       - name: Run the tests
-        run: node --test ci/decide.test.mjs ci/apply-proposals.test.mjs ci/version-map.test.mjs ci/map-mode.test.mjs ci/field-rows.test.mjs ci/tail-check.test.mjs ci/poll-steam.test.mjs ci/staging.test.mjs ci/promote.test.mjs ci/vmap-sign.test.mjs ci/vmap-watchdog.test.mjs ci/client-check-workflow.test.mjs ci/client-rig-workflow.test.mjs ci/called-login.test.mjs ci/build-all-workflow.test.mjs
+        run: node --test ci/decide.test.mjs ci/apply-proposals.test.mjs ci/version-map.test.mjs ci/map-mode.test.mjs ci/field-rows.test.mjs ci/tail-check.test.mjs ci/poll-steam.test.mjs ci/staging.test.mjs ci/promote.test.mjs ci/vmap-sign.test.mjs ci/vmap-watchdog.test.mjs ci/client-check-workflow.test.mjs ci/client-rig-workflow.test.mjs ci/called-login.test.mjs ci/build-all-workflow.test.mjs ci/pipeline-alert.test.mjs ci/workflow-shells.test.mjs
       - name: Test the verdict script
         shell: pwsh
         run: ./ci/test-verdict.ps1

@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addBuild, emit, emptyMap } from './version-map.mjs';
+import { firstLogError } from './pipeline-alert.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -131,11 +132,14 @@ test('alert: a failed job or a HOLD other than "nothing new" opens or updates on
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
   assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
   assert.ok(a.includes('result === "failure"'));
-  assert.ok(a.includes('gh issue create --title "$TITLE" --body-file alert.md --label pipeline-alert --assignee "$OWNER"'));
-  assert.ok(a.includes('gh issue comment "$number" --body-file alert.md'));
+  assert.ok(a.includes('node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"'));
+  assert.ok(a.includes('node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl'));
+  // The failure annotations hold the first error line as soon as the step emits it.
+  assert.match(a, /\n\s+checks: read\s/);
+  assert.ok(a.indexOf('Check out the alert script') < a.indexOf('Read why the jobs failed'));
   // The caller's ceiling must grant issues: write, or GitHub rejects the call.
   const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
-  assert.match(watch.slice(watch.indexOf('  client-check:\n')), /permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+issues: write/);
+  assert.match(watch.slice(watch.indexOf('  client-check:\n')), /permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+issues: write.*\n\s+actions: read.*\n\s+checks: read/);
 });
 
 test('build label: the map-mode step labels a build "steam_build <build id>" and never names the branch', () => {
@@ -756,8 +760,8 @@ const alertRun = ({ env = {}, result, decision, jobs = [], logs = {}, noChain = 
   if (result) files['res/result.json'] = result;
   if (decision) files['chain/decision.json'] = decision;
   else if (!noChain) files['chain/map-mode-report.json'] = {};
-  if (jobs.length) files['failed-jobs.jsonl'] = jobs.map((j) => JSON.stringify(j)).join('\n') + '\n';
-  for (const [id, text] of Object.entries(logs)) files[`logs/${id}.txt`] = text;
+  // ci/pipeline-alert.mjs causes writes each failed job with its first error line, read here from the log given.
+  if (jobs.length) files['failed-jobs.jsonl'] = jobs.map((j) => JSON.stringify(logs[j.id] === undefined ? j : { ...j, error: firstLogError(logs[j.id]) })).join('\n') + '\n';
   const script = runOf(job('alert'), 'Work out what needs attention');
   const r = runBash(script, { cwd: dir, env: { ...ALERT_ENV, ...env, GITHUB_OUTPUT: join(dir, 'out.txt') }, files });
   const read = (n) => (existsSync(join(dir, n)) ? readFileSync(join(dir, n), 'utf8') : null);
@@ -891,9 +895,18 @@ test('alert (leg C1): a missing or failed push, a failed candidate build or test
   assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { RIG_GATE_RESULT: 'failure' } }).md, /- \*\*client rig gate\*\* failed/);
 });
 
-test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the owner on create; a re-alert comments on the open issue', { skip: !bash }, () => {
+// The issue steps run ci/pipeline-alert.mjs, which calls gh itself: only where node finds the fake gh first
+// (not on Windows, where node cannot run the fake's shebang and would reach the real gh).
+const withAlertScript = (dir) => {
+  mkdirSync(join(dir, 'ci'), { recursive: true });
+  for (const f of ['pipeline-alert.mjs', 'layout-diff.mjs']) cpSync(join(here, f), join(dir, 'ci', f));
+  return dir;
+};
+const fakeGhReachable = !!bash && process.platform !== 'win32';
+
+test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the owner on create; a re-alert comments on the open issue', { skip: !fakeGhReachable }, () => {
   const script = runOf(job('alert'), 'Open or update the issue');
-  const dir = mkdtempSync(join(tmpdir(), 'alert-issue-'));
+  const dir = withAlertScript(mkdtempSync(join(tmpdir(), 'alert-issue-')));
   const created = runBash(script, { cwd: dir, env: ALERT_ENV, files: { 'alert.md': 'x' } });
   assert.equal(created.status, 0, created.stderr);
   const c = calls(dir);
@@ -901,7 +914,7 @@ test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the o
   assert.ok(c.includes('issue create --title SR map mode: public_test_branch needs attention --body-file alert.md --label pipeline-alert --assignee msantoro12'), c.join('\n'));
   assert.ok(!c.some((l) => l.startsWith('issue comment')));
   // An open issue for the branch: comment on that one, and make sure it is labelled and assigned.
-  const dir2 = mkdtempSync(join(tmpdir(), 'alert-issue-'));
+  const dir2 = withAlertScript(mkdtempSync(join(tmpdir(), 'alert-issue-')));
   const again = runBash(script, { cwd: dir2, env: ALERT_ENV, files: { 'alert.md': 'x', 'issue-number.txt': '27\n' } });
   assert.equal(again.status, 0, again.stderr);
   const c2 = calls(dir2);

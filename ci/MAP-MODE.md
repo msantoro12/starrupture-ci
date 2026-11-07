@@ -589,8 +589,8 @@ the issue "SR map mode: <branch> needs attention", labelled `pipeline-alert`, as
 `msantoro12` and mentioning him. Its lines, each with its cause:
 
 - a failed job (build-scanner, plugin-plan, check, map mode, publish the feed): the cause
-  is the check's `result.json` reason, else the failed step and the first `##[error]` line
-  of its log (jobs API); a map mode that never uploaded its artifact says so;
+  is the check's `result.json` reason, else the failed step and its first error line, from
+  the job's failure annotations or else its log (jobs API; `ci/pipeline-alert.mjs`); a map mode that never uploaded its artifact says so;
 - a client check that did not run: `result.json` status `skipped` or `no-login`, with the
   reason it recorded;
 - a map-mode HOLD, with the decide reasons, except "nothing new" (G3) and the autopilot switch
