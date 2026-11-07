@@ -1,0 +1,70 @@
+﻿2026-11-07T17:19:41.5583538Z Current runner version: '2.338.2'
+2026-11-07T17:19:41.5608119Z ##[group]Runner Image Provisioner
+2026-11-07T17:19:41.5609090Z Hosted Compute Agent
+2026-11-07T17:19:41.5609870Z Version: 20261028.624
+2026-11-07T17:19:41.5610496Z Commit: 54898b74c23fde5556c9b3c3a2290865feef0dfe
+2026-11-07T17:19:41.5611300Z Build Date: 2026-10-28T21:51:42Z
+2026-11-07T17:19:41.5612029Z Worker ID: {cc6000a0-79b7-4278-9f6a-7735818095c5}
+2026-11-07T17:19:41.5612767Z Region: westus2
+2026-11-07T17:19:41.5613326Z Cloud: Azure
+2026-11-07T17:19:41.5613852Z ##[endgroup]
+2026-11-07T17:19:41.5615384Z ##[group]Operating System
+2026-11-07T17:19:41.5616062Z Ubuntu
+2026-11-07T17:19:41.5616709Z 26.04.1
+2026-11-07T17:19:41.5617229Z LTS
+2026-11-07T17:19:41.5617726Z ##[endgroup]
+2026-11-07T17:19:41.5618703Z ##[group]Runner Image
+2026-11-07T17:19:41.5619665Z Image: ubuntu-26.04
+2026-11-07T17:19:41.5620354Z Version: 20261101.186.1
+2026-11-07T17:19:41.5621723Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261101.186/images/ubuntu/Ubuntu2604-Readme.md
+2026-11-07T17:19:41.5623350Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu26%2F20261101.186
+2026-11-07T17:19:41.5624313Z ##[endgroup]
+2026-11-07T17:19:41.5625498Z ##[group]GITHUB_TOKEN Permissions
+2026-11-07T17:19:41.5627799Z Contents: read
+2026-11-07T17:19:41.5628400Z Metadata: read
+2026-11-07T17:19:41.5629137Z ##[endgroup]
+2026-11-07T17:19:41.5631713Z Secret source: Actions
+2026-11-07T17:19:41.5632804Z Cache mode: write
+2026-11-07T17:19:41.5633908Z Prepare workflow directory
+2026-11-07T17:19:41.6171252Z Prepare all required actions
+2026-11-07T17:19:41.6219367Z Getting action download info
+2026-11-07T17:19:41.9424237Z Download action repository 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' (SHA:3d3c42e5aac5ba805825da76410c181273ba90b1)
+2026-11-07T17:19:42.0772136Z Download action repository 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333' (SHA:9000827ccba6bdab643e8b6fd33ac0654aef8333)
+2026-11-07T17:19:42.4246060Z Uses: msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main (7b355d4fe231beab643d0af792968760b5fd1048)
+2026-11-07T17:19:42.4251497Z ##[group] Inputs
+2026-11-07T17:19:42.4252098Z   branch: public_test_branch
+2026-11-07T17:19:42.4252667Z   buildid: 26461198
+2026-11-07T17:19:42.4253171Z   other_buildid: 25646882
+2026-11-07T17:19:42.4253694Z   pr: 38
+2026-11-07T17:19:42.4254212Z   loader_repo: msantoro12/StarRupture-ModLoader
+2026-11-07T17:19:42.4254890Z   loader_ref: gss/loader-work
+2026-11-07T17:19:42.4255450Z   scanner_ref: ci/aobscan
+2026-11-07T17:19:42.4259802Z   plugins: msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work LetMeInside/StarRupture-Plugin-MiniMap@latest-release
+2026-11-07T17:19:42.4264173Z   plugin_sdk_repo: msantoro12/StarRupture-Plugin-SDK
+2026-11-07T17:19:42.4264874Z   plugin_sdk_ref: gss/sdk-work
+2026-11-07T17:19:42.4265490Z   game_sdk_repo: AlienXAXS/StarRupture-Game-SDK
+2026-11-07T17:19:42.4266136Z   game_sdk_ref: main
+2026-11-07T17:19:42.4266643Z   plugin_exclude: 
+2026-11-07T17:19:42.4267149Z   apply_confidence: high
+2026-11-07T17:19:42.4268102Z   map_mode: true
+2026-11-07T17:19:42.4268612Z   publish: false
+2026-11-07T17:19:42.4269081Z   force: false
+2026-11-07T17:19:42.4269691Z ##[endgroup]
+2026-11-07T17:19:42.4270488Z Complete job name: client-check (public_test_branch) / push the map rows to the loader fork
+2026-11-07T17:19:42.5017845Z ##[group]Run if [ -z "$DEPLOY_KEY" ]; then
+2026-11-07T17:19:42.5018674Z [36;1mif [ -z "$DEPLOY_KEY" ]; then[0m
+2026-11-07T17:19:42.5020833Z [36;1m  echo "::error title=Loader deploy key missing::the secret SR_DEPLOYKEY_MODLOADER is not set in the environment fork-push of $GITHUB_REPOSITORY (or the caller does not pass it by name); the candidate map rows cannot be pushed to the loader fork. Setup: ci/MAP-MODE.md, step 26."[0m
+2026-11-07T17:19:42.5023085Z [36;1m  exit 1[0m
+2026-11-07T17:19:42.5023561Z [36;1mfi[0m
+2026-11-07T17:19:42.5076764Z shell: /usr/bin/bash -e {0}
+2026-11-07T17:19:42.5077630Z env:
+2026-11-07T17:19:42.5078100Z   APP_ID: 1631270
+2026-11-07T17:19:42.5078589Z   LOGIN_DAYS: 200
+2026-11-07T17:19:42.5079079Z   WARN_DAYS: 30
+2026-11-07T17:19:42.5079797Z   LOADER_REPO: msantoro12/StarRupture-ModLoader
+2026-11-07T17:19:42.5080439Z   DEPLOY_KEY: 
+2026-11-07T17:19:42.5081026Z ##[endgroup]
+2026-11-07T17:19:42.5260822Z ##[error]the secret SR_DEPLOYKEY_MODLOADER is not set in the environment fork-push of msantoro12/starrupture-ci (or the caller does not pass it by name); the candidate map rows cannot be pushed to the loader fork. Setup: ci/MAP-MODE.md, step 26.
+2026-11-07T17:19:42.5277828Z ##[error]Process completed with exit code 1.
+2026-11-07T17:19:42.5477120Z Evaluate and set job outputs
+2026-11-07T17:19:42.5484658Z Cleaning up orphan processes

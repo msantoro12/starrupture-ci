@@ -2663,7 +2663,8 @@ jobs:
   # The cause of a failed job comes from artifacts and the run's own job list, which
   # exist when the job failed: the check job's result.json, the map-mode artifact
   # (reported missing when the job never uploaded it), the jobs API (failed step and
-  # the first ##[error] line of its log) and the rig jobs' verdict outputs.
+  # its first error line, from the job's annotations or else its log; ci/pipeline-alert.mjs)
+  # and the rig jobs' verdict outputs.
   alert:
     name: alert
     needs: [build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate]
@@ -2675,6 +2676,7 @@ jobs:
       issues: write
       pull-requests: write   # the chain-passed label and the ready note on the update PR
       actions: read          # the failed steps and logs of this run's jobs
+      checks: read           # their failure annotations (the first error line)
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -2708,6 +2710,12 @@ jobs:
       OTHER_RIG_ARTIFACT: ${{ needs.rig-other.outputs.artifact }}
       OTHER_RIG_REVIEW: ${{ needs.rig-other.outputs.review }}
     steps:
+      - name: Check out the alert script
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+
       - name: Download the map-mode chain
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
@@ -2722,16 +2730,9 @@ jobs:
           name: client-check-${{ inputs.branch }}
           path: res
 
-      # Best effort: a failed job's step name and the log lines of this run, for the cause.
+      # Best effort: each failed job's step name and first error line, for the cause.
       - name: Read why the jobs failed
-        run: |
-          mkdir -p logs
-          : > failed-jobs.jsonl
-          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-            --jq '.jobs[] | select(.conclusion == "failure") | {id, name, step: ([.steps[] | select(.conclusion == "failure")][0].name // "")}' > failed-jobs.jsonl || true
-          for id in $(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --jq '.jobs[] | select(.conclusion == "failure") | .id' || true); do
-            gh api "repos/$GH_REPO/actions/jobs/$id/logs" 2>/dev/null | head -c 4000000 > "logs/$id.txt" || true
-          done
+        run: node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl || true
 
       - name: Work out what needs attention
         id: what
@@ -2744,21 +2745,15 @@ jobs:
             const info = [];
             const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
             const clip = (s, n = 300) => { s = String(s ?? "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 3) + "..." : s; };
-            // Failed jobs of this run (jobs API), with the first error line of each log.
+            // Failed jobs of this run, each with its failed step and first error line (ci/pipeline-alert.mjs causes).
             const failed = [];
             try { for (const l of fs.readFileSync("failed-jobs.jsonl", "utf8").split("\n")) if (l.trim()) { try { failed.push(JSON.parse(l)); } catch {} } } catch {}
-            const errorLine = (id) => {
-              let t = "";
-              try { t = fs.readFileSync("logs/" + id + ".txt", "utf8"); } catch { return ""; }
-              const errs = t.split("\n").map((l) => l.replace(/\r$/, "").replace(/^\S+Z /, "")).filter((l) => l.startsWith("##[error]")).map((l) => l.slice(9));
-              return errs.find((l) => !/^Process completed with exit code/.test(l)) ?? errs[0] ?? "";
-            };
             // A job of this workflow is listed as "<name>", or "<caller job> / <name>" when sr-watch calls it.
             const apiCause = (name) => {
               const mine = failed.filter((j) => j.name === name || j.name.endsWith(" / " + name));
               const j = mine.find((x) => x.name.includes("(" + e.BRANCH + ")")) ?? mine[0];
               if (!j) return "";
-              const err = errorLine(j.id);
+              const err = j.error ?? "";
               return (j.step ? "step \"" + j.step + "\"" : "") + (err ? (j.step ? ": " : "") + clip(err) : "");
             };
             const why = (name) => { const c = apiCause(name); return c ? ["  - cause: " + c] : []; };
@@ -2837,17 +2832,7 @@ jobs:
 
       - name: Open or update the issue
         if: steps.what.outputs.alert == 'true'
-        run: |
-          set -euo pipefail
-          export TITLE="SR map mode: $BRANCH needs attention"
-          gh label create pipeline-alert --color B60205 --description 'A pipeline run or a game-update PR needs the owner' --force
-          number="$(gh issue list --state open --search "$TITLE in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
-          if [ -n "$number" ]; then
-            gh issue comment "$number" --body-file alert.md
-            gh issue edit "$number" --add-label pipeline-alert --add-assignee "$OWNER"
-          else
-            gh issue create --title "$TITLE" --body-file alert.md --label pipeline-alert --assignee "$OWNER"
-          fi
+        run: node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"
 
       # The PR carries what the chain concluded: chain-passed-<branch> only after a
       # run with no alert line (sr-watch reads it), and one line when the only thing

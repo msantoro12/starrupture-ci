@@ -89,7 +89,10 @@ test('both called workflows declare the Steam secrets as required, and read them
 
 test('sr-watch passes the login, the TEST key, the loader fork key, the nine plugin fork keys and nothing else; no inherit, no release key', () => {
   const j = job(workflows['sr-watch.yml'], 'client-check');
-  const secrets = j.slice(j.indexOf('\n    secrets:\n') + 1).trimEnd().split('\n').slice(1).map((l) => l.trim().split(':')[0]);
+  // The secrets block ends at the first line that is not a secret (the next job's comment, if any).
+  const block = j.slice(j.indexOf('\n    secrets:\n') + 1).split('\n').slice(1);
+  const end = block.findIndex((l) => !/^ {6}[A-Z][A-Z0-9_]*:/.test(l));
+  const secrets = (end < 0 ? block : block.slice(0, end)).map((l) => l.trim().split(':')[0]);
   assert.deepEqual(secrets.sort(), [...SECRETS, 'VMAP_SIGN_KEY_TEST', 'SR_DEPLOYKEY_MODLOADER', ...PLUGIN_KEYS].sort());
   assert.ok(!/secrets: inherit/.test(workflows['sr-watch.yml']));
   assert.ok(!/\n {6}publish:/.test(j), 'publish is not passed');
