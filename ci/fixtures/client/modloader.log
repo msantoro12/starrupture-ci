@@ -1,0 +1,182 @@
+[07:13:48.608] [INFO ] [T:06648] ======================================================
+[07:13:48.608] [INFO ] [T:06648]   StarRupture Mod Loader Core loaded
+[07:13:48.608] [INFO ] [T:06648] ======================================================
+[07:13:48.608] [INFO ] [T:06648] [init] Build: v1.23.1 (client), PID 2044
+[07:13:48.608] [INFO ] [T:06648] [init] Executable: D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe
+[07:13:48.618] [INFO ] [T:06648] [init] Core_Attach on thread 6648 (main thread is 6648)
+[07:13:48.618] [INFO ] [T:06648] [init] Migrating legacy config/plugin files...
+[07:13:48.618] [INFO ] [T:06648] [init] Legacy file migration done
+[07:13:48.618] [INFO ] [T:06648] [init] ImGui DLL present: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\StarRupture-ImGui.dll
+[07:13:48.618] [INFO ] [T:06648] [init] Sync events created
+[07:13:48.618] [INFO ] [T:06648] Core_Attach on main thread -- deferring init via QueueUserAPC
+[07:13:48.618] [INFO ] [T:06648] [init] Core_Attach complete -- returning to the proxy
+[07:13:48.629] [INFO ] [T:06648] [init] Main-thread APC fired -- starting Stage 1 with the game held
+[07:13:48.629] [INFO ] [T:06648] [init] Init thread started (tid 3432)
+[07:13:48.629] [INFO ] [T:06648] [init] Main thread parked at the Stage 1 gate (timeout 180000 ms)
+[07:13:48.631] [INFO ] [T:03432] [init] ---- Stage 1: hook installation (init thread 3432) ----
+[07:13:48.631] [INFO ] [T:03432] [init] Executable check passed
+[07:13:48.631] [INFO ] [T:03432] [init] Main thread held: parked on the Stage 1 gate
+[07:13:48.631] [INFO ] [T:03432] Process ID: 2044
+[07:13:48.631] [INFO ] [T:03432] Executable: D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe
+[07:13:48.631] [INFO ] [T:03432] Working directory: D:\sr-client\StarRupture\Binaries\Win64
+[07:13:48.631] [INFO ] [T:03432] Command line: "D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe" -nullrhi -unattended -nosound -log
+[07:13:48.631] [INFO ] [T:03432] Main module base: 0x7FF7A4D70000
+[07:13:48.631] [INFO ] [T:03432] Main module size: 0xF35C000 (249200 KB)
+[07:13:48.631] [INFO ] [T:03432] Main module entry: 0x7FF7B4092310
+[07:13:48.631] [INFO ] [T:03432] OS version: Windows 10 or greater
+[07:13:48.631] [INFO ] [T:03432] OS type: Server
+[07:13:48.631] [INFO ] [T:03432] System RAM: 16378 MB total, 13503 MB available
+[07:13:48.648] [INFO ] [T:03432] [init] Splash window shown
+[07:13:48.648] [INFO ] [T:03432] [ModLoader] Logger initialized (using Log:: backend)
+[07:13:48.649] [INFO ] [T:03432] [ModLoader] [VersionFeed] No feed request (stage 1): [AutoUpdate] Enabled is off
+[07:13:48.649] [INFO ] [T:03432] [ModLoader] Game version OK: ++Earth20+Neon-CL-127004
+[07:13:48.649] [INFO ] [T:03432] [init] Pattern preflight starting...
+[07:13:48.649] [INFO ] [T:03432] [ModLoader] [Preflight] Verifying 65 modloader scan patterns...
+[07:13:48.720] [INFO ] [T:03432] [ModLoader] [Preflight] Pattern verification complete: 65/65 usable (0 fatal, 0 non-fatal)
+[07:13:48.720] [INFO ] [T:03432] [init] Pattern preflight passed in 63 ms
+[07:13:48.720] [INFO ] [T:03432] [init] Installing engine hooks...
+[07:13:48.724] [INFO ] [T:03432] [ModLoader] [EngineInit] Installing engine initialization hooks...
+[07:13:48.724] [INFO ] [T:03432] [ModLoader] [EngineInit] Scanning for FEngineLoop::Init...
+[07:13:48.724] [INFO ] [T:03432] [ModLoader] [EngineInit] [OK] FEngineLoop::Init hook installed successfully
+[07:13:48.724] [INFO ] [T:03432] [ModLoader] [EngineInit] Scanning for UGameEngine::Init (fallback)...
+[07:13:48.724] [INFO ] [T:03432] [ModLoader] [EngineInit] [OK] UGameEngine::Init hook installed successfully
+[07:13:48.724] [INFO ] [T:03432] [ModLoader] [EngineInit] At least one engine init hook installed - engine ready detection active
+[07:13:48.726] [INFO ] [T:03432] [ModLoader] [EngineInit] Installing spawner hooks...
+[07:13:48.731] [INFO ] [T:03432] [init] Engine hooks installed in 15 ms
+[07:13:48.734] [INFO ] [T:03432] [init] Preload phase finished in 0 ms
+[07:13:48.734] [INFO ] [T:03432] [init] Stage 1 complete in 93 ms -- hooks installed, main thread running
+[07:13:48.734] [INFO ] [T:06648] [init] Stage 1 gate released after 109 ms -- main thread resuming game boot
+[07:13:48.734] [INFO ] [T:03432] [init] ---- Stage 2: subsystems + wait for engine ----
+[07:13:48.734] [INFO ] [T:03432] [init] Initialising subsystems (config, plugin manager)...
+[07:13:48.736] [INFO ] [T:03432] [ModLoader] Config manager initialized: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\config
+[07:13:48.736] [INFO ] [T:03432] [ModLoader] Plugin manager initialized
+[07:13:48.736] [INFO ] [T:03432] [init] Subsystems initialised
+[07:13:48.736] [INFO ] [T:03432] [ModLoader] Running client build of modloader
+[07:13:48.736] [INFO ] [T:03432] [init] Input hooks installed
+[07:13:48.736] [INFO ] [T:03432] [init] WorldBeginPlay + EngineTick hooks installed
+[07:13:51.342] [INFO ] [T:06648] [ModLoader] [EngineInit] FEngineLoop::Init called (#1)
+[07:13:51.342] [INFO ] [T:06648] [ModLoader] [EngineInit] UGameEngine::Init called (#2)
+[07:13:51.634] [INFO ] [T:06648] [ModLoader] InitAllLoadedPlugins: 0 initialized, 0 failed (of 0 deferred)
+[07:13:52.858] [INFO ] [T:06648] [ModLoader] [EngineInit] *** ENGINE READY *** (via UGameEngine::Init)
+[07:13:52.867] [INFO ] [T:06648] [EngineInit] Main thread sleeping -- waiting for plugins to initialise
+[07:13:52.868] [INFO ] [T:03432] [init] Stage 2 complete in 4141 ms -- engine ready
+[07:13:52.891] [INFO ] [T:03432] [ModLoader] [LayoutCheck] UObject::ProcessEvent: vtable slot 0x4C holds the function the map resolved (base+0x177FB20)
+[07:13:52.891] [INFO ] [T:03432] [ModLoader] [LayoutCheck] SDK CL 127004 against the game: 159 classes, 159 checked, 0 mismatched, 0 missing, 0 deferred, 6 rows resolved per build -- GObjects pass 21.4 ms (64410 objects, 15896 types), 23.1 ms in all
+[07:13:52.892] [INFO ] [T:03432] [init] ---- Stage 3: auto-update + plugins ----
+[07:13:52.892] [INFO ] [T:03432] [init] Client UI initialised
+[07:13:52.893] [INFO ] [T:03432] [init] Running plugin auto-update check...
+[07:13:52.893] [INFO ] [T:00700] [AutoUpdate] Starting auto-update check (current version: v1.23.1)
+[07:13:52.893] [INFO ] [T:00700] [AutoUpdate] Disabled via modloader.ini — skipping
+[07:13:52.894] [INFO ] [T:03432] [init] Auto-update check finished in 0 ms
+[07:13:52.894] [INFO ] [T:03432] [init] Loading plugin DLLs...
+[07:13:52.896] [INFO ] [T:03432] [ModLoader] Searching for plugins in ModLoader\Plugins
+[07:13:52.897] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\BetterCheats.dll
+[07:13:52.903] [INFO ] [T:03432] [ModLoader] Plugin info - Name: BetterCheats, Version: v0.23.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.903] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: BetterCheats vv0.23.0 (PluginInit deferred)
+[07:13:52.904] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\BetterDrone.dll
+[07:13:52.908] [INFO ] [T:03432] [ModLoader] Plugin info - Name: BetterDrone, Version: v0.23.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.908] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: BetterDrone vv0.23.0 (PluginInit deferred)
+[07:13:52.910] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\CameraControls.dll
+[07:13:52.911] [INFO ] [T:03432] [ModLoader] Plugin info - Name: CameraControls, Version: v0.2.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.911] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: CameraControls vv0.2.0 (PluginInit deferred)
+[07:13:52.912] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\Codex.dll
+[07:13:52.925] [INFO ] [T:03432] [ModLoader] Plugin info - Name: Codex, Version: v1.0.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.925] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: Codex vv1.0.0 (PluginInit deferred)
+[07:13:52.926] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\Compass_Plugin.dll
+[07:13:52.928] [INFO ] [T:03432] [ModLoader] Plugin info - Name: Compass, Version: v0.21.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.928] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: Compass vv0.21.0 (PluginInit deferred)
+[07:13:52.929] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\ProductionViewer.dll
+[07:13:52.933] [INFO ] [T:03432] [ModLoader] Plugin info - Name: ProductionViewer, Version: v0.17.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.934] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: ProductionViewer vv0.17.0 (PluginInit deferred)
+[07:13:52.935] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\RuptureTimer.dll
+[07:13:52.936] [INFO ] [T:03432] [ModLoader] Plugin info - Name: AxRuptureTimer, Version: v0.11.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.936] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: AxRuptureTimer vv0.11.0 (PluginInit deferred)
+[07:13:52.938] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\Waila.dll
+[07:13:52.939] [INFO ] [T:03432] [ModLoader] Plugin info - Name: Waila, Version: v0.20.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.939] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: Waila vv0.20.0 (PluginInit deferred)
+[07:13:52.940] [INFO ] [T:03432] [ModLoader] Loading plugin: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\WaveOptimiser.dll
+[07:13:52.942] [INFO ] [T:03432] [ModLoader] Plugin info - Name: WaveOptimiser, Version: v0.13.0, Author: AlienX, Interface: 75 (modloader expects [70, 75]), game build CL-127004
+[07:13:52.942] [INFO ] [T:03432] [ModLoader] Successfully loaded plugin DLL: WaveOptimiser vv0.13.0 (PluginInit deferred)
+[07:13:52.942] [INFO ] [T:03432] [ModLoader] Loaded 9 plugin DLL(s) from Plugins (PluginInit deferred)
+[07:13:52.943] [INFO ] [T:03432] [init] Plugin DLLs loaded in 62 ms
+[07:13:52.943] [INFO ] [T:03432] [init] Installing remaining plugin event hooks...
+[07:13:52.983] [INFO ] [T:03432] [init] Plugin event hooks installed in 31 ms
+[07:13:52.983] [INFO ] [T:03432] [init] Initialising plugins...
+[07:13:52.989] [INFO ] [T:03432] [ModLoader] [init] Calling PluginInit on all loaded plugins
+[07:13:52.990] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: BetterCheats vv0.23.0
+[07:13:53.327] [INFO ] [T:03432] [ModLoader] [HookScan] BetterCheats: 22 pattern(s) resolved, no failures
+[07:13:53.327] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: BetterCheats vv0.23.0
+[07:13:53.361] [INFO ] [T:03432] [ModLoader] [PluginConsole] 'BetterCheats' registered console command 'bc_invsize' (game thread)
+[07:13:53.367] [INFO ] [T:03432] [ModLoader] Plugin initialized: BetterCheats
+[07:13:53.369] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: BetterDrone vv0.23.0
+[07:13:53.410] [INFO ] [T:03432] [ModLoader] [HookScan] BetterDrone: 13 pattern(s) resolved, no failures
+[07:13:53.410] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: BetterDrone vv0.23.0
+[07:13:53.452] [INFO ] [T:03432] [ModLoader] Plugin initialized: BetterDrone
+[07:13:53.454] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: CameraControls vv0.2.0
+[07:13:53.458] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: CameraControls vv0.2.0
+[07:13:53.458] [INFO ] [T:03432] [Plugin:CameraControls] CameraControls initializing...
+[07:13:53.460] [INFO ] [T:03432] [Plugin:CameraControls] ProjectIO: projects directory is D:\sr-client\StarRupture\Binaries\Win64\ModLoader\Plugins\CameraControls\Projects
+[07:13:53.463] [INFO ] [T:03432] [Plugin:CameraControls] Input: registered 26 keybinds
+[07:13:53.463] [INFO ] [T:03432] [Plugin:CameraControls] Editor: widgets registered (timeline=000001EB4811D4B0 properties=000001EB4811DD70 overlay=000001EB4811DB30 notice=000001EB4811D7B0)
+[07:13:53.464] [INFO ] [T:03432] [Plugin:CameraControls] CameraControls initialized
+[07:13:53.464] [INFO ] [T:03432] [ModLoader] Plugin initialized: CameraControls
+[07:13:53.466] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: Codex vv1.0.0
+[07:13:53.468] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: Codex vv1.0.0
+[07:13:53.468] [INFO ] [T:03432] [Plugin:Codex] Plugin initializing...
+[07:13:53.468] [WARN ] [T:03432] [Plugin:Codex] CodexIcons: ImGui texture hooks unavailable (server/generic build) - icons disabled.
+[07:13:53.473] [INFO ] [T:03432] [Plugin:Codex] CodexUI: search, detail and pin windows registered
+[07:13:53.476] [INFO ] [T:03432] [Plugin:Codex] Plugin initialized successfully
+[07:13:53.476] [INFO ] [T:03432] [ModLoader] Plugin initialized: Codex
+[07:13:53.478] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: Compass vv0.21.0
+[07:13:53.486] [INFO ] [T:03432] [ModLoader] [HookScan] Compass: 2 pattern(s) resolved, no failures
+[07:13:53.486] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: Compass vv0.21.0
+[07:13:53.486] [INFO ] [T:03432] [Plugin:Compass] Compass plugin initializing...
+[07:13:53.487] [WARN ] [T:03432] [Plugin:Compass] Compass is disabled in config — skipping hook install
+[07:13:53.487] [INFO ] [T:03432] [ModLoader] Plugin initialized: Compass
+[07:13:53.489] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: ProductionViewer vv0.17.0
+[07:13:53.499] [INFO ] [T:03432] [Plugin:ProductionViewer] ProductionBaseCore: base core resolution ready (names enabled)
+[07:13:53.509] [INFO ] [T:03432] [ModLoader] [HookScan] ProductionViewer: 7 pattern(s) resolved, no failures
+[07:13:53.509] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: ProductionViewer vv0.17.0
+[07:13:53.509] [INFO ] [T:03432] [Plugin:ProductionViewer] Plugin initializing (client build)...
+[07:13:53.512] [INFO ] [T:03432] [Plugin:ProductionViewer] Production Viewer window registered
+[07:13:53.517] [INFO ] [T:03432] [Plugin:ProductionViewer] ProductionMass: SignalEntity hook installed - Mass-simulated crafting will be tracked
+[07:13:53.517] [INFO ] [T:03432] [Plugin:ProductionViewer] ProductionTracker: initialized
+[07:13:53.518] [WARN ] [T:03432] [Plugin:ProductionViewer] ProductionIcons: ImGui texture hooks unavailable (server/generic build) - icons disabled.
+[07:13:53.519] [INFO ] [T:03432] [Plugin:ProductionViewer] Plugin initialized successfully
+[07:13:53.519] [INFO ] [T:03432] [ModLoader] Plugin initialized: ProductionViewer
+[07:13:53.521] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: AxRuptureTimer vv0.11.0
+[07:13:53.522] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: AxRuptureTimer vv0.11.0
+[07:13:53.522] [INFO ] [T:03432] [Plugin:AxRuptureTimer] RuptureTimer v0.11.0 initializing (client build)
+[07:13:53.526] [INFO ] [T:03432] [Plugin:AxRuptureTimer] RuptureTimer initialized
+[07:13:53.526] [INFO ] [T:03432] [ModLoader] Plugin initialized: AxRuptureTimer
+[07:13:53.528] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: Waila vv0.20.0
+[07:13:53.556] [INFO ] [T:03432] [ModLoader] [HookScan] Waila: 8 pattern(s) resolved, no failures
+[07:13:53.556] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: Waila vv0.20.0
+[07:13:53.556] [INFO ] [T:03432] [Plugin:Waila] Plugin initializing...
+[07:13:53.557] [INFO ] [T:03432] [Plugin:Waila] WAILA Configuration:
+[07:13:53.557] [INFO ] [T:03432] [Plugin:Waila]   MaxDistance: 650.0 units
+[07:13:53.557] [INFO ] [T:03432] [Plugin:Waila] Plugin initialized successfully
+[07:13:53.557] [INFO ] [T:03432] [ModLoader] Plugin initialized: Waila
+[07:13:53.559] [INFO ] [T:03432] [ModLoader] [HookScan] Resolving patterns for: WaveOptimiser vv0.13.0
+[07:13:53.586] [INFO ] [T:03432] [ModLoader] [HookScan] WaveOptimiser: 10 pattern(s) resolved, no failures
+[07:13:53.586] [INFO ] [T:03432] [ModLoader] Calling PluginInit for: WaveOptimiser vv0.13.0
+[07:13:53.586] [INFO ] [T:03432] [Plugin:WaveOptimiser] Plugin initializing...
+[07:13:53.650] [INFO ] [T:03432] [Plugin:WaveOptimiser] WaveOptimiser: all 10 heat-excluded classes resolved
+[07:13:53.650] [INFO ] [T:03432] [Plugin:WaveOptimiser] WaveOptimiser: AddEntitiesToWave hooked at 0x7FF7AC3A3020, RemoveEntitiesFromWave hooked at 0x7FF7AC3BF540
+[07:13:53.650] [INFO ] [T:03432] [Plugin:WaveOptimiser] Plugin initialized successfully
+[07:13:53.650] [INFO ] [T:03432] [ModLoader] Plugin initialized: WaveOptimiser
+[07:13:53.651] [INFO ] [T:03432] [ModLoader] InitAllLoadedPlugins: 9 initialized, 0 failed (of 9 deferred)
+[07:13:53.651] [INFO ] [T:03432] [ModLoader] Plugin startup phase complete
+[07:13:53.651] [INFO ] [T:03432] [init] Plugins initialised in 672 ms
+[07:13:53.651] [INFO ] [T:03432] [init] Stage 3 complete in 765 ms -- releasing main thread
+[07:13:53.651] [INFO ] [T:06648] [EngineInit] Plugins ready -- main thread resuming
+[07:13:53.653] [INFO ] [T:03432] [ModLoader] Mod loader initialised successfully.
+[07:13:53.653] [INFO ] [T:03432] [init] Waiting for plugin splash holds to be released (30 s timeout)...
+[07:13:53.653] [WARN ] [T:05824] UE4SS failed to load (error 126): D:\sr-client\StarRupture\Binaries\Win64\ue4ss\ue4ss.dll
+[07:14:05.218] [WARN ] [T:06648] [ModLoader] [WorldBeginPlay] Map_MainMenu detected -- triggering engine-ready fallback
+[07:14:05.218] [INFO ] [T:06648] [EngineInit] Main thread sleeping -- waiting for plugins to initialise
+[07:14:05.218] [INFO ] [T:06648] [EngineInit] Plugins ready -- main thread resuming
+[07:14:05.876] [INFO ] [T:06648] [EngineInit] Main thread sleeping -- waiting for plugins to initialise
+[07:14:05.876] [INFO ] [T:06648] [EngineInit] Plugins ready -- main thread resuming
+[07:14:06.708] [INFO ] [T:06648] [Plugin:ProductionViewer] ProductionNet: session role resolved: Solo
+[07:14:07.076] [INFO ] [T:03432] [init] Boot sequence finished in 18437 ms -- init thread exiting

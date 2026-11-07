@@ -1,5 +1,6 @@
 # Fixture tests for verdict.ps1: a good boot passes, and each way a boot can go
-# wrong (missing file, empty log, missing marker, bad value) must fail.
+# wrong (missing file, empty log, missing marker, bad value) must fail. Server mode
+# first (engine-test), then client mode (the client test rig).
 $ErrorActionPreference = 'Stop'
 $verdict = Join-Path $PSScriptRoot 'verdict.ps1'
 $root = Join-Path ([IO.Path]::GetTempPath()) 'verdict-cases'
@@ -73,7 +74,12 @@ $cases = [ordered]@{
  'init_summary_missing'   = { param($c) $c.ml = $c.ml | Where-Object { $_ -notmatch 'InitAllLoadedPlugins' } }
  'boot_ready_timeout'     = { param($c) $c.boot.ready_s = $null }
  'no_server_build'        = { param($c) $c.ml = $c.ml | Where-Object { $_ -notmatch 'server build' } }
+ 'compat_report_line'     = { param($c) $c.ml += '[16:53:00.000] [INFO ] [T:01484] [ModLoader] [LayoutCheck] Compatibility report written to ModLoader\compat-report-128786.json' }
+ 'compat_report_listed'   = { param($c) $c.boot | Add-Member -NotePropertyName compat_reports -NotePropertyValue @('compat-report-128786.json') -Force }
+ 'plugins_switched_off'   = { param($c) $c.ml += '[16:53:00.000] [ERROR] [T:01484] [init] Layout mismatch -- plugins are switched off for this session' }
 }
+# Cases that must fail one particular check, not just exit 1.
+$serverMustFail = @{ compat_report_line = 'no_compat_report'; compat_report_listed = 'no_compat_report'; plugins_switched_off = 'plugins_not_switched_off' }
 $expectPass = @('good', 'world_in_game_only')
 $bad = 0
 foreach ($k in $cases.Keys) {
@@ -82,7 +88,214 @@ foreach ($k in $cases.Keys) {
     $ok = ($r.Exit -eq $want)
     if (-not $ok) { $bad++ }
     $failed = ($r.Out -split "`n" | Where-Object { $_ -match ' FAIL ' } | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
+    if ($ok -and $serverMustFail.ContainsKey($k) -and (($failed -split ',') -notcontains $serverMustFail[$k])) { $ok = $false; $bad++ }
     '{0,-24} exit={1} want={2} {3}  failed: {4}' -f $k, $r.Exit, $want, $(if ($ok) { 'OK ' } else { 'BAD' }), $failed
 }
+
+# ---- client mode ---------------------------------------------------------------
+# The clean fixture is fixtures\client: the logs of a real nine-plugin launch of the
+# public build (loader v1.23.1, overlay off), trimmed to the lines the judge reads and
+# scrubbed of nothing because they held nothing private. dll-hashes.json holds
+# hashes derived from the file names, not real ones. Each case below starts from it,
+# changes one thing, and must fail the check named in $clientMustFail.
+$fx = Join-Path (Join-Path $PSScriptRoot 'fixtures') 'client'
+function Read-FxLines([string]$n) { [string[]](Get-Content -LiteralPath (Join-Path $fx $n) -Encoding UTF8) }
+function Read-FxJson([string]$n) { Get-Content -LiteralPath (Join-Path $fx $n) -Raw -Encoding UTF8 | ConvertFrom-Json }
+function Drop($c, [string]$re) { $c.ml = @($c.ml | Where-Object { $_ -notmatch $re }) }
+function Plugin($c, [string]$repo) { $c.set.plugins | Where-Object { $_.repo -eq $repo } }
+
+function New-ClientCase([string]$Name, [scriptblock]$Mutate) {
+    $d = Join-Path $root "client-$Name"; New-Item -ItemType Directory $d | Out-Null
+    $c = @{
+        ml = Read-FxLines 'modloader.log'; proxy = Read-FxLines 'proxy.log'; au = Read-FxLines 'autoupdate.log'
+        boot = Read-FxJson 'boot.json'; set = Read-FxJson 'set.json'; hashes = Read-FxJson 'dll-hashes.json'
+        skip = @()
+    }
+    & $Mutate $c
+    foreach ($f in @(@('ml', 'modloader.log'), @('proxy', 'proxy.log'), @('au', 'autoupdate.log'))) {
+        if ($f[0] -notin $c.skip) { Set-Content (Join-Path $d $f[1]) $c[$f[0]] -Encoding utf8 }
+    }
+    foreach ($f in @(@('boot', 'boot.json'), @('set', 'set.json'), @('hashes', 'dll-hashes.json'))) {
+        if ($f[0] -notin $c.skip) { $c[$f[0]] | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $d $f[1]) -Encoding utf8 }
+    }
+    $shell = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
+    $out = & $shell -NoProfile -File $verdict -OutDir $d -Client 2>&1
+    [pscustomobject]@{ Case = $Name; Exit = $LASTEXITCODE; Out = ($out -join "`n"); Dir = $d }
+}
+
+$sig = '[00:00:01.000] [WARN ] [T:03432] [ModLoader] '
+$err = '[00:00:01.000] [ERROR] [T:03432] [ModLoader] '
+$clientCases = [ordered]@{
+ 'good'                    = @{ Mut = { param($c) } }
+ # Plugin missing, wrong, refused, crashed
+ 'plugin_lines_missing'    = @{ Mut = { param($c) Drop $c 'Waila' };                                                       Fail = 'plugin_loaded_WAILA' }
+ 'plugin_removed'          = @{ Mut = { param($c) (Plugin $c 'WAILA').removed = $true; Drop $c 'Waila' };                 Fail = 'plugin_loaded_WAILA' }
+ 'plugin_info_only'        = @{ Mut = { param($c) Drop $c 'Successfully loaded plugin DLL: Waila ' };                     Fail = 'plugin_loaded_WAILA' }
+ 'log_name_is_repo_name'   = @{ Mut = { param($c) (Plugin $c 'WAILA').PSObject.Properties.Remove('logName') };            Fail = 'plugin_loaded_WAILA' }
+ 'rupture_timer_repo_name' = @{ Mut = { param($c) (Plugin $c 'RuptureTimer').PSObject.Properties.Remove('logName') };     Fail = 'plugin_loaded_RuptureTimer' }
+ 'plugin_older_version'    = @{ Mut = { param($c) $c.ml = $c.ml -replace 'Name: Waila, Version: v0\.20\.0', 'Name: Waila, Version: v0.19.0' }; Fail = 'plugin_version_WAILA' }
+ 'plugin_version_no_v'     = @{ Mut = { param($c) $c.ml = $c.ml -replace 'Name: Waila, Version: v0\.20\.0', 'Name: Waila, Version: 0.20.0' }; Fail = 'plugin_version_WAILA' }
+ 'plugin_version_dev'      = @{ Mut = { param($c) $c.ml = $c.ml -replace 'Name: Waila, Version: v0\.20\.0', 'Name: Waila, Version: dev' }; Fail = 'plugin_version_WAILA' }
+ 'refused_not_loaded'      = @{ Mut = { param($c) $c.ml += "$($sig)Plugin 'Codex' is not loaded: Needs an update to run on CL-128786" };  Fail = 'plugin_not_refused_Codex' }
+ 'refused_was_NOT_loaded'  = @{ Mut = { param($c) $c.ml += "$($sig)Plugin 'Codex' was NOT loaded: it declares layouts the game no longer has" }; Fail = 'plugin_not_refused_Codex' }
+ 'refused_wrong_target'    = @{ Mut = { param($c) $c.ml += "$($sig)Plugin 'Waila' was built for a server build but this is a client build -- refusing to load" }; Fail = 'plugin_not_refused_WAILA' }
+ 'refused_hooks'           = @{ Mut = { param($c) $c.ml += "$($err)Plugin 'Waila' was NOT loaded: one or more of its hooks could not be resolved." }; Fail = 'plugin_not_refused_WAILA' }
+ 'refused_switched_off'    = @{ Mut = { param($c) $c.ml += "$($sig)Plugin 'Waila' is switched off: its layouts do not match this game" };  Fail = 'plugin_not_refused_WAILA' }
+ 'refused_interface_newer' = @{ Mut = { param($c) $c.ml += "$($sig)Plugin interface version 80 is newer than this loader supports (up to 75): D:\g\ModLoader\Plugins\Waila.dll" }; Fail = 'plugin_not_refused_WAILA' }
+ 'refused_missing_exports' = @{ Mut = { param($c) $c.ml += "$($sig)Plugin missing required exports: D:\g\ModLoader\Plugins\Compass_Plugin.dll" }; Fail = 'plugin_not_refused_Compass' }
+ 'refused_path_unknown'    = @{ Mut = { param($c) $c.ml += "$($sig)Plugin missing required exports: D:\g\ModLoader\Plugins\Mystery.dll" }; Fail = 'no_unexpected_refusal' }
+ 'refused_plugin_unlisted' = @{ Mut = { param($c) $c.ml += "$($sig)Plugin 'StarRuptureTimer' is not loaded: Needs an update to run on CL-127004" }; Fail = 'no_unexpected_refusal' }
+ 'plugin_crashed'          = @{ Mut = { param($c) $c.ml += "$($err)[PluginManager] Plugin 'Waila' CRASHED in its tick callback -- code=0xC0000005 fault=0x7FF700001234" }; Fail = 'plugin_no_fault_WAILA' }
+ # A plugin the set does not name must not load, whichever way the set falls short
+ 'unexpected_plugin'       = @{ Mut = { param($c)
+        $i = [array]::IndexOf($c.ml, ($c.ml | Where-Object { $_ -match 'Successfully loaded plugin DLL: Codex ' } | Select-Object -First 1))
+        $add = @("$($sig)Plugin info - Name: Evil, Version: v6.6.6, Author: X, Interface: 75 (modloader expects [70, 75]), game build CL-127004",
+                 "$($sig)Successfully loaded plugin DLL: Evil vv6.6.6 (PluginInit deferred)")
+        $c.ml = @($c.ml[0..$i]) + $add + @($c.ml[($i + 1)..($c.ml.Count - 1)]) };                                              Fail = 'no_unexpected_plugin' }
+ 'set_names_one_plugin'    = @{ Mut = { param($c) $c.set.plugins = @($c.set.plugins | Select-Object -First 1) };               Fail = 'no_unexpected_plugin' }
+ 'init_summary_more'       = @{ Mut = { param($c) $c.ml = $c.ml -replace '9 initialized, 0 failed \(of 9', '10 initialized, 0 failed (of 10' }; Fail = 'plugins_initialized' }
+ 'plugin_init_failed'      = @{ Mut = { param($c) $c.ml += "$($sig)Plugin initialization failed: Waila" };                  Fail = 'plugin_no_fault_WAILA' }
+ 'plugin_not_initialized'  = @{ Mut = { param($c) Drop $c 'Plugin initialized: Waila$' };                                  Fail = 'plugin_initialized_WAILA' }
+ # Declared refusals
+ 'expect_refused_loaded'   = @{ Mut = { param($c) (Plugin $c 'Compass').expectRefused = $true };                           Fail = 'plugin_not_loaded_Compass' }
+ 'expect_refused_no_line'  = @{ Mut = { param($c) (Plugin $c 'Compass').expectRefused = $true; Drop $c 'Compass' };       Fail = 'plugin_refusal_line_Compass' }
+ 'expect_refused_ok'       = @{ Mut = { param($c)
+        (Plugin $c 'Compass').expectRefused = $true; Drop $c 'Compass'
+        $c.ml += "$($sig)Plugin 'Compass' is not loaded: Needs an update to run on CL-128786"
+        $c.ml = $c.ml -replace '9 initialized, 0 failed \(of 9 deferred\)', '8 initialized, 0 failed (of 8 deferred)' } }
+ # A declared refusal excuses the refusal lines only, never a fault of the same plugin
+ 'refused_but_faulted'     = @{ Mut = { param($c)
+        (Plugin $c 'Compass').expectRefused = $true; Drop $c 'Compass'
+        $c.ml += "$($err)Plugin 'Compass' is not loaded: Needs an update to run on CL-128786"
+        $c.ml += "$($err)[PluginGuard] Fault (code=0xC0000005 at 00007FF7A6224989) under plugin 'Compass', in its tick callback, raised in engine or loader code: not contained"
+        $c.ml = $c.ml -replace '9 initialized, 0 failed \(of 9 deferred\)', '8 initialized, 0 failed (of 8 deferred)' }; Fail = 'plugin_no_fault_Compass' }
+ 'refused_but_crashed'     = @{ Mut = { param($c)
+        (Plugin $c 'Compass').expectRefused = $true; Drop $c 'Compass'
+        $c.ml += "$($err)Plugin 'Compass' was NOT loaded: one or more of its hooks could not be resolved."
+        $c.ml += "$($err)[PluginManager] Plugin 'Compass' CRASHED in its tick callback -- code=0xC0000005 fault=0x7FF700001234"
+        $c.ml = $c.ml -replace '9 initialized, 0 failed \(of 9 deferred\)', '8 initialized, 0 failed (of 8 deferred)' }; Fail = 'no_crash_markers' }
+ 'expect_refused_error_ok' = @{ Mut = { param($c)
+        (Plugin $c 'Compass').expectRefused = $true; Drop $c 'Compass'
+        $c.ml += "$($err)Plugin 'Compass' was NOT loaded: one or more of its hooks could not be resolved."
+        $c.ml += "$($err)[HookScan] 'Compass' will NOT be loaded -- PluginInit will not be called."
+        $c.ml = $c.ml -replace '9 initialized, 0 failed \(of 9 deferred\)', '8 initialized, 0 failed (of 8 deferred)' } }
+ # Loader and layout
+ 'loader_older'            = @{ Mut = { param($c) $c.ml = $c.ml -replace 'Build: v1\.23\.1 \(client\)', 'Build: v1.23.0 (client)' }; Fail = 'loader_build_line' }
+ 'loader_dev'              = @{ Mut = { param($c) $c.ml = $c.ml -replace 'Build: v1\.23\.1 \(client\)', 'Build: dev (client)' };    Fail = 'loader_build_line' }
+ 'loader_server_build'     = @{ Mut = { param($c) $c.ml = $c.ml -replace 'Build: v1\.23\.1 \(client\)', 'Build: v1.23.1 (server)' }; Fail = 'loader_build_line' }
+ 'preflight_fatal'         = @{ Mut = { param($c) $c.ml = $c.ml -replace '65/65 usable \(0 fatal, 0 non-fatal\)', '64/65 usable (1 fatal, 0 non-fatal)' }; Fail = 'preflight_all_usable' }
+ 'preflight_missing'       = @{ Mut = { param($c) Drop $c 'verification complete' };                                       Fail = 'preflight_all_usable' }
+ 'preflight_failed_line'   = @{ Mut = { param($c) $c.ml += "$($err)[init] Pattern preflight failed -- mod loader disabled" }; Fail = 'loader_not_disabled' }
+ 'version_mismatch'        = @{ Mut = { param($c) $c.ml += "$($err)[ModLoader] VERSION MISMATCH: expected 'a', got 'b'" }; Fail = 'loader_not_disabled' }
+ 'hookscan_failed'         = @{ Mut = { param($c) $c.ml += "$($err)[HookScan] Plugin 'Waila' (hooks): 6 resolved, 2 failed" };  Fail = 'hookscan_clean' }
+ 'hookscan_not_loaded'     = @{ Mut = { param($c) $c.ml += "$($err)[HookScan] 'Waila' will NOT be loaded -- PluginInit will not be called." }; Fail = 'hookscan_clean' }
+ 'layout_mismatch'         = @{ Mut = { param($c) $c.ml = $c.ml -replace '159 checked, 0 mismatched', '159 checked, 3 mismatched' }; Fail = 'layout_ok' }
+ 'layout_missing_classes'  = @{ Mut = { param($c) $c.ml = $c.ml -replace '0 missing', '2 missing' };                        Fail = 'layout_ok' }
+ 'layout_line_missing'     = @{ Mut = { param($c) Drop $c 'SDK CL 127004 against' };                                       Fail = 'layout_ok' }
+ 'layout_plugins_off'      = @{ Mut = { param($c) $c.ml += "$($err)[init] Layout mismatch -- plugins are switched off for this session" }; Fail = 'plugins_not_switched_off' }
+ 'compat_report_line'      = @{ Mut = { param($c) $c.ml += "$($sig)[LayoutCheck] Compatibility report written to ModLoader\compat-report-128786.json" }; Fail = 'no_compat_report' }
+ 'compat_report_listed'    = @{ Mut = { param($c) $c.boot.compat_reports = @('compat-report-128786.json') };               Fail = 'no_compat_report' }
+ # Crashes
+ 'fatal_engine_crash'      = @{ Mut = { param($c) $c.ml += "$($err)[CrashReporter] *** FATAL ENGINE CRASH *** -- suppressing CrashReportClient upload" }; Fail = 'no_crash_markers' }
+ 'pluginguard_fault'       = @{ Mut = { param($c) $c.ml += "$($err)[PluginGuard] Fault (code=0xC0000005 at 00007FF7A6224989) under plugin 'ProductionViewer', in its tick callback, raised in engine or loader code: not contained" }; Fail = 'no_crash_markers' }
+ 'crash_dialog'            = @{ Mut = { param($c) $c.boot.crash_dialog = 'The game has crashed' };                         Fail = 'no_crash_dialog' }
+ 'crash_files'             = @{ Mut = { param($c) $c.boot.crash_files = @('StarRupture\Saved\Crashes\crash1\UE4Minidump.dmp') }; Fail = 'no_crash_files' }
+ # A boot.json that lacks a field is no evidence of a clean run
+ 'boot_no_crash_files'     = @{ Mut = { param($c) $c.boot.PSObject.Properties.Remove('crash_files') };                        Fail = 'no_crash_files' }
+ 'boot_no_crash_dialog'    = @{ Mut = { param($c) $c.boot.PSObject.Properties.Remove('crash_dialog') };                       Fail = 'no_crash_dialog' }
+ 'boot_no_compat_reports'  = @{ Mut = { param($c) $c.boot.PSObject.Properties.Remove('compat_reports') };                     Fail = 'no_compat_report' }
+ 'early_exit_zero'         = @{ Mut = { param($c) $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 0 }; Fail = 'client_alive_at_end' }
+ 'early_exit_nonzero'      = @{ Mut = { param($c) $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 53 }; Fail = 'client_alive_at_end' }
+ 'process_not_found'       = @{ Mut = { param($c) $c.boot.process_found = $false };                                        Fail = 'client_process_started' }
+ 'unexpected_error'        = @{ Mut = { param($c) $c.ml += "$($err)[ImGuiBackend] D3D12CreateDevice failed" };              Fail = 'no_loader_errors' }
+ 'proxy_fatal'             = @{ Mut = { param($c) $c.proxy += '[2026-11-07 07:13:48.700] [ERROR] FATAL: LoadLibrary failed for StarRupture-ModLoader-Core.dll' }; Fail = 'proxy_core_attached' }
+ 'proxy_no_attach'         = @{ Mut = { param($c) $c.proxy = @($c.proxy | Where-Object { $_ -notmatch 'Core_Attach\(\) succeeded' }) }; Fail = 'proxy_core_attached' }
+ # Boot never completes
+ 'no_init_summary'         = @{ Mut = { param($c) Drop $c 'InitAllLoadedPlugins' };                                        Fail = 'plugins_initialized' }
+ 'init_summary_short'      = @{ Mut = { param($c) $c.ml = $c.ml -replace '9 initialized, 0 failed \(of 9', '8 initialized, 0 failed (of 9' }; Fail = 'plugins_initialized' }
+ 'init_summary_failed'     = @{ Mut = { param($c) $c.ml = $c.ml -replace '9 initialized, 0 failed', '8 initialized, 1 failed' }; Fail = 'plugins_initialized' }
+ 'no_startup_phase'        = @{ Mut = { param($c) Drop $c 'Plugin startup phase complete' };                               Fail = 'startup_phase_complete' }
+ 'no_boot_finished'        = @{ Mut = { param($c) Drop $c 'Boot sequence finished' };                                      Fail = 'boot_sequence_finished' }
+ # No update traffic, no DLL changes
+ 'manifest_url'            = @{ Mut = { param($c) $c.ml += '[07:13:52.894] [INFO ] [T:00700] [AutoUpdate] Manifest URL: https://example.invalid/manifest-client.json (compiled-in default)' }; Fail = 'no_update_check' }
+ 'update_check_not_off'    = @{ Mut = { param($c) Drop $c 'Disabled via modloader' };                                      Fail = 'no_update_check' }
+ 'autoupdate_log_no_off'   = @{ Mut = { param($c) $c.au = @($c.au | Where-Object { $_ -notmatch 'disabled via' }) };       Fail = 'autoupdate_log_disabled' }
+ 'dll_changed'             = @{ Mut = { param($c) $c.hashes.'ModLoader/Plugins/Waila.dll'.after = 'ab' * 32 };             Fail = 'dll_hashes_unchanged' }
+ 'dll_gone_after'          = @{ Mut = { param($c) $c.hashes.'ModLoader/Plugins/Waila.dll'.after = $null };                 Fail = 'dll_hashes_unchanged' }
+ 'dll_hashes_empty'        = @{ Mut = { param($c) $c.hashes = [pscustomobject]@{} };                                       Fail = 'dll_hashes_unchanged' }
+ # Missing inputs
+ 'ml_missing'              = @{ Mut = { param($c) $c.skip += 'ml' };                                                       Fail = 'modloader_log_present' }
+ 'ml_empty'                = @{ Mut = { param($c) $c.ml = @() };                                                           Fail = 'modloader_log_present' }
+ 'proxy_missing'           = @{ Mut = { param($c) $c.skip += 'proxy' };                                                    Fail = 'proxy_log_present' }
+ 'autoupdate_missing'      = @{ Mut = { param($c) $c.skip += 'au' };                                                       Fail = 'autoupdate_log_present' }
+ 'boot_missing'            = @{ Mut = { param($c) $c.skip += 'boot' };                                                     Fail = 'boot_record' }
+ 'set_missing'             = @{ Mut = { param($c) $c.skip += 'set' };                                                      Fail = 'set_record' }
+ 'set_no_expect'           = @{ Mut = { param($c) (Plugin $c 'Codex').PSObject.Properties.Remove('expect') };              Fail = 'set_record' }
+ 'hashes_missing'          = @{ Mut = { param($c) $c.skip += 'hashes' };                                                   Fail = 'dll_hashes_unchanged' }
+ # Not a failure
+ 'feature_off_note'        = @{ Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: no row for CL-128786 (reflected)" } }
+}
+
+$extra = {
+    # Beyond the exit code: the verdict.json a caller reads.
+    param($k, $r)
+    $j = Get-Content -LiteralPath (Join-Path $r.Dir 'verdict.json') -Raw | ConvertFrom-Json
+    $row = { param($n) $j.plugins | Where-Object { $_.name -eq $n } }
+    $bad = @()
+    if ($r.Exit -eq 0 -and $j.verdict -ne 'PASS') { $bad += 'verdict.json says not PASS' }
+    if ($r.Exit -ne 0 -and ($j.verdict -ne 'FAIL' -or $j.reason -notmatch '^\d+ of \d+ checks failed, first: ')) { $bad += "verdict.json reason: $($j.reason)" }
+    if ($k -notin 'set_missing', 'set_no_expect', 'set_names_one_plugin' -and @($j.plugins).Count -ne 9) { $bad += "verdict.json lists $(@($j.plugins).Count) plugins" }
+    if ($k -eq 'good') {
+        $w = & $row 'WAILA'
+        if ($w.state -ne 'ok' -or $w.logVersion -ne 'v0.20.0' -or $w.expected -ne 'v0.20.0') { $bad += 'WAILA row wrong' }
+        if ($j.loader.logVersion -ne 'v1.23.1') { $bad += 'loader row wrong' }
+    }
+    if ($k -eq 'plugin_removed' -and (& $row 'WAILA').state -ne 'missing') { $bad += 'removed plugin not reported missing' }
+    if ($k -eq 'plugin_older_version' -and ((& $row 'WAILA').state -ne 'wrong version' -or (& $row 'WAILA').logVersion -ne 'v0.19.0')) { $bad += 'wrong version not reported' }
+    if ($k -eq 'refused_not_loaded' -and (& $row 'Codex').state -ne 'refused') { $bad += 'refused plugin not reported refused' }
+    if ($k -eq 'refused_but_faulted' -and (& $row 'Compass').state -ne 'crashed') { $bad += 'declared refusal with a fault not reported crashed' }
+    if ($k -eq 'expect_refused_ok' -and (& $row 'Compass').state -ne 'refused (as declared)') { $bad += 'declared refusal not reported' }
+    if ($k -eq 'feature_off_note' -and ((& $row 'WAILA').state -ne 'ok' -or (& $row 'WAILA').note -notmatch 'Hover details')) { $bad += 'feature-off note missing' }
+    if ($k -eq 'rupture_timer_repo_name' -and (& $row 'RuptureTimer').state -ne 'missing') { $bad += 'repo-name lookup not reported missing' }
+    $bad
+}
+
+foreach ($k in $clientCases.Keys) {
+    $r = New-ClientCase $k $clientCases[$k].Mut
+    $mustFail = $clientCases[$k].Fail
+    $want = if ($mustFail) { 1 } else { 0 }
+    $failed = ($r.Out -split "`n" | Where-Object { $_ -match ' FAIL\s*$' -and $_ -notmatch '^VERDICT' } | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
+    $problems = @()
+    if ($r.Exit -ne $want) { $problems += "exit $($r.Exit), want $want" }
+    if ($mustFail -and (($failed -split ',') -notcontains $mustFail)) { $problems += "check $mustFail did not fail" }
+    if (-not $mustFail -and $failed) { $problems += "unexpected failures: $failed" }
+    if (Test-Path (Join-Path $r.Dir 'verdict.json')) { $problems += @(& $extra $k $r) } else { $problems += 'no verdict.json' }
+    if ($problems.Count -gt 0) { $bad++ }
+    'client {0,-24} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
+}
+
+# Client mode keeps the logs' text off the console and out of GITHUB_STEP_SUMMARY: the
+# evidence goes to files in the output folder, which the workflow publishes after its leak
+# gate. Server mode still appends to the summary.
+$stepSummary = Join-Path $root 'step-summary.md'
+$env:GITHUB_STEP_SUMMARY = $stepSummary
+try {
+    $r = New-ClientCase 'summary_to_file' { param($c) $c.ml += "$($err)[ImGuiBackend] D3D12CreateDevice failed" }
+    $files = @('summary.md', 'verdict.txt') | ForEach-Object { Join-Path $r.Dir $_ }
+    $problems = @()
+    if (Test-Path $stepSummary) { $problems += 'client mode wrote GITHUB_STEP_SUMMARY' }
+    if ($r.Out -match 'D3D12CreateDevice|Successfully loaded|Plugin info') { $problems += 'client mode printed log text' }
+    if ($r.Out -notmatch 'no_loader_errors\s+FAIL') { $problems += 'client console lacks the check names' }
+    foreach ($f in $files) { if (-not (Test-Path $f) -or (Get-Content $f -Raw) -notmatch 'D3D12CreateDevice') { $problems += "$(Split-Path $f -Leaf) lacks the evidence" } }
+    if ((Get-Content $files[0] -Raw) -notmatch '\| Plugin \| Expected \| In log \|') { $problems += 'summary.md lacks the plugin table' }
+    $s = New-Case 'summary_server' { param($c) }
+    if (-not (Test-Path $stepSummary) -or (Get-Content $stepSummary -Raw) -notmatch 'Engine test verdict: PASS') { $problems += 'server mode did not append to GITHUB_STEP_SUMMARY' }
+} finally { Remove-Item Env:GITHUB_STEP_SUMMARY -ErrorAction SilentlyContinue }
+if ($problems.Count -gt 0) { $bad++ }
+'client summary_to_file                          {0}{1}' -f $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
+
+# Server mode must not have grown a verdict.json.
+if (Test-Path (Join-Path $root 'good\verdict.json')) { $bad++; 'BAD server mode wrote verdict.json' }
+
 "mismatches: $bad"
 if ($bad -gt 0) { exit 1 }

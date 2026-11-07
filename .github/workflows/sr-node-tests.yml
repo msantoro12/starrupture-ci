@@ -1,6 +1,7 @@
 name: SR node tests
 
-# Fixture tests for ci/decide.mjs, ci/apply-proposals.mjs and ci/version-map.mjs.
+# Fixture tests for ci/decide.mjs, ci/apply-proposals.mjs and ci/version-map.mjs,
+# and for the verdict script (ci/verdict.ps1) the engine test and the client rig share.
 # The live case clones AlienX's loader main read-only to prove the generated patch applies.
 
 on:
@@ -29,4 +30,7 @@ jobs:
         with:
           node-version: lts/*
       - name: Run the tests
-        run: node --test ci/decide.test.mjs ci/apply-proposals.test.mjs ci/version-map.test.mjs ci/map-mode.test.mjs ci/field-rows.test.mjs ci/tail-check.test.mjs ci/poll-steam.test.mjs ci/staging.test.mjs ci/promote.test.mjs ci/vmap-sign.test.mjs ci/vmap-watchdog.test.mjs ci/client-check-workflow.test.mjs
+        run: node --test ci/decide.test.mjs ci/apply-proposals.test.mjs ci/version-map.test.mjs ci/map-mode.test.mjs ci/field-rows.test.mjs ci/tail-check.test.mjs ci/poll-steam.test.mjs ci/staging.test.mjs ci/promote.test.mjs ci/vmap-sign.test.mjs ci/vmap-watchdog.test.mjs ci/client-check-workflow.test.mjs ci/client-rig-workflow.test.mjs
+      - name: Test the verdict script
+        shell: pwsh
+        run: ./ci/test-verdict.ps1
