@@ -2532,7 +2532,9 @@ jobs:
   #   rig-other   the other Steam branch (public <-> public_test_branch) with the refusals
   #               the loader's own rule predicts for THAT branch's current build
   #               (map-mode's expect_refused_other: decide's loaderRefusal on the other
-  #               branch's CL, the CL found through its build id in the candidate map).
+  #               branch's CL, the CL found through its build id in the candidate map),
+  #               plus the plugins whose interface the candidate loader does not accept
+  #               (the scanner's REFUSED), which it refuses on every build.
   #               Its current build must keep working with the same DLLs: a refusal the
   #               rule predicts there (a v70 plugin on a newer build) is declared, and any
   #               refusal it does not predict is a fail. Public is never excused by hand:
@@ -2670,7 +2672,7 @@ jobs:
     needs: [build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate]
     if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10   # a job log not there yet is fetched again, up to a minute per job
     permissions:
       contents: read
       issues: write

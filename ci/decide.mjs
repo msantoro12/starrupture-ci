@@ -290,7 +290,7 @@ function refusalFromFields(p, running) {
 // the build. A plugin whose fields cannot say is not listed, so a refusal the rule does not
 // predict stays unexpected and fails the rig.
 export function expectedRefusals(rows, cl) {
-  if (!Array.isArray(rows) || !Number.isInteger(Number(cl)) || Number(cl) <= 0 || cl === null) return [];
+  if (!Array.isArray(rows) || !Number.isInteger(Number(cl)) || Number(cl) <= 0) return [];
   const names = rows.filter((p) => isObj(p) && typeof p.name === 'string' && p.name !== '' && (p.verdict === 'REFUSED' || loaderRefusal(p, cl))).map((p) => p.name);
   return [...new Set(names)].sort();
 }

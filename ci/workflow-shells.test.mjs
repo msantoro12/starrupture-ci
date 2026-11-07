@@ -21,12 +21,15 @@ const read = (p) => readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
 function stepsAt(lines, indent) {
   const steps = [];
   const item = new RegExp(`^ {${indent}}- `);
-  const key = (k) => new RegExp(`^ {${indent + 2}}${k}:`);
+  // A key of the step: on its own line, or on the item line itself ("- run: ...").
+  const key = (k) => new RegExp(`^ {${indent}}(?:- | {2})${k}:`);
   let s = null;
   lines.forEach(({ text, n }) => {
     if (item.test(text)) {
       s = { line: n, name: (/name:\s*(.*)$/.exec(text) ?? [])[1] ?? text.trim(), run: false, shell: false };
       steps.push(s);
+      if (key('run').test(text)) s.run = true;
+      if (key('shell').test(text)) s.shell = true;
       return;
     }
     if (!s) return;
@@ -55,7 +58,8 @@ export function workflowJobs(text) {
     const runsOn = (/^ {4}runs-on:\s*(.*)$/m.exec(body) ?? [])[1] ?? '';
     return {
       name: j.name,
-      windows: /windows/i.test(runsOn),
+      // An expression (a matrix os) counts as Windows when the job names a Windows runner anywhere.
+      windows: /windows/i.test(runsOn) || (/\$\{\{/.test(runsOn) && /windows/i.test(body)),
       defaultShell: /^ {4}defaults:\n {6}run:\n(?: {8}.*\n)*? {8}shell:/m.test(body + '\n'),
       steps: stepsAt(j.lines, 6),
     };
@@ -100,12 +104,15 @@ test('shells: the parser sees a bash block with no shell on a Windows job', () =
     'jobs:', '  a:', '    runs-on: windows-latest', '    steps:',
     '      - name: Bare', '        run: |', '          case "$X" in', '            *) ;;', '          esac',
     '      - name: Declared', '        shell: bash', '        run: echo ok',
+    '      - run: echo inline',
     '      - uses: actions/checkout@v7', '  b:', '    runs-on: ubuntu-latest', '    steps:', '      - run: echo linux',
     '  c:', '    runs-on: windows-latest', '    defaults:', '      run:', '        shell: bash', '    steps:', '      - run: echo set',
+    '  d:', '    strategy:', '      matrix:', '        os: [ubuntu-latest, windows-latest]', '    runs-on: ${{ matrix.os }}', '    steps:', '      - run: echo matrix',
   ].join('\n');
   const jobs = workflowJobs(wf);
-  assert.deepEqual(jobs.map((j) => [j.name, j.windows, j.defaultShell]), [['a', true, false], ['b', false, false], ['c', true, true]]);
-  assert.deepEqual(jobs[0].steps.map((s) => [s.name, s.run, s.shell]), [['Bare', true, false], ['Declared', true, true], ['- uses: actions/checkout@v7', false, false]]);
+  assert.deepEqual(jobs.map((j) => [j.name, j.windows, j.defaultShell]), [['a', true, false], ['b', false, false], ['c', true, true], ['d', true, false]]);
+  assert.deepEqual(jobs[0].steps.map((s) => [s.name, s.run, s.shell]), [['Bare', true, false], ['Declared', true, true], ['- run: echo inline', true, false], ['- uses: actions/checkout@v7', false, false]]);
+  assert.deepEqual(jobs[3].steps.map((s) => s.run && !s.shell), [true]);
   // The loader job of the compile check as it was on main at 7b355d4: its first step had no shell.
   const before = ['jobs:', '  loader:', '    runs-on: windows-latest', '    steps:', '      - name: Check the loader repository', '        run: |', '          case "$LOADER_REPO_INPUT" in', '          esac'].join('\n');
   assert.deepEqual(workflowJobs(before)[0].steps.filter((s) => s.run && !s.shell).map((s) => s.name), ['Check the loader repository']);
