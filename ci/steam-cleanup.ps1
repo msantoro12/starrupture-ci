@@ -101,7 +101,7 @@ function Remove-Login {
         # The processes holding what is left: those under the Steam folder, or under the item itself.
         $roots = @($left | ForEach-Object { if ($steamDir -and $_.StartsWith($steamDir, [StringComparison]::OrdinalIgnoreCase)) { $steamDir } else { $_ } } | Select-Object -Unique)
         $holders = @($roots | ForEach-Object { Get-Locker $_ } | Where-Object { $_ -ne 'not found' } | Select-Object -Unique)
-        $heldBy = if ($holders) { "held by: $($holders -join ', ')" } else { 'holder not found' }
+        $heldBy = if ($holders) { ("held by: $($holders -join ', ')" -replace 'ssfn\d+', 'ssfn*') } else { 'holder not found' }
         foreach ($l in $shown) { Write-Host "::error::$l could not be removed after $LoginRetrySec s ($heldBy)" }
         $reason = "The Steam login could not be removed from the runner after $LoginRetrySec s ($($shown -join ', '); $heldBy)."
         if ($env:RUNNER_TEMP) { Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-cleanup-reason.txt') -Value $reason -Encoding utf8 }
