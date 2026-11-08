@@ -14,6 +14,11 @@ name: SR client rig
 #
 # One game session per account: runs queue, and GitHub keeps one waiting run per group (a
 # third run replaces the second). Nothing cancels a run that is going.
+# A feed run (feed_artifact) seeds the loader's feed cache with a TEST-signed feed taken from
+# an artifact of the calling run, and ci/verdict.ps1 then also judges that the loader applied
+# it. It needs a candidate loader that trusts the TEST key (the caller builds it), and the
+# feed must be signed with the TEST key: a release-signed feed is refused here, so nothing the
+# release key signed ever reaches this job.
 # Game files, engine logs, dumps and Steam config files never leave the runner. Nothing
 # taken from the logs reaches the console, the job summary or an upload before the leak
 # gate has passed: the verdict writes its text to files in out/, and the last step
@@ -50,6 +55,18 @@ on:
         description: 'Plugins taken out of the install but still expected, so they must show as missing'
         type: string
         default: ''
+      feed_artifact:
+        description: 'Optional: name of an artifact of this run holding feed.test-signed.txt, a TEST-signed feed to seed into the loader''s feed cache (needs a candidate loader that trusts the TEST key)'
+        type: string
+        default: ''
+      feed_seq:
+        description: 'The seq the feed carries (required with feed_artifact)'
+        type: string
+        default: ''
+      feed_cl:
+        description: 'The CL of the running build, which the feed must carry (required with feed_artifact)'
+        type: string
+        default: ''
   workflow_call:
     inputs:
       branch:
@@ -78,6 +95,18 @@ on:
         default: ''
       remove_plugins:
         description: 'Plugins taken out of the install but still expected'
+        type: string
+        default: ''
+      feed_artifact:
+        description: 'Name of an artifact of the calling run holding feed.test-signed.txt, seeded into the loader''s feed cache'
+        type: string
+        default: ''
+      feed_seq:
+        description: 'The seq the feed carries'
+        type: string
+        default: ''
+      feed_cl:
+        description: 'The CL of the running build, which the feed must carry'
         type: string
         default: ''
     outputs:
@@ -128,6 +157,9 @@ jobs:
       EXPECT: ${{ inputs.expect }}
       EXPECT_REFUSED: ${{ inputs.expect_refused }}
       REMOVE_PLUGINS: ${{ inputs.remove_plugins }}
+      FEED_ARTIFACT: ${{ inputs.feed_artifact }}
+      FEED_SEQ: ${{ inputs.feed_seq }}
+      FEED_CL: ${{ inputs.feed_cl }}
       MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
       DOWNLOAD_DIR: D:\rig-dl
       # One name per rig run. A caller's run id is the top-level run's, so the several rigs of one run (the
@@ -200,6 +232,54 @@ jobs:
           github-token: ${{ github.token }}
           path: candidate
 
+      # The feed is seeded into the candidate loader's cache and trusted by that build alone, so it
+      # needs the candidate, and it is checked here, before the install: signed with the TEST key
+      # (never the release key), carrying the seq it is declared with and a build row for the CL.
+      - name: Check the feed inputs
+        if: inputs.feed_artifact != '' || inputs.feed_seq != '' || inputs.feed_cl != ''
+        shell: pwsh
+        run: |
+          function Stop-Rig([string]$m) {
+            Write-Host "::error::$m"
+            Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-reason.txt') -Value $m -Encoding utf8
+            exit 1
+          }
+          if (-not $env:FEED_ARTIFACT -or -not $env:FEED_SEQ -or -not $env:FEED_CL) { Stop-Rig 'feed_artifact, feed_seq and feed_cl go together' }
+          if ($env:FEED_ARTIFACT -notmatch '^[A-Za-z0-9._-]{1,100}$') { Stop-Rig 'feed_artifact is not a plain artifact name' }
+          if ($env:FEED_SEQ -cnotmatch '^[1-9][0-9]{0,14}$') { Stop-Rig 'feed_seq is not a number' }
+          if ($env:FEED_CL -cnotmatch '^[1-9][0-9]{0,8}$') { Stop-Rig 'feed_cl is not a number' }
+          if (-not (Test-Path candidate)) { Stop-Rig 'a seeded feed needs the candidate loader that trusts it: candidate_run_id and candidate_artifact are missing' }
+
+      - name: Download the feed
+        if: inputs.feed_artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.feed_artifact }}
+          path: feed
+
+      - name: Check the feed
+        if: inputs.feed_artifact != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          reason() { echo "::error::$1"; printf '%s\n' "$1" > "$RUNNER_TEMP/rig-reason.txt"; exit 1; }
+          [ -f feed/feed.test-signed.txt ] || reason "the artifact $FEED_ARTIFACT has no feed.test-signed.txt"
+          out="$(node ci/vmap-sign.mjs verify feed/feed.test-signed.txt --allow-test-key --expect-seq "$FEED_SEQ" 2>&1)" || reason "the feed does not verify: $out"
+          # The TEST key only: a feed signed with the release key is not what this rig is for.
+          case "$out" in "ok seq=$FEED_SEQ key=k1 TEST-KEY") ;; *) reason "the feed is not signed with the TEST key k1 at seq $FEED_SEQ: $out" ;; esac
+          echo "$out"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parseFeed } from "./ci/version-map.mjs";
+            const NL = String.fromCharCode(10);
+            // A signed feed is: format line, seq line, the rows, sig line. The rows with the format line are the unsigned feed.
+            const lines = readFileSync(process.argv[1], "utf8").split(NL);
+            const map = parseFeed([lines[0], ...lines.slice(2, -2), ""].join(NL), "feed.test-signed.txt");
+            const cl = Number(process.argv[2]);
+            if (!map.builds.some((b) => b.cl === cl)) { console.error("the feed has no build row for CL-" + cl); process.exit(1); }
+            console.log("The feed carries a build row for CL-" + cl);
+          ' feed/feed.test-signed.txt "$FEED_CL" || reason "the feed does not carry a build row for CL-$FEED_CL"
+
       # Validates every input and the candidate, resolves the releases, and fails here, not
       # after a 16 GB install, on a bad one.
       - name: Resolve the set
@@ -209,8 +289,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $cand = if (Test-Path candidate) { 'candidate' } else { '' }
+          $feed = @{}
+          if ($env:FEED_ARTIFACT) { $feed = @{ FeedFile = 'feed/feed.test-signed.txt'; FeedSeq = $env:FEED_SEQ; FeedCl = $env:FEED_CL } }
           ./ci/client-rig-set.ps1 -Mode Resolve -Branch $env:BRANCH -Tags $env:TAGS -Expect $env:EXPECT `
-            -ExpectRefused $env:EXPECT_REFUSED -RemovePlugins $env:REMOVE_PLUGINS -Owner $env:MOD_OWNER -CandidateDir $cand
+            -ExpectRefused $env:EXPECT_REFUSED -RemovePlugins $env:REMOVE_PLUGINS -Owner $env:MOD_OWNER -CandidateDir $cand @feed
 
       # Repeat runs download nothing: the owner reads the public download counts.
       - name: Restore the release files
@@ -247,7 +329,9 @@ jobs:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
         run: |
           $cand = if (Test-Path candidate) { 'candidate' } else { '' }
-          ./ci/client-rig-set.ps1 -Mode Install -DownloadDir $env:DOWNLOAD_DIR -InstallDir $env:INSTALL_DIR -OutDir out -CandidateDir $cand
+          $feed = @{}
+          if ($env:FEED_ARTIFACT) { $feed = @{ FeedFile = 'feed/feed.test-signed.txt'; FeedSeq = $env:FEED_SEQ; FeedCl = $env:FEED_CL } }
+          ./ci/client-rig-set.ps1 -Mode Install -DownloadDir $env:DOWNLOAD_DIR -InstallDir $env:INSTALL_DIR -OutDir out -CandidateDir $cand @feed
 
       - name: Launch the game client
         id: launch

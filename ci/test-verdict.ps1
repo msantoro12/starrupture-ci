@@ -123,6 +123,17 @@ function New-ClientCase([string]$Name, [scriptblock]$Mutate) {
     [pscustomobject]@{ Case = $Name; Exit = $LASTEXITCODE; Out = ($out -join "`n"); Dir = $d }
 }
 
+# The feed-path rig: set.json names the feed the run seeded, and the loader logs it applied
+# just before the game version gate. The fixture's build is CL 127004.
+function Seed-Feed($c, $Seq = 41, $Cl = 127004, [string]$Line = '', [switch]$AfterGate) {
+    $c.set | Add-Member -NotePropertyName feed -NotePropertyValue ([pscustomobject]@{ seq = $Seq; cl = $Cl }) -Force
+    if (-not $Line) { $Line = "[07:13:48.640] [INFO ] [T:03432] [VersionFeed] Feed seq $Seq (key k1, TEST KEY): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)" }
+    if ($AfterGate) { $c.ml += $Line; return }
+    $i = [array]::IndexOf($c.ml, ($c.ml | Where-Object { $_ -match 'Game version OK:' } | Select-Object -First 1))
+    $c.ml = @($c.ml[0..($i - 1)]) + @($Line) + @($c.ml[$i..($c.ml.Count - 1)])
+}
+$vf = '[07:13:48.700] [WARN ] [T:03432] [VersionFeed] '
+
 $sig = '[00:00:01.000] [WARN ] [T:03432] [ModLoader] '
 $err = '[00:00:01.000] [ERROR] [T:03432] [ModLoader] '
 $clientCases = [ordered]@{
@@ -232,6 +243,21 @@ $clientCases = [ordered]@{
  'set_missing'             = @{ Mut = { param($c) $c.skip += 'set' };                                                      Fail = 'set_record' }
  'set_no_expect'           = @{ Mut = { param($c) (Plugin $c 'Codex').PSObject.Properties.Remove('expect') };              Fail = 'set_record' }
  'hashes_missing'          = @{ Mut = { param($c) $c.skip += 'hashes' };                                                   Fail = 'dll_hashes_unchanged' }
+ # The feed-path rig (set.json carries a feed)
+ 'feed_good'               = @{ Mut = { param($c) Seed-Feed $c } }
+ 'feed_record_bad'         = @{ Mut = { param($c) Seed-Feed $c; $c.set.feed.seq = 'x' };                                   Fail = 'feed_record' }
+ 'feed_line_missing'       = @{ Mut = { param($c) Seed-Feed $c; Drop $c '\[VersionFeed\] Feed seq' };                      Fail = 'feed_applied' }
+ 'feed_wrong_seq'          = @{ Mut = { param($c) Seed-Feed $c 41 127004; $c.set.feed.seq = 42 };                          Fail = 'feed_applied' }
+ 'feed_zero_rows'          = @{ Mut = { param($c) Seed-Feed $c -Line "[07:13:48.640] [INFO ] [T:03432] [VersionFeed] Feed seq 41 (key k1, TEST KEY): 0 rows from the feed, 12 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)" }; Fail = 'feed_applied' }
+ 'feed_release_key'        = @{ Mut = { param($c) Seed-Feed $c -Line "[07:13:48.640] [INFO ] [T:03432] [VersionFeed] Feed seq 41 (key k2): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)" }; Fail = 'feed_applied' }
+ 'feed_after_the_gate'     = @{ Mut = { param($c) Seed-Feed $c -AfterGate };                                               Fail = 'feed_rows_used' }
+ 'feed_other_cl'           = @{ Mut = { param($c) Seed-Feed $c 41 128786 };                                                Fail = 'feed_rows_used' }
+ 'feed_cache_unusable'     = @{ Mut = { param($c) Seed-Feed $c; $c.ml += "$($vf)The feed cache is not usable (signature does not verify); using the loader's own map" }; Fail = 'feed_not_refused' }
+ 'feed_cache_unread'       = @{ Mut = { param($c) Seed-Feed $c; $c.ml += "$($vf)The feed cache 'D:\g\ModLoader\version-map-client.v1.cache' could not be read (or is over 1 MiB); using the loader's own map" }; Fail = 'feed_not_refused' }
+ 'feed_cl_refused'         = @{ Mut = { param($c) Seed-Feed $c; $c.ml += "$($vf)CL-127004 from the feed is refused: it lacks 3 of the keys the loader needs" }; Fail = 'feed_not_refused' }
+ 'feed_fetch_started'      = @{ Mut = { param($c) Seed-Feed $c; $c.ml += '[07:13:49.000] [INFO ] [T:03432] [VersionFeed] Fetching the feed (stage 1)' }; Fail = 'feed_not_fetched' }
+ 'feed_fetched_stored'     = @{ Mut = { param($c) Seed-Feed $c; $c.ml += '[07:13:49.500] [INFO ] [T:03432] [VersionFeed] Feed seq 41 stored for the next launch' }; Fail = 'feed_not_fetched' }
+ 'feed_no_request_ok'      = @{ Mut = { param($c) Seed-Feed $c; $c.ml += '[07:13:49.000] [INFO ] [T:03432] [VersionFeed] No feed request (stage 1): auto-update is off' } }
  # Not a failure
  'feature_off_note'        = @{ Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: no row for CL-128786 (reflected)" } }
 }
