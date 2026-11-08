@@ -270,6 +270,14 @@ on:
         description: 'Proof run: a branch of msantoro12/StarRupture-ModLoader the feed-path rig builds instead of the Latest release (refused unless publish is off; blank: the Latest release)'
         type: string
         default: ''
+      # Dispatch only, the owner's proof of the full public chain on a CL the loader already maps
+      # (sr-watch cannot pass it: the call does not declare it). Map mode refuses it on another
+      # branch, with publish on or with test_autopilot. It records nothing in state/public-builds.json,
+      # pushes the candidate to auto/update-<CL>-<run>-<attempt> only, and never publishes.
+      proof_run:
+        description: 'Proof run: carry public''s already-mapped CL through the candidate, both rigs and the feed-path rig; never records or publishes (needs public, map_mode, publish off)'
+        type: boolean
+        default: false
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -2339,7 +2347,7 @@ jobs:
   record-public:
     name: record the public build
     needs: [check]
-    if: ${{ !cancelled() && inputs.map_mode == true && inputs.test_autopilot != true && inputs.branch == 'public' && needs.check.result == 'success' }}
+    if: ${{ !cancelled() && inputs.map_mode == true && inputs.test_autopilot != true && inputs.proof_run != true && inputs.branch == 'public' && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2467,13 +2475,24 @@ jobs:
       GH_REPO: ${{ github.repository }}
       # A dispatched test run only (never a call from sr-watch): see the input.
       TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && inputs.publish != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
-      # The raw dispatch input: a test run for the publish gate, however TEST_AUTOPILOT came out.
-      TEST_INPUT: ${{ inputs.test_autopilot == true }}
+      # The raw dispatch inputs: a test run (or a proof run) for the publish gate, however TEST_AUTOPILOT came out.
+      TEST_INPUT: ${{ inputs.test_autopilot == true || inputs.proof_run == true }}
       # Every map-mode run that is not a test run (the unattended chain passes publish: true): a disabled
       # autopilot holds publishing only, so the candidate is still exported, TEST-signed, staged and pushed.
       # Publishing itself is the publish input and the autopilot, in the publish job.
       CANDIDATE: ${{ inputs.map_mode == true && inputs.test_autopilot != true }}
+      # The owner's proof run (dispatch only): see the input.
+      PROOF: ${{ inputs.proof_run == true }}
     steps:
+      - name: Refuse a proof run that could publish
+        if: ${{ inputs.proof_run == true }}
+        env:
+          PUBLISH: ${{ inputs.publish == true }}
+          TEST_RUN: ${{ inputs.test_autopilot == true }}
+        run: |
+          [ "$BRANCH" = public ] && [ "$PUBLISH" = false ] && [ "$TEST_RUN" = false ] \
+            || { echo "::error::proof_run needs branch public, publish off and test_autopilot off: a proof run never publishes"; exit 2; }
+
       - name: Check out the map tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2618,6 +2637,16 @@ jobs:
             import { parse } from "./tool/ci/version-map.mjs";
             process.stdout.write("previous_cl=" + parse(readFileSync(process.argv[1], "utf8"), "the header").builtCL + "\n");
           ' "$header" >> "$GITHUB_OUTPUT"
+          # A proof run re-runs a CL the header already maps, and no other: its field rows take the
+          # build as its own reference (the chain step), which is only true for a CL mapped before.
+          if [ "$PROOF" = true ]; then
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { parse } from "./tool/ci/version-map.mjs";
+              const cl = Number(JSON.parse(readFileSync("observations.json", "utf8")).cl);
+              if (!parse(readFileSync(process.argv[1], "utf8"), "the header").builds.some((b) => b.cl === cl)) { console.log("::error::proof_run re-runs a CL the loader already maps, and the header has no build row for CL-" + cl); process.exit(2); }
+            ' "$header"
+          fi
           status=0
           # A test run measures a CL already in the table again; any other run refuses it.
           node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json --remeasure "$TEST_AUTOPILOT" || status=$?
@@ -2656,7 +2685,10 @@ jobs:
           # reflected key is listed (it cannot find what moved), so decide holds
           # with that reason; the file is never named when it does not exist.
           base=()
-          if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json); else echo "field-rows: no reference layout in the check's artifact (branch $BRANCH); running without --base"; fi
+          # A proof run's CL is already mapped (the write step checked): the build is its own reference.
+          if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json)
+          elif [ "$PROOF" = true ]; then base=(--base res/layout-target.json); echo "field-rows: proof run on CL-$cl, which the header already maps: the build is its own reference"
+          else echo "field-rows: no reference layout in the check's artifact (branch $BRANCH); running without --base"; fi
           fr=0
           node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" \
             --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --sources commits.json --report field-rows.json || fr=$?
@@ -2671,7 +2703,8 @@ jobs:
             const r = read("res/result.json");
             put("g1.json", { ok: process.env.BUILD_RESULT === "success" });
             put("g2.json", { ok: r.checks?.fail === false });
-            put("g3.json", { ok: true, cl, previousCl });
+            // A proof run measures a CL the header already maps again: G3 passes it then.
+            put("g3.json", { ok: true, cl, previousCl, ...(process.env.PROOF === "true" ? { proof: true } : {}) });
             // The plugin verdicts: decide holds on any plugin the loader would refuse.
             put("plugins.json", r.plugins ?? { error: "the client check wrote no plugin verdicts" });
             // G4: the client scan, with the SDK value of each global the check compared.
@@ -2920,7 +2953,7 @@ jobs:
   publish:
     name: publish the feed
     needs: [check, map-mode, rig-branch, rig-other, feed-gate]
-    if: ${{ !cancelled() && inputs.test_autopilot != true && inputs.publish == true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' && needs.feed-gate.result == 'success' && (needs.feed-gate.outputs.state == 'PASS' || needs.feed-gate.outputs.state == 'SKIP') }}
+    if: ${{ !cancelled() && inputs.test_autopilot != true && inputs.proof_run != true && inputs.publish == true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' && needs.feed-gate.result == 'success' && (needs.feed-gate.outputs.state == 'PASS' || needs.feed-gate.outputs.state == 'SKIP') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -2932,7 +2965,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      TEST_INPUT: ${{ inputs.test_autopilot == true }}
+      TEST_INPUT: ${{ inputs.test_autopilot == true || inputs.proof_run == true }}
       CHAIN_SEQ: ${{ needs.map-mode.outputs.seq }}
     steps:
       - name: Check out the sign tool
@@ -3092,6 +3125,8 @@ jobs:
       # Where the rows were read from, and the only repository this job writes to.
       LOADER_REPO: ${{ inputs.loader_repo }}
       PUSH_REPO: msantoro12/StarRupture-ModLoader
+      # A proof run pushes auto/update-<CL>-<run>-<attempt> only, never the plain name.
+      PROOF: ${{ inputs.proof_run == true }}
     steps:
       - name: Check the deploy key
         env:
@@ -3151,7 +3186,7 @@ jobs:
           curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$ssh_dir/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
           out="$(node tool/ci/staging.mjs push --repo "$PUSH_REPO" --plan chain/stage-plan.json --build chain/build.json \
-            --header chain/version_map.generated.h --checkout loader --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT")"
+            --header chain/version_map.generated.h --checkout loader --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" --proof "$PROOF")"
           echo "$out" >> "$GITHUB_OUTPUT"
           echo "Loader fork: $(echo $out)" >> "$GITHUB_STEP_SUMMARY"
 

@@ -5,7 +5,7 @@
 //   node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
 //   node ci/staging.mjs target --repo <owner/name> --plan <stage-plan.json>      (the allowlist check alone)
 //   node ci/staging.mjs push --repo <owner/name> --plan <stage-plan.json> --build <build.json> --header <file> \
-//        --checkout <dir> --run-id <id> --run-attempt <n>      (the push job of sr-client-check.yml only)
+//        --checkout <dir> --run-id <id> --run-attempt <n> [--proof true]      (the push job of sr-client-check.yml only)
 //
 // A beta build that passed the chain is staged: its map rows sit on the loader
 // fork's `auto/update-<CL>` (a newer build at the same CL gets `-<run>`, so
@@ -155,11 +155,12 @@ const defaultGit = (args, { cwd } = {}) => execFileSync('git', args, { cwd, enco
 
 // The real effect. Cuts one commit from `checkout` (the loader commit the chain read the
 // header from) that changes only HEADER_PATH, and pushes it as plan.branch, or as plan.branch
-// with the run id when that branch exists with another tree. opts: { repo, plan, build, header,
-// checkout, runId, runAttempt, url? }; git is replaceable for tests. Returns
-// { branch, sha, tree, pushed }.
+// with the run id when that branch exists with another tree. A proof run (proof: true) only ever
+// takes the run-suffixed name, so it never writes the plain auto/update-<CL>. opts: { repo, plan,
+// build, header, checkout, runId, runAttempt, proof?, url? }; git is replaceable for tests.
+// Returns { branch, sha, tree, pushed }.
 export function pushLoader(opts, git = defaultGit) {
-  const { repo, plan, build, header, checkout, runId, runAttempt } = opts;
+  const { repo, plan, build, header, checkout, runId, runAttempt, proof = false } = opts;
   need(plan && plan.repo === LOADER_REPO && typeof plan.branch === 'string' && typeof plan.message === 'string', 'the stage plan holds no loader branch and message');
   checkTarget(repo, plan.branch);
   need(/^[0-9]+$/.test(String(runId)) && /^[0-9]+$/.test(String(runAttempt)), 'run id and attempt must be numeric');
@@ -177,7 +178,8 @@ export function pushLoader(opts, git = defaultGit) {
   const tree = g('rev-parse', 'HEAD^{tree}');
   const url = opts.url ?? `git@github.com:${repo}.git`;
   // The plan's name first; a branch with another tree is never overwritten, so the next name carries the run.
-  for (const branch of [plan.branch, `${plan.branch}-${runId}-${runAttempt}`]) {
+  const suffixed = `${plan.branch}-${runId}-${runAttempt}`;
+  for (const branch of proof ? [suffixed] : [plan.branch, suffixed]) {
     checkTarget(repo, branch);
     const existing = g('ls-remote', url, `refs/heads/${branch}`).split('\t')[0];
     if (existing) {
@@ -188,7 +190,7 @@ export function pushLoader(opts, git = defaultGit) {
     g('push', '-q', '--no-tags', url, `HEAD:refs/heads/${branch}`);
     return { branch, sha, tree, pushed: true };
   }
-  throw new StagingError(`${plan.branch} and its run-suffixed name both exist with other trees; nothing is pushed`);
+  throw new StagingError(proof ? `${suffixed} exists with another tree; nothing is pushed` : `${plan.branch} and its run-suffixed name both exist with other trees; nothing is pushed`);
 }
 
 function readJson(path) {
@@ -219,7 +221,7 @@ export function main(argv) {
       return 0;
     }
     if (cmd === 'push' && o.repo && o.plan && o.build && o.header && o.checkout && o['run-id'] && o['run-attempt']) {
-      const r = pushLoader({ repo: o.repo, plan: readJson(o.plan), build: readJson(o.build), header: o.header, checkout: o.checkout, runId: o['run-id'], runAttempt: o['run-attempt'] });
+      const r = pushLoader({ repo: o.repo, plan: readJson(o.plan), build: readJson(o.build), header: o.header, checkout: o.checkout, runId: o['run-id'], runAttempt: o['run-attempt'], proof: o.proof === 'true' });
       process.stderr.write(r.pushed ? `pushed ${r.branch} at ${r.sha} to ${o.repo}\n` : `${r.branch} already holds this tree at ${r.sha}; nothing to push\n`);
       process.stdout.write(`branch=${r.branch}\nsha=${r.sha}\n`);
       return 0;
@@ -233,7 +235,7 @@ export function main(argv) {
     process.stderr.write(`refused: ${e.message}\n`);
     return 3;
   }
-  process.stderr.write('usage: staging.mjs stage --build <f> --index <f> [--branches <f>] [--out <f>]\n       staging.mjs rederive --branches <f> --out <f>\n       staging.mjs target --repo <owner/name> --plan <f>\n       staging.mjs push --repo <owner/name> --plan <f> --build <f> --header <f> --checkout <dir> --run-id <n> --run-attempt <n>\n');
+  process.stderr.write('usage: staging.mjs stage --build <f> --index <f> [--branches <f>] [--out <f>]\n       staging.mjs rederive --branches <f> --out <f>\n       staging.mjs target --repo <owner/name> --plan <f>\n       staging.mjs push --repo <owner/name> --plan <f> --build <f> --header <f> --checkout <dir> --run-id <n> --run-attempt <n> [--proof true]\n');
   return 2;
 }
 

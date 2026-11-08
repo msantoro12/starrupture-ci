@@ -93,7 +93,7 @@ test('test_autopilot: dispatch only, refused with publish on, never publishable,
   assert.match(mm, /import \{ isPublishable \} from "\.\/tool\/ci\/promote\.mjs";/);
   assert.match(mm, /const ok = isPublishable\(p, \{ testRun: process\.env\.IS_TEST === "false" \? false : true, branch: process\.env\.BRANCH \}\);/);
   assert.match(mm, /--uses res\/layout-uses\.txt/);
-  assert.match(job('publish'), /if: \$\{\{ !cancelled\(\) && inputs\.test_autopilot != true && inputs\.publish == true && needs\.map-mode\.outputs\.test == 'false' && /);
+  assert.match(job('publish'), /if: \$\{\{ !cancelled\(\) && inputs\.test_autopilot != true && inputs\.proof_run != true && inputs\.publish == true && needs\.map-mode\.outputs\.test == 'false' && /);
   assert.ok(!/workflow_ref/.test(jobIf('publish')), 'the publish input is the one switch: no inference from who called');
   const ap = JSON.parse(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'));
   assert.ok(ap.enabled === false || (ap.enabled === true && ap.paths.every((p) => p === 'M')), 'autopilot is off or limited to the map-feed path M');
@@ -103,7 +103,7 @@ test('publish lock: a test run never reaches the release key, whatever state/aut
   const mm = job('map-mode');
   // The chain states explicitly whether it is a test: the dispatch input, its own flag or the decision.
   assert.match(mm, /\n {6}test: \$\{\{ steps\.chain\.outputs\.test \}\}\n/);
-  assert.match(mm, /TEST_INPUT: \$\{\{ inputs\.test_autopilot == true \}\}/);
+  assert.match(mm, /TEST_INPUT: \$\{\{ inputs\.test_autopilot == true \|\| inputs\.proof_run == true \}\}/);
   // A held candidate (decision not M) counts as a test as far as publishing goes.
   assert.ok(mm.includes(`is_test="$(node -p "const d = JSON.parse(require('fs').readFileSync('decision.json','utf8')); String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || d.test === true || (d.candidate === true && d.decision !== 'M'))")"\n          echo "test=$is_test" >> "$GITHUB_OUTPUT"`));
   const pub = job('publish');
@@ -121,7 +121,9 @@ test('publish lock: a test run never reaches the release key, whatever state/aut
 
 test('field-rows: a missing reference layout is never named, and only a refusal (exit 3) is survivable', () => {
   const mm = job('map-mode');
-  assert.ok(mm.includes('if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json); else echo '));
+  assert.ok(mm.includes('if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json)\n'));
+  assert.ok(mm.includes('elif [ "$PROOF" = true ]; then base=(--base res/layout-target.json); echo '), 'only a proof run takes the build as its own reference');
+  assert.ok(mm.includes('\n          else echo "field-rows: no reference layout'));
   assert.ok(mm.includes('--next res/layout-target.json "${base[@]}"'));
   assert.ok(!/--base res\/layout-reference\.json \\\n/.test(mm), '--base is never passed unconditionally');
   assert.ok(mm.includes('if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr)'));
@@ -2715,6 +2717,64 @@ test('feed gate: the judge passes only on a plan RUN, a built loader and a PASS 
     const r = feedJudgeRun(env);
     assert.deepEqual([r.status, r.state], [1, 'FAIL'], JSON.stringify(env));
   }
+});
+
+test('proof_run: a dispatch input only; sr-watch cannot set it; it never records, never publishes and never pushes the plain branch', () => {
+  assert.match(dispatch, /\n {6}proof_run:\n {8}description: [^\n]*never records or publishes[^\n]*\n {8}type: boolean\n {8}default: false\n/);
+  assert.ok(!call.includes('proof_run'), 'a call cannot pass it');
+  assert.ok(!watch.includes('proof_run'), 'the unattended chain never sets it');
+  // record-public: never for a proof run; the unattended public run still records.
+  const rec = (inputs) => evalExpr(jobIf('record-public'), { needs: { check: { result: 'success', outputs: {} } }, inputs });
+  assert.equal(rec({ map_mode: true, branch: 'public', publish: true }), true);
+  assert.equal(rec({ map_mode: true, branch: 'public', proof_run: true }), false);
+  // publish: never for a proof run, even with every gate passed and publish on; the unattended chain is unchanged.
+  const pub = (inputs) => evalExpr(jobIf('publish'), { needs: okNeeds(), inputs: { ...okInputs(), ...inputs } });
+  assert.equal(pub({}), true);
+  assert.equal(pub({ proof_run: true }), false);
+  assert.match(job('publish'), /\n {6}TEST_INPUT: \$\{\{ inputs\.test_autopilot == true \|\| inputs\.proof_run == true \}\}\n/, 'the lock step refuses it too');
+  // The chain marks it a test, so nothing it plans is publishable.
+  const mm = job('map-mode');
+  assert.match(mm, /\n {6}PROOF: \$\{\{ inputs\.proof_run == true \}\}\n/);
+  assert.ok(mm.includes('put("g3.json", { ok: true, cl, previousCl, ...(process.env.PROOF === "true" ? { proof: true } : {}) });'));
+  // The push: the run-suffixed name only.
+  const push = job('push-loader');
+  assert.match(push, /\n {6}PROOF: \$\{\{ inputs\.proof_run == true \}\}\n/);
+  assert.ok(runOf(push, 'Commit the header and push the branch').includes('--run-attempt "$RUN_ATTEMPT" --proof "$PROOF")'));
+  // The rest of the chain runs for it as for the unattended chain: nothing else keys on proof_run.
+  for (const name of ['push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'feed-plan', 'feed-loader', 'rig-feed', 'feed-gate', 'rig-gate']) assert.ok(!jobIf(name).includes('proof_run'), name);
+});
+
+test('proof_run: map mode refuses it on another branch, with publish on or with test_autopilot', { skip: !bash }, () => {
+  const j = job('map-mode');
+  assert.ok(j.indexOf('- name: Refuse a proof run that could publish') < j.indexOf('- name: Check out the map tool'), 'refused before anything else');
+  assert.match(step(j, 'Refuse a proof run that could publish'), /\n {8}if: \$\{\{ inputs\.proof_run == true \}\}\n/);
+  const script = runOf(j, 'Refuse a proof run that could publish');
+  const run = (env) => sh(script, tmpdir(), { BRANCH: 'public', PUBLISH: 'false', TEST_RUN: 'false', ...env });
+  assert.equal(run({}).status, 0);
+  for (const env of [{ PUBLISH: 'true' }, { TEST_RUN: 'true' }, { BRANCH: 'public_test_branch' }]) {
+    const r = run(env);
+    assert.equal(r.status, 2, JSON.stringify(env));
+    assert.match(r.stdout, /::error::proof_run needs branch public, publish off and test_autopilot off/);
+  }
+});
+
+test('proof_run: the write step takes only a CL the header already maps', { skip: !bash }, () => {
+  const lines = writeStep();
+  const at = lines.findIndex((l) => l.startsWith('# A proof run re-runs a CL'));
+  const block = lines.slice(at, lines.findIndex((l, i) => i > at && l === 'fi') + 1).join('\n');
+  assert.ok(at > 0 && block.endsWith('fi'));
+  assert.ok(lines.indexOf('status=0') > at, 'checked before the header is written');
+  const header = parse(readFileSync(join(here, 'fixtures', 'version-map', 'loader.h'), 'utf8'), 'fixture');
+  const known = header.builds[0].cl;
+  const run = (cl, proof) => {
+    const dir = carryDir({ 'observations.json': JSON.stringify({ cl }) });
+    return sh(`set -euo pipefail\nheader=loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h\n${block}\necho checked`, dir, { PROOF: proof });
+  };
+  assert.equal(run(known, 'true').status, 0);
+  const unknown = run(999999, 'true');
+  assert.equal(unknown.status, 2);
+  assert.match(unknown.stdout, /::error::proof_run re-runs a CL the loader already maps, and the header has no build row for CL-999999/);
+  assert.equal(run(999999, 'false').status, 0, 'any other run is not checked here');
 });
 
 test('feed gate: the alert names a gate that did not pass and notes a skip', () => {
