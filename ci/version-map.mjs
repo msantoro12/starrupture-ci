@@ -597,6 +597,27 @@ export function parseFeed(text, where = 'feed') {
   return map;
 }
 
+// What a feed adds to, or changes in, the rows a header already holds for one CL. Both maps are
+// the parsers' output (the feed's from parseFeed, the header's from parse). A row is the same
+// when every field is the same; a feed has no way to remove a row, so a row only the header
+// holds is not a difference. Returns { added, changed }, each a sorted list of row names:
+// `build`, `function <key> (fp ...)` or `field <key>`.
+export function feedDelta(feed, header, cl) {
+  const canon = (row) => JSON.stringify(Object.keys(row).sort().map((k) => [k, row[k]]));
+  const rows = (map) => new Map([
+    ...map.builds.filter((b) => b.cl === cl).map((b) => ['build', b]),
+    ...map.functions.filter((r) => r.cl === cl).map((r) => [`function ${r.key} (fp ${hex8(r.fp)})`, r]),
+    ...map.fields.filter((r) => r.cl === cl).map((r) => [`field ${r.key}`, r]),
+  ]);
+  const have = rows(header);
+  const added = [], changed = [];
+  for (const [name, row] of rows(feed)) {
+    if (!have.has(name)) added.push(name);
+    else if (canon(have.get(name)) !== canon(row)) changed.push(name);
+  }
+  return { added: added.sort(), changed: changed.sort() };
+}
+
 // ---- The keys the components use, and the coverage check ----------------------
 //
 // One key per line, '#' comments and blank lines skipped:

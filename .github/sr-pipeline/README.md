@@ -105,7 +105,7 @@ Copied from the loader's `release.yml` and the plugins' `release.yml` build step
 | `sr-build-all` / `interface`, `loader`, `plugin` | `contents: read` | check out and build |
 | `sr-build-all` / `report` | `contents: read`, `actions: read`, `pull-requests: write` | list jobs and artifacts, comment on the PR |
 | `sr-watch` / `alert` | `contents: read`, `issues: write`, `actions: read`, `checks: read` | a failed poll or compile check: the failed steps, their annotations and logs, the alert issue |
-| `sr-watch` / `client-check` (caller) | `contents: write`, `pull-requests: write`, `issues: write`, `actions: read`, `checks: read` (a ceiling) | covers the called workflow; passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` (by name), `VMAP_SIGN_KEY_TEST` and the deploy keys of the loader fork and the nine plugin forks, no release key |
+| `sr-watch` / `client-check` (caller) | `contents: write`, `pull-requests: write`, `issues: write`, `actions: write`, `checks: read` (a ceiling) | covers the called workflow (`actions: write` is the feed-loader-cleanup job's); passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` (by name), `VMAP_SIGN_KEY_TEST`, `VMAP_SIGN_KEY` (the release key, read only by the publish job) and the deploy keys of the loader fork and the nine plugin forks, and `publish: true` |
 | `sr-client-check` / `build-scanner` | `contents: read` | check out the loader, build the scanner |
 | `sr-client-check` / `check` | `contents: read`, environment `steam-client` | the only job that can read the Steam login; checks out no repository |
 | `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR; no environment, no secrets |

@@ -449,11 +449,13 @@ function Invoke-ClientVerdict {
     Add-Check 'game_version_ok' ($null -ne $gv) $gv
 
     # ---- the seeded feed (feed-path rig only) ----
-    # The cache holds a TEST-signed feed for the running build, which the loader's own map does
-    # not carry. The loader must read it (the line names the seq), do it before the game version
-    # gate, and pass that gate on the CL the feed was made for: with no baseline row for that
-    # CL, the rows can only have come from the feed. Fetching, a refused feed and a cache fault
-    # all fail; a run that touched the network is not a test of the cache.
+    # The cache holds a TEST-signed feed for the running build, with rows the loader's own map
+    # lacks or holds with other values (the workflow runs this rig only then). The loader must
+    # read it (the line names the seq), take rows from it ("N rows from the feed", N > 0: the
+    # loader counts the rows it took from the feed, and a row the compiled map holds for the
+    # running exe wins over the feed's), do it before the game version gate, and pass that gate
+    # on the CL the feed was made for. Fetching, a refused feed and a cache fault all fail; a run
+    # that touched the network is not a test of the cache.
     $feedSpec = Get-Prop $set 'feed' $null
     if ($feedSpec) {
         $fSeq = [string](Get-Prop $feedSpec 'seq' '')

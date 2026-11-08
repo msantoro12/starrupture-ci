@@ -14,8 +14,9 @@ name: SR client rig
 #
 # One game session per account: runs queue, and GitHub keeps one waiting run per group (a
 # third run replaces the second). Nothing cancels a run that is going.
-# A feed run (feed_artifact) seeds the loader's feed cache with a TEST-signed feed taken from
-# an artifact of the calling run, and ci/verdict.ps1 then also judges that the loader applied
+# A feed run (feed_artifact, a call only: the feed is an artifact of the calling run, which a
+# dispatch has none of) seeds the loader's feed cache with a TEST-signed feed taken from
+# that artifact, and ci/verdict.ps1 then also judges that the loader applied
 # it. It needs a candidate loader that trusts the TEST key (the caller builds it), and the
 # feed must be signed with the TEST key: a release-signed feed is refused here, so nothing the
 # release key signed ever reaches this job.
@@ -53,18 +54,6 @@ on:
         default: ''
       remove_plugins:
         description: 'Plugins taken out of the install but still expected, so they must show as missing'
-        type: string
-        default: ''
-      feed_artifact:
-        description: 'Optional: name of an artifact of this run holding feed.test-signed.txt, a TEST-signed feed to seed into the loader''s feed cache (needs a candidate loader that trusts the TEST key)'
-        type: string
-        default: ''
-      feed_seq:
-        description: 'The seq the feed carries (required with feed_artifact)'
-        type: string
-        default: ''
-      feed_cl:
-        description: 'The CL of the running build, which the feed must carry (required with feed_artifact)'
         type: string
         default: ''
   workflow_call:
