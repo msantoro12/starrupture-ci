@@ -134,10 +134,23 @@ test('the cleanup script: the login part is fatal and verified, the folder part 
   assert.match(c, /ValidateSet\('All', 'Login', 'Folder'\)/);
   // Login: ssfn, config.vdf, loginusers.vdf, steamcmd and the registry go; each is checked afterwards; exit 1 on a leftover.
   for (const t of ['ssfn*', 'config.vdf', 'loginusers.vdf', 'C:\\steamcmd', 'HKCU:\\Software\\Valve']) assert.ok(c.includes(t), t);
-  assert.match(c, /\$left = @\(\$targets \| Where-Object \{ Test-Path -LiteralPath \$_ \}\)/);
-  assert.match(c, /rig-reason\.txt/);
-  // Folder: stops the client, the helper, the service and the game; retries; warns with the holder; exits 0.
-  for (const p of ['steam', 'StarRupture', 'Steam Client Service']) assert.ok(c.includes(p), p);
+  assert.match(c, /\$left = @\(Remove-WithRetry \$targets \$LoginRetrySec\)/);
+  assert.match(c, /\$LoginRetrySec = 60/);
+  // The reason goes to its own file (not the launch's rig-reason.txt) and names the item and the holder.
+  assert.match(c, /rig-cleanup-reason\.txt/);
+  assert.ok(!/rig-reason\.txt/.test(c), 'the cleanup never writes the launch reason file');
+  assert.match(c, /\$heldBy = if \(\$holders\)/);
+  assert.match(c, /\$holders = @\(\$roots \| ForEach-Object \{ Get-Locker/);
+  // Steam's logs folder holds the account name, not a credential: it is not a Login target, it goes with the folder.
+  const loginFn = c.slice(c.indexOf('function Remove-Login'), c.indexOf('function Remove-Folder'));
+  assert.ok(!/'logs'/.test(loginFn), 'logs is not removed by the login part');
+  assert.match(loginFn, /^function Remove-Login \{\r?\n    Stop-SteamProcesses\r?\n    Start-Sleep/, 'the login part stops every process first');
+  // Both parts stop the client, its helpers, the service, the error reporter, the overlay, the game and the
+  // redistributable helper, then anything whose image is under the Steam folder; retries; warns with the holder; exits 0.
+  const stopFn = c.slice(c.indexOf('function Stop-SteamProcesses'), c.indexOf('function Remove-WithRetry'));
+  for (const p of ['steam', 'gameoverlayui', 'StarRupture', 'vctip', 'Steam Client Service', 'net.exe stop', 'Wait-Process']) assert.ok(stopFn.includes(p), p);
+  assert.match(stopFn, /\$_\.Path\.StartsWith\("\$steamDir\\"/, 'any process under the Steam folder');
+  assert.match(c, /Stop-SteamProcesses\r?\n    \}\r?\n\}/, 'the processes are stopped again between tries');
   assert.match(c, /Start-Sleep -Seconds \$wait/);
   assert.match(c, /\$FolderRetrySec = 60/);
   assert.match(c, /::warning::[^\n]*held by: \$\(Get-Locker/);
@@ -227,7 +240,7 @@ test('login failures leave a marker in the launch script and surface as login-fa
 });
 
 // Runs the "Outputs and result" step for a made-up state; returns its status output and exit code.
-function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', stage = '', cleanup = 'success', reasonFile = '' }) {
+function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', stage = '', cleanup = 'success', reasonFile = '', cleanupReasonFile = '', extractReasonFile = '' }) {
   const dir = mkdtempSync(join(tmpdir(), 'sr-final-'));
   try {
     const temp = join(dir, 'tmp');
@@ -236,6 +249,8 @@ function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', st
     mkdirSync(join(work, 'out'), { recursive: true });
     if (login) writeFileSync(join(temp, 'rig-login-failed.txt'), 'login');
     if (reasonFile) writeFileSync(join(temp, 'rig-reason.txt'), reasonFile);
+    if (cleanupReasonFile) writeFileSync(join(temp, 'rig-cleanup-reason.txt'), cleanupReasonFile);
+    if (extractReasonFile) writeFileSync(join(temp, 'rig-extract-reason.txt'), extractReasonFile);
     if (boot !== null) writeFileSync(join(work, 'out', 'boot.json'), JSON.stringify(boot));
     const outFile = join(dir, 'output.txt');
     writeFileSync(outFile, '');
@@ -287,7 +302,22 @@ test('the status step: login-failed, usmap-failed, extract-failed, ok, and empty
     assert.match(r.summary, /\n\n\S/, `a reason follows the status line for ${JSON.stringify(st)}`);
     assert.match(r.out, /::error title=Data extract::status '[^']*'\. \S/);
   }
-  assert.match(finalStatus({ boot: { process_found: true }, usmapOk: 'true', cleanup: 'failure', reasonFile: 'ssfn123 could not be removed' }).out, /ssfn123 could not be removed/);
+  // Each status shows the reason of its own stage: the cleanup's for cleanup-failed (with the extractor note),
+  // never the launch's, and the other way round.
+  const own = finalStatus({ boot: { process_found: true }, usmapOk: 'true', cleanup: 'failure', cleanupReasonFile: 'The Steam login could not be removed from the runner after 60 s (config; held by: vctip (pid 1)).', reasonFile: 'Attempt 1 ended: launch text' });
+  assert.match(own.out, /status 'cleanup-failed'\. The Steam login could not be removed from the runner after 60 s \(config; held by: vctip \(pid 1\)\)\. The extractor did not run\./);
+  assert.ok(!/launch text/.test(own.out), 'the launch reason is not shown for cleanup-failed');
+  const launchOnly = finalStatus({ boot: { process_found: true }, usmapOk: 'false', reasonFile: 'the game exited early', cleanupReasonFile: 'cleanup text' });
+  assert.match(launchOnly.out, /status 'usmap-failed'\. the game exited early/);
+  assert.ok(!/cleanup text/.test(launchOnly.out), 'the cleanup reason is not shown for usmap-failed');
+  // A sign-in failure with a leftover login says both, in that order.
+  const both = finalStatus({ login: true, cleanup: 'failure', reasonFile: 'Steam rejected the login', cleanupReasonFile: 'cleanup text' });
+  assert.match(both.out, /status 'login-failed'\. Steam rejected the login The login also could not be removed from the runner: cleanup text/);
+  // The extractor's reason is shown only when the extractor failed, not for a leak-gate or upload failure.
+  assert.match(finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'success', stage: 'extract-failed', extractReasonFile: 'extractor text' }).out, /extractor text/);
+  const upl = finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'failure', stage: 'ok', extractReasonFile: 'extractor text', reasonFile: 'launch text' });
+  assert.ok(!/extractor text|launch text/.test(upl.out), 'an upload failure shows neither');
+  assert.match(upl.out, /the leak gate or the upload failed/);
 });
 
 // ---- S4: one cleanup and one leak gate, shared with the rig -------------------------------------

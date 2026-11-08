@@ -353,7 +353,7 @@ test('cleanup: runs always, removes steamcmd, the Steam folder and the Steam pro
   assert.match(c, /Filter steam_appid\.txt/);
   assert.ok(indexOfStep('cleanup') > indexOfStep('launch') && indexOfStep('cleanup') < indexOfStep('verdict'));
   // The verdict only reads out/, which cleanup leaves alone.
-  assert.ok(!/out\b/.test(c.replace(/#.*$/gm, '')));
+  assert.ok(!/\bout\b/.test(c.replace(/#.*$/gm, '')));
 });
 
 test('cleanup: the rig runs both parts in one step; the login part is fatal, the folder part only warns', () => {
@@ -365,6 +365,10 @@ test('cleanup: the rig runs both parts in one step; the login part is fatal, the
   assert.match(c, /if \(\$Phase -eq 'All'\) \{ Remove-Folder \}/);
   assert.match(c, /::warning::[^\n]*held by: /);
   assert.match(step('Outputs and result'), /CLEANUP -eq 'failure'/);
+  // The rig's reason is the cleanup's own text (the item left and its holder) when the script wrote one.
+  assert.match(step('Outputs and result'), /rig-cleanup-reason\.txt/);
+  assert.match(c, /\$LoginRetrySec = 60/);
+  assert.match(c, /\$FolderRetrySec = 60/);
 });
 
 test('result: job fails on a failed verdict after the logs are uploaded, outputs always set', () => {

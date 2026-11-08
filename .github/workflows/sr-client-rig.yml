@@ -418,7 +418,11 @@ jobs:
             if (Test-Path -LiteralPath $vj) { $reason += " The verdict itself was $((Get-Content -LiteralPath $vj -Raw | ConvertFrom-Json).verdict)." }
           }
           elseif ($env:LEAK -eq 'failure') { $reason = 'The leak gate found account data in the output; nothing was uploaded.' }
-          elseif ($env:CLEANUP -eq 'failure') { $reason = 'The runner could not be cleaned of Steam and the login.' }
+          elseif ($env:CLEANUP -eq 'failure') {
+            $reason = 'The runner could not be cleaned of Steam and the login.'
+            $cr = Join-Path $env:RUNNER_TEMP 'rig-cleanup-reason.txt'
+            if (Test-Path -LiteralPath $cr) { $reason = (Get-Content -LiteralPath $cr -Raw).Trim() }
+          }
           elseif ((Test-Path -LiteralPath $vj) -and $env:LEAK -eq 'success') {
             $j = Get-Content -LiteralPath $vj -Raw | ConvertFrom-Json
             $verdict = $j.verdict; $reason = $j.reason; $publish = $true
