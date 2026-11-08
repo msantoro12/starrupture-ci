@@ -229,6 +229,20 @@ test('a proof run pushes only the run-suffixed name, never the plain auto/update
   assert.equal(push(g, { proof: true, header: g.header('same\n') }).branch, 'auto/update-129402-77-1');
 });
 
+test('a first publish whose rows the base already holds uses the base commit; any other run is refused', () => {
+  const f = fork();
+  const same = f.header('old rows\n');
+  assert.throws(() => push(f, { header: same }), /no rows to push/);
+  assert.throws(() => push(f, { header: same, proof: true }), /no rows to push/);
+  const r = push(f, { header: same, proof: true, firstPublish: true });
+  assert.deepEqual(r, { branch: '', sha: f.base.sha, tree: f.base.tree, pushed: false });
+  assert.deepEqual(refs(f), ['refs/heads/main'], 'nothing was pushed');
+  // With rows to add it pushes the run-suffixed name like any proof run.
+  const g = push(f, { proof: true, firstPublish: true, runId: 79 });
+  assert.equal(g.pushed, true);
+  assert.equal(g.branch, 'auto/update-129402-79-1');
+});
+
 test('git never sees a force, a tag, a delete or a ref outside auto/update-<CL>', () => {
   const f = fork();
   const calls = [];

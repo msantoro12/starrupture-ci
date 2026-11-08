@@ -5,6 +5,7 @@
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json \
 //       [--fields field-rows.json] --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
 //       [--other-cl 129402 | --other-unmapped "public runs build 123"] [--rig-plugins rig-plugins.json]
+//       [--first-publish]
 //
 // Prints the decision as JSON on stdout. Exit codes: 0 = path M (map-only update: the
 // rows go into the loader's map and ship as a signed feed), 10 = path B (auto-fix of
@@ -53,12 +54,18 @@
 // push) but nothing of it is publishable: the decision is not M. An unreadable or
 // malformed autopilot file, and every other HOLD reason, hold as always.
 // --test-autopilot is the same for a dispatched test run and also marks the result `test`.
+// --first-publish (the dispatch-only first publish of the feed, never with --test-autopilot): for
+// that one run the autopilot is taken as on for path M and state/autopilot.json is not consulted,
+// and G3 accepts a CL that is not newer than the header's when the G3 result says "firstPublish":
+// true as well. Neither half does anything alone. The file is never written. The result carries
+// `firstPublish`. Every other gate, the plugin verdicts and the rate limits apply as always.
 //
 // Gate result shapes:
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
 //           ("proof": true, an owner's proof run only: it re-runs a CL the header already maps, which the
-//           client check verified, so any CL passes)
+//           client check verified, so any CL passes; "firstPublish": true counts only together with
+//           --first-publish: the header holds a newer CL than the build this run publishes)
 //   G4:     the raw `sr-aobscan --json` output of the CLIENT exe (target "client"). The
 //           client check alone decides: a dedicated server build, when one exists for the
 //           CL, is scanned for information only and is never a gate. G4 must hold one
@@ -130,14 +137,15 @@ function checkSimpleGate(name, loaded) {
   return {};
 }
 
-function checkG3(loaded) {
+function checkG3(loaded, { firstPublish = false } = {}) {
   const bad = checkEnvelope('G3', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
   if (v.ok !== true) return { error: 'G3: gate did not pass (ok is not true)' };
   if (!isCl(v.cl)) return { error: 'G3: cl is missing or not a plain number' };
   if (!isCl(v.previousCl)) return { error: 'G3: previousCl is missing or not a plain number' };
-  if (v.proof !== true && Number(v.cl) <= Number(v.previousCl)) {
+  const bypass = v.proof === true || (firstPublish && v.firstPublish === true);
+  if (!bypass && Number(v.cl) <= Number(v.previousCl)) {
     return { error: `G3: CL-${v.cl} is not newer than CL-${v.previousCl}` };
   }
   return { cl: v.cl };
@@ -492,6 +500,7 @@ export function decide(inputs) {
       // input. From the rig's own DLLs (--rig-plugins), never from the plugin builds judged in perPlugin.
       expectRefused: rigRows === null ? [] : expectedRefusals(rigRows, cl),
     };
+    if (inputs.firstPublish) r.firstPublish = true;
     // The other branch's build: the same rule on that CL (--other-cl). On the very CL this check
     // scanned, the scanned verdicts apply too, so the two lists are then the same.
     if (inputs.otherCl !== undefined && inputs.otherCl !== null) {
@@ -519,14 +528,16 @@ export function decide(inputs) {
   if (typeof inputs.repo !== 'string' || inputs.repo === '') fail('repo name missing');
   if (!Number.isFinite(inputs.now)) fail('clock value invalid');
 
-  const ap = checkAutopilot(inputs.autopilot);
+  // The first publish stands in for the autopilot on this one run: path M only, the file not read.
+  if (inputs.firstPublish && inputs.testAutopilot) fail('a first publish is never a test run');
+  const ap = inputs.firstPublish ? { enabled: true, paths: ['M'], maxPerDay: LIMITS.maxReleasesPerDay } : checkAutopilot(inputs.autopilot);
   if (ap.error) fail(ap.error);
   else if (!ap.enabled && (inputs.testAutopilot || inputs.candidate)) disabled = true;
   else if (!ap.enabled) fail('autopilot is disabled (enabled is not true)');
 
   const g1 = checkSimpleGate('G1 compile', inputs.g1);
   const g2 = checkSimpleGate('G2 interface', inputs.g2);
-  const g3 = checkG3(inputs.g3);
+  const g3 = checkG3(inputs.g3, { firstPublish: inputs.firstPublish === true });
   const g4 = checkG4(inputs.g4);
   const g5 = checkG5(inputs.g5);
   const plugins = checkPlugins(inputs.plugins, new Set(Array.isArray(inputs.fields?.value?.rows) ? inputs.fields.value.rows : []), g3.cl);
@@ -625,21 +636,22 @@ function main() {
   let args;
   try {
     const argv = process.argv.slice(2);
-    args = parseArgs(argv.filter((a) => a !== '--test-autopilot' && a !== '--candidate'));
+    args = parseArgs(argv.filter((a) => a !== '--test-autopilot' && a !== '--candidate' && a !== '--first-publish'));
     args.testAutopilot = argv.includes('--test-autopilot');
     args.candidate = argv.includes('--candidate');
+    args.firstPublish = argv.includes('--first-publish');
     if (args['other-cl'] !== undefined) args.otherCl = otherClOf(args['other-cl']);
     if (args['other-unmapped'] !== undefined) args.otherUnmapped = otherUnmappedOf(args['other-unmapped']);
     if (args.otherCl !== undefined && args.otherUnmapped !== undefined) throw new Error('--other-cl and --other-unmapped exclude each other');
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate] [--first-publish]`);
     process.exit(2);
   }
   let result;
   try {
     const now = args.now === undefined ? Date.now() : Date.parse(args.now);
     result = decide({
-      repo: args.repo, now, testAutopilot: args.testAutopilot, candidate: args.candidate,
+      repo: args.repo, now, testAutopilot: args.testAutopilot, candidate: args.candidate, firstPublish: args.firstPublish,
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
       g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),

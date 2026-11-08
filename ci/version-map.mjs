@@ -25,7 +25,7 @@
 //   node ci/version-map.mjs remove-key <header> --key <key>
 //   node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
 //   node ci/version-map.mjs check <header> [--keys <keys.txt>]...
-//   node ci/version-map.mjs export-feed <header> --out <file> [--public-builds <state/public-builds.json>]
+//   node ci/version-map.mjs export-feed <header> --out <file>
 //
 // init writes an empty map; it refuses to overwrite a file.
 // add-build, add-function, add-absent and add-field add one row. A row that is
@@ -40,11 +40,7 @@
 // has). prune keeps the builds listed and drops every other build with all its rows.
 // check reads the header (any header off the format fails) and, with --keys,
 // applies the coverage rule over the union of the key lists given.
-// export-feed writes the loader map as the feed: tab-separated, LF, unsigned. With
-// --public-builds it writes only the CLs that are or were on public (the list is read
-// by ci/public-builds.mjs) and prints each CL it left out with its row count. A list
-// that is missing, unreadable or empty, or a header with no row for public's current
-// CL, refuses the export.
+// export-feed writes the loader map as the feed: tab-separated, LF, unsigned.
 //
 // Exit codes: 0 ok; 3 check found a violation; 2 usage, parse or conflict error.
 // The format, the feed and the keys file are documented in ci/VERSION-MAP.md.
@@ -53,7 +49,6 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isPattern } from './apply-proposals.mjs';
 import { isMain } from './layout-diff.mjs';
-import { currentPublicCL, publicCLs, readPublicBuilds } from './public-builds.mjs';
 
 export const FORMAT_VERSION = 2;
 export const FEED_FORMAT = 1;
@@ -550,25 +545,6 @@ export function exportFeed(map) {
   return text;
 }
 
-// The map with only the CLs that are, or once were, on public. A CL's build row and
-// every function, absent, field and size row keyed to it stay or go together. list is
-// parsePublicBuilds's. Returns { map, left: [{ cl, builds, functions, fields }] }, the
-// CLs left out. Refuses when the map has no build row for public's current CL: that
-// feed would not cover the build players run.
-export function publicOnly(map, list) {
-  const current = currentPublicCL(list);
-  need(map.builds.some((b) => b.cl === current), `public's current CL-${current} has no build row in the header; the feed would not cover public`);
-  const keep = publicCLs(list);
-  const left = [...map.builds].filter((b) => !keep.has(b.cl)).sort(byCL).map((b) => ({
-    cl: b.cl, builds: 1, functions: map.functions.filter((r) => r.cl === b.cl).length, fields: map.fields.filter((r) => r.cl === b.cl).length,
-  }));
-  const kept = (r) => keep.has(r.cl);
-  return {
-    map: { ...map, builds: map.builds.filter(kept), functions: map.functions.filter(kept), fields: map.fields.filter(kept), absentFields: (map.absentFields ?? []).filter(kept) },
-    left,
-  };
-}
-
 // Reads a feed export-feed wrote, strictly: loosely into the model, then
 // exported again, and any byte of difference is an error naming the first line.
 // No CRLF: the feed is bytes as signed, not a checkout.
@@ -834,18 +810,11 @@ export function main(argv) {
     process.stdout.write(`${file}: ${map.builds.length} builds, ${map.functions.length} function rows, ${map.fields.length} field rows; ${opt.keys ? `${problems.length} coverage problems` : 'format only'}\n`);
     return problems.length ? EXIT_VIOLATION : EXIT_OK;
   } else if (cmd === 'export-feed') {
-    only(opt, ['out', 'public-builds'], cmd);
+    only(opt, ['out'], cmd);
     need(typeof opt.out === 'string', '--out is required');
     const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
     need(!same(resolve(opt.out), resolve(file)), '--out must not be the header');
-    let map = load();
-    if (opt['public-builds'] !== undefined) {
-      const r = publicOnly(map, readPublicBuilds(opt['public-builds']));
-      map = r.map;
-      for (const l of r.left) process.stderr.write(`version-map: left out CL-${l.cl}, not on public: ${l.builds + l.functions + l.fields} rows (${l.builds} build, ${l.functions} function, ${l.fields} field)\n`);
-      process.stderr.write(`version-map: public export: ${r.left.length} CLs left out\n`);
-    }
-    const text = exportFeed(map);
+    const text = exportFeed(load());
     writeFileSync(opt.out, text);
     process.stderr.write(`version-map: ${opt.out}: feed format ${FEED_FORMAT}, ${text.split('\n').length - 1} lines, ${Buffer.byteLength(text)} bytes\n`);
   } else {

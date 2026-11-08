@@ -302,6 +302,26 @@ test('G3 proof: an owner\'s proof run passes a CL already mapped, the built one 
   for (const proof of ['true', 1, false, null]) holds(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '127004', proof }) })), /not newer/);
 });
 
+test('first publish: it passes a CL that is not newer and skips the autopilot, only with the flag and the G3 mark together', () => {
+  const g3 = (over = {}) => ok({ ok: true, cl: '127004', previousCl: '129402', firstPublish: true, ...over });
+  const off = ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 });
+  // The bypass is the run's own: the flag and the mark, with the autopilot off and the CL not newer.
+  const fp = decide(base({ firstPublish: true, g3: g3(), autopilot: off }));
+  assert.equal(fp.decision, 'M');
+  assert.equal(fp.firstPublish, true);
+  // The mark without the flag, or the flag without the mark, bypasses nothing.
+  holds(decide(base({ g3: g3() })), /not newer/);
+  holds(decide(base({ firstPublish: true, g3: g3({ firstPublish: undefined }) })), /not newer/);
+  for (const firstPublish of ['true', 1, false, null]) holds(decide(base({ firstPublish: true, g3: g3({ firstPublish }) })), /not newer/);
+  // Without the flag the autopilot still holds a run.
+  holds(decide(base({ g3: ok({ ok: true, cl: '127999', previousCl: '127004' }), autopilot: off })), /autopilot/);
+  // The rest of the gates apply as always: a failed check or a missing G3 still holds it.
+  holds(decide(base({ firstPublish: true, g3: g3(), autopilot: off, g1: ok({ ok: false }) })), /./);
+  holds(decide(base({ firstPublish: true, g3: g3(), autopilot: off, g4: ok(aob([aobRow('GetWorld', 'MISSING')])) })), /./);
+  // Never a test run.
+  holds(decide(base({ firstPublish: true, testAutopilot: true, g3: g3() })), /never a test run/);
+});
+
 test('fail closed: G4 must be a consistent client scan; a server scan is never the gate', () => {
   const good = aob([aobRow('GetWorld')]);
   holds(decide(base({ g4: ok({ ...good, target: 'server' }) })), /expected "client"/);
@@ -471,6 +491,21 @@ test('cli: exit 1 for a path C hold and for an unverified SDK global', () => {
   const g = runCli(cliFiles({ g4: aob([aobRow('GetWorld')], { noGlobals: true }) }));
   assert.equal(g.status, 1);
   assert.match(g.out.reasons.join(), /SDK global/);
+});
+
+test('cli: --first-publish decides M with the autopilot file off and leaves that file untouched; without it the same files HOLD', () => {
+  const off = { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 };
+  const files = cliFiles({ autopilot: off, g3: { ok: true, cl: '127004', previousCl: '129402', firstPublish: true } });
+  const plain = runCli(files);
+  assert.equal(plain.status, 1);
+  assert.equal(plain.out.decision, 'HOLD');
+  const fp = runCli(files, ['--first-publish']);
+  assert.equal(fp.status, 0);
+  assert.equal(fp.out.decision, 'M');
+  assert.equal(fp.out.firstPublish, true);
+  assert.deepEqual(JSON.parse(readFileSync(join(fp.dir, 'autopilot.json'), 'utf8')), off, 'state/autopilot.json is read by nobody and written by nobody');
+  // Never with a test run.
+  assert.notEqual(runCli(files, ['--first-publish', '--test-autopilot']).status, 0);
 });
 
 test('cli: an input that is a directory is a HOLD', () => {
