@@ -120,7 +120,7 @@ on:
         type: boolean
         default: false
       publish:
-        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
+        description: 'Sign the feed with the release key and publish it when promote says so (off: a dispatch is a dry run; the chain sr-watch runs publishes by itself when the autopilot is on and every gate passes)'
         type: boolean
         default: false
     # A called job sees an environment secret only when the caller passes it
@@ -2298,6 +2298,79 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # ---- Record the public build on the list the feed is cut from ---------
+  # The feed may carry only the CLs on state/public-builds.json (the game's devs asked for no
+  # loader on the test branch). When a PUBLIC run's check measured a build that is not the
+  # list's last entry, this job adds { cl, buildid, firstSeen } to the end of the list on main
+  # (ci/public-builds.mjs append), before map mode exports that build's feed. A test-branch
+  # run, a test run and a run that measured nothing never get here. Fails closed: a list that
+  # cannot be read or appended, or a push that main refuses, fails the job, and map mode does
+  # not run on a list it could not bring up to date. It commits that one file and nothing else.
+  record-public:
+    name: record the public build
+    needs: [check]
+    if: ${{ !cancelled() && inputs.map_mode == true && inputs.test_autopilot != true && inputs.branch == 'public' && needs.check.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: public-builds
+      cancel-in-progress: false
+    outputs:
+      appended: ${{ steps.record.outputs.appended }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          sparse-checkout: |
+            ci
+            state
+          persist-credentials: true
+
+      - name: Download the scans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: client-check-${{ inputs.branch }}
+          path: res
+
+      - name: Add the build to the list
+        id: record
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          # Second lock behind the job condition: only a public run says what public runs.
+          [ "$BRANCH" = public ] || { echo "::error::only a run for public records a public build"; exit 2; }
+          # The build Steam installed and the CL read from its exe. A run that measured no exe has
+          # nothing to record; map mode then stops on the missing scan by itself.
+          cl="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.cl ?? ''")"
+          buildid="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).download?.buildid ?? ''")"
+          if [ -z "$cl" ] || [ -z "$buildid" ]; then
+            echo "::notice title=Public builds::the check measured no exe (CL '$cl', build '$buildid'); nothing to record"
+            echo "appended=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          appended=false
+          done_=false
+          for attempt in 1 2 3; do
+            git fetch --quiet origin main
+            git checkout --quiet --detach origin/main
+            out="$(node ci/public-builds.mjs append state/public-builds.json --cl "$cl" --buildid "$buildid")" || { echo "::error title=Public builds::the list was not updated"; exit 2; }
+            echo "$out"
+            case "$out" in unchanged*) done_=true; break ;; esac
+            git add state/public-builds.json
+            git commit --quiet -m "Record public build $buildid (CL-$cl)" -m "The poll saw Steam's public branch on build $buildid, which the client check read as CL-$cl. The feed is cut from this list."
+            if git push origin HEAD:main; then appended=true; done_=true; break; fi
+            echo "push rejected (attempt $attempt); fetching main again"
+          done
+          [ "$done_" = true ] || { echo "::error title=Public builds::could not push the list to main after 3 tries; map mode does not run"; exit 2; }
+          echo "appended=$appended" >> "$GITHUB_OUTPUT"
+          if [ "$appended" = true ]; then echo "### Public builds: recorded CL-$cl (build $buildid) as public's current build" >> "$GITHUB_STEP_SUMMARY"; fi
+
   # ---- Map mode: the update as rows in the loader's version map -----------
   # The unattended path M chain, on the scans the check job uploaded and the
   # loader's header: map-mode assemble and write, field rows from the PDB
@@ -2307,7 +2380,7 @@ jobs:
   # dry run). The client check alone decides: no dedicated-server scan is read.
   # Reads only artifacts, the header and the vmap-feed release: no Steam login,
   # no plugin code, no game files. The release key signs only in the publish
-  # job below, and only when the publish input says so.
+  # job below (see its conditions: public only, the autopilot on, every gate).
   # The candidate chain does not wait for the autopilot: a disabled autopilot
   # holds PUBLISHING only (decide --candidate; the decision stays HOLD with the
   # reason, so the publish job cannot run). Every other HOLD reason still stops
@@ -2321,8 +2394,8 @@ jobs:
   # prunes nothing: the sets the previous release still reads are kept.
   map-mode:
     name: map mode
-    needs: [build, plugins, check, key-sources-plan, key-sources]
-    if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' }}
+    needs: [build, plugins, check, key-sources-plan, key-sources, record-public]
+    if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' && (needs.record-public.result == 'success' || needs.record-public.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2333,6 +2406,8 @@ jobs:
       cancel-in-progress: false
     outputs:
       decision: ${{ steps.chain.outputs.decision }}
+      # The one seq of this chain: the TEST-signed feed, the promote plan and (in the publish job) the release-signed feed and the history entry all carry it.
+      seq: ${{ steps.chain.outputs.seq }}
       action: ${{ steps.chain.outputs.action }}
       publishable: ${{ steps.chain.outputs.publishable }}
       # 'false' only for a run that is explicitly not a test; the publish job needs exactly that.
@@ -2375,6 +2450,16 @@ jobs:
           sparse-checkout: |
             ci
             state
+          persist-credentials: false
+
+      # The list on main, read after the record-public job: tool/ is the commit the run started on.
+      - name: Check out the public builds list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: pub
+          sparse-checkout: state/public-builds.json
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Check out the loader's header
@@ -2595,6 +2680,10 @@ jobs:
             [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
           fi
           echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
+          # The one seq of this chain, computed here and nowhere else: the TEST-signed feed, the promote
+          # plan, the history entry and the release-signed feed of the publish job all carry this number.
+          seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$last_seq")"
+          echo "seq=$seq" >> "$GITHUB_OUTPUT"
           test_flag=()
           [ "$TEST_AUTOPILOT" = true ] && test_flag=(--test-autopilot)
           [ "$CANDIDATE" = true ] && test_flag=(--candidate)
@@ -2665,8 +2754,6 @@ jobs:
               md.push(`| ${p.name} | ${status} | ${off} | ${[...p.reasons, ...p.degraded.map((x) => x.why)].join("; ").replace(/[|]/g, "/")} |`);
             }
             md.push("", ...d.reasons.map((r) => `- HOLD: ${r}`), ...d.notes.map((n) => `- ${n}`));
-            // The unattended chain (candidate) never publishes: no job takes its M to the feed, whatever the autopilot says.
-            if (d.candidate === true && d.decision === "M") md.push("- **publish not wired on the unattended path**: the autopilot is on, but this chain only builds, signs with the TEST key and stages; the feed is published only by a dispatch with publish on");
             require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
           '
           promote_flag=()
@@ -2677,11 +2764,30 @@ jobs:
             promote_flag=(--test-autopilot)
           elif [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
 
-          # Path M: the feed, signed with the TEST key and verified.
-          node tool/ci/version-map.mjs export-feed "$header" --out feed.txt
+          # Path M: the feed, public CLs only (the list on main, which the record-public job brought up to
+          # date), signed with the TEST key and verified. A refusal (no list, no row for public's current
+          # CL) stops the chain.
+          export_status=0
+          node tool/ci/version-map.mjs export-feed "$header" --out feed.txt --public-builds pub/state/public-builds.json 2> export.err || export_status=$?
+          cat export.err >&2
+          [ "$export_status" -eq 0 ] || { echo "::error::the public-only feed export was refused (exit $export_status): $(tr '\n' ' ' < export.err)"; exit 2; }
+          # The CLs the export left out, and the requirement that this build's own CL is in the feed on public.
+          node -e '
+            const fs = require("fs");
+            const left = fs.readFileSync("export.err", "utf8").split("\n").filter((l) => l.startsWith("left out CL-"));
+            const md = ["", "### Feed export: public CLs only", "", ...(left.length ? left.map((l) => "- " + l) : ["- no CL left out: every CL in the header is on public\u0027s list"])];
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+          '
+          if [ "$BRANCH" = public ]; then
+            node --input-type=module -e '
+              import { publicCLs, readPublicBuilds } from "./tool/ci/public-builds.mjs";
+              const cl = Number(process.argv[1]);
+              if (!publicCLs(readPublicBuilds("pub/state/public-builds.json")).has(cl)) { console.log("::error::CL-" + cl + " is the build public runs, but it is not on the public builds list, so its feed would leave it out"); process.exit(2); }
+            ' "$cl"
+          fi
           [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
-          node tool/ci/vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq"
-          node tool/ci/vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq"
+          node tool/ci/vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq" --seq "$seq"
+          node tool/ci/vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq" --expect-seq "$seq"
 
           # Stage a beta build; plan the promotion. For a beta build the plan is
           # for the day public flips to this exact build; for public, it is the
@@ -2717,7 +2823,7 @@ jobs:
           [ "$TEST_AUTOPILOT" = true ] && promote_flag=(--test-autopilot)
           p=0
           node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
-            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${promote_flag[@]}" || p=$?
+            --history history.json --last-seq "$last_seq" --seq "$seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${promote_flag[@]}" || p=$?
           IS_TEST="$is_test" node --input-type=module -e '
             import { appendFileSync, readFileSync } from "node:fs";
             import { isPublishable } from "./tool/ci/promote.mjs";
@@ -2747,6 +2853,7 @@ jobs:
             decision.json
             feed.txt
             feed.test-signed.txt
+            export.err
             build.json
             stage-plan.json
             staged.json
@@ -2757,21 +2864,26 @@ jobs:
           retention-days: 14
 
   # ---- Publish: the feed signed with the release key ---------------------
-  # Only with the publish input (default off; the owner turns it on), only for
-  # public, and only when decide chose M and the chain marked it publishable
-  # (a promotion, or public's own new CL with nothing staged), and only when both
-  # client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
-  # loader: a failed, cancelled or skipped rig keeps the feed unsigned. The promote
-  # step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
-  # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in
-  # the vmap-sign environment, deployments from main only). Reads the live feed's seq again
-  # right before signing (one publish at a time), signs above it, verifies
-  # with no TEST key allowed, and uploads it with the updated history to the
-  # vmap-feed release.
+  # Publishes with nobody at the keyboard, when and only when every one of these holds:
+  #   - the run is for public, never a test branch (the feed may carry only CLs that are on
+  #     public's list, state/public-builds.json);
+  #   - it is the chain sr-watch runs, or a dispatch with the publish input on (a dispatch
+  #     without it is a dry run) - and never a test_autopilot run;
+  #   - decide chose M, which it does only with state/autopilot.json enabled: with the autopilot
+  #     disabled the decision is HOLD and this job is skipped ("publish skipped");
+  #   - the chain marked it publishable (ci/promote.mjs isPublishable) and is not a test run;
+  #   - both client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
+  #     loader: a failed, cancelled or skipped rig keeps the feed unsigned.
+  # The promote step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
+  # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
+  # environment, deployments from main only). It signs the chain's feed with the chain's one seq
+  # (map-mode computed it once; it must still rise above the live feed's), uploads the feed and
+  # the history to the vmap-feed release, then downloads what was published and verifies its
+  # signature, seq and sha256.
   publish:
     name: publish the feed
     needs: [check, map-mode, rig-branch, rig-other]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' }}
+    if: ${{ !cancelled() && inputs.test_autopilot != true && (inputs.publish == true || !contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@')) && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -2784,12 +2896,23 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TEST_INPUT: ${{ inputs.test_autopilot == true }}
+      CHAIN_SEQ: ${{ needs.map-mode.outputs.seq }}
     steps:
       - name: Check out the sign tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: tool
           sparse-checkout: ci
+          persist-credentials: false
+
+      # The list on main as it is now: the feed is checked against it again below.
+      - name: Check out the public builds list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: pub
+          sparse-checkout: state/public-builds.json
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Download the chain
@@ -2801,14 +2924,48 @@ jobs:
       - name: Refuse a test run
         # Second lock behind the job condition: nothing a test run produced is
         # ever signed with the release key, whatever state/autopilot.json says.
+        # The unattended chain's own M carries wouldBe M; a test run or
+        # a held decision carries a mark of its own.
         run: |
           set -euo pipefail
           [ "$TEST_INPUT" = false ] || { echo "::error::a test run never publishes"; exit 2; }
           node -e '
             const read = (f) => JSON.parse(require("fs").readFileSync("chain/" + f, "utf8"));
             const d = read("decision.json"), p = read("promote-plan.json");
-            if (d.test !== undefined || d.wouldBe !== undefined || p.test !== undefined) { console.error("::error::the chain is marked a test run; refusing to sign it"); process.exit(2); }
+            const ownM = d.decision === "M" && d.wouldBe === "M";
+            if (d.test !== undefined || (d.wouldBe !== undefined && !ownM) || p.test !== undefined) { console.error("::error::the chain is marked a test run; refusing to sign it"); process.exit(2); }
           '
+
+      - name: Check the seq and the feed before signing
+        run: |
+          set -euo pipefail
+          # The chain's one seq: a number, and the plan (when it states one) says the same.
+          case "$CHAIN_SEQ" in ''|0*|*[!0-9]*) echo "::error::the chain carries no usable seq ('$CHAIN_SEQ')"; exit 2 ;; esac
+          node -e '
+            const p = JSON.parse(require("fs").readFileSync("chain/promote-plan.json", "utf8"));
+            if (p.seq !== null && p.seq !== undefined && String(p.seq) !== process.env.CHAIN_SEQ) { console.error("::error::the promote plan states seq " + p.seq + ", not the chain seq " + process.env.CHAIN_SEQ); process.exit(2); }
+          '
+          # The live seq, read again now: another publish may have landed since the chain ran.
+          # No release yet is seq 0; a release that cannot be read, or a feed that does not verify, stops.
+          last_seq=0
+          if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > live-release.json 2> live-release.err; then
+            gh release download vmap-feed --pattern version-map-client.v1.txt --dir live
+            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
+          elif grep -q 'HTTP 404' live-release.err; then
+            echo "no vmap-feed release yet"
+          else
+            cat live-release.err; echo "::error::cannot read the vmap-feed release"; exit 2
+          fi
+          echo "$last_seq" > last-seq.txt
+          if [ "$CHAIN_SEQ" -le "$last_seq" ]; then
+            echo "::error::the chain's seq $CHAIN_SEQ no longer rises above the published seq $last_seq (another publish landed since); nothing was signed, the chain has to run again"; exit 2
+          fi
+          # The feed is cut again from the chain's header against the list on main now. It must be the
+          # feed the chain staged, byte for byte: a list that moved since (public changed build) means
+          # this chain is stale.
+          node tool/ci/version-map.mjs export-feed chain/version_map.generated.h --out feed.again.txt --public-builds pub/state/public-builds.json
+          cmp -s chain/feed.txt feed.again.txt || { echo "::error::the feed the chain staged differs from the feed the public builds list on main allows now; nothing was signed, the chain has to run again"; exit 2; }
 
       - name: Sign with the release key, verify, publish
         env:
@@ -2816,24 +2973,34 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$VMAP_SIGN_KEY" ] || { echo "::error::the VMAP_SIGN_KEY secret is not set"; exit 2; }
-          # The live seq, read again now: another publish may have landed since
-          # the chain ran. No release yet is seq 0; a feed that does not verify stops.
-          last_seq=0
-          if gh release download vmap-feed --pattern version-map-client.v1.txt --dir live 2>/dev/null; then
-            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
-            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
-          fi
-          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq"
-          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq"
+          last_seq="$(cat last-seq.txt)"
+          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq" --seq "$CHAIN_SEQ"
+          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq" --expect-seq "$CHAIN_SEQ"
           node -e '
             const fs = require("fs");
             const h = JSON.parse(fs.readFileSync("chain/history.json", "utf8"));
             const d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8"));
-            h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString() });
+            h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString(), seq: Number(process.env.CHAIN_SEQ) });
             fs.writeFileSync("vmap-history.json", JSON.stringify(h, null, 1) + "\n");
           '
           gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
           gh release upload vmap-feed version-map-client.v1.txt vmap-history.json --clobber
+
+      - name: Verify what was published
+        run: |
+          set -euo pipefail
+          # Download the assets as the loader will, and check them against what was signed here.
+          gh release download vmap-feed --pattern version-map-client.v1.txt --pattern vmap-history.json --dir published --clobber
+          out="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
+          echo "$out"
+          case "$out" in "ok seq=$CHAIN_SEQ key=k2") ;; *) echo "::error::the published feed is not seq $CHAIN_SEQ signed with the release key k2: $out"; exit 2 ;; esac
+          for f in version-map-client.v1.txt vmap-history.json; do
+            want="$(sha256sum "$f" | cut -d' ' -f1)"
+            got="$(sha256sum "published/$f" | cut -d' ' -f1)"
+            [ "$want" = "$got" ] || { echo "::error::the published $f has sha256 $got, not the $want that was signed and uploaded"; exit 2; }
+            echo "$f sha256 $got"
+          done
+          echo "### Published the feed: seq $CHAIN_SEQ, release key k2, sha256 $(sha256sum published/version-map-client.v1.txt | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
 
   # ---- Push: the staged map rows to the loader fork -----------------------
   # The only job that reads the loader fork's deploy key (SR_DEPLOYKEY_MODLOADER,
@@ -3206,7 +3373,7 @@ jobs:
   # and the rig jobs' verdict outputs.
   alert:
     name: alert
-    needs: [build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate]
+    needs: [build, plugin-plan, check, record-public, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate]
     if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # a job log not there yet is fetched again, up to a minute per job
@@ -3231,6 +3398,7 @@ jobs:
       CHECK_RESULT: ${{ needs.check.result }}
       MAP_MODE_RESULT: ${{ needs.map-mode.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
+      RECORD_RESULT: ${{ needs.record-public.result }}
       # The cue that staged map rows should have been pushed, built and put through the rigs.
       STAGED_EXPECTED: ${{ needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
       PUSH_RESULT: ${{ needs.push-loader.result }}
@@ -3300,7 +3468,7 @@ jobs:
             const d = readJson("chain/decision.json");
             const chainThere = fs.existsSync("chain") && fs.readdirSync("chain").length > 0;
 
-            for (const [label, name, result] of [["build-scanner", "build-scanner", e.BUILD_RESULT], ["plugin-plan", "plugin-plan", e.PLAN_RESULT], ["publish the feed", "publish the feed", e.PUBLISH_RESULT]]) {
+            for (const [label, name, result] of [["build-scanner", "build-scanner", e.BUILD_RESULT], ["plugin-plan", "plugin-plan", e.PLAN_RESULT], ["publish the feed", "publish the feed", e.PUBLISH_RESULT], ["record the public build", "record the public build", e.RECORD_RESULT]]) {
               if (result === "failure") lines.push("- job **" + label + "** failed", ...why(name));
             }
             if (e.CHECK_RESULT === "failure") {
