@@ -18,7 +18,7 @@ import {
   FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, parse, parseFeed, parseKeys, prune, publicOnly,
   removeKey, replaceBuild, unionKeys,
 } from './version-map.mjs';
-import { PublicBuildsError, currentPublicCL, parsePublicBuilds, publicCLs, readPublicBuilds } from './public-builds.mjs';
+import { PublicBuildsError, appendPublicBuild, currentPublicCL, parsePublicBuilds, publicCLs, readPublicBuilds } from './public-builds.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIX = join(here, 'fixtures', 'version-map');
@@ -675,4 +675,56 @@ test('the command line prints the current CL, and exits 2 with a reason on a bad
   assert.match(empty.stderr, /list is empty/);
   assert.equal(runList(join(dir, 'missing.json')).status, 2);
   assert.equal(readFileSync(f, 'utf8'), '[]');
+});
+
+test('append: a new build becomes the last entry, the rest is untouched, and the same build twice is a no-op', () => {
+  const seed = readFileSync(SEED, 'utf8');
+  const first = parsePublicBuilds(seed).builds;
+  const r = appendPublicBuild(seed, { cl: 129999, buildid: '26500000', now: '2026-11-08T00:00:00Z' });
+  assert.equal(r.appended, true);
+  const list = parsePublicBuilds(r.text);
+  assert.deepEqual(list.builds.slice(0, first.length), first, 'older entries are byte for byte what they were');
+  assert.deepEqual(list.builds.at(-1), { cl: 129999, buildid: '26500000', firstSeen: '2026-11-08T00:00:00Z' });
+  assert.equal(currentPublicCL(list), 129999);
+  assert.ok(r.text.startsWith(seed.replace(/\n\]\n$/, ',\n')), 'the file keeps its layout: one entry per line');
+  assert.ok(r.text.endsWith('\n]\n'));
+  const again = appendPublicBuild(r.text, { cl: 129999, buildid: '26500000', now: '2026-11-09T00:00:00Z' });
+  assert.deepEqual(again, { text: r.text, appended: false });
+  // A flip back to an older build is a new entry at the end; the same CL on another build is one too.
+  const back = appendPublicBuild(r.text, { cl: 127004, buildid: '25646882', now: '2026-11-10T00:00:00Z' });
+  assert.equal(back.appended, true);
+  assert.equal(currentPublicCL(parsePublicBuilds(back.text)), 127004);
+  assert.equal(appendPublicBuild(back.text, { cl: 127004, buildid: '25999999', now: '2026-11-11T00:00:00Z' }).appended, true);
+});
+
+test('append: refuses a time that goes backwards, a bad build and a damaged list, and leaves the file as it was', () => {
+  const seed = readFileSync(SEED, 'utf8');
+  const bad = [
+    [seed, { cl: 2, buildid: '2', now: '2020-01-01T00:00:00Z' }],
+    [seed, { cl: 0, buildid: '2', now: '2026-12-01T00:00:00Z' }],
+    [seed, { cl: 2, buildid: 'abc', now: '2026-12-01T00:00:00Z' }],
+    [seed, { cl: 2, buildid: '2', now: '2026-12-01' }],
+    ['[]', { cl: 2, buildid: '2', now: '2026-12-01T00:00:00Z' }],
+    ['{', { cl: 2, buildid: '2', now: '2026-12-01T00:00:00Z' }],
+  ];
+  for (const [t, entry] of bad) assert.throws(() => appendPublicBuild(t, entry), PublicBuildsError, JSON.stringify(entry));
+  const dir = mkdtempSync(join(tmpdir(), 'public-builds-append-'));
+  const f = join(dir, 'p.json');
+  const runList = (...a) => spawnSync(process.execPath, [join(here, 'public-builds.mjs'), ...a], { encoding: 'utf8', windowsHide: true });
+  writeFileSync(f, seed);
+  const ok = runList('append', f, '--cl', '129999', '--buildid', '26500000', '--now', '2026-11-08T00:00:00Z');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /^appended: CL-129999 build 26500000/);
+  const written = readFileSync(f, 'utf8');
+  assert.equal(currentPublicCL(parsePublicBuilds(written)), 129999);
+  const same = runList('append', f, '--cl', '129999', '--buildid', '26500000');
+  assert.equal(same.status, 0, same.stderr);
+  assert.match(same.stdout, /^unchanged/);
+  assert.equal(readFileSync(f, 'utf8'), written);
+  for (const a of [['append', f, '--cl', '130000', '--buildid', '1', '--now', '2020-01-01T00:00:00Z'], ['append', f, '--cl', 'x', '--buildid', '1'], ['append', f, '--cl', '5'], ['append', join(dir, 'none.json'), '--cl', '5', '--buildid', '1']]) {
+    const r = runList(...a);
+    assert.equal(r.status, 2, a.join(' '));
+    assert.match(r.stderr, /^public-builds: /);
+  }
+  assert.equal(readFileSync(f, 'utf8'), written, 'a refused append writes nothing');
 });
