@@ -502,7 +502,7 @@ With `--other-cl N` (the CL the other Steam branch runs) decide also writes `oth
 metadata. Only the loader rule counts there: the scanner's REFUSED verdict and a probe note
 are about the scanned CL, not another build. The map-mode job exposes it as
 `expect_refused_other`, the `expect_refused` input of `rig-other`. Without `--other-cl`
-the field is absent and the other rig expects no refusal.
+the field is absent and the other rig expects no refusal; `--other-unmapped` (a build the map has no row for) sets `expectDeclineOther` instead, see above.
 
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
 same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,

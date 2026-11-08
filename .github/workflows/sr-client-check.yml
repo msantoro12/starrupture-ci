@@ -72,7 +72,7 @@ on:
         type: string
         default: ''
       other_buildid:
-        description: 'Build id of the other client branch (public or public_test_branch) as the watcher saw it; its CL decides which refusals the rig of that branch expects'
+        description: 'Build id of the other client branch (public or public_test_branch); its CL decides which refusals the rig of that branch expects. Empty: read live from Steam'
         type: string
         default: ''
       pr:
@@ -1696,7 +1696,7 @@ jobs:
       - name: Scan the key sources
         id: keysrc
         if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && needs.key-sources-plan.outputs.any == 'true'
-        # The map-mode job stops with the cause of a key source that failed; the client check itself is not changed by one.
+        # The map-mode job names a key source that failed in its summary and as an alert line; the client check itself is not changed by one.
         continue-on-error: true
         timeout-minutes: 30
         shell: pwsh
@@ -1974,7 +1974,7 @@ jobs:
           # Key sources (map mode, out/keysrc.json): the keys their sources request, read from the same Game SDK.
           # Each is a component of its own that is not in $components, so layout.json, its pdb-diff and the
           # gate that reads them never see it; only the key list and the uses file below do. The result is
-          # recorded in keysrc.json (layout: ok), which the map-mode job requires.
+          # recorded in keysrc.json (layout: ok), which the scans builder of the map-mode job requires of a source's scan.
           $keysrc = if (Test-Path out\keysrc.json) { Get-Content out\keysrc.json -Raw | ConvertFrom-Json } else { $null }
           $keyParts = [Collections.Generic.List[object]]::new()
           if ($keysrc) {
@@ -2546,7 +2546,6 @@ jobs:
         env:
           KEY_PLAN: ${{ needs.key-sources-plan.result }}
           KEY_ANY: ${{ needs.key-sources-plan.outputs.any }}
-          KEY_BUILD: ${{ needs.key-sources.result }}
           PLAN: ${{ needs.key-sources-plan.outputs.matrix }}
         run: |
           set -euo pipefail
@@ -2558,13 +2557,12 @@ jobs:
             const plan = JSON.parse(process.env.PLAN || "[]");
             const got = new Map();
             if (fs.existsSync("res/keysrc.json")) for (const s of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) got.set(s.name, s);
-            const leg = process.env.KEY_BUILD;
             const alerts = [];
             const md = ["", "### Key sources", ""];
             for (const p of plan) {
               const s = got.get(p.name);
               const why = !s ? "the check job recorded no result for it, so it was not scanned"
-                : s.status !== "ok" ? (s.error || "it was not scanned") + (leg !== "success" && /no artifact/.test(s.error ?? "") ? " (key-sources: " + leg + ")" : "")
+                : s.status !== "ok" ? (s.error || "it was not scanned")
                 : s.layout === "ok" ? ""
                 : s.layout ? "its keys were not read: " + s.layout : "its keys were not read (the layout step stopped before the key sources)";
               if (why) {

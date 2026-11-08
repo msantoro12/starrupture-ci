@@ -426,7 +426,7 @@ function Invoke-DeclineChecks($ml, $au, $hashes, [bool]$haveLog) {
     Add-Check 'no_game_version_ok' ($haveLog -and $null -eq $gv) $(if ($gv) { "FOUND: $gv" } elseif ($haveLog) { 'no Game version OK line' } else { '' })
     $hooks = First-Match $ml '\[init\] Engine hooks installed in|\[init\] Boot sequence finished in|\[init\] Pattern preflight passed in'
     Add-Check 'no_hooks_installed' ($haveLog -and $null -eq $hooks) $(if ($hooks) { "FOUND: $hooks" } elseif ($haveLog) { 'no hook, preflight or boot-finished line' } else { '' })
-    $plug = First-Match $ml 'Plugin info - Name:|Successfully loaded plugin DLL:|Plugin initialized:|InitAllLoadedPlugins: [1-9]\d* initialized'
+    $plug = First-Match $ml 'Loading plugin:|Plugin info - Name:|Successfully loaded plugin DLL:|Plugin initialized:|InitAllLoadedPlugins: [1-9]\d* initialized'
     Add-Check 'no_plugin_activity' ($haveLog -and $null -eq $plug) $(if ($plug) { "FOUND: $plug" } elseif ($haveLog) { 'no plugin was read or initialised' } else { '' })
 
     $crashRe = 'CRASHED|FATAL ENGINE CRASH|\[PluginGuard\]'
@@ -535,7 +535,8 @@ function Invoke-ClientVerdict {
     $logLoader = ''
     if ($buildLine -and $buildLine -match '\[init\] Build: (.+?) \(client\), PID') { $logLoader = $Matches[1] }
     Add-Check 'loader_build_line' ([bool]($buildLine -and $loaderExpect -ne '' -and ($logLoader -ceq $loaderExpect))) $(if ($buildLine) { "$buildLine  (expected $loaderExpect)" } else { '' })
-    # A build the candidate map has no row for: judged as a decline, not as a boot.
+    # A build the candidate map has no row for: judged as a decline, not as a boot. The handoff checks are not
+    # run: the loader declined before reading any plugin, so there is nothing to hand off.
     if ([bool](Get-Prop $set 'expectDecline' $false)) {
         Invoke-DeclineChecks $ml $au $hashes $haveLog
         Set-ClientResult $set $loaderExpect $logLoader @(Get-DeclineRows $specs) 0 'declined the build cleanly: it logged the version mismatch, loaded no plugin and the game kept running'

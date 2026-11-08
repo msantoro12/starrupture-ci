@@ -1988,7 +1988,7 @@ test('key sources: a failing one is named in the summary and as an alert line an
   assert.equal(x.r.status, 0, 'no key sources listed');
   // Each way a key source goes wrong is a warning, a line in the step summary and an alert line; none stops map mode.
   const fails = [
-    [{ KEY_BUILD: 'failure' }, [{ ...good, status: 'failed', error: 'it did not build (no artifact)' }], /it did not build \(no artifact\) \(key-sources: failure\)/],
+    [{ KEY_BUILD: 'failure' }, [{ ...good, status: 'failed', error: 'it did not build (no artifact)' }], /it did not build \(no artifact\); map mode went on/],
     [{}, [{ ...good, status: 'failed', error: 'sr-aobscan failed' }], /sr-aobscan failed/],
     [{}, [{ ...good, layout: 'failed: gen failed' }], /its keys were not read: failed: gen failed/],
     [{}, [{ ...good, layout: undefined }], /layout step stopped before the key sources/],

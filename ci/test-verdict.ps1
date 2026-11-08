@@ -498,6 +498,7 @@ $declineCases = [ordered]@{
  'hooks installed'              = @{ Mut = { param($c) $c.ml += "$($decSig)[init] Engine hooks installed in 12 ms" };                                  Fail = 'no_hooks_installed' }
  'boot finished'                = @{ Mut = { param($c) $c.ml += "$($decSig)[init] Boot sequence finished in 9000 ms" };                                Fail = 'no_hooks_installed' }
  'plugin read'                  = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] Plugin info - Name: BetterCheats, Version: v0.23.0, Author: AlienX, Interface: 74" }; Fail = 'no_plugin_activity' }
+ 'plugin loading'               = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] Loading plugin: D:\Game\ModLoader\Plugins\BetterCheats.dll" }; Fail = 'no_plugin_activity' }
  'plugin loaded'                = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] Successfully loaded plugin DLL: BetterCheats v0.23.0 (PluginInit deferred)" }; Fail = 'no_plugin_activity' }
  'plugin initialised'           = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] InitAllLoadedPlugins: 3 initialized, 0 failed (of 3 deferred)" }; Fail = 'no_plugin_activity' }
  'crash marker'                 = @{ Mut = { param($c) $c.ml += "$($decErr)[CrashReporter] *** FATAL ENGINE CRASH *** -- suppressing CrashReportClient upload" }; Fail = 'no_crash_markers' }
