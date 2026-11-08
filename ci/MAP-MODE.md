@@ -103,12 +103,9 @@ Policy (owner), in plain words:
   both Steam branches, the same DLLs. A rig fail blocks publish and raises the alert.
 - Graphics are not a gate. The rig runs `-nullrhi` to the main menu: no rendering, overlay,
   DX11 or in-world checks. Graphical problems get small fixes after a release.
-- Autopilot off means build everything, publish nothing. Switching it on again does not
-  publish by itself: the unattended chain never calls the `publish` job, so today an enabled
-  autopilot does nothing extra (the decision reads `M`, and the run summary says "publish not
-  wired on the unattended path"). Re-enabling the autopilot also needs the publish wiring
-  (sr-watch calling the check with publish on, or a publish step after a green `rig-gate`,
-  signed with the release key), which is separate work and the owner's call. The staged
+- Autopilot off means build everything, publish nothing: the decision stays `HOLD` and the
+  `publish` job is skipped ("publish skipped"). The autopilot is the one switch: with it on, a
+  public run that passes every gate publishes by itself (below, "The publish path"). The staged
   branch push needs the loader fork's deploy key (step 26). It stays off until the owner has
   approved the first full run.
 - The rig runs only candidates built in this repository from our own branches.
@@ -507,8 +504,8 @@ rows from the same run. `state/autopilot.json` ships with `enabled: false`: unti
 is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
 
 The autopilot gates publishing only, not the candidate. `--candidate` (the
-unattended chain: `map_mode` on, `publish` off, not a `test_autopilot` run, which
-is what `sr-watch.yml` calls) keeps that `HOLD` and its reason, and adds `wouldBe`
+unattended chain: `map_mode` on, not a `test_autopilot` run, which
+is what `sr-watch.yml` calls, with `publish: true`; the publish input does not change the candidate) keeps that `HOLD` and its reason, and adds `wouldBe`
 and `candidate: true`. When `wouldBe` is `M`, the only thing that held it was the
 autopilot, and the chain runs on: export, TEST-key signing and verify, staging (and
 the push of the staged branch), and `promote.mjs plan --test-autopilot`, which plans
@@ -532,8 +529,9 @@ is publishable.
 unsigned feed. `vmap-sign.mjs` signs and checks it:
 
 ```
-node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2 [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>]
-node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>] [--pub <keyId>=<64 hex>]... [--allow-test-key]
+node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2 [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>]
+node ci/vmap-sign.mjs next-seq [--last-seq <n>] [--now <unix seconds>]
+node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>] [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>]
 ```
 
 Signing inserts a `seq` line after the `format` line and ends the file with
@@ -545,6 +543,20 @@ the clock has not passed it. The private key is read from the environment variab
 512 KiB or one that already has a `seq` or `sig` line; `verify` takes files up to
 1 MiB, checks the signature before anything else and, with `--last-seq`, requires a
 higher `seq`. `verify` exits 3 when it refuses a file.
+
+**The feed only carries builds that are on public.** A game build that is only on the test
+branch never goes into a feed, however well it was mapped: a feed is read by every player's
+loader. `export-feed <header> --out <file> --public-builds state/public-builds.json` keeps
+the rows of the CLs on that list (the current public CL and the ones that were public
+before; format and source in VERSION-MAP.md) and leaves out every other CL, build row and
+all. It prints each CL it left out and how many rows. If the list cannot be read, is empty,
+or the header has no row for public's current CL, it refuses with exit 2 and writes no feed.
+
+**One seq per publish.** `seq` is worked out once with `vmap-sign.mjs next-seq` and that
+number is passed on: `vmap-sign.mjs sign --seq <n>` signs exactly it (it must rise above
+`--last-seq` and be within a day of the clock), `promote.mjs plan --seq <n>` plans with it,
+and the history entry records it. `vmap-sign.mjs verify --expect-seq <n>` refuses (exit 3)
+a signed feed that carries another seq, so a plan and a feed that disagree stop the run.
 
 The feed format, the key slots (`k1` is the TEST key, `k2` the release key) and what the
 loader checks are in the loader repository's [VersionMap.md](https://github.com/AlienXAXS/StarRupture-ModLoader/blob/main/VersionMap.md#the-feed).
@@ -706,15 +718,37 @@ at a symbol's start that stays.
 ```
 sr-watch (poll Steam, every build)
   -> client-check: build, plugin-plan, plugins, key-sources, check
+  -> record-public (public run: add a new public build to state/public-builds.json on main)
   -> map-mode (assemble, write, field-rows, decide, export, sign k1, stage, promote plan)
   -> push-loader (auto/update-<CL> to the loader fork)
   -> candidate-loader (build the candidate loader and plugins)
   -> rig-branch + rig-other (client rig on each Steam branch)
   -> rig-gate (both PASS)
-  -> publish (public only, publish on; sign k2, upload to the vmap-feed release)
+  -> feed-plan, feed-loader, rig-feed, feed-loader-cleanup, feed-gate (public only: the feed-path rig, PASS or a named skip)
+  -> publish (public only, autopilot on, rigs and feed gate pass; sign k2, upload, verify the upload)
   -> vmap-publish.yml (loader repo, every 15 min: verify, upload to Latest)
   -> players' loaders
 ```
+
+The feed-path rig (public only) tests the feed the way players get it. It builds the
+loader of AlienX's Latest release tag with one define, `VMAP_TRUST_TEST_KEY`, set in the
+`CL` environment variable of the build step (no source change; the build log must show
+it reached the compiler). The rig puts this run's TEST-signed feed in the loader's feed
+cache and the verdict checks that the loader applied it and took rows from it. A missing
+feed, or a feed without the CL, fails. The gate compares the feed's rows for the running CL
+with the release tag's compiled map (`feedDelta` in `version-map.mjs`). It skips, with that
+reason, only when the feed adds no row and changes no row for that CL: then the loader runs on
+the compiled rows with or without the feed. A row the tag lacks, or holds with other values,
+is a row the feed delivers, so the rig runs and has to pass. Publish needs the gate to PASS
+or skip. The build is a rig input, never a release asset. It trusts the TEST key, so the
+`feed-loader-cleanup` job deletes its artifact as soon as the rig has ended, on every outcome.
+It is not built inside the rig job because that job holds the live Steam login and no build code
+runs there.
+
+A proof run of this path (dispatch only, publish off) can name `feed_loader_ref`, a branch of
+`msantoro12/StarRupture-ModLoader`, which the rig then builds instead of the Latest release,
+for example a branch without public's rows, so the feed is their only source. It is refused
+with `publish` on or a name that is not a plain branch, and `sr-watch` cannot set it.
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 `sr-watch.yml`) is the unattended path M on one build. It reads only the check
@@ -741,29 +775,62 @@ no plugin code, no game file.
    the layout diff moved, changed or lost, the plugin verdicts (`plugins.json`), then
    the field rows, and the history on the `vmap-feed` release for the rate limits.
 4. On path M, or on the HOLD that only the autopilot caused (the candidate chain, above):
-   `export-feed`, sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and verify it,
+   `export-feed --public-builds` (public CLs only; the step summary names each CL it left
+   out), sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and verify it,
    `staging.mjs stage` for a beta build, and `promote.mjs plan`. All dry runs. Then, for
    a staged build, the `push-loader` job pushes `auto/update-<CL>` to the loader fork.
    The chain writes `verify.json` from this run's re-scan and marks the run publishable
    for a promotion, or for `public`'s own build on a new CL with nothing staged (the
    normal flow).
-5. The `publish` job (input `publish`, default off; `public` branch only; decide `M` and
-   a publishable run) is reachable only when `publish` is explicitly on and the run is
-   explicitly not a test (`test_autopilot` off, the map-mode `test` output `false`, no test
-   mark on `decision.json` or `promote-plan.json`, checked again in the job), whatever
-   `state/autopilot.json` says. It runs in the
-   `vmap-sign` environment (main only), one at a time (`concurrency: vmap-publish`),
-   reads the live feed's seq again right before signing, signs the exported feed with the
-   release key k2 above it, verifies it without the TEST key, and uploads it with the
-   history to the `vmap-feed` release. `sr-watch.yml` does not pass `publish`, and passes
-   only the Steam login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, by name, so the called
-   `check` job reads them from `steam-client`), `VMAP_SIGN_KEY_TEST` and the loader fork's
-   deploy key `SR_DEPLOYKEY_MODLOADER` and the nine plugin forks' deploy keys
-   (`SR_DEPLOYKEY_<PLUGIN>`, read by the `auto-apply` job in `fork-push`); no `secrets: inherit`,
-   no release key. Its `client-check` job grants
-   `contents: write` as a ceiling: GitHub checks every called job against the caller's
-   permissions when it parses the call, so `publish` could not be called otherwise; each
-   called job still sets its own, and only `publish` asks for write.
+5. The `publish` job, below ("The publish path"). `sr-watch.yml` passes `publish: true` and
+   only these secrets, by name: the Steam login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, so the
+   called `check` job reads them from `steam-client`), `VMAP_SIGN_KEY_TEST`, the loader fork's deploy key
+   `SR_DEPLOYKEY_MODLOADER`, the nine plugin forks' deploy keys
+   (`SR_DEPLOYKEY_<PLUGIN>`, read by the `auto-apply` job in `fork-push`) and the release key
+   `VMAP_SIGN_KEY`; no `secrets: inherit`. The release key is an environment secret of
+   `vmap-sign` that only the `publish` job reads, and it reads empty there unless the caller passes it. Its `client-check` job grants `contents: write` as a ceiling: GitHub checks every
+   called job against the caller's permissions when it parses the call; each called job still
+   sets its own, and only `record-public` and `publish` ask for write.
+
+### The publish path
+
+The `publish` job runs by itself, with nobody pressing a button, when and only when all of
+these hold:
+
+1. The run is for `public`. A test-branch run never publishes and never touches the public
+   list: the game's devs asked for no loader on the test branch.
+2. The `publish` input is on: `sr-watch` passes it, a dispatch sets it, and nothing infers it
+   from who called. A dispatch without it is a dry run, and a `test_autopilot` run never publishes.
+3. `decide` says `M`. That needs `state/autopilot.json` enabled; while it is off the decision
+   is `HOLD` and the job is skipped.
+4. `promote.mjs` marks the run publishable, and no test mark is on `decision.json` or
+   `promote-plan.json` (checked again in the job).
+5. Both client rigs ended with verdict `PASS` on the candidate loader.
+6. The feed gate ended `PASS`, or `SKIP` because the feed adds and changes no row for the running CL.
+
+Just before it signs, the job reads `state/autopilot.json` on main again and stops unless it is
+enabled and allows path M, so turning the autopilot off stops a chain that is already running.
+
+It runs in the `vmap-sign` environment (main only), one at a time (`concurrency: vmap-publish`).
+It signs the feed the chain staged with the release key k2, uploads it and `vmap-history.json`
+to the `vmap-feed` release, then downloads what it published and checks the signature (release
+key, no TEST key), the seq and the sha256. The secret is `VMAP_SIGN_KEY`, the environment
+`vmap-sign`.
+
+- **Public only.** Every feed the chain exports (the TEST-signed staged one and, from it, the
+  release-signed one) comes from `export-feed --public-builds`, so the staged feed shows
+  exactly what would ship. Before signing, the job cuts the feed again against the list on
+  `main` and stops if it differs from the staged one (public changed build meanwhile; the
+  chain has to run again). A run whose export leaves a CL out says which in the step summary.
+- **The public list.** `state/public-builds.json` on `main` (format in VERSION-MAP.md). When a
+  public run's check measures a build that is not the list's last entry, the `record-public`
+  job adds `{ cl, buildid, firstSeen }` at the end and pushes that one file to `main`, before
+  the feed is exported. If it cannot, the chain stops. Public's current CL is the last entry.
+- **One seq.** `map-mode` computes the seq once (`vmap-sign.mjs next-seq`) and uses that
+  number for the TEST signature, the promote plan, the release signature and the history
+  entry; the job checks the published feed with `verify --expect-seq`. If another publish
+  landed meanwhile and the seq no longer rises above the live one, nothing is signed and the
+  chain runs again.
 
 The header is always an artifact too. Until the loader fork's deploy key exists
 (step 26), the `push-loader` job fails with its cause, and the staging record in

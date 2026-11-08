@@ -45,7 +45,12 @@
 #                                       That ERROR line plus "Plugin initialization failed:
 #                                       <logName>", and nothing else for the plugin, passes it
 #                                       as loaded and one fewer is expected to initialise
-#       ]
+#       ],
+#       "feed": { "seq": 41, "cl": 130000 }   optional: the run seeded the loader's feed cache with
+#                                       this feed (client-rig-set.ps1 -FeedFile). The loader must
+#                                       log it applied, with that seq, before the game version gate;
+#                                       must log no fetch, no refusal and no cache fault; and the
+#                                       build it reports must be that CL
 #     }
 #   boot.json        process facts for the client (the shipping exe). Same fields as
 #                    boot-server.ps1 writes, plus two:
@@ -442,6 +447,40 @@ function Invoke-ClientVerdict {
     Add-Check 'loader_client_build' ($null -ne $clientBuild) $clientBuild
     $gv = First-Match $ml 'Game version OK:'
     Add-Check 'game_version_ok' ($null -ne $gv) $gv
+
+    # ---- the seeded feed (feed-path rig only) ----
+    # The cache holds a TEST-signed feed for the running build, with rows the loader's own map
+    # lacks or holds with other values (the workflow runs this rig only then). The loader must
+    # read it (the line names the seq), take rows from it ("N rows from the feed", N > 0: the
+    # loader counts the rows it took from the feed, and a row the compiled map holds for the
+    # running exe wins over the feed's), do it before the game version gate, and pass that gate
+    # on the CL the feed was made for. Fetching, a refused feed and a cache fault all fail; a run
+    # that touched the network is not a test of the cache.
+    $feedSpec = Get-Prop $set 'feed' $null
+    if ($feedSpec) {
+        $fSeq = [string](Get-Prop $feedSpec 'seq' '')
+        $fCl = [string](Get-Prop $feedSpec 'cl' '')
+        $fSpecOk = ($fSeq -cmatch '^[1-9][0-9]{0,14}$') -and ($fCl -cmatch '^[1-9][0-9]{0,8}$')
+        Add-Check 'feed_record' $fSpecOk $(if ($fSpecOk) { "set.json feed: seq $fSeq, CL $fCl" } else { '' })
+        $fApplied = $null; $fRows = 0; $fAt = -1; $gvAt = -1
+        if ($fSpecOk -and $ml) {
+            for ($i = 0; $i -lt $ml.Count; $i++) {
+                if ($null -eq $fApplied -and $ml[$i] -cmatch "\[VersionFeed\] Feed seq $fSeq \(key [^,)]+, TEST KEY\): (\d+) rows from the feed") {
+                    $fApplied = $ml[$i]; $fRows = [int]$Matches[1]; $fAt = $i
+                }
+                if ($gvAt -lt 0 -and $ml[$i] -cmatch '\[ModLoader\] Game version OK:') { $gvAt = $i }
+            }
+        }
+        Add-Check 'feed_applied' ($null -ne $fApplied -and $fRows -gt 0) $fApplied
+        $gvCl = ''
+        if ($gv -and $gv -cmatch 'Game version OK: .*-CL-(\d+)') { $gvCl = $Matches[1] }
+        Add-Check 'feed_rows_used' ($fSpecOk -and $null -ne $fApplied -and $fAt -ge 0 -and $gvAt -gt $fAt -and $gvCl -ceq $fCl) $(
+            if ($gv) { "$gv  (CL $fCl expected; feed line at log line $($fAt + 1), version gate at $($gvAt + 1))" } else { '' })
+        $fBad = First-Match $ml '\[VersionFeed\].*(feed cache is not usable|feed cache .* could not be read|from the feed is refused|fetched feed is refused|feed could not be fetched)'
+        Add-Check 'feed_not_refused' ($haveLog -and $null -eq $fBad) $(if ($fBad) { "FOUND: $fBad" } elseif ($haveLog) { 'no refusal or cache fault line' } else { '' })
+        $fFetch = First-Match $ml '\[VersionFeed\] (Fetching the feed|Feed seq \d+ stored for the next launch|The fetched feed is not stored)'
+        Add-Check 'feed_not_fetched' ($haveLog -and $null -eq $fFetch) $(if ($fFetch) { "FOUND: $fFetch" } elseif ($haveLog) { 'no fetch or store line' } else { '' })
+    }
 
     $pf = First-Match $ml '\[Preflight\] Pattern verification complete: (\d+)/(\d+) usable \((\d+) fatal, (\d+) non-fatal\)'
     $pfOk = $false

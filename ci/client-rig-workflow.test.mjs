@@ -51,10 +51,12 @@ test('triggers: dispatch and call only, no schedule, no pull request, one set of
   const dispatch = on.slice(on.indexOf('  workflow_dispatch:'), on.indexOf('  workflow_call:'));
   const call = on.slice(on.indexOf('  workflow_call:'), on.indexOf('    outputs:'));
   const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'remove_plugins'];
+  // The feed inputs name an artifact of the calling run: a dispatch has none, so only a call takes them.
+  const feedInputs = ['feed_artifact', 'feed_seq', 'feed_cl'];
   assert.deepEqual(names(dispatch), want);
-  assert.deepEqual(names(call), want);
+  assert.deepEqual(names(call), [...want, ...feedInputs]);
   assert.match(dispatch, /branch:\n(?:.*\n)*?\s+default: public\n/);
-  for (const n of want.slice(1)) assert.match(call, new RegExp(`${n}:\\n(?:.*\\n)*?\\s+default: ''`), `${n} defaults to empty`);
+  for (const n of [...want.slice(1), ...feedInputs]) assert.match(call, new RegExp(`${n}:\\n(?:.*\\n)*?\\s+default: ''`), `${n} defaults to empty`);
 });
 
 test('workflow_call outputs: verdict, reason and artifact, from the job', () => {
@@ -666,4 +668,17 @@ test('leak gate, -Strict (the data extract): bytes, login-file names, and digit-
   // The name and a clean file still behave as in the rig.
   assert.equal(runGate(['-Strict'], { files: { 'n.json': 'ACCT1' } }).status, 1);
   assert.equal(runGate(['-Strict'], { files: { 'n.json': '{"ok":true}' } }).status, 0);
+});
+
+test('feed run: the rig seeds a TEST-signed feed only, checks it before the install, and writes it where the loader reads its cache', () => {
+  const byName = (n) => steps.find((s) => nameOf(s) === n);
+  for (const n of ['Check the feed inputs', 'Download the feed', 'Check the feed']) assert.ok(byName(n), `step "${n}"`);
+  const order = ['Check the feed inputs', 'Download the feed', 'Check the feed', 'Resolve the set'].map((n) => steps.findIndex((s) => nameOf(s) === n));
+  assert.ok(order.every((i) => i >= 0) && order.every((v, i) => i === 0 || v > order[i - 1]), `feed steps run before Resolve: ${order}`);
+  const check = byName('Check the feed');
+  assert.ok(check.includes('--allow-test-key') && check.includes('key=k1 TEST-KEY'), 'only the TEST key is accepted');
+  assert.ok(!/VMAP_SIGN_KEY/.test(wf), 'the rig never holds the signing key');
+  assert.ok(setup.includes('version-map-client.v1.cache'), 'seeded at the loader cache path');
+  assert.match(verdictPs, /feed_applied/);
+  assert.match(verdictPs, /feed_rows_used/);
 });

@@ -59,7 +59,7 @@ test('every caller of the client check or the rig passes both Steam secrets by n
     }
   }
   assert.ok(callers.includes('sr-watch.yml:client-check'), `sr-watch calls the client check (found: ${callers.join(', ')})`);
-  for (const rigJob of ['rig-branch', 'rig-other']) {
+  for (const rigJob of ['rig-branch', 'rig-other', 'rig-feed']) {
     assert.ok(callers.includes(`sr-client-check.yml:${rigJob}`), `the client check calls the rig in ${rigJob} (found: ${callers.join(', ')})`);
   }
 });
@@ -87,15 +87,16 @@ test('both called workflows declare the Steam secrets as required, and read them
   }
 });
 
-test('sr-watch passes the login, the TEST key, the loader fork key, the nine plugin fork keys and nothing else; no inherit, no release key', () => {
+test('sr-watch passes the login, the TEST key, the release key, the loader fork key, the nine plugin fork keys and nothing else; no inherit', () => {
   const j = job(workflows['sr-watch.yml'], 'client-check');
   // The secrets block ends at the first line that is not a secret (the next job's comment, if any).
   const block = j.slice(j.indexOf('\n    secrets:\n') + 1).split('\n').slice(1);
   const end = block.findIndex((l) => !/^ {6}[A-Z][A-Z0-9_]*:/.test(l));
   const secrets = (end < 0 ? block : block.slice(0, end)).map((l) => l.trim().split(':')[0]);
-  assert.deepEqual(secrets.sort(), [...SECRETS, 'VMAP_SIGN_KEY_TEST', 'SR_DEPLOYKEY_MODLOADER', ...PLUGIN_KEYS].sort());
+  assert.deepEqual(secrets.sort(), [...SECRETS, 'VMAP_SIGN_KEY_TEST', 'VMAP_SIGN_KEY', 'SR_DEPLOYKEY_MODLOADER', ...PLUGIN_KEYS].sort());
   assert.ok(!/secrets: inherit/.test(workflows['sr-watch.yml']));
-  assert.ok(!/\n {6}publish:/.test(j), 'publish is not passed');
+  assert.match(j, /\n {6}publish: true\n/, 'publish is passed explicitly');
+  assert.ok(!/feed_loader_ref/.test(j), 'the proof input is never set by the unattended chain');
 });
 
 test('client check: a missing login fails the check job with its cause, never a green skip', () => {
@@ -131,7 +132,7 @@ test('report and alert state the real cause, and say how to check the build agai
 
 test('map mode: runs only on a successful check, and names the cause when there is no scanner result', () => {
   const mm = job(check, 'map-mode');
-  assert.match(mm, /\n {4}if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' \}\}\n/);
+  assert.match(mm, /\n {4}if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' && \(needs\.record-public\.result == 'success' \|\| needs\.record-public\.result == 'skipped'\) \}\}\n/);
   const write = step(mm, 'Write the update into the header');
   const guard = write.indexOf('if [ ! -f res/scanner.json ]; then');
   assert.ok(guard > 0, 'guards the scanner result');

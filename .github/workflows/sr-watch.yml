@@ -9,8 +9,10 @@ name: SR Steam watch
 # per changed branch, which comments its own result. Merging the PR means
 # "handled" and advances the baseline on main.
 #
-# Only writes: the first baseline commit to main, and game-update/* branches,
-# plus the alert issue the client check (or the alert job, for the rest of the
+# Only writes: the first baseline commit to main, the public builds list on main
+# (state/public-builds.json, when a run measured a new public build), and game-update/* branches,
+# and, with state/autopilot.json enabled and every gate passed, the signed feed on the
+# vmap-feed release (the publish job of sr-client-check.yml), plus the alert issue the client check (or the alert job, for the rest of the
 # chain) opens when a run fails or holds, and the
 # same issue for a game-update PR that stays open six hours without passing the chain.
 # No tags, no releases.
@@ -219,19 +221,22 @@ jobs:
     # deploy key is passed too (the push-loader job pushes auto/update-<CL>
     # with it, in environment fork-push), and so are the nine plugin forks' keys
     # (the auto-apply job pushes the verified fixes with them, also in fork-push).
-    # The release key is not passed, and neither is publish: no feed is published
-    # from here.
+    # The release key is passed too: it is an environment secret of vmap-sign, which only
+    # the called publish job reads (main only), and unpassed it would read as empty there. That job
+    # publishes the feed from here by itself (this call sets publish: true), and only with the
+    # autopilot on and every gate passed (ci/MAP-MODE.md, "The publish path").
     # These permissions are a ceiling, not a grant: GitHub checks every called
     # job against them when it parses the call, before any if. Each called job
-    # sets its own, and only publish (vmap-sign environment, main only, publish
-    # input on) asks for contents: write. actions: read is the client rig's
+    # sets its own, and only record-public (the public builds list on main) and publish
+    # (vmap-sign environment, main only) ask for contents: write. actions: read is the client rig's
     # (sr-client-check calls sr-client-rig, which reads the candidate run's
-    # artifacts); without it here the nested call would not parse.
+    # artifacts); without it here the nested call would not parse. actions: write is the
+    # feed-loader-cleanup job's, which deletes the feed-path loader artifact once the rig has ended.
     permissions:
       contents: write
       pull-requests: write
       issues: write    # the alert job of the called workflow
-      actions: read    # the client rig, called by the called workflow
+      actions: write   # feed-loader-cleanup; the client rig, called by the called workflow, reads (actions: read)
       checks: read     # the alert job reads the failed jobs' annotations
     uses: ./.github/workflows/sr-client-check.yml
     with:
@@ -240,10 +245,12 @@ jobs:
       other_buildid: ${{ matrix.other_buildid }}
       pr: ${{ needs.poll.outputs.pr }}
       map_mode: true
+      publish: true
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
       VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+      VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
       SR_DEPLOYKEY_MODLOADER: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}
       SR_DEPLOYKEY_BETTERCHEATS: ${{ secrets.SR_DEPLOYKEY_BETTERCHEATS }}
       SR_DEPLOYKEY_BETTERDRONE: ${{ secrets.SR_DEPLOYKEY_BETTERDRONE }}

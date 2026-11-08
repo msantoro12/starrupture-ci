@@ -192,3 +192,23 @@ test('isPublishable: a test run is never publishable, whatever the autopilot fil
   assert.equal(isPublishable(normal, { testRun: false, branch: 'public_test_branch' }), false, 'normal flow publishes public only');
   assert.equal(isPublishable({ action: 'hold' }, { testRun: false, branch: 'public' }), false);
 });
+
+test('a seq computed once is the seq of the plan; one that does not rise or is over a day ahead is refused', () => {
+  assert.equal(plan(inputs({ seq: SEQ + 90 })).seq, SEQ + 90);
+  assert.equal(plan(inputs({ lastSeq: SEQ + 5, seq: SEQ + 6 })).seq, SEQ + 6);
+  assert.throws(() => plan(inputs({ lastSeq: SEQ, seq: SEQ })), PromoteError);
+  assert.throws(() => plan(inputs({ seq: SEQ + 86401 })), /more than a day ahead/);
+  assert.throws(() => plan(inputs({ seq: NaN })), PromoteError);
+});
+
+test('the command line takes --seq and prints it; a bad one is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'promote-seq-'));
+  const w = (n, d) => { writeFileSync(join(dir, n), JSON.stringify(d)); return join(dir, n); };
+  const args = ['plan', '--index', w('i.json', stagedIndex(build())), '--public', w('p.json', flip()), '--autopilot', w('a.json', autopilot), '--history', w('h.json', history), '--last-seq', '41', '--now', '2026-11-05T12:00:00Z', '--verify', w('v.json', { ok: true })];
+  const run = (...extra) => spawnSync(process.execPath, [TOOL, ...args, ...extra], { encoding: 'utf8', windowsHide: true });
+  const ok = run('--seq', String(SEQ + 90), '--out', join(dir, 'plan.json'));
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, new RegExp(`would sign and publish seq ${SEQ + 90}\\n$`));
+  assert.equal(JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8')).seq, SEQ + 90);
+  for (const bad of ['41', '0', 'abc', String(SEQ + 86401)]) assert.equal(run('--seq', bad).status, 3, bad);
+});

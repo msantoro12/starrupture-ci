@@ -7,13 +7,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addBuild, emit, emptyMap } from './version-map.mjs';
+import { addBuild, emit, emptyMap, parse, parseFeed } from './version-map.mjs';
 import { firstLogError } from './pipeline-alert.mjs';
+import { parsePublicBuilds } from './public-builds.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -92,7 +93,8 @@ test('test_autopilot: dispatch only, refused with publish on, never publishable,
   assert.match(mm, /import \{ isPublishable \} from "\.\/tool\/ci\/promote\.mjs";/);
   assert.match(mm, /const ok = isPublishable\(p, \{ testRun: process\.env\.IS_TEST === "false" \? false : true, branch: process\.env\.BRANCH \}\);/);
   assert.match(mm, /--uses res\/layout-uses\.txt/);
-  assert.match(job('publish'), /if: \$\{\{ !cancelled\(\) && inputs\.publish == true && inputs\.test_autopilot != true && needs\.map-mode\.outputs\.test == 'false' && /);
+  assert.match(job('publish'), /if: \$\{\{ !cancelled\(\) && inputs\.test_autopilot != true && inputs\.publish == true && needs\.map-mode\.outputs\.test == 'false' && /);
+  assert.ok(!/workflow_ref/.test(jobIf('publish')), 'the publish input is the one switch: no inference from who called');
   const ap = JSON.parse(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'));
   assert.ok(ap.enabled === false || (ap.enabled === true && ap.paths.every((p) => p === 'M')), 'autopilot is off or limited to the map-feed path M');
 });
@@ -110,7 +112,9 @@ test('publish lock: a test run never reaches the release key, whatever state/aut
   const lock = pub.slice(pub.indexOf('- name: Refuse a test run'), pub.indexOf('- name: Sign with the release key'));
   assert.ok(lock.length > 40, 'the lock step comes before the signing step');
   assert.ok(lock.includes('[ "$TEST_INPUT" = false ] || { echo "::error::a test run never publishes"; exit 2; }'));
-  assert.ok(lock.includes('d.test !== undefined || d.wouldBe !== undefined || p.test !== undefined'));
+  // The unattended chain's own M carries wouldBe M; a test run, a held decision or a test plan is refused.
+  assert.ok(lock.includes('d.test !== undefined || (d.wouldBe !== undefined && !ownM) || p.test !== undefined'));
+  assert.ok(lock.includes('const ownM = d.decision === "M" && d.wouldBe === "M";'));
   assert.ok(!/VMAP_SIGN_KEY/.test(lock), 'the lock step does not read the key');
   assert.ok(pub.indexOf('- name: Refuse a test run') < pub.indexOf('vmap-sign.mjs sign'), 'locked before signing');
 });
@@ -127,7 +131,7 @@ test('field-rows: a missing reference layout is never named, and only a refusal 
 
 test('alert: a failed job or a HOLD other than "nothing new" opens or updates one issue per branch', () => {
   const a = job('alert');
-  assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate\]/);
+  assert.match(a, /needs: \[build, plugin-plan, check, record-public, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, feed-loader-cleanup, feed-gate\]/);
   assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
   assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
@@ -139,7 +143,7 @@ test('alert: a failed job or a HOLD other than "nothing new" opens or updates on
   assert.ok(a.indexOf('Check out the alert script') < a.indexOf('Read why the jobs failed'));
   // The caller's ceiling must grant issues: write, or GitHub rejects the call.
   const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
-  assert.match(watch.slice(watch.indexOf('  client-check:\n')), /permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+issues: write.*\n\s+actions: read.*\n\s+checks: read/);
+  assert.match(watch.slice(watch.indexOf('  client-check:\n')), /permissions:\n\s+contents: write\n\s+pull-requests: write\n\s+issues: write.*\n\s+actions: write.*\n\s+checks: read/);
 });
 
 test('build label: the map-mode step labels a build "steam_build <build id>" and never names the branch', () => {
@@ -210,7 +214,7 @@ test('new build: the check step reads map_mode, records the flag and keeps the o
 });
 
 test('new build: map mode runs after a passing check only, so a real gate failure still blocks it', () => {
-  assert.match(job('map-mode'), /if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' \}\}/);
+  assert.match(job('map-mode'), /if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' && \(needs\.record-public\.result == 'success' \|\| needs\.record-public\.result == 'skipped'\) \}\}/);
   assert.match(job('map-mode'), /put\("g2\.json", \{ ok: r\.checks\?\.fail === false \}\);/, 'G2 still reads the fail flag of the check');
 });
 
@@ -263,7 +267,7 @@ const bash = process.platform === 'win32' ? ['C:\\Program Files\\Git\\bin\\bash.
 
 test('candidate: a disabled autopilot holds publishing only; the chain still exports, signs, stages and plans', () => {
   const mm = job('map-mode');
-  assert.match(mm, /\n {6}CANDIDATE: \$\{\{ inputs\.map_mode == true && inputs\.publish != true && inputs\.test_autopilot != true \}\}\n/);
+  assert.match(mm, /\n {6}CANDIDATE: \$\{\{ inputs\.map_mode == true && inputs\.test_autopilot != true \}\}\n/);
   assert.ok(mm.includes('[ "$CANDIDATE" = true ] && test_flag=(--candidate)'));
   // The chain runs on past a HOLD that only the autopilot caused, and stops on any other.
   assert.ok(mm.includes('elif [ "$CANDIDATE" = true ] && [ "$decision" = HOLD ] && [ "$would" = M ]; then'));
@@ -272,13 +276,13 @@ test('candidate: a disabled autopilot holds publishing only; the chain still exp
   // The held plan is a test plan: marked, and never publishable.
   assert.ok(mm.includes('promote_flag=(--test-autopilot)'));
   assert.ok(mm.includes('--out promote-plan.json "${promote_flag[@]}"'));
-  // Publish stays out of reach while the decision is HOLD, and a candidate never runs with publish on.
+  // Publish stays out of reach while the decision is HOLD, though sr-watch passes publish on and the chain still stages.
   const pub = job('publish');
   assert.match(pub, /needs\.map-mode\.outputs\.decision == 'M'/);
   assert.match(pub, /needs\.map-mode\.outputs\.test == 'false'/);
   assert.match(pub, /inputs\.publish == true/);
   assert.ok(!/CANDIDATE|candidate/.test(pub.replace(/^ *#.*$/gm, '')), 'the publish job knows nothing of the candidate path');
-  assert.ok(!/\n {6}publish:/.test(watch.slice(watch.indexOf('  client-check:\n'))), 'sr-watch never passes publish');
+  assert.match(watch.slice(watch.indexOf('  client-check:\n')), /\n {6}publish: true\n/, 'sr-watch passes publish explicitly');
 });
 
 test('push-loader: the key, the environment and the target are named, and the allowlist runs before the key is used', () => {
@@ -505,19 +509,22 @@ test('expect_refused: the step turns decision.json into the rig input (names sep
 // Evaluates a job's `if: ${{ ... }}` with the expression syntax these workflows use (a JS subset:
 // && || ! == != and string literals), against fake needs and inputs.
 const jobIf = (name) => job(name).match(/\n {4}if: (\$\{\{ .* \}\})\n/)[1];
+const SR_WATCH_REF = 'msantoro12/starrupture-ci/.github/workflows/sr-watch.yml@refs/heads/main';
+const contains = (a, b) => String(a).includes(String(b));
 const evalExpr = (expr, ctx) => {
   const inner = expr.replace(/^\$\{\{ /, '').replace(/ \}\}$/, '');
   const js = inner
     .replace(/!cancelled\(\)|always\(\)/g, 'true')
     .replace(/needs\.([\w-]+)\./g, 'needs["$1"].')
     .replace(/!=/g, '!==').replace(/([^=!<>])==(?!=)/g, '$1===');
-  return new Function('needs', 'inputs', `return (${js});`)(ctx.needs, ctx.inputs);
+  return new Function('needs', 'inputs', 'github', 'contains', `return (${js});`)(ctx.needs, ctx.inputs, ctx.github ?? { workflow_ref: SR_WATCH_REF }, contains);
 };
 const okNeeds = () => ({
   'map-mode': { result: 'success', outputs: { test: 'false', decision: 'M', publishable: 'true', staged: 'true', expect_refused: '' } },
   'candidate-loader': { result: 'success', outputs: { artifact: 'loader-candidate-public', version: 'cand-1-abcdef0', expect: 'Loader=cand-1-abcdef0', sha: 'a'.repeat(40) } },
   'rig-branch': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public-x-1-1' } },
   'rig-other': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public_test_branch-x-1-1' } },
+  'feed-gate': { result: 'success', outputs: { state: 'PASS', reason: '' } },
   check: { result: 'success', outputs: {} },
 });
 const okInputs = () => ({ publish: true, test_autopilot: false, branch: 'public', loader_repo: 'AlienXAXS/StarRupture-ModLoader', map_mode: true });
@@ -545,8 +552,8 @@ test('rig gate: two jobs call the reusable rig, with the keyless call shape (no 
     assert.ok(!/secrets: inherit/.test(j));
     assert.match(j, /\n {4}needs: \[map-mode, candidate-loader/, `${n} needs the map job and the candidate loader`);
   }
-  // The rig is called twice in the file, by these two jobs.
-  assert.equal(wf.match(/uses: \.\/\.github\/workflows\/sr-client-rig\.yml/g)?.length, 2);
+  // The rig is called three times in the file: these two jobs and the feed-path rig (rig-feed).
+  assert.equal(wf.match(/uses: \.\/\.github\/workflows\/sr-client-rig\.yml/g)?.length, 3);
 });
 
 test('rig gate: the second rig follows the first, even when the first fails (the rig keeps one pending run per group)', () => {
@@ -609,11 +616,11 @@ test('rig gate: each rig declares the refusals the loader rule predicts for the 
 });
 
 test('rig gate: publish needs both rigs with result success and verdict PASS, and every old condition still applies', () => {
-  assert.match(job('publish'), /\n {4}needs: \[check, map-mode, rig-branch, rig-other\]\n/);
-  const run = (mut = () => {}, inputs = okInputs()) => {
+  assert.match(job('publish'), /\n {4}needs: \[check, map-mode, rig-branch, rig-other, feed-gate\]\n/);
+  const run = (mut = () => {}, inputs = okInputs(), github = undefined) => {
     const n = okNeeds();
     mut(n);
-    return evalExpr(jobIf('publish'), { needs: n, inputs });
+    return evalExpr(jobIf('publish'), { needs: n, inputs, github });
   };
   assert.equal(run(), true, 'both rigs pass: it runs');
   for (const r of RIG_JOBS) {
@@ -625,7 +632,12 @@ test('rig gate: publish needs both rigs with result success and verdict PASS, an
     assert.equal(run((n) => { n[r] = { result: 'failure', outputs: { verdict: 'PASS' } }; }), false, `${r} a failed job is not a pass whatever it says`);
   }
   // The old conditions are all still there.
-  assert.equal(run(() => {}, { ...okInputs(), publish: false }), false, 'publish input off');
+  // The publish input is the one switch, for sr-watch (which passes it) and for a dispatch alike.
+  const direct = { workflow_ref: 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main' };
+  assert.equal(run(() => {}, okInputs()), true, 'sr-watch passes publish on and it publishes');
+  assert.equal(run(() => {}, { ...okInputs(), publish: false }), false, 'publish off is a dry run, whoever called');
+  assert.equal(run(() => {}, { ...okInputs(), publish: false }, direct), false, 'a direct dispatch without publish is a dry run');
+  assert.equal(run(() => {}, { ...okInputs(), publish: true }, direct), true, 'a direct dispatch with publish on publishes');
   assert.equal(run(() => {}, { ...okInputs(), test_autopilot: true }), false, 'test run');
   assert.equal(run(() => {}, { ...okInputs(), branch: 'public_test_branch' }), false, 'only public publishes');
   assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; }), false, 'a HOLD decision (autopilot off)');
@@ -710,7 +722,8 @@ test('rig gate: the nested call fits its callers (permissions ceiling, depth, ma
   const caller = watch.slice(watch.indexOf('  client-check:\n'));
   const grants = (text) => Object.fromEntries([...text.matchAll(/ {6}([a-z-]+): (read|write)\b/g)].map((m) => [m[1], m[2]]));
   const ceiling = grants(caller.match(/\n {4}permissions:\n((?: {6}[a-z-]+: .*\n)+)/)[1]);
-  assert.equal(ceiling.actions, 'read', "sr-watch grants the rig its actions: read (a nested call is checked against the top caller)");
+  assert.equal(ceiling.actions, 'write', "sr-watch grants actions: write (the cleanup job's; the rig's actions: read fits under it)");
+  assert.equal(job('feed-loader-cleanup').match(/\n {4}permissions:\n((?: {6}[a-z-]+: .*\n)+)/)[1].trim(), 'actions: write', 'only the cleanup job asks for it');
   for (const n of RIG_JOBS) {
     const asked = grants(job(n).match(/\n {4}permissions:\n((?: {6}[a-z-]+: .*\n)+)/)[1]);
     for (const [k, v] of Object.entries(asked)) assert.ok(ceiling[k] === v || (v === 'read' && ceiling[k] === 'write'), `${n}: ${k}: ${v} fits sr-watch's ceiling`);
@@ -1071,7 +1084,9 @@ test('plugin keys (leg C1): sr-watch passes the nine fork keys by name; the clie
     const body = job(n).replace(/^ *#.*$/gm, '');
     assert.ok(!FORK_KEYS.some((k) => body.includes(k)), `${n} does not read a plugin fork key`);
   }
-  assert.ok(!/VMAP_SIGN_KEY:/.test(call) && !/VMAP_SIGN_KEY:/.test(caller));
+  // The release key is declared and passed by name too, but no plugin job reads it (the publish job does, in the vmap-sign environment).
+  assert.match(call, /\n {6}VMAP_SIGN_KEY:\n {8}description: [^\n]+\n {8}required: false\n/);
+  assert.ok(caller.includes('\n      VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}\n'));
   // The nine are the ones the auto-apply name check admits.
   const allowed = job('auto-apply').match(/\^\(([A-Za-z|]+)\)\$/)[1].split('|').map((n) => `SR_DEPLOYKEY_${n.toUpperCase()}`).sort();
   assert.deepEqual(allowed, [...FORK_KEYS].sort());
@@ -1430,7 +1445,7 @@ test('S1 map mode: decide gets the rig facts, and both rigs the resolved tags', 
 
 // ---- S2: an enabled autopilot publishes nothing on the unattended path, and the summary says so
 
-test('S2 summary: the unattended chain\'s M says publish is not wired, a held or dispatched decision does not', () => {
+test('S2 summary: no decision says publishing is not wired any more', () => {
   const mm = job('map-mode');
   const start = mm.indexOf("          node -e '\n            const d = JSON.parse(require(\"fs\").readFileSync(\"decision.json\"");
   const end = mm.indexOf("\n          '\n", start);
@@ -1443,31 +1458,31 @@ test('S2 summary: the unattended chain\'s M says publish is not wired, a held or
     assert.equal(r.status, 0, r.stderr);
     return readFileSync(join(dir, 'summary.md'), 'utf8');
   };
-  const SAID = 'publish not wired on the unattended path';
-  // Autopilot on: the candidate chain decides M, and nothing publishes it.
-  assert.ok(run({ decision: 'M', cl: 129402, candidate: true, wouldBe: 'M' }).includes(SAID));
-  // Autopilot off: HOLD, which says the autopilot holds it; the line about wiring is not added.
-  assert.ok(!run({ decision: 'HOLD', cl: 129402, candidate: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] }).includes(SAID));
-  // A dispatch with publish on is not the unattended path.
-  assert.ok(!run({ decision: 'M', cl: 129402 }).includes(SAID));
-  // A test run never.
-  assert.ok(!run({ decision: 'HOLD', cl: 129402, test: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] }).includes(SAID));
+  const SAID = /not wired/;
+  // Autopilot on: the candidate chain decides M and the publish job takes it from there.
+  assert.ok(!SAID.test(run({ decision: 'M', cl: 129402, candidate: true, wouldBe: 'M' })));
+  // Autopilot off: HOLD, which says the autopilot holds it.
+  const held = run({ decision: 'HOLD', cl: 129402, candidate: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] });
+  assert.ok(!SAID.test(held));
+  assert.match(held, /publish held; would be M/);
+  assert.ok(!SAID.test(run({ decision: 'M', cl: 129402 })));
+  assert.ok(!SAID.test(run({ decision: 'HOLD', cl: 129402, test: true, wouldBe: 'M', reasons: [AUTOPILOT_HOLD] })));
+  assert.ok(!/not wired/.test(job('map-mode')));
 });
 
-test('S2 docs: re-enabling the autopilot is said to need the publish wiring, and the deploy key setup is step 26', () => {
+test('S2 docs: the autopilot is the one switch for publishing, and the deploy key setup is step 26', () => {
   for (const f of [join(here, 'MAP-MODE.md'), join(here, '..', '.github', 'sr-pipeline', 'README.md')]) {
     const text = readFileSync(f, 'utf8').replace(/\r\n/g, '\n').replace(/\s+/g, ' ');
-    assert.match(text, /publish wiring/, f);
-    assert.match(text, /publish not wired on the unattended path/, f);
-    assert.match(text, /an enabled autopilot (does nothing extra|changes nothing)/, f);
+    assert.ok(!/publish not wired on the unattended path/.test(text), `${f}: the old "not wired" line is gone`);
+    assert.ok(!/needs the publish wiring/.test(text), f);
+    assert.match(text, /autopilot (is )?(disabled|off)[^.]*publish(ing)? (is )?(skipped|held)|publish skipped/i, f);
     assert.match(text, /step 26/, f);
-    assert.ok(!/it publishes on its own/.test(text) && !/pipeline publishes on its own/.test(text), `${f}: no claim that the autopilot publishes by itself`);
   }
 });
 
 // ---- N2: "ready, publish held" only for a chain that staged a candidate and ran the rigs
 
-test('N2 alert: a dispatch with publish on that the autopilot held (no candidate) is not "ready"', { skip: !bash }, () => {
+test('N2 alert: a hold that staged no candidate is not "ready"', { skip: !bash }, () => {
   const a = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: [AUTOPILOT_HOLD] }, env: { STAGED_EXPECTED: 'false', CANDIDATE_RESULT: 'skipped', RIG_GATE_RESULT: 'skipped' } });
   assert.equal(a.status, 0, a.stderr);
   assert.equal(a.outputs.ready, 'false');
@@ -1909,7 +1924,7 @@ test('key sources: nothing but the scan, the layout keys and the scans builder r
 
 test('key sources: a failing one stops map mode with its cause, a clean list does not', () => {
   const gate = runOf(job('map-mode'), 'Require the key sources');
-  assert.match(job('map-mode'), /^ {4}needs: \[build, plugins, check, key-sources-plan, key-sources\]$/m);
+  assert.match(job('map-mode'), /^ {4}needs: \[build, plugins, check, key-sources-plan, key-sources, record-public\]$/m);
   const run = (env, keysrc) => {
     const dir = mkdtempSync(join(tmpdir(), 'key-gate-'));
     mkdirSync(join(dir, 'res'));
@@ -2015,4 +2030,697 @@ test('key sources: no program in a node -e block closes its single quotes early 
     n++;
   }
   assert.ok(n >= 8, `${n} programs checked`);
+});
+
+// ------------------------------------------------------------ publish bundle B1b: unattended publish, public only, one seq
+
+const apPath = join(here, '..', 'state', 'autopilot.json');
+const sh = (cmd, cwd, env = {}) => spawnSync(bash, ['-c', cmd], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env } });
+
+test('publish gates (unattended): the public run of sr-watch publishes on its own only when every gate holds, and the order of the gates is stated', () => {
+  const pub = job('publish');
+  const ifLine = jobIf('publish');
+  const run = (mut = () => {}, inputs = okInputs(), github = undefined) => {
+    const n = okNeeds();
+    mut(n);
+    return evalExpr(ifLine, { needs: n, inputs, github });
+  };
+  assert.equal(run(), true, 'sr-watch (publish: true), public, M, publishable, both rigs PASS: publishes');
+  assert.equal(run(() => {}, { ...okInputs(), publish: false }), false, 'the publish input off: a dry run');
+  // Each gate alone stops it.
+  assert.equal(run(() => {}, { ...okInputs(), branch: 'public_test_branch' }), false, 'a test-branch run never publishes');
+  assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; n['map-mode'].outputs.publishable = 'false'; n['map-mode'].outputs.test = 'true'; }), false, 'autopilot off: HOLD, a held candidate counts as a test, publish skipped');
+  assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; }), false, 'a HOLD alone');
+  assert.equal(run((n) => { n['map-mode'].outputs.publishable = 'false'; }), false, 'promote says not publishable');
+  assert.equal(run((n) => { n['rig-other'].outputs.verdict = 'FAIL'; }), false, 'a rig fail');
+  assert.equal(run(() => {}, { ...okInputs(), test_autopilot: true }), false, 'a test_autopilot run');
+  // The release key sits in the vmap-sign environment of this job only, and the job holds no other secret.
+  assert.match(pub, /\n {4}environment: vmap-sign\n/);
+  assert.deepEqual([...new Set([...pub.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]))], ['VMAP_SIGN_KEY']);
+  const holders = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /secrets\.VMAP_SIGN_KEY(?!_TEST)/.test(job(n)));
+  assert.deepEqual(holders, ['publish']);
+  // sr-watch passes the release key by name (a called job reads an environment secret only that way); only the publish job reads it.
+  assert.ok(watch.slice(watch.indexOf('  client-check:\n')).includes('\n      VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}\n'));
+  // The gates are written down in the order they apply, and the old "not wired" wording is gone.
+  const head = wf.slice(wf.indexOf('# ---- Publish: the feed signed with the release key'), wf.indexOf('\n  publish:\n'));
+  const at = ['run is for public', 'the publish input is on', 'decide chose M', 'publishable', 'both client rigs'].map((t) => head.indexOf(t));
+  assert.ok(at.every((i) => i > 0) && at.every((v, i) => i === 0 || v > at[i - 1]), `gate order in the comment: ${at}`);
+  assert.ok(!/publish not wired/.test(wf));
+  // The switch is state/autopilot.json, and it stays off in this change.
+  assert.equal(JSON.parse(readFileSync(apPath, 'utf8')).enabled, false);
+});
+
+test('publish gates: the autopilot off means a HOLD and a skipped publish, the chain still stages (decide --candidate)', () => {
+  const ap = JSON.parse(readFileSync(apPath, 'utf8'));
+  assert.equal(ap.enabled, false);
+  // decide reads the file the job reads, and a disabled autopilot is a HOLD whose only reason is the autopilot.
+  const mm = job('map-mode');
+  assert.ok(mm.includes('--autopilot tool/state/autopilot.json'));
+  assert.ok(mm.includes('echo "decision=$decision" >> "$GITHUB_OUTPUT"'));
+  const n = okNeeds();
+  n['map-mode'].outputs.decision = 'HOLD';
+  assert.equal(evalExpr(jobIf('publish'), { needs: n, inputs: { ...okInputs(), publish: false } }), false);
+  // The held chain's plan is a test plan, so it is never publishable whatever else is true.
+  assert.ok(mm.includes('promote_flag=(--test-autopilot)'));
+});
+
+test('record-public: only a public run, not a test run, appends; its if and its script both say so', () => {
+  const j = job('record-public');
+  assert.match(j, /\n {4}needs: \[check\]\n/);
+  assert.match(j, /\n {4}permissions:\n {6}contents: write\n/);
+  const ifRecord = jobIf('record-public');
+  const run = (inputs, check = 'success') => evalExpr(ifRecord, { needs: { check: { result: check, outputs: {} } }, inputs });
+  assert.equal(run({ map_mode: true, branch: 'public' }), true);
+  assert.equal(run({ map_mode: true, branch: 'public_test_branch' }), false, 'never from a test-branch run');
+  assert.equal(run({ map_mode: true, branch: 'public', test_autopilot: true }), false, 'never from a test run');
+  assert.equal(run({ map_mode: false, branch: 'public' }), false);
+  assert.equal(run({ map_mode: true, branch: 'public' }, 'failure'), false);
+  assert.equal(run({ map_mode: true, branch: 'public' }, 'skipped'), false);
+  // It commits that one file and nothing else, to main, never by force.
+  const script = runOf(j, 'Add the build to the list');
+  assert.ok(script.includes('[ "$BRANCH" = public ] || { echo "::error::only a run for public records a public build"; exit 2; }'));
+  assert.deepEqual([...script.matchAll(/git add ([^\n]+)/g)].map((m) => m[1]), ['state/public-builds.json']);
+  assert.deepEqual([...script.matchAll(/git push ([^\n;]+)/g)].map((m) => m[1].replace(/\s*then.*/, '')), ['origin HEAD:main']);
+  assert.ok(!/--force|-f |\+HEAD|git commit [^\n]*-a/.test(script));
+  assert.match(script, /git commit --quiet -m "Record public build \$buildid \(CL-\$cl\)"/);
+  assert.ok(!/Co-Authored-By/i.test(script));
+  // Map mode waits for it, and does not run when it failed: fail closed.
+  const mmIf = jobIf('map-mode');
+  const mmRun = (record) => evalExpr(mmIf, { needs: { check: { result: 'success', outputs: {} }, 'record-public': { result: record, outputs: {} } }, inputs: { map_mode: true } });
+  assert.equal(mmRun('success'), true);
+  assert.equal(mmRun('skipped'), true, 'a test-branch run skips the record job and still maps');
+  assert.equal(mmRun('failure'), false);
+  assert.equal(mmRun('cancelled'), false);
+  // A list that moved is read from main after the record job, not from the commit the run started on.
+  assert.match(job('map-mode'), /- name: Check out the public builds list\n {8}uses: actions\/checkout@[0-9a-f]{40} # v[\d.]+\n {8}with:\n {10}ref: main\n {10}path: pub\n/);
+  // The alert names it.
+  assert.ok(job('alert').includes('record-public'));
+  assert.ok(job('alert').includes('["record the public build", "record the public build", e.RECORD_RESULT]'));
+});
+
+// A local "origin" with a main branch that holds the tool and the list, and a clone to run the record step in.
+const recordFixture = ({ list = readFileSync(join(here, '..', 'state', 'public-builds.json'), 'utf8'), result = { checks: { exe: { cl: 129999 } }, download: { buildid: '26500000' } }, reject = false } = {}) => {
+  const root = mkdtempSync(join(tmpdir(), 'record-public-'));
+  const git = (cwd, ...a) => {
+    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false', ...a], { cwd, encoding: 'utf8', windowsHide: true });
+    assert.equal(r.status, 0, `git ${a.join(' ')}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  const origin = join(root, 'origin.git');
+  const seed = join(root, 'seed');
+  mkdirSync(seed, { recursive: true });
+  git(root, 'init', '--quiet', '--bare', '--initial-branch=main', origin);
+  git(seed, 'init', '--quiet', '--initial-branch=main');
+  mkdirSync(join(seed, 'ci'));
+  mkdirSync(join(seed, 'state'));
+  for (const f of ['public-builds.mjs', 'layout-diff.mjs']) copyFileSync(join(here, f), join(seed, 'ci', f));
+  writeFileSync(join(seed, 'state', 'public-builds.json'), list);
+  git(seed, 'add', '.');
+  git(seed, 'commit', '--quiet', '-m', 'seed');
+  git(seed, 'remote', 'add', 'origin', origin);
+  git(seed, 'push', '--quiet', 'origin', 'main');
+  if (reject) {
+    writeFileSync(join(origin, 'hooks', 'pre-receive'), '#!/bin/sh\necho "refused by the test" >&2\nexit 1\n');
+    chmodSync(join(origin, 'hooks', 'pre-receive'), 0o755);
+  }
+  const work = join(root, 'work');
+  git(root, 'clone', '--quiet', origin, work);
+  mkdirSync(join(work, 'res'));
+  if (result) writeFileSync(join(work, 'res', 'result.json'), JSON.stringify(result));
+  const out = join(root, 'out.txt');
+  const summary = join(root, 'summary.md');
+  writeFileSync(out, '');
+  writeFileSync(summary, '');
+  return { work, origin, out, summary, git };
+};
+const runRecord = (fx, branch = 'public') => {
+  const script = runOf(job('record-public'), 'Add the build to the list');
+  return sh(script, fx.work, { BRANCH: branch, GITHUB_OUTPUT: fx.out, GITHUB_STEP_SUMMARY: fx.summary });
+};
+
+test('record-public script: a new public build is appended on main, one file, plain message; the same build twice adds nothing', { skip: !bash }, () => {
+  const fx = recordFixture();
+  const before = fx.git(fx.origin, 'rev-list', '--count', 'main');
+  const r = runRecord(fx);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(readFileSync(fx.out, 'utf8'), /appended=true/);
+  assert.equal(Number(fx.git(fx.origin, 'rev-list', '--count', 'main')), Number(before) + 1);
+  assert.equal(fx.git(fx.origin, 'log', '-1', '--format=%s', 'main'), 'Record public build 26500000 (CL-129999)');
+  assert.equal(fx.git(fx.origin, 'diff-tree', '--no-commit-id', '--name-only', '-r', 'main'), 'state/public-builds.json', 'one file');
+  assert.ok(!/Co-Authored-By/i.test(fx.git(fx.origin, 'log', '-1', '--format=%B', 'main')));
+  const list = parsePublicBuilds(fx.git(fx.origin, 'show', 'main:state/public-builds.json'));
+  assert.equal(list.builds.at(-1).cl, 129999);
+  assert.equal(list.builds.at(-1).buildid, '26500000');
+  assert.match(list.builds.at(-1).firstSeen, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  assert.match(readFileSync(fx.summary, 'utf8'), /recorded CL-129999/);
+  // The same build again: nothing new on main.
+  writeFileSync(fx.out, '');
+  const again = runRecord(fx);
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+  assert.match(readFileSync(fx.out, 'utf8'), /appended=false/);
+  assert.equal(Number(fx.git(fx.origin, 'rev-list', '--count', 'main')), Number(before) + 1);
+});
+
+test('record-public script: a test-branch run, a run with no exe, a damaged list and a refused push never leave a changed list (fail closed)', { skip: !bash }, () => {
+  // A test-branch run: refused, nothing pushed.
+  let fx = recordFixture();
+  let r = runRecord(fx, 'public_test_branch');
+  assert.equal(r.status, 2);
+  assert.match(r.stdout, /only a run for public records a public build/);
+  assert.equal(fx.git(fx.origin, 'rev-list', '--count', 'main'), '1');
+  // No exe measured: nothing to record, and no failure here (map mode stops on the missing scan itself).
+  fx = recordFixture({ result: { status: 'skipped' } });
+  r = runRecord(fx);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(readFileSync(fx.out, 'utf8'), /appended=false/);
+  assert.equal(fx.git(fx.origin, 'rev-list', '--count', 'main'), '1');
+  // A list that is off the format: the step fails and pushes nothing.
+  fx = recordFixture({ list: '{"not":"a list"}' });
+  r = runRecord(fx);
+  assert.notEqual(r.status, 0);
+  assert.equal(fx.git(fx.origin, 'rev-list', '--count', 'main'), '1');
+  // Main refuses the push: three tries, then the step fails.
+  fx = recordFixture({ reject: true });
+  r = runRecord(fx);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stdout, /could not push the list to main after 3 tries/);
+  assert.equal(fx.git(fx.origin, 'rev-list', '--count', 'main'), '1');
+});
+
+test('one seq: next-seq runs once, in the chain, and the TEST signature, the promote plan and the check of the TEST feed all get it', () => {
+  const mm = job('map-mode');
+  assert.equal(mm.match(/vmap-sign\.mjs next-seq/g)?.length, 1);
+  assert.ok(mm.includes('seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$last_seq")"'));
+  assert.ok(mm.includes('echo "seq=$seq" >> "$GITHUB_OUTPUT"'));
+  assert.match(mm, /\n {6}seq: \$\{\{ steps\.chain\.outputs\.seq \}\}\n/);
+  assert.ok(mm.includes('vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq" --seq "$seq"'));
+  assert.ok(mm.includes('vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq" --expect-seq "$seq"'));
+  assert.ok(mm.includes('--history history.json --last-seq "$last_seq" --seq "$seq" --now'));
+  assert.ok(mm.indexOf('next-seq') < mm.indexOf('decide.mjs --repo'), 'computed before anything uses it');
+  // Nothing recomputes it: no other next-seq, and no sign or plan without --seq anywhere in the file.
+  assert.equal(wf.match(/vmap-sign\.mjs next-seq/g)?.length, 1);
+  const signs = [...wf.matchAll(/node tool\/ci\/vmap-sign\.mjs sign [^\n]*/g)];
+  const plans = [...wf.matchAll(/node tool\/ci\/promote\.mjs plan [^\n]*\n[^\n]*/g)];
+  assert.equal(signs.length, 2, 'the TEST signature and the release signature');
+  assert.equal(plans.length, 1);
+  for (const m of signs) assert.ok(/--seq "\$(seq|CHAIN_SEQ)"/.test(m[0]), m[0]);
+  for (const m of plans) assert.ok(/--seq "\$seq"/.test(m[0]), m[0]);
+  // The publish job carries the chain's number, never a new one, into the signature, the check and the history.
+  const pub = job('publish');
+  assert.match(pub, /CHAIN_SEQ: \$\{\{ needs\.map-mode\.outputs\.seq \}\}/);
+  assert.ok(pub.includes('--key-id k2 --last-seq "$last_seq" --seq "$CHAIN_SEQ"'));
+  assert.ok(pub.includes('verify version-map-client.v1.txt --last-seq "$last_seq" --expect-seq "$CHAIN_SEQ"'));
+  assert.ok(pub.includes('seq: Number(process.env.CHAIN_SEQ)'));
+  assert.ok(pub.includes('verify published/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ"'));
+  assert.ok(!/next-seq/.test(pub));
+});
+
+test('public only: every export-feed in the workflow carries --public-builds, and the chain reports the CLs it left out', () => {
+  const exports = [...wf.matchAll(/node tool\/ci\/version-map\.mjs export-feed [^\n]*/g)].map((m) => m[0]);
+  assert.equal(exports.length, 2, 'the chain exports the staged feed; the publish job cuts it again to compare');
+  for (const e of exports) assert.match(e, /--public-builds pub\/state\/public-builds\.json/, e);
+  const mm = job('map-mode');
+  assert.ok(mm.indexOf('export-feed') < mm.indexOf('--key-id k1'), 'exported public-only before it is signed');
+  // The export step: a refusal stops the chain.
+  assert.ok(mm.includes('[ "$export_status" -eq 0 ] || { echo "::error::the public-only feed export was refused'));
+  // Public's own CL must be in the feed.
+  assert.ok(mm.includes('is the build public runs, but it is not on the public builds list'));
+});
+
+test('public only: the step summary names each CL the export left out', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          node -e \'\n            const fs = require("fs");\n            const left =');
+  const end = mm.indexOf("\n          '\n", start);
+  assert.ok(start > 0 && end > start);
+  const script = mm.slice(start, end).replace(/^ {10}node -e '\n/, '').replace(/^ {12}/gm, '');
+  const run = (err) => {
+    const dir = mkdtempSync(join(tmpdir(), 'export-summary-'));
+    writeFileSync(join(dir, 'export.err'), err);
+    const r = spawnSync(process.execPath, ['-e', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_STEP_SUMMARY: join(dir, 's.md') } });
+    assert.equal(r.status, 0, r.stderr);
+    return readFileSync(join(dir, 's.md'), 'utf8');
+  };
+  const left = run('left out CL-129402, not on public: 4 rows (1 build, 1 function, 2 field)\nleft out CL-128786, not on public: 2 rows (1 build, 1 function)\npublic export: 2 CLs left out\n');
+  assert.match(left, /Feed export: public CLs only/);
+  assert.match(left, /- left out CL-129402, not on public: 4 rows/);
+  assert.match(left, /- left out CL-128786, not on public: 2 rows/);
+  assert.ok(!/every CL in the header is on public/.test(left));
+  assert.match(run('public export: 0 CLs left out\n'), /no CL left out/);
+});
+
+// The publish job's steps, run against stubs: gh, the signer and the exporter write what they are asked and log their arguments.
+const publishFixture = ({ liveSeq = 100, chainSeq = '200', planSeq = null, exportText = 'FEED\n', feedText = 'FEED\n', publishedKey = 'k2', publishedSeq = undefined, release = true } = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'publish-job-'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  mkdirSync(join(dir, 'chain'));
+  mkdirSync(join(dir, 'pub', 'state'), { recursive: true });
+  mkdirSync(join(dir, 'bin'));
+  writeFileSync(join(dir, 'pub', 'state', 'public-builds.json'), '[]');
+  writeFileSync(join(dir, 'chain', 'feed.txt'), feedText);
+  writeFileSync(join(dir, 'chain', 'version_map.generated.h'), '');
+  writeFileSync(join(dir, 'chain', 'promote-plan.json'), JSON.stringify({ action: 'normal-flow', seq: planSeq }));
+  writeFileSync(join(dir, 'chain', 'decision.json'), JSON.stringify({ decision: 'M', cl: 129999, candidate: true, wouldBe: 'M' }));
+  writeFileSync(join(dir, 'chain', 'history.json'), JSON.stringify({ releases: [], attempts: {} }));
+  writeFileSync(join(dir, 'tool', 'ci', 'vmap-sign.mjs'), `import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+const a = process.argv.slice(2);
+appendFileSync('calls.log', 'vmap-sign ' + a.join(' ') + '\\n');
+const opt = (n) => a[a.indexOf('--' + n) + 1];
+if (a[0] === 'sign') writeFileSync(opt('out'), readFileSync(a[1], 'utf8') + 'signed seq ' + opt('seq') + '\\n');
+if (a[0] === 'verify') {
+  const live = a[1].startsWith('live/');
+  const seq = live ? ${liveSeq} : ${publishedSeq ?? 'Number(opt("expect-seq"))'};
+  const key = live ? 'k2' : '${publishedKey}';
+  if (!live && opt('expect-seq') !== undefined && Number(opt('expect-seq')) !== seq) { console.error('refused: wrong seq'); process.exit(3); }
+  console.log('ok seq=' + seq + ' key=' + key);
+}
+`);
+  writeFileSync(join(dir, 'tool', 'ci', 'version-map.mjs'), `import { appendFileSync, writeFileSync } from 'node:fs';
+const a = process.argv.slice(2);
+appendFileSync('calls.log', 'version-map ' + a.join(' ') + '\\n');
+writeFileSync(a[a.indexOf('--out') + 1], ${JSON.stringify(exportText)});
+`);
+  writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash
+printf 'gh %s\\n' "$*" >> calls.log
+case "$1 $2" in
+  "api repos/"*) ${release ? 'echo "{}"; exit 0' : 'echo "gh: Not Found (HTTP 404)" >&2; exit 1'} ;;
+  "release download") dest=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && dest="$2"; shift; done; mkdir -p "$dest"; if [ "$dest" = live ]; then echo LIVE > live/version-map-client.v1.txt; else cp version-map-client.v1.txt vmap-history.json "$dest"/; [ -n "$TAMPER" ] && echo x >> "$dest"/vmap-history.json; fi ;;
+esac
+exit 0
+`);
+  chmodSync(join(dir, 'bin', 'gh'), 0o755);
+  return { dir, chainSeq };
+};
+const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
+const callsOf = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
+
+test('publish job: the chain seq must still rise above the live seq, the plan must agree, and the feed must be the one the list allows now', { skip: !bash }, () => {
+  const step = 'Check the seq and the feed before signing';
+  let fx = publishFixture();
+  let r = runPublishStep(fx, step);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(readFileSync(join(fx.dir, 'last-seq.txt'), 'utf8').trim(), '100');
+  assert.ok(callsOf(fx.dir).some((c) => /^version-map export-feed chain\/version_map\.generated\.h --out feed\.again\.txt --public-builds pub\/state\/public-builds\.json$/.test(c)), 'cut again against the list');
+  // The plan states the same seq: fine.
+  fx = publishFixture({ planSeq: 200 });
+  assert.equal(runPublishStep(fx, step).status, 0);
+  // Another publish landed: the chain seq no longer rises above the live one. Nothing is signed.
+  fx = publishFixture({ liveSeq: 200 });
+  r = runPublishStep(fx, step);
+  assert.equal(r.status, 2);
+  assert.match(r.stdout, /no longer rises above the published seq 200.*nothing was signed/);
+  // The plan states another seq than the chain.
+  fx = publishFixture({ planSeq: 201 });
+  r = runPublishStep(fx, step);
+  assert.equal(r.status, 2);
+  assert.match(r.stdout + r.stderr, /promote plan states seq 201, not the chain seq 200/);
+  // No seq from the chain at all.
+  for (const bad of ['', '0', 'abc', '2 00']) {
+    fx = publishFixture({ chainSeq: bad });
+    assert.equal(runPublishStep(fx, step).status, 2, `seq '${bad}'`);
+  }
+  // The list moved since the chain staged: the feed differs, so the chain is stale.
+  fx = publishFixture({ exportText: 'OTHER FEED\n' });
+  r = runPublishStep(fx, step);
+  assert.equal(r.status, 2);
+  assert.match(r.stdout, /differs from the feed the public builds list on main allows now/);
+  // No release yet is seq 0.
+  fx = publishFixture({ release: false });
+  r = runPublishStep(fx, step);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(readFileSync(join(fx.dir, 'last-seq.txt'), 'utf8').trim(), '0');
+});
+
+test('publish job: signs with the chain seq, records it in the history, uploads, then verifies the published copy (signature, seq, sha256)', { skip: !bash }, () => {
+  const fx = publishFixture();
+  writeFileSync(join(fx.dir, 'last-seq.txt'), '100\n');
+  let r = runPublishStep(fx, 'Sign with the release key, verify, publish');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const c = callsOf(fx.dir);
+  assert.ok(c.includes('vmap-sign sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq 100 --seq 200'), c.join('\n'));
+  assert.ok(c.includes('vmap-sign verify version-map-client.v1.txt --last-seq 100 --expect-seq 200'));
+  // History first: if the second upload fails, the history is not short of a feed that is live.
+  const upHist = c.indexOf('gh release upload vmap-feed vmap-history.json --clobber');
+  const upFeed = c.indexOf('gh release upload vmap-feed version-map-client.v1.txt --clobber');
+  assert.ok(upHist >= 0 && upFeed > upHist, c.join('\n'));
+  const history = JSON.parse(readFileSync(join(fx.dir, 'vmap-history.json'), 'utf8'));
+  assert.deepEqual(history.releases.map((x) => [x.repo, x.cl, x.seq]), [['ModLoader', 129999, 200]]);
+  // A missing release key stops before anything is signed.
+  const nokey = publishFixture();
+  writeFileSync(join(nokey.dir, 'last-seq.txt'), '100\n');
+  r = runPublishStep(nokey, 'Sign with the release key, verify, publish', { VMAP_SIGN_KEY: '' });
+  assert.equal(r.status, 2);
+  assert.deepEqual(callsOf(nokey.dir).filter((l) => l.startsWith('vmap-sign sign')), []);
+  // The published copy is checked.
+  r = runPublishStep(fx, 'Verify what was published');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /ok seq=200 key=k2/);
+  assert.match(r.stdout, /version-map-client\.v1\.txt sha256 [0-9a-f]{64}/);
+  assert.match(readFileSync(join(fx.dir, 'summary.md'), 'utf8'), /Published the feed: seq 200, release key k2, sha256 [0-9a-f]{64}/);
+  assert.equal(runPublishStep(fx, 'Verify what was published', { TAMPER: '1' }).status, 2, 'a published file that differs from the signed one fails');
+  const wrongKey = publishFixture({ publishedKey: 'k1' });
+  writeFileSync(join(wrongKey.dir, 'last-seq.txt'), '100\n');
+  assert.equal(runPublishStep(wrongKey, 'Sign with the release key, verify, publish').status, 0);
+  r = runPublishStep(wrongKey, 'Verify what was published');
+  assert.equal(r.status, 2);
+  assert.match(r.stdout, /not seq 200 signed with the release key k2/);
+  // A signer that wrote another seq than the chain's fails at the first verify, before anything is uploaded.
+  const wrongSeq = publishFixture({ publishedSeq: 199 });
+  writeFileSync(join(wrongSeq.dir, 'last-seq.txt'), '100\n');
+  assert.notEqual(runPublishStep(wrongSeq, 'Sign with the release key, verify, publish').status, 0);
+  assert.ok(!callsOf(wrongSeq.dir).some((l) => l.startsWith('gh release upload')));
+});
+
+test('publish job: the lock accepts the chain\'s own M and refuses a test run, a held candidate and a test plan', { skip: !bash }, () => {
+  const lock = (decision, plan = { action: 'normal-flow', seq: null }, testInput = 'false') => {
+    const fx = publishFixture();
+    writeFileSync(join(fx.dir, 'chain', 'decision.json'), JSON.stringify(decision));
+    writeFileSync(join(fx.dir, 'chain', 'promote-plan.json'), JSON.stringify(plan));
+    return runPublishStep(fx, 'Refuse a test run', { TEST_INPUT: testInput }).status;
+  };
+  assert.equal(lock({ decision: 'M', cl: 1, candidate: true, wouldBe: 'M' }), 0, 'the unattended chain with the autopilot on');
+  assert.equal(lock({ decision: 'M', cl: 1 }), 0, 'a dispatch with publish on');
+  assert.equal(lock({ decision: 'HOLD', cl: 1, candidate: true, wouldBe: 'M' }), 2, 'held by the autopilot');
+  assert.equal(lock({ decision: 'M', cl: 1, test: true, wouldBe: 'M' }), 2, 'a test run');
+  assert.equal(lock({ decision: 'M', cl: 1, candidate: true, wouldBe: 'M' }, { action: 'normal-flow', test: true }), 2, 'a test plan');
+  assert.equal(lock({ decision: 'M', cl: 1, candidate: true, wouldBe: 'M' }, undefined, 'true'), 2, 'the test input');
+});
+
+// ------------------------------------------------------------ publish bundle B2: the feed-path rig gate
+
+const feedIf = (name, needs, inputs) => evalExpr(jobIf(name), { needs, inputs });
+const feedNeeds = (over = {}) => ({ ...okNeeds(), 'feed-plan': { result: 'success', outputs: { state: 'RUN' } }, 'feed-loader': { result: 'success', outputs: {} }, 'rig-feed': { result: 'success', outputs: { verdict: 'PASS' } }, ...over });
+
+test('feed gate: publish needs the feed gate to end PASS or a named SKIP, and nothing else changes', () => {
+  const run = (mut = () => {}) => { const n = okNeeds(); mut(n); return evalExpr(jobIf('publish'), { needs: n, inputs: okInputs() }); };
+  assert.equal(run(), true, 'feed gate PASS');
+  assert.equal(run((n) => { n['feed-gate'].outputs.state = 'SKIP'; }), true, 'feed gate SKIP (the feed adds and changes no row)');
+  assert.equal(run((n) => { n['feed-gate'].outputs.state = 'FAIL'; }), false, 'FAIL');
+  assert.equal(run((n) => { n['feed-gate'].outputs.state = ''; }), false, 'no state');
+  assert.equal(run((n) => { n['feed-gate'] = { result: 'failure', outputs: { state: 'FAIL' } }; }), false, 'a failed gate job');
+  assert.equal(run((n) => { n['feed-gate'] = { result: 'skipped', outputs: {} }; }), false, 'a skipped gate job is not a pass');
+  assert.equal(run((n) => { n['feed-gate'] = { result: 'cancelled', outputs: { state: 'PASS' } }; }), false, 'a cancelled gate job');
+  // The autopilot off: decide says HOLD, so publish is skipped whatever the feed gate says.
+  assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; }), false, 'autopilot off: still no publish');
+  assert.match(job('publish'), /\n {4}needs: \[check, map-mode, rig-branch, rig-other, feed-gate\]\n/);
+});
+
+test('feed gate: it runs on public only, for the candidates the rig gate covers, and the rig shares the Steam group', () => {
+  for (const name of ['feed-plan', 'feed-gate']) {
+    assert.equal(feedIf(name, feedNeeds(), okInputs()), true, `${name} runs on public`);
+    assert.equal(feedIf(name, feedNeeds(), { ...okInputs(), branch: 'public_test_branch' }), false, `${name} never runs on public_test_branch`);
+    assert.equal(feedIf(name, feedNeeds(), { ...okInputs(), test_autopilot: true }), false, `${name} skips a test_autopilot run`);
+    assert.equal(feedIf(name, feedNeeds({ 'map-mode': { result: 'success', outputs: { staged: 'false' } } }), okInputs()), false, `${name} skips what the chain did not stage`);
+  }
+  assert.equal(feedIf('feed-loader', feedNeeds(), okInputs()), true);
+  assert.equal(feedIf('feed-loader', feedNeeds({ 'feed-plan': { result: 'success', outputs: { state: 'SKIP' } } }), okInputs()), false, 'a skipped plan builds nothing');
+  assert.equal(feedIf('rig-feed', feedNeeds(), okInputs()), true);
+  assert.equal(feedIf('rig-feed', feedNeeds(), { ...okInputs(), branch: 'public_test_branch' }), false, 'the feed rig is public only');
+  assert.equal(feedIf('rig-feed', feedNeeds({ 'feed-loader': { result: 'failure', outputs: {} } }), okInputs()), false, 'no rig without the build');
+  // It runs after the candidate rigs, in the same Steam group (the called rig carries the group), with the same plugin set.
+  const rf = job('rig-feed');
+  assert.match(rf, /\n {4}needs: \[map-mode, feed-plan, feed-loader, rig-branch, rig-other\]\n/);
+  assert.match(rf, /\n {4}uses: \.\/\.github\/workflows\/sr-client-rig\.yml\n/);
+  assert.deepEqual(mapOf(rf, 'secrets'), { STEAM_CI_USERNAME: '${{ secrets.STEAM_CI_USERNAME }}', STEAM_CI_LOGIN_CACHE: '${{ secrets.STEAM_CI_LOGIN_CACHE }}' });
+  const w = mapOf(rf, 'with');
+  assert.equal(w.tags, '${{ needs.map-mode.outputs.rig_tags }}', 'the same plugin set as the candidate rig');
+  assert.equal(w.expect_refused, '${{ needs.map-mode.outputs.expect_refused }}', 'the same refusals as the public candidate rig');
+  assert.equal(w.feed_artifact, 'map-mode-${{ inputs.branch }}');
+  const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(rig, /concurrency:\n {6}group: sr-client-rig\n/);
+});
+
+test('feed gate: the loader is built from the release tag with the define set in CL, and the build log must prove it', () => {
+  const l = job('feed-loader');
+  assert.match(l, /\n {10}CL: \/DVMAP_TRUST_TEST_KEY \/Bt\+\n/, 'the define comes from the CL variable of the build step');
+  assert.match(l, /ref: \$\{\{ needs\.feed-plan\.outputs\.sha \}\}/, 'the release tag commit, no branch');
+  assert.match(l, /log_file: \$\{\{ env\.MSBUILD_LOG \}\}/);
+  const check = l.slice(l.indexOf('- name: Check the define reached the compiler'));
+  assert.ok(check.includes('c1xx'), 'the /Bt+ timing line is required');
+  assert.ok(check.includes('version_feed'), 'the file that reads the define must have been compiled');
+  assert.ok((check.match(/throw '/g) ?? []).length >= 3, 'the step throws when the proof is missing');
+  assert.ok(l.indexOf('- name: Check the define reached the compiler') < l.indexOf('- name: Upload the loader for the rig'), 'the proof comes before the upload');
+  assert.match(l, /retention-days: 1/, 'a rig input kept one day');
+  assert.ok(!/gh release|upload-release|softprops|git (apply|am)\b|sed -i/.test(l), 'not a release asset, no patch');
+  assert.ok(!/secrets\./.test(l), 'the build job holds no secret');
+  assert.ok(!/\n {4}environment:/.test(l));
+});
+
+test('feed gate: no job of the feed path, and not the rig, can reach the release signing key', () => {
+  for (const n of ['feed-plan', 'feed-loader', 'rig-feed', 'feed-gate']) {
+    assert.ok(!/VMAP_SIGN_KEY/.test(job(n)), `${n} has no signing key`);
+    assert.ok(!/secrets\.(?!STEAM_CI_USERNAME|STEAM_CI_LOGIN_CACHE)/.test(job(n)), `${n} reads no secret but the Steam pair`);
+  }
+  const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8');
+  assert.ok(!/VMAP_SIGN_KEY/.test(rig));
+  const holders = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /secrets\.VMAP_SIGN_KEY(?!_TEST)/.test(job(n)));
+  assert.deepEqual(holders, ['publish']);
+});
+
+// The plan job's script, run against a fake `gh` and the fixture feed and header.
+// The signed TEST feed of the fixtures, and a header that holds the loader fixture's rows plus the
+// feed's rows for CL-130001 (edit changes each function row), for the feed-plan comparisons.
+const feedFixtureText = () => readFileSync(join(here, 'fixtures', 'vmap-sign', 'test-feed-k1.txt'), 'utf8').replaceAll('\r\n', '\n');
+const headerWithFeedRows = (edit = (r) => r) => {
+  const lines = feedFixtureText().split('\n');
+  const feed = parseFeed([lines[0], ...lines.slice(2, -2), ''].join('\n'), 'feed');
+  const base = parse(readFileSync(join(here, 'fixtures', 'version-map', 'loader.h'), 'utf8'), 'loader.h');
+  return emit({ ...base, builds: base.builds.concat(feed.builds.filter((b) => b.cl === 130001)), functions: base.functions.concat(feed.functions.map(edit)), fields: base.fields.concat(feed.fields) });
+};
+const feedPlanRun = ({ cl, withFeed = true, tag = 'v9.9.9', header = null, ref = '', publish = 'true', refSha = 'b'.repeat(40) }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'feedplan-'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  for (const f of readdirSync(here).filter((n) => n.endsWith('.mjs') && !n.endsWith('.test.mjs'))) copyFileSync(join(here, f), join(dir, 'tool', 'ci', f));
+  mkdirSync(join(dir, 'chain'), { recursive: true });
+  if (withFeed) writeFileSync(join(dir, 'chain', 'feed.test-signed.txt'), feedFixtureText());
+  writeFileSync(join(dir, 'chain', 'decision.json'), JSON.stringify({ decision: 'M', cl }));
+  if (header === null) copyFileSync(join(here, 'fixtures', 'version-map', 'loader.h'), join(dir, 'header-fixture.h'));
+  else writeFileSync(join(dir, 'header-fixture.h'), header);
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'gh'), [
+    '#!/bin/bash',
+    'printf "%s\\n" "$*" >> "$FAKE_DIR/calls.log"',
+    'case "$*" in',
+    '  *git/ref/heads/*) [ -n "$FAKE_REF_SHA" ] || exit 1; echo "$FAKE_REF_SHA" ;;',
+    `  *releases/latest*) echo ${tag} ;;`,
+    '  *contents/*) cat "$FAKE_DIR/header-fixture.h" ;;',
+    `  *commits/*) echo ${'a'.repeat(40)} ;;`,
+    'esac',
+    'exit 0',
+    '',
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  const out = join(dir, 'out.txt');
+  writeFileSync(out, '');
+  const r = spawnSync(bash, ['-c', runOf(job('feed-plan'), 'Plan the feed-path rig')], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, FAKE_REF_SHA: refSha, GITHUB_OUTPUT: out, MOD_OWNER: 'AlienXAXS', SEQ: '1761900000', RIG_TAGS: '', FEED_LOADER_REF: ref, PUBLISH: publish, PATH: bin + delimiter + process.env.PATH } });
+  const o = Object.fromEntries(readFileSync(out, 'utf8').split('\n').filter(Boolean).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  const calls = existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8') : '';
+  rmSync(dir, { recursive: true, force: true });
+  return { status: r.status, stderr: r.stderr, calls, ...o };
+};
+
+test('feed gate: the plan fails on a missing feed or a feed without the CL, and skips only when the feed adds and changes no row', { skip: !bash }, () => {
+  const missing = feedPlanRun({ cl: 130001, withFeed: false });
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.equal(missing.state, 'FAIL');
+  assert.match(missing.reason, /no TEST-signed feed/);
+  const noCl = feedPlanRun({ cl: 999999 });
+  assert.equal(noCl.state, 'FAIL');
+  assert.match(noCl.reason, /carries no build row for CL-999999/);
+  // Identical rows: the loader runs the same with or without the feed.
+  const same = feedPlanRun({ cl: 130001, header: headerWithFeedRows() });
+  assert.equal(same.status, 0, same.stderr);
+  assert.equal(same.state, 'SKIP');
+  assert.match(same.reason, /adds no row and changes no row for CL-130001 compared with the compiled map of v9\.9\.9/);
+  assert.equal(same.cl, '130001');
+  // Rows the compiled map lacks: the feed delivers them, so the rig runs.
+  const added = feedPlanRun({ cl: 130001 });
+  assert.equal(added.status, 0, added.stderr);
+  assert.equal(added.state, 'RUN');
+  assert.match(added.reason, /adds 3 and changes 0 rows for CL-130001 compared with the compiled map of v9\.9\.9: adds build; adds field ATest::Native; adds function Test::MapOnly/);
+  assert.equal(added.owner, 'AlienXAXS');
+  assert.equal(added.tag, 'v9.9.9');
+  assert.equal(added.cl, '130001');
+  assert.equal(added.seq, '1761900000');
+  assert.match(added.sha, /^a{40}$/);
+  // Rows the compiled map holds with other values: the feed changes them, so the rig runs.
+  const changed = feedPlanRun({ cl: 130001, header: headerWithFeedRows((r) => ({ ...r, rva: r.rva + 8 })) });
+  assert.equal(changed.state, 'RUN');
+  assert.match(changed.reason, /adds 0 and changes 1 rows for CL-130001.*changes function Test::MapOnly/);
+  const build = feedPlanRun({ cl: 128786 });
+  assert.equal(build.state, 'RUN', 'a CL the tag has, with another build stamp in the feed');
+  assert.match(build.reason, /adds 0 and changes 1 rows for CL-128786.*changes build/);
+});
+
+test('feed gate: a proof run builds a branch of the owner fork; publish on, a bad name or an unresolvable branch fail the plan', { skip: !bash }, () => {
+  const ok = feedPlanRun({ cl: 130001, ref: 'strip-rows', publish: 'false' });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.state, 'RUN');
+  assert.equal(ok.owner, 'msantoro12', 'the fork, whatever MOD_OWNER says');
+  assert.equal(ok.tag, 'ref-bbbbbbbbbbbb');
+  assert.equal(ok.sha, 'b'.repeat(40));
+  assert.match(ok.calls, /repos\/msantoro12\/StarRupture-ModLoader\/git\/ref\/heads\/strip-rows/);
+  assert.match(ok.calls, new RegExp('repos/msantoro12/StarRupture-ModLoader/contents/.*ref=' + 'b'.repeat(40)));
+  assert.ok(!/AlienXAXS/.test(ok.calls), 'nothing of the upstream repository is read');
+  assert.match(ok.reason, /compiled map of the branch strip-rows \(ref-bbbbbbbbbbbb\)/);
+  // No ref: the Latest release, as before.
+  assert.ok(!/git\/ref/.test(feedPlanRun({ cl: 130001 }).calls));
+  const pub = feedPlanRun({ cl: 130001, ref: 'strip-rows', publish: 'true' });
+  assert.equal(pub.state, 'FAIL');
+  assert.match(pub.reason, /refused with publish on/);
+  assert.ok(!/git\/ref/.test(pub.calls), 'refused before anything is resolved');
+  for (const bad of ['-x', '.hidden', 'a..b', 'a//b', 'a/', 'a.lock', 'a.', 'a b', 'a;rm -rf x', 'a$(id)', 'x'.repeat(101)]) {
+    const r = feedPlanRun({ cl: 130001, ref: bad, publish: 'false' });
+    assert.equal(r.state, 'FAIL', `refused: ${bad}`);
+    assert.match(r.reason, /not a plain branch name/, bad);
+  }
+  for (const good of ['strip-rows', 'feat/no-rows', 'v1.2_x']) assert.equal(feedPlanRun({ cl: 130001, ref: good, publish: 'false' }).state, 'RUN', good);
+  const gone = feedPlanRun({ cl: 130001, ref: 'nope', publish: 'false', refSha: '' });
+  assert.equal(gone.state, 'FAIL');
+  assert.match(gone.reason, /cannot resolve the branch nope of msantoro12\/StarRupture-ModLoader/);
+  const junk = feedPlanRun({ cl: 130001, ref: 'nope', publish: 'false', refSha: 'zz' });
+  assert.equal(junk.state, 'FAIL');
+  assert.match(junk.reason, /does not resolve to a commit/);
+});
+
+test('feed_loader_ref: a dispatch input only; sr-watch cannot set it; checked early and again by the plan; the build follows the plan\'s owner', () => {
+  assert.match(dispatch, /\n {6}feed_loader_ref:\n {8}description: [^\n]*msantoro12\/StarRupture-ModLoader[^\n]*\n {8}type: string\n {8}default: ''\n/);
+  assert.ok(!call.includes('feed_loader_ref'), 'a call cannot pass it');
+  assert.ok(!watch.slice(watch.indexOf('  client-check:\n')).includes('feed_loader_ref'), 'the unattended chain never sets it');
+  const plan = job('plugin-plan');
+  assert.ok(plan.indexOf('- name: Check the feed-path loader ref') > 0 && plan.indexOf('- name: Check the feed-path loader ref') < plan.indexOf('- name: Check out the plugin pins'), 'refused before any other step');
+  // Both reads of the input take it only from a run of this workflow itself.
+  for (const j of [plan, job('feed-plan')]) assert.match(j, /FEED_LOADER_REF: \$\{\{ contains\(github\.workflow_ref, '\/\.github\/workflows\/sr-client-check\.yml@'\) && inputs\.feed_loader_ref \|\| '' \}\}/);
+  assert.ok(job('feed-loader').includes('repository: ${{ needs.feed-plan.outputs.owner }}/StarRupture-ModLoader'));
+  assert.ok(job('feed-loader').includes('LOADER_OWNER: ${{ needs.feed-plan.outputs.owner }}'));
+});
+
+test('feed_loader_ref: the early step refuses publish on and any name that is not a plain branch', { skip: !bash }, () => {
+  const script = runOf(job('plugin-plan'), 'Check the feed-path loader ref');
+  const run = (ref, publish) => sh(script, tmpdir(), { FEED_LOADER_REF: ref, PUBLISH: publish });
+  assert.equal(run('strip-rows', 'false').status, 0);
+  assert.equal(run('feat/no-rows', 'false').status, 0);
+  assert.equal(run('strip-rows', 'true').status, 2, 'publish on');
+  for (const bad of ['-x', 'a..b', 'a//b', 'a/', 'a.lock', 'a.', 'a b', 'a;id']) assert.equal(run(bad, 'false').status, 2, bad);
+  assert.match(step(job('plugin-plan'), 'Check the feed-path loader ref'), /\n {8}if: \$\{\{ inputs\.feed_loader_ref != '' \}\}\n/);
+});
+
+test('feed gate: feed-plan and feed-gate run on a failed upstream job but not on a cancelled run', () => {
+  for (const n of ['feed-plan', 'feed-gate']) {
+    assert.ok(jobIf(n).includes('!cancelled()'), n);
+    assert.ok(!jobIf(n).includes('always()'), n);
+  }
+});
+
+// ------------------------------------------------------------ the feed-path loader trusts the TEST key: deleted after use
+
+test('feed-loader-cleanup: runs after the rig on every outcome once the loader was built, deletes the artifact and checks it is gone', { skip: !bash }, () => {
+  const j = job('feed-loader-cleanup');
+  assert.match(j, /\n {4}needs: \[feed-loader, rig-feed\]\n/);
+  const at = (over) => evalExpr(jobIf('feed-loader-cleanup'), { needs: feedNeeds(over), inputs: okInputs() });
+  assert.equal(at({}), true, 'the rig passed');
+  assert.equal(at({ 'rig-feed': { result: 'failure', outputs: { verdict: 'FAIL' } } }), true, 'the rig failed');
+  assert.equal(at({ 'rig-feed': { result: 'skipped', outputs: {} } }), true, 'the rig was skipped');
+  assert.equal(at({ 'rig-feed': { result: 'cancelled', outputs: {} } }), true, 'the run was cancelled');
+  assert.equal(at({ 'feed-loader': { result: 'failure', outputs: {} } }), true, 'the build failed after its upload');
+  assert.equal(at({ 'feed-loader': { result: 'skipped', outputs: {} } }), false, 'nothing was built: nothing to delete');
+  assert.match(j, /\n {4}permissions:\n {6}actions: write\n/);
+  // The artifact it removes is the one the loader job uploads.
+  const up = job('feed-loader');
+  assert.ok(up.includes('ARTIFACT: loader-feed-${{ inputs.branch }}') && j.includes('ARTIFACT: loader-feed-${{ inputs.branch }}'));
+  assert.ok(!j.includes('secrets.') && !j.includes('uses:'), 'no secret, no third-party action');
+  const script = runOf(j, 'Delete the artifact and check it is gone');
+  const run = (ids, left) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cleanup-'));
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin', 'gh'), [
+      '#!/bin/bash',
+      'printf "%s\\n" "$*" >> "$FAKE_DIR/calls.log"',
+      'case "$*" in',
+      '  *DELETE*) ;;',
+      '  *"artifacts | length"*) echo "$FAKE_LEFT" ;;',
+      '  *paginate*) for i in $FAKE_IDS; do echo "$i"; done ;;',
+      'esac',
+      'exit 0',
+      '',
+    ].join('\n'));
+    chmodSync(join(dir, 'bin', 'gh'), 0o755);
+    const r = sh(script, dir, { FAKE_DIR: dir, FAKE_IDS: ids, FAKE_LEFT: left, GH_REPO: 'o/r', RUN_ID: '9', ARTIFACT: 'loader-feed-public', PATH: join(dir, 'bin') + delimiter + process.env.PATH });
+    const calls = existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : [];
+    rmSync(dir, { recursive: true, force: true });
+    return { status: r.status, calls, out: r.stdout + r.stderr };
+  };
+  const two = run('11 12', '0');
+  assert.equal(two.status, 0, two.out);
+  assert.deepEqual(two.calls.filter((l) => l.includes('DELETE')), ['api -X DELETE repos/o/r/actions/artifacts/11', 'api -X DELETE repos/o/r/actions/artifacts/12']);
+  assert.equal(run('', '0').status, 0, 'no artifact (the build failed before the upload) is fine');
+  const stuck = run('11', '1');
+  assert.equal(stuck.status, 1, 'an artifact that is still there fails the job');
+  assert.match(stuck.out, /still there/);
+});
+
+// ------------------------------------------------------------ publish: the autopilot is read again from main right before signing
+
+const autopilotStepRun = (text) => {
+  const dir = mkdtempSync(join(tmpdir(), 'apstep-'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  for (const f of readdirSync(here).filter((n) => n.endsWith('.mjs') && !n.endsWith('.test.mjs'))) copyFileSync(join(here, f), join(dir, 'tool', 'ci', f));
+  mkdirSync(join(dir, 'bin'));
+  writeFileSync(join(dir, 'bin', 'gh'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$FAKE_DIR/calls.log"\n[ -f "$FAKE_DIR/ap.json" ] && cat "$FAKE_DIR/ap.json" || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }\n');
+  chmodSync(join(dir, 'bin', 'gh'), 0o755);
+  if (text !== null) writeFileSync(join(dir, 'ap.json'), typeof text === 'string' ? text : JSON.stringify(text));
+  const r = sh(runOf(job('publish'), 'Check the autopilot is still on'), dir, { FAKE_DIR: dir, GH_REPO: 'o/r', PATH: join(dir, 'bin') + delimiter + process.env.PATH });
+  const calls = existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8') : '';
+  rmSync(dir, { recursive: true, force: true });
+  return { status: r.status, out: r.stdout + r.stderr, calls };
+};
+
+test('publish job: it reads state/autopilot.json on main again right before signing, and stops unless the autopilot is on for path M', { skip: !bash }, () => {
+  const pub = job('publish');
+  assert.ok(pub.indexOf('- name: Check the autopilot is still on') > pub.indexOf('- name: Refuse a test run'), 'after the test-run lock');
+  assert.ok(pub.indexOf('- name: Check the autopilot is still on') < pub.indexOf('- name: Sign with the release key'), 'before anything is signed');
+  const on = { schema: 1, enabled: true, paths: ['M'], max_releases_per_day: 2 };
+  const ok = autopilotStepRun(on);
+  assert.equal(ok.status, 0, ok.out);
+  assert.match(ok.calls, /repos\/o\/r\/contents\/state\/autopilot\.json\?ref=main/);
+  const off = autopilotStepRun({ ...on, enabled: false });
+  assert.equal(off.status, 2);
+  assert.match(off.out, /turned off on main while this chain ran; nothing was signed/);
+  const noM = autopilotStepRun({ ...on, paths: ['B'] });
+  assert.equal(noM.status, 2);
+  assert.match(noM.out, /path M is no longer enabled/);
+  assert.equal(autopilotStepRun({ schema: 1, enabled: true }).status, 2, 'a malformed file');
+  assert.equal(autopilotStepRun('not json').status, 2, 'not JSON');
+  const gone = autopilotStepRun(null);
+  assert.equal(gone.status, 2, 'unreadable');
+  assert.match(gone.out, /cannot read state\/autopilot\.json on main; nothing was signed/);
+});
+
+const feedJudgeRun = (env) => {
+  const dir = mkdtempSync(join(tmpdir(), 'feedjudge-'));
+  const out = join(dir, 'out.txt');
+  writeFileSync(out, '');
+  const r = spawnSync(bash, ['-c', runOf(job('feed-gate'), 'Judge the feed path')], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_OUTPUT: out, GITHUB_STEP_SUMMARY: join(dir, 'sum.md'), RUN_URL: 'https://x/run/1', TAG: 'v9.9.9', CL: '130001', SEQ: '1761900000', PLAN_RESULT: 'success', PLAN_STATE: 'RUN', LOADER_RESULT: 'success', RIG_RESULT: 'success', RIG_VERDICT: 'PASS', ...env } });
+  const o = Object.fromEntries(readFileSync(out, 'utf8').split('\n').filter(Boolean).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  rmSync(dir, { recursive: true, force: true });
+  return { status: r.status, ...o };
+};
+
+test('feed gate: the judge passes only on a plan RUN, a built loader and a PASS verdict of the feed rig', { skip: !bash }, () => {
+  assert.equal(feedJudgeRun({}).state, 'PASS');
+  const skip = feedJudgeRun({ PLAN_STATE: 'SKIP', PLAN_REASON: 'CL-1 is already in the compiled map of v1' });
+  assert.deepEqual([skip.status, skip.state], [0, 'SKIP']);
+  assert.match(skip.reason, /already in the compiled map/);
+  for (const env of [{ PLAN_STATE: 'FAIL', PLAN_REASON: 'no feed' }, { PLAN_RESULT: 'failure' }, { PLAN_STATE: '' }, { LOADER_RESULT: 'failure' }, { LOADER_RESULT: 'skipped' }, { RIG_RESULT: 'failure', RIG_VERDICT: 'FAIL', RIG_REASON: 'the loader did not apply the feed' }, { RIG_RESULT: 'skipped', RIG_VERDICT: '' }, { RIG_VERDICT: '' }]) {
+    const r = feedJudgeRun(env);
+    assert.deepEqual([r.status, r.state], [1, 'FAIL'], JSON.stringify(env));
+  }
+});
+
+test('feed gate: the alert names a gate that did not pass and notes a skip', () => {
+  const a = job('alert');
+  assert.match(a, /FEED_GATE_RESULT: \$\{\{ needs\.feed-gate\.result \}\}/);
+  assert.match(a, /FEED_EXPECTED: \$\{\{ needs\.map-mode\.result == 'success'[^}]*inputs\.branch == 'public' \}\}/);
+  assert.ok(a.includes('feed-path rig gate** did not pass'));
+  assert.ok(a.includes('Feed-path rig gate **skipped**'));
 });

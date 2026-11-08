@@ -8,15 +8,20 @@
 // k1 or k2, before it parses anything.
 //
 //   node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2
-//        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>]
+//        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>]
+//   node ci/vmap-sign.mjs next-seq [--last-seq <n>] [--now <unix seconds>]
 //   node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>]
-//        [--pub <keyId>=<64 hex>]... [--allow-test-key]
+//        [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>]
 //
 // The private key comes from an environment variable (default VMAP_SIGN_KEY,
 // a PEM) or a file, and is never printed. `seq` is the UTC second of signing,
 // raised to last + 1 when the clock has not passed the last published `seq`.
 // A `seq` more than a day ahead of the clock is refused, at the signer and at
-// the verifier: a far-future `seq` would pin every cache. verify refuses a
+// the verifier: a far-future `seq` would pin every cache. next-seq prints that
+// number without signing, so a run computes it once and hands it to the signer
+// (sign --seq), to the promote plan (promote.mjs plan --seq) and to the history
+// entry. sign --seq signs exactly that seq (it must rise above --last-seq), and
+// verify --expect-seq refuses a feed that carries another. verify refuses a
 // feed signed with a key marked TEST unless --allow-test-key is given, so no
 // gate passes a test-signed feed by reading past a word in the output.
 //
@@ -57,16 +62,30 @@ function publicKeyFromHex(hex) {
 
 const SEQ_LINE = /^seq\t([1-9][0-9]*)$/;
 
-// unsigned: the export-feed text. Returns the signed text.
-export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Math.floor(Date.now() / 1000) } = {}) {
+// The seq to sign now: the UTC second, raised to last + 1 when the clock has not passed the last seq.
+export function nextSeq(lastSeq = 0, now = Math.floor(Date.now() / 1000)) {
+  need(Number.isSafeInteger(lastSeq) && lastSeq >= 0, 'the last seq is a non-negative integer');
+  const seq = Math.max(now, lastSeq + 1);
+  need(seq <= now + MAX_SEQ_AHEAD, `seq ${seq} is more than a day ahead of the clock (${now}); the last published seq looks wrong`);
+  return seq;
+}
+
+// unsigned: the export-feed text. Returns the signed text. seq: sign exactly this
+// seq (computed once by nextSeq) instead of computing one here.
+export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Math.floor(Date.now() / 1000), seq: given } = {}) {
   need(keyId === 'k1' || keyId === 'k2', "the key ID is 'k1' or 'k2'");
   need(Number.isSafeInteger(lastSeq) && lastSeq >= 0, 'the last seq is a non-negative integer');
   need(Buffer.byteLength(unsigned) <= FEED_MAX_BYTES, `the feed is over ${FEED_MAX_BYTES} bytes`);
   const lines = unsigned.split('\n');
   need(lines[0] === `format\t${FEED_FORMAT}` && lines[lines.length - 1] === '', `expected an unsigned format ${FEED_FORMAT} feed from export-feed`);
   need(!lines.some((l) => l.startsWith('seq\t') || l.startsWith('sig\t') || l.includes('\r')), 'the feed already has a seq or sig line, or a CR');
-  const seq = Math.max(now, lastSeq + 1);
-  need(seq <= now + MAX_SEQ_AHEAD, `seq ${seq} is more than a day ahead of the clock (${now}); the last published seq looks wrong`);
+  let seq;
+  if (given === undefined) seq = nextSeq(lastSeq, now);
+  else {
+    need(Number.isSafeInteger(given) && given > lastSeq, `the given seq ${given} does not rise above the last seq ${lastSeq}`);
+    need(given <= now + MAX_SEQ_AHEAD, `the given seq ${given} is more than a day ahead of the clock (${now})`);
+    seq = given;
+  }
   const body = [lines[0], `seq\t${seq}`, ...lines.slice(1)].join('\n');
   const signature = edSign(null, Buffer.from(body), createPrivateKey(privateKeyPem));
   return { text: `${body}sig\t${keyId}\t${signature.toString('base64')}\n`, seq };
@@ -116,12 +135,12 @@ function options(argv, flags, repeated = [], switches = []) {
 }
 
 const int = (s, what) => { need(/^\d+$/.test(s), `${what} is a non-negative integer`); return Number(s); };
-const USAGE = 'usage: vmap-sign.mjs sign|verify <feed> [options]; see the comment at the top of ci/vmap-sign.mjs';
+const USAGE = 'usage: vmap-sign.mjs sign|verify <feed> [options] | next-seq [options]; see the comment at the top of ci/vmap-sign.mjs';
 
 export function main(argv) {
   const [cmd, ...args] = argv;
   if (cmd === 'sign') {
-    const { opt, rest } = options(args, ['out', 'key-id', 'key-env', 'key-file', 'last-seq', 'now']);
+    const { opt, rest } = options(args, ['out', 'key-id', 'key-env', 'key-file', 'last-seq', 'now', 'seq']);
     need(rest.length === 1 && opt.out && opt['key-id'], USAGE);
     need(!(opt['key-env'] && opt['key-file']), 'give --key-env or --key-file, not both');
     const pem = opt['key-file'] ? readFileSync(opt['key-file'], 'utf8') : process.env[opt['key-env'] ?? 'VMAP_SIGN_KEY'];
@@ -130,13 +149,20 @@ export function main(argv) {
       keyId: opt['key-id'],
       lastSeq: opt['last-seq'] === undefined ? 0 : int(opt['last-seq'], '--last-seq'),
       now: opt.now === undefined ? undefined : int(opt.now, '--now'),
+      seq: opt.seq === undefined ? undefined : int(opt.seq, '--seq'),
     });
     writeFileSync(opt.out, text);
     process.stdout.write(`signed ${opt.out}: seq ${seq}, key ${opt['key-id']}, ${Buffer.byteLength(text)} bytes\n`);
     return EXIT_OK;
   }
+  if (cmd === 'next-seq') {
+    const { opt, rest } = options(args, ['last-seq', 'now']);
+    need(rest.length === 0, USAGE);
+    process.stdout.write(`${nextSeq(opt['last-seq'] === undefined ? 0 : int(opt['last-seq'], '--last-seq'), opt.now === undefined ? undefined : int(opt.now, '--now'))}\n`);
+    return EXIT_OK;
+  }
   if (cmd === 'verify') {
-    const { opt, rest } = options(args, ['last-seq', 'now', 'pub'], ['pub'], ['allow-test-key']);
+    const { opt, rest } = options(args, ['last-seq', 'now', 'pub', 'expect-seq'], ['pub'], ['allow-test-key']);
     need(rest.length === 1, USAGE);
     let keys = PUBLIC_KEYS;
     if (opt.pub) {
@@ -147,6 +173,7 @@ export function main(argv) {
         keys[m[1]] = { hex: m[2], test: false };
       }
     }
+    const expect = opt['expect-seq'] === undefined ? undefined : int(opt['expect-seq'], '--expect-seq');
     try {
       const r = verifyFeed(readFileSync(rest[0]), {
         keys,
@@ -154,6 +181,7 @@ export function main(argv) {
         now: opt.now === undefined ? undefined : int(opt.now, '--now'),
       });
       need(!r.test || opt['allow-test-key'], `the feed is signed with the TEST key ${r.keyId}; pass --allow-test-key to accept it`);
+      if (expect !== undefined) need(r.seq === expect, `the feed carries seq ${r.seq}, not the expected ${expect}`);
       process.stdout.write(`ok seq=${r.seq} key=${r.keyId}${r.test ? ' TEST-KEY' : ''}\n`);
       return EXIT_OK;
     } catch (e) {

@@ -16,6 +16,10 @@ inputs:
   manifest_url:
     description: 'Compiled in as AutoUpdateManifestUrl'
     required: true
+  log_file:
+    description: 'Optional: a path for an MSBuild file log (normal verbosity), for a caller that checks the compiler output. Empty: no file log'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -29,9 +33,12 @@ runs:
         CONFIGURATION: ${{ inputs.configuration }}
         BUILD_TAG: ${{ inputs.build_tag }}
         MANIFEST_URL: ${{ inputs.manifest_url }}
+        LOG_FILE: ${{ inputs.log_file }}
       run: |
         # Same arguments as the loader's release.yml build steps, plus the
         # parallelism switches.
+        $log = @()
+        if ($env:LOG_FILE) { $log = @("/flp:LogFile=$($env:LOG_FILE);Verbosity=normal") }
         msbuild "StarRupture-ModLoader.sln" `
           /p:Configuration="$env:CONFIGURATION" `
           /p:Platform=x64 `
@@ -41,5 +48,6 @@ runs:
           /m `
           /p:CL_MP=true `
           /nodeReuse:false `
-          /v:minimal
+          /v:minimal `
+          @log
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

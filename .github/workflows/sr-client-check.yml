@@ -41,10 +41,12 @@ name: SR client check
 # msantoro12): nothing here publishes, tags, releases or uploads it. The
 # check job fetches or builds it itself, after the login cache is deleted;
 # it never goes through the plugins job's artifact, and the files die with
-# the runner. This workflow has no release, tag, Nexus or upload-to-the-world
-# step, the fork keys exist only for the owner's own forks (the auto-apply
-# job checks the repository), and the result artifact holds reports, never a
-# plugin binary.
+# the runner. For another author's plugin this workflow has no release, tag,
+# Nexus or upload-to-the-world step, the fork keys exist only for the owner's
+# own forks (the auto-apply job checks the repository), and the result artifact
+# holds reports, never a plugin binary. What it does write is the loader's own
+# version map feed: the public builds list on main (record-public) and the signed
+# feed on the vmap-feed release (publish), both described at their jobs.
 #
 # Login: a separate Steam account that owns the game, never the owner's main
 # account. Its steamcmd login cache (config.vdf) is the secret
@@ -120,7 +122,7 @@ on:
         type: boolean
         default: false
       publish:
-        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
+        description: 'Sign the feed with the release key and publish it when promote says so (only sr-watch passes true; the autopilot must be on and every gate must pass)'
         type: boolean
         default: false
     # A called job sees an environment secret only when the caller passes it
@@ -128,8 +130,9 @@ on:
     # the environment of the called job that reads it). Unpassed, it reads as
     # empty, with no error. The Steam login is required, so a caller that leaves
     # it out fails at the call instead of checking nothing. The release key
-    # (vmap-sign) is not declared, so a call gives publish no key; sr-watch keeps
-    # publish off. The deploy keys of the loader fork and of the nine plugin forks
+    # (environment vmap-sign, main only) is declared too, and only the publish job
+    # reads it; a caller that leaves it out gets a publish job that stops at the
+    # empty key. The deploy keys of the loader fork and of the nine plugin forks
     # (environment fork-push) are declared but not required, so a missing one fails
     # the push-loader or auto-apply job with its cause, not the call.
     secrets:
@@ -141,6 +144,9 @@ on:
         required: true
       VMAP_SIGN_KEY_TEST:
         description: 'TEST signing key (k1) for the map-mode dry run'
+        required: false
+      VMAP_SIGN_KEY:
+        description: 'Release signing key (k2, environment vmap-sign); pass it by name. Only the publish job reads it'
         required: false
       SR_DEPLOYKEY_MODLOADER:
         description: 'Write deploy key of the loader fork (environment fork-push); pass it by name'
@@ -245,7 +251,7 @@ on:
         type: boolean
         default: false
       publish:
-        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run)'
+        description: 'Sign the feed with the release key and publish it when promote says so (off: dry run; also refused with feed_loader_ref)'
         type: boolean
         default: false
       # Dispatch only: sr-watch calls this workflow and cannot pass it. With
@@ -256,6 +262,14 @@ on:
         description: 'Test run: carry on past a disabled autopilot as far as the promote plan; never publishes (needs map_mode, publish off)'
         type: boolean
         default: false
+      # Dispatch only, for a proof run of the feed-path rig: sr-watch cannot pass it (the call
+      # does not declare it), and it is refused with publish on. The feed-path rig then builds
+      # this branch of msantoro12/StarRupture-ModLoader instead of the Latest release, for
+      # example a branch without public's rows, so the feed is the only source of them.
+      feed_loader_ref:
+        description: 'Proof run: a branch of msantoro12/StarRupture-ModLoader the feed-path rig builds instead of the Latest release (refused unless publish is off; blank: the Latest release)'
+        type: string
+        default: ''
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -422,6 +436,22 @@ jobs:
       # <Plugin>=<tag> for each plugin of another author whose newest release is not the reviewed one: the alert's "waiting for review" line.
       review: ${{ steps.plan.outputs.review }}
     steps:
+      # The proof input of the feed-path rig (feed_loader_ref) is judged first, so a refused
+      # run costs nothing: it is for a run that publishes nothing, and it names a branch of
+      # the owner's loader fork, nothing else. The feed-plan job checks it again before it
+      # reads it.
+      - name: Check the feed-path loader ref
+        if: ${{ inputs.feed_loader_ref != '' }}
+        env:
+          FEED_LOADER_REF: ${{ contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') && inputs.feed_loader_ref || '' }}
+          PUBLISH: ${{ inputs.publish == true }}
+        run: |
+          set -euo pipefail
+          [ "$PUBLISH" = false ] || { echo "::error::feed_loader_ref is for a proof run and is refused with publish on"; exit 2; }
+          printf '%s' "$FEED_LOADER_REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$' && ! printf '%s' "$FEED_LOADER_REF" | grep -Eq '\.\.|//|/$|\.lock$|\.$' \
+            || { echo "::error::feed_loader_ref is not a plain branch name of msantoro12/StarRupture-ModLoader"; exit 2; }
+          echo "The feed-path rig will build the branch $FEED_LOADER_REF of msantoro12/StarRupture-ModLoader."
+
       # The one list of the reviewed releases of other authors' plugins (Pin in ci/plugin-names.json), which the rig reads too.
       - name: Check out the plugin pins
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2298,6 +2328,79 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # ---- Record the public build on the list the feed is cut from ---------
+  # The feed may carry only the CLs on state/public-builds.json (the game's devs asked for no
+  # loader on the test branch). When a PUBLIC run's check measured a build that is not the
+  # list's last entry, this job adds { cl, buildid, firstSeen } to the end of the list on main
+  # (ci/public-builds.mjs append), before map mode exports that build's feed. A test-branch
+  # run, a test run and a run that measured nothing never get here. Fails closed: a list that
+  # cannot be read or appended, or a push that main refuses, fails the job, and map mode does
+  # not run on a list it could not bring up to date. It commits that one file and nothing else.
+  record-public:
+    name: record the public build
+    needs: [check]
+    if: ${{ !cancelled() && inputs.map_mode == true && inputs.test_autopilot != true && inputs.branch == 'public' && needs.check.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: public-builds
+      cancel-in-progress: false
+    outputs:
+      appended: ${{ steps.record.outputs.appended }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          sparse-checkout: |
+            ci
+            state
+          persist-credentials: true
+
+      - name: Download the scans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: client-check-${{ inputs.branch }}
+          path: res
+
+      - name: Add the build to the list
+        id: record
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          # Second lock behind the job condition: only a public run says what public runs.
+          [ "$BRANCH" = public ] || { echo "::error::only a run for public records a public build"; exit 2; }
+          # The build Steam installed and the CL read from its exe. A run that measured no exe has
+          # nothing to record; map mode then stops on the missing scan by itself.
+          cl="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.cl ?? ''")"
+          buildid="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).download?.buildid ?? ''")"
+          if [ -z "$cl" ] || [ -z "$buildid" ]; then
+            echo "::notice title=Public builds::the check measured no exe (CL '$cl', build '$buildid'); nothing to record"
+            echo "appended=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          appended=false
+          done_=false
+          for attempt in 1 2 3; do
+            git fetch --quiet origin main
+            git checkout --quiet --detach origin/main
+            out="$(node ci/public-builds.mjs append state/public-builds.json --cl "$cl" --buildid "$buildid")" || { echo "::error title=Public builds::the list was not updated"; exit 2; }
+            echo "$out"
+            case "$out" in unchanged*) done_=true; break ;; esac
+            git add state/public-builds.json
+            git commit --quiet -m "Record public build $buildid (CL-$cl)" -m "The poll saw Steam's public branch on build $buildid, which the client check read as CL-$cl. The feed is cut from this list."
+            if git push origin HEAD:main; then appended=true; done_=true; break; fi
+            echo "push rejected (attempt $attempt); fetching main again"
+          done
+          [ "$done_" = true ] || { echo "::error title=Public builds::could not push the list to main after 3 tries; map mode does not run"; exit 2; }
+          echo "appended=$appended" >> "$GITHUB_OUTPUT"
+          if [ "$appended" = true ]; then echo "### Public builds: recorded CL-$cl (build $buildid) as public's current build" >> "$GITHUB_STEP_SUMMARY"; fi
+
   # ---- Map mode: the update as rows in the loader's version map -----------
   # The unattended path M chain, on the scans the check job uploaded and the
   # loader's header: map-mode assemble and write, field rows from the PDB
@@ -2307,7 +2410,7 @@ jobs:
   # dry run). The client check alone decides: no dedicated-server scan is read.
   # Reads only artifacts, the header and the vmap-feed release: no Steam login,
   # no plugin code, no game files. The release key signs only in the publish
-  # job below, and only when the publish input says so.
+  # job below (see its conditions: public only, the autopilot on, every gate).
   # The candidate chain does not wait for the autopilot: a disabled autopilot
   # holds PUBLISHING only (decide --candidate; the decision stays HOLD with the
   # reason, so the publish job cannot run). Every other HOLD reason still stops
@@ -2321,8 +2424,8 @@ jobs:
   # prunes nothing: the sets the previous release still reads are kept.
   map-mode:
     name: map mode
-    needs: [build, plugins, check, key-sources-plan, key-sources]
-    if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' }}
+    needs: [build, plugins, check, key-sources-plan, key-sources, record-public]
+    if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' && (needs.record-public.result == 'success' || needs.record-public.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2333,6 +2436,8 @@ jobs:
       cancel-in-progress: false
     outputs:
       decision: ${{ steps.chain.outputs.decision }}
+      # The one seq of this chain: the TEST-signed feed, the promote plan and (in the publish job) the release-signed feed and the history entry all carry it.
+      seq: ${{ steps.chain.outputs.seq }}
       action: ${{ steps.chain.outputs.action }}
       publishable: ${{ steps.chain.outputs.publishable }}
       # 'false' only for a run that is explicitly not a test; the publish job needs exactly that.
@@ -2364,9 +2469,10 @@ jobs:
       TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && inputs.publish != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
       # The raw dispatch input: a test run for the publish gate, however TEST_AUTOPILOT came out.
       TEST_INPUT: ${{ inputs.test_autopilot == true }}
-      # The unattended chain (and a dispatch that is neither a test run nor a publish): a disabled
+      # Every map-mode run that is not a test run (the unattended chain passes publish: true): a disabled
       # autopilot holds publishing only, so the candidate is still exported, TEST-signed, staged and pushed.
-      CANDIDATE: ${{ inputs.map_mode == true && inputs.publish != true && inputs.test_autopilot != true }}
+      # Publishing itself is the publish input and the autopilot, in the publish job.
+      CANDIDATE: ${{ inputs.map_mode == true && inputs.test_autopilot != true }}
     steps:
       - name: Check out the map tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2375,6 +2481,16 @@ jobs:
           sparse-checkout: |
             ci
             state
+          persist-credentials: false
+
+      # The list on main, read after the record-public job: tool/ is the commit the run started on.
+      - name: Check out the public builds list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: pub
+          sparse-checkout: state/public-builds.json
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Check out the loader's header
@@ -2595,6 +2711,10 @@ jobs:
             [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
           fi
           echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
+          # The one seq of this chain, computed here and nowhere else: the TEST-signed feed, the promote
+          # plan, the history entry and the release-signed feed of the publish job all carry this number.
+          seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$last_seq")"
+          echo "seq=$seq" >> "$GITHUB_OUTPUT"
           test_flag=()
           [ "$TEST_AUTOPILOT" = true ] && test_flag=(--test-autopilot)
           [ "$CANDIDATE" = true ] && test_flag=(--candidate)
@@ -2665,8 +2785,6 @@ jobs:
               md.push(`| ${p.name} | ${status} | ${off} | ${[...p.reasons, ...p.degraded.map((x) => x.why)].join("; ").replace(/[|]/g, "/")} |`);
             }
             md.push("", ...d.reasons.map((r) => `- HOLD: ${r}`), ...d.notes.map((n) => `- ${n}`));
-            // The unattended chain (candidate) never publishes: no job takes its M to the feed, whatever the autopilot says.
-            if (d.candidate === true && d.decision === "M") md.push("- **publish not wired on the unattended path**: the autopilot is on, but this chain only builds, signs with the TEST key and stages; the feed is published only by a dispatch with publish on");
             require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
           '
           promote_flag=()
@@ -2677,11 +2795,30 @@ jobs:
             promote_flag=(--test-autopilot)
           elif [ "$decision" != M ]; then echo "decide: $decision (exit $d); nothing exported or signed"; exit 0; fi
 
-          # Path M: the feed, signed with the TEST key and verified.
-          node tool/ci/version-map.mjs export-feed "$header" --out feed.txt
+          # Path M: the feed, public CLs only (the list on main, which the record-public job brought up to
+          # date), signed with the TEST key and verified. A refusal (no list, no row for public's current
+          # CL) stops the chain.
+          export_status=0
+          node tool/ci/version-map.mjs export-feed "$header" --out feed.txt --public-builds pub/state/public-builds.json 2> export.err || export_status=$?
+          cat export.err >&2
+          [ "$export_status" -eq 0 ] || { echo "::error::the public-only feed export was refused (exit $export_status): $(tr '\n' ' ' < export.err)"; exit 2; }
+          # The CLs the export left out, and the requirement that this build's own CL is in the feed on public.
+          node -e '
+            const fs = require("fs");
+            const left = fs.readFileSync("export.err", "utf8").split("\n").filter((l) => l.startsWith("left out CL-"));
+            const md = ["", "### Feed export: public CLs only", "", ...(left.length ? left.map((l) => "- " + l) : ["- no CL left out: every CL in the header is on public\u0027s list"])];
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+          '
+          if [ "$BRANCH" = public ]; then
+            node --input-type=module -e '
+              import { publicCLs, readPublicBuilds } from "./tool/ci/public-builds.mjs";
+              const cl = Number(process.argv[1]);
+              if (!publicCLs(readPublicBuilds("pub/state/public-builds.json")).has(cl)) { console.log("::error::CL-" + cl + " is the build public runs, but it is not on the public builds list, so its feed would leave it out"); process.exit(2); }
+            ' "$cl"
+          fi
           [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
-          node tool/ci/vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq"
-          node tool/ci/vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq"
+          node tool/ci/vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq" --seq "$seq"
+          node tool/ci/vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq" --expect-seq "$seq"
 
           # Stage a beta build; plan the promotion. For a beta build the plan is
           # for the day public flips to this exact build; for public, it is the
@@ -2717,7 +2854,7 @@ jobs:
           [ "$TEST_AUTOPILOT" = true ] && promote_flag=(--test-autopilot)
           p=0
           node tool/ci/promote.mjs plan --index staged.json --public public.json --autopilot tool/state/autopilot.json \
-            --history history.json --last-seq "$last_seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${promote_flag[@]}" || p=$?
+            --history history.json --last-seq "$last_seq" --seq "$seq" --now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --verify verify.json --out promote-plan.json "${promote_flag[@]}" || p=$?
           IS_TEST="$is_test" node --input-type=module -e '
             import { appendFileSync, readFileSync } from "node:fs";
             import { isPublishable } from "./tool/ci/promote.mjs";
@@ -2747,6 +2884,7 @@ jobs:
             decision.json
             feed.txt
             feed.test-signed.txt
+            export.err
             build.json
             stage-plan.json
             staged.json
@@ -2757,21 +2895,32 @@ jobs:
           retention-days: 14
 
   # ---- Publish: the feed signed with the release key ---------------------
-  # Only with the publish input (default off; the owner turns it on), only for
-  # public, and only when decide chose M and the chain marked it publishable
-  # (a promotion, or public's own new CL with nothing staged), and only when both
-  # client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
-  # loader: a failed, cancelled or skipped rig keeps the feed unsigned. The promote
-  # step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
-  # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in
-  # the vmap-sign environment, deployments from main only). Reads the live feed's seq again
-  # right before signing (one publish at a time), signs above it, verifies
-  # with no TEST key allowed, and uploads it with the updated history to the
-  # vmap-feed release.
+  # Publishes with nobody at the keyboard, when and only when every one of these holds:
+  #   - the run is for public, never a test branch (the feed may carry only CLs that are on
+  #     public's list, state/public-builds.json);
+  #   - the publish input is on (sr-watch passes it, a dispatch sets it; a dispatch without it is
+  #     a dry run) - and it is never a test_autopilot run;
+  #   - decide chose M, which it does only with state/autopilot.json enabled: with the autopilot
+  #     disabled the decision is HOLD and this job is skipped ("publish skipped");
+  #   - the chain marked it publishable (ci/promote.mjs isPublishable) and is not a test run;
+  #   - both client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
+  #     loader: a failed, cancelled or skipped rig keeps the feed unsigned;
+  #   - the feed gate (feed-gate) ended PASS, or SKIP with its reason (the feed adds or changes no
+  #     row for the running CL compared with the compiled map of the release the feed-path rig
+  #     would run): the feed as players read it was tested in the real game, or has nothing
+  #     to test.
+  # Right before it signs, the job reads state/autopilot.json on main again: a chain that was
+  # already running when the autopilot was turned off stops there.
+  # The promote step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
+  # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
+  # environment, deployments from main only). It signs the chain's feed with the chain's one seq
+  # (map-mode computed it once; it must still rise above the live feed's), uploads the feed and
+  # the history to the vmap-feed release, then downloads what was published and verifies its
+  # signature, seq and sha256.
   publish:
     name: publish the feed
-    needs: [check, map-mode, rig-branch, rig-other]
-    if: ${{ !cancelled() && inputs.publish == true && inputs.test_autopilot != true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' }}
+    needs: [check, map-mode, rig-branch, rig-other, feed-gate]
+    if: ${{ !cancelled() && inputs.test_autopilot != true && inputs.publish == true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' && needs.feed-gate.result == 'success' && (needs.feed-gate.outputs.state == 'PASS' || needs.feed-gate.outputs.state == 'SKIP') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -2784,12 +2933,23 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TEST_INPUT: ${{ inputs.test_autopilot == true }}
+      CHAIN_SEQ: ${{ needs.map-mode.outputs.seq }}
     steps:
       - name: Check out the sign tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: tool
           sparse-checkout: ci
+          persist-credentials: false
+
+      # The list on main as it is now: the feed is checked against it again below.
+      - name: Check out the public builds list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: pub
+          sparse-checkout: state/public-builds.json
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Download the chain
@@ -2801,13 +2961,66 @@ jobs:
       - name: Refuse a test run
         # Second lock behind the job condition: nothing a test run produced is
         # ever signed with the release key, whatever state/autopilot.json says.
+        # The unattended chain's own M carries wouldBe M; a test run or
+        # a held decision carries a mark of its own.
         run: |
           set -euo pipefail
           [ "$TEST_INPUT" = false ] || { echo "::error::a test run never publishes"; exit 2; }
           node -e '
             const read = (f) => JSON.parse(require("fs").readFileSync("chain/" + f, "utf8"));
             const d = read("decision.json"), p = read("promote-plan.json");
-            if (d.test !== undefined || d.wouldBe !== undefined || p.test !== undefined) { console.error("::error::the chain is marked a test run; refusing to sign it"); process.exit(2); }
+            const ownM = d.decision === "M" && d.wouldBe === "M";
+            if (d.test !== undefined || (d.wouldBe !== undefined && !ownM) || p.test !== undefined) { console.error("::error::the chain is marked a test run; refusing to sign it"); process.exit(2); }
+          '
+
+      - name: Check the seq and the feed before signing
+        run: |
+          set -euo pipefail
+          # The chain's one seq: a number, and the plan (when it states one) says the same.
+          case "$CHAIN_SEQ" in ''|0*|*[!0-9]*) echo "::error::the chain carries no usable seq ('$CHAIN_SEQ')"; exit 2 ;; esac
+          node -e '
+            const p = JSON.parse(require("fs").readFileSync("chain/promote-plan.json", "utf8"));
+            if (p.seq !== null && p.seq !== undefined && String(p.seq) !== process.env.CHAIN_SEQ) { console.error("::error::the promote plan states seq " + p.seq + ", not the chain seq " + process.env.CHAIN_SEQ); process.exit(2); }
+          '
+          # The live seq, read again now: another publish may have landed since the chain ran.
+          # No release yet is seq 0; a release that cannot be read, or a feed that does not verify, stops.
+          last_seq=0
+          if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > live-release.json 2> live-release.err; then
+            gh release download vmap-feed --pattern version-map-client.v1.txt --dir live
+            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
+          elif grep -q 'HTTP 404' live-release.err; then
+            echo "no vmap-feed release yet"
+          else
+            cat live-release.err; echo "::error::cannot read the vmap-feed release"; exit 2
+          fi
+          echo "$last_seq" > last-seq.txt
+          if [ "$CHAIN_SEQ" -le "$last_seq" ]; then
+            echo "::error::the chain's seq $CHAIN_SEQ no longer rises above the published seq $last_seq (another publish landed since); nothing was signed, the chain has to run again"; exit 2
+          fi
+          # The feed is cut again from the chain's header against the list on main now. It must be the
+          # feed the chain staged, byte for byte: a list that moved since (public changed build) means
+          # this chain is stale.
+          node tool/ci/version-map.mjs export-feed chain/version_map.generated.h --out feed.again.txt --public-builds pub/state/public-builds.json
+          cmp -s chain/feed.txt feed.again.txt || { echo "::error::the feed the chain staged differs from the feed the public builds list on main allows now; nothing was signed, the chain has to run again"; exit 2; }
+
+      # The switch as it is on main now, read right before the key is used. The chain read it when it
+      # started, hours ago: turning the autopilot off must stop a chain that is already running.
+      # Fails closed: a file that cannot be read, is malformed, is not enabled or does not allow path M stops the job.
+      - name: Check the autopilot is still on
+        run: |
+          set -euo pipefail
+          gh api -H "Accept: application/vnd.github.raw+json" "repos/$GH_REPO/contents/state/autopilot.json?ref=main" > autopilot.main.json             || { echo "::error::cannot read state/autopilot.json on main; nothing was signed"; exit 2; }
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { checkAutopilot } from "./tool/ci/decide.mjs";
+            let value;
+            try { value = JSON.parse(readFileSync("autopilot.main.json", "utf8")); } catch { console.error("::error::state/autopilot.json on main is not JSON; nothing was signed"); process.exit(2); }
+            const ap = checkAutopilot({ ok: true, value });
+            if (ap.error) { console.error("::error::" + ap.error + "; nothing was signed"); process.exit(2); }
+            if (!ap.enabled) { console.error("::error::the autopilot was turned off on main while this chain ran; nothing was signed"); process.exit(2); }
+            if (!ap.paths.includes("M")) { console.error("::error::path M is no longer enabled in the autopilot on main; nothing was signed"); process.exit(2); }
+            console.log("The autopilot is on for path M on main.");
           '
 
       - name: Sign with the release key, verify, publish
@@ -2816,24 +3029,37 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "$VMAP_SIGN_KEY" ] || { echo "::error::the VMAP_SIGN_KEY secret is not set"; exit 2; }
-          # The live seq, read again now: another publish may have landed since
-          # the chain ran. No release yet is seq 0; a feed that does not verify stops.
-          last_seq=0
-          if gh release download vmap-feed --pattern version-map-client.v1.txt --dir live 2>/dev/null; then
-            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
-            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
-          fi
-          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq"
-          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq"
+          last_seq="$(cat last-seq.txt)"
+          node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq" --seq "$CHAIN_SEQ"
+          node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq" --expect-seq "$CHAIN_SEQ"
           node -e '
             const fs = require("fs");
             const h = JSON.parse(fs.readFileSync("chain/history.json", "utf8"));
             const d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8"));
-            h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString() });
+            h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString(), seq: Number(process.env.CHAIN_SEQ) });
             fs.writeFileSync("vmap-history.json", JSON.stringify(h, null, 1) + "\n");
           '
           gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
-          gh release upload vmap-feed version-map-client.v1.txt vmap-history.json --clobber
+          # The history first: if only one upload lands, the history may name a release that is not out
+          # (a re-run signs again), never a feed that the history does not know.
+          gh release upload vmap-feed vmap-history.json --clobber
+          gh release upload vmap-feed version-map-client.v1.txt --clobber
+
+      - name: Verify what was published
+        run: |
+          set -euo pipefail
+          # Download the assets as the loader will, and check them against what was signed here.
+          gh release download vmap-feed --pattern version-map-client.v1.txt --pattern vmap-history.json --dir published --clobber
+          out="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
+          echo "$out"
+          case "$out" in "ok seq=$CHAIN_SEQ key=k2") ;; *) echo "::error::the published feed is not seq $CHAIN_SEQ signed with the release key k2: $out"; exit 2 ;; esac
+          for f in version-map-client.v1.txt vmap-history.json; do
+            want="$(sha256sum "$f" | cut -d' ' -f1)"
+            got="$(sha256sum "published/$f" | cut -d' ' -f1)"
+            [ "$want" = "$got" ] || { echo "::error::the published $f has sha256 $got, not the $want that was signed and uploaded"; exit 2; }
+            echo "$f sha256 $got"
+          done
+          echo "### Published the feed: seq $CHAIN_SEQ, release key k2, sha256 $(sha256sum published/version-map-client.v1.txt | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
 
   # ---- Push: the staged map rows to the loader fork -----------------------
   # The only job that reads the loader fork's deploy key (SR_DEPLOYKEY_MODLOADER,
@@ -3122,6 +3348,362 @@ jobs:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
 
+  # ---- Feed-path rig: the feed the loader reads, in the real game --------
+  # The two rigs above run the candidate loader with its map rows compiled in. Players run
+  # the released loader and get the new build's rows from the signed feed, so this gate runs
+  # that path: a loader built from AlienX's Latest release tag, unchanged except for one
+  # compiler define (VMAP_TRUST_TEST_KEY, so it trusts the TEST key k1 this run's feed is
+  # signed with), on the public Steam branch with the same plugin set as the public candidate
+  # rig, its feed cache seeded with this run's TEST-signed public-only feed. It passes only
+  # when the loader's log shows the feed verified and applied (seq), rows of the running
+  # build's CL came from the feed, and every plugin loads under the same verdict rules and
+  # expected refusals as the public candidate rig (ci/verdict.ps1, the "feed" record of set.json).
+  # It skips, with its reason in the summary, only when the feed adds no row and changes no row
+  # for the running CL compared with the compiled map of that tag (version-map.mjs feedDelta):
+  # then the loader runs on the compiled rows with or without the feed. A row the tag does not
+  # hold for that CL, or holds with other values, is a row the feed delivers, so the rig runs and
+  # has to pass. It fails when the feed is missing or does not carry the CL. The publish job
+  # needs this gate's PASS or its named skip.
+  # Which route: the define comes from the CL environment variable of the build step (cl.exe
+  # prepends it to every compile), so the loader source is unchanged; no patch, no source edit.
+  # The cache is seeded, the fetch is not tried: the rig turns [AutoUpdate] off, no feed URL is
+  # compiled in (this build passes no VmapFeedUrl), and the rig's firewall blocks every exe of
+  # the install, so no request can leave and the outcome does not depend on the compiled-in URL.
+  # The verdict still fails a run that logs a fetch. The build is a rig input only, in an
+  # artifact that feed-loader-cleanup deletes as soon as the rig has ended (see there). It runs
+  # after the two candidate rigs, in the same Steam concurrency group (the rig workflow's), and
+  # on the public branch only.
+  # A proof run (dispatch only, publish off) can name feed_loader_ref: a branch of
+  # msantoro12/StarRupture-ModLoader built instead of the Latest release, for example one
+  # without public's rows, so the feed is the only source of them. sr-watch cannot set it.
+  feed-plan:
+    name: feed-path rig plan
+    needs: [map-mode, rig-branch, rig-other]
+    if: ${{ !cancelled() && inputs.branch == 'public' && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.plan.outputs.state }}
+      reason: ${{ steps.plan.outputs.reason }}
+      owner: ${{ steps.plan.outputs.owner }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.plan.outputs.sha }}
+      cl: ${{ steps.plan.outputs.cl }}
+      seq: ${{ steps.plan.outputs.seq }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
+      SEQ: ${{ needs.map-mode.outputs.seq }}
+      RIG_TAGS: ${{ needs.map-mode.outputs.rig_tags }}
+      FEED_LOADER_REF: ${{ contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') && inputs.feed_loader_ref || '' }}
+      PUBLISH: ${{ inputs.publish == true }}
+    steps:
+      - name: Check out the tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      # A missing artifact is a FAIL state of the plan, not a crash of the job: the gate names it.
+      - name: Download the chain
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: map-mode-${{ inputs.branch }}
+          path: chain
+
+      - name: Plan the feed-path rig
+        id: plan
+        run: |
+          set -uo pipefail
+          finish() { r="$(printf '%s' "$2" | tr '\r\n' '  ')"; echo "state=$1" >> "$GITHUB_OUTPUT"; echo "reason=$r" >> "$GITHUB_OUTPUT"; echo "$1: $r"; exit 0; }
+          # Whether the signed feed holds a build row for a CL.
+          feed_has_build() {
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { parseFeed } from "./tool/ci/version-map.mjs";
+              const NL = String.fromCharCode(10);
+              const [file, cl] = process.argv.slice(1);
+              const lines = readFileSync(file, "utf8").split(NL);
+              const map = parseFeed([lines[0], ...lines.slice(2, -2), ""].join(NL), file);
+              process.stdout.write(map.builds.some((b) => b.cl === Number(cl)) ? "yes" : "no");
+            ' "$@"
+          }
+          # What the feed adds to, or changes in, the rows the compiled map holds for the CL:
+          # "<added> <changed> <the first names>" (version-map.mjs feedDelta).
+          feed_delta() {
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { feedDelta, parse, parseFeed } from "./tool/ci/version-map.mjs";
+              const NL = String.fromCharCode(10);
+              const [feedFile, headerFile, cl] = process.argv.slice(1);
+              const lines = readFileSync(feedFile, "utf8").split(NL);
+              const feed = parseFeed([lines[0], ...lines.slice(2, -2), ""].join(NL), feedFile);
+              const d = feedDelta(feed, parse(readFileSync(headerFile, "utf8"), headerFile), Number(cl));
+              const names = [...d.added.map((n) => "adds " + n), ...d.changed.map((n) => "changes " + n)];
+              process.stdout.write(d.added.length + " " + d.changed.length + " " + names.slice(0, 5).join("; ") + (names.length > 5 ? "; and " + (names.length - 5) + " more" : ""));
+            ' "$@"
+          }
+          case "$MOD_OWNER" in msantoro12|AlienXAXS) ;; *) finish FAIL "MOD_OWNER '$MOD_OWNER' is not an owner the pipeline reads" ;; esac
+          if [ -n "$FEED_LOADER_REF" ]; then
+            [ "$PUBLISH" = false ] || finish FAIL "feed_loader_ref is for a proof run and is refused with publish on"
+            printf '%s' "$FEED_LOADER_REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$' && ! printf '%s' "$FEED_LOADER_REF" | grep -Eq '\.\.|//|/$|\.lock$|\.$' \
+              || finish FAIL "feed_loader_ref is not a plain branch name of msantoro12/StarRupture-ModLoader"
+          fi
+          [ -f chain/feed.test-signed.txt ] || finish FAIL "the map-mode artifact holds no TEST-signed feed (feed.test-signed.txt): this run produced no feed to seed"
+          case "$SEQ" in ''|0*|*[!0-9]*) finish FAIL "the chain carries no usable seq ('$SEQ')" ;; esac
+          out="$(node tool/ci/vmap-sign.mjs verify chain/feed.test-signed.txt --allow-test-key --expect-seq "$SEQ" 2>&1)" || finish FAIL "the TEST-signed feed does not verify: $out"
+          [ "$out" = "ok seq=$SEQ key=k1 TEST-KEY" ] || finish FAIL "the feed is not signed with the TEST key k1 at seq $SEQ: $out"
+          cl="$(node -p "String(JSON.parse(require('fs').readFileSync('chain/decision.json','utf8')).cl ?? '')" 2>/dev/null || true)"
+          case "$cl" in ''|0*|*[!0-9]*) finish FAIL "decision.json names no CL for the running build ('$cl')" ;; esac
+          in_feed="$(feed_has_build chain/feed.test-signed.txt "$cl" 2>&1)" || finish FAIL "the feed does not parse: $in_feed"
+          [ "$in_feed" = yes ] || finish FAIL "the feed carries no build row for CL-$cl, the running build"
+          # The loader the rig builds: the owner's branch of a proof run, else the Latest release of
+          # the loader repository (or the tag the rig's tags name).
+          owner="$MOD_OWNER"
+          if [ -n "$FEED_LOADER_REF" ]; then
+            owner=msantoro12
+            sha="$(gh api "repos/$owner/StarRupture-ModLoader/git/ref/heads/$FEED_LOADER_REF" --jq .object.sha 2>/dev/null)" || finish FAIL "cannot resolve the branch $FEED_LOADER_REF of $owner/StarRupture-ModLoader"
+            printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || finish FAIL "the branch $FEED_LOADER_REF does not resolve to a commit ('$sha')"
+            tag="ref-${sha:0:12}"
+            src="the branch $FEED_LOADER_REF ($tag)"
+          else
+            tag=""
+            for pair in ${RIG_TAGS:-}; do case "$pair" in Loader=*) tag="${pair#Loader=}" ;; esac; done
+            if [ -z "$tag" ]; then tag="$(gh api "repos/$owner/StarRupture-ModLoader/releases/latest" --jq .tag_name 2>/dev/null)" || finish FAIL "cannot read the Latest release of $owner/StarRupture-ModLoader"; fi
+            printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+-]{0,40}$' || finish FAIL "the loader release tag '$tag' is not a plain tag"
+            sha="$(gh api "repos/$owner/StarRupture-ModLoader/commits/$tag" --jq .sha 2>/dev/null)" || finish FAIL "cannot resolve the loader tag $tag to a commit"
+            printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || finish FAIL "the loader tag $tag does not resolve to a commit ('$sha')"
+            src="$tag"
+          fi
+          # The map that loader compiles in: its header at that commit.
+          gh api -H "Accept: application/vnd.github.raw+json" "repos/$owner/StarRupture-ModLoader/contents/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h?ref=$sha" > tag-header.h 2> tag-header.err \
+            || finish FAIL "cannot read the compiled map of $src: $(head -c 200 tag-header.err)"
+          delta="$(feed_delta chain/feed.test-signed.txt tag-header.h "$cl" 2>&1)" || finish FAIL "the compiled map of $src cannot be compared with the feed: $delta"
+          added="${delta%% *}"; rest="${delta#* }"; changed="${rest%% *}"; names="${rest#* }"
+          { echo "owner=$owner"; echo "tag=$tag"; echo "sha=$sha"; echo "cl=$cl"; echo "seq=$SEQ"; } >> "$GITHUB_OUTPUT"
+          if [ "$added" = 0 ] && [ "$changed" = 0 ]; then
+            finish SKIP "the feed adds no row and changes no row for CL-$cl compared with the compiled map of $src, so the loader runs on the compiled rows with or without it"
+          fi
+          finish RUN "the feed (seq $SEQ) adds $added and changes $changed rows for CL-$cl compared with the compiled map of $src: $names"
+
+  feed-loader:
+    name: feed-path loader
+    needs: [feed-plan]
+    if: ${{ !cancelled() && needs.feed-plan.outputs.state == 'RUN' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # No secrets and no environment: this job builds loader code and ships it to the rig as an artifact,
+    # which feed-loader-cleanup deletes once the rig has ended.
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.out.outputs.artifact }}
+      expect: ${{ steps.out.outputs.expect }}
+      version: ${{ steps.out.outputs.version }}
+    env:
+      TAG: ${{ needs.feed-plan.outputs.tag }}
+      LOADER_SHA: ${{ needs.feed-plan.outputs.sha }}
+      LOADER_OWNER: ${{ needs.feed-plan.outputs.owner }}
+      # A plain token the rig's expect value takes; the loader prints it as "[init] Build: <tag> (client)".
+      BUILD_TAG: feedrig-${{ github.run_id }}-${{ needs.feed-plan.outputs.tag }}
+      ARTIFACT: loader-feed-${{ inputs.branch }}
+      MSBUILD_LOG: msbuild-feed.log
+    steps:
+      - name: Check out the loader at the release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.feed-plan.outputs.owner }}/StarRupture-ModLoader
+          ref: ${{ needs.feed-plan.outputs.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check it is that commit
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          if ($head -ne $env:LOADER_SHA) { throw "checked out $head, the plan named $($env:LOADER_SHA)" }
+          "Loader $($env:LOADER_OWNER)/StarRupture-ModLoader $($env:TAG) at $head"
+
+      # After the loader checkout, so its clean step does not remove it.
+      - name: Check out the build action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-actions
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      # The one difference from the release build: the define that makes the loader trust the TEST
+      # key. cl.exe reads it from the CL environment variable, so nothing in the source changes.
+      # /Bt+ makes every compile print its timing, which proves in the build log that cl.exe read
+      # this variable (the define and the timing flag arrive together).
+      - name: Build Client Release with VMAP_TRUST_TEST_KEY
+        uses: ./ci-actions/.github/actions/build-loader
+        env:
+          CL: /DVMAP_TRUST_TEST_KEY /Bt+
+        with:
+          configuration: Client Release
+          build_tag: ${{ env.BUILD_TAG }}
+          manifest_url: ${{ github.server_url }}/${{ vars.MOD_OWNER || 'AlienXAXS' }}/StarRupture-ModLoader/releases/latest/download/manifest-client.json
+          log_file: ${{ env.MSBUILD_LOG }}
+
+      - name: Check the define reached the compiler
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:MSBUILD_LOG)) { throw 'the build wrote no MSBuild log, so the define cannot be checked' }
+          $log = Get-Content -LiteralPath $env:MSBUILD_LOG
+          # The file that reads the define was compiled, and cl.exe printed the timing the same variable asked for.
+          $timed = @($log | Where-Object { $_ -match 'time\(.*c1xx\.dll\)=' })
+          $feedUnit = @($log | Where-Object { $_ -match 'version_feed\.cpp' })
+          if ($feedUnit.Count -eq 0) { throw 'the build log never names version_feed.cpp: the file that reads VMAP_TRUST_TEST_KEY was not compiled in this build' }
+          if ($timed.Count -eq 0) { throw 'the build log has no /Bt+ timing line: cl.exe did not read the CL environment variable, so VMAP_TRUST_TEST_KEY was not defined' }
+          "cl.exe read the CL environment variable: $($timed.Count) timed compile line(s), version_feed.cpp compiled."
+
+      - name: Check the build
+        shell: pwsh
+        run: |
+          $dir = 'build\Client Release'
+          foreach ($f in 'dwmapi.dll', 'ModLoader\StarRupture-ModLoader-Core.dll') {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) { throw "the build has no $f" }
+          }
+          $core = [IO.File]::ReadAllBytes((Join-Path $dir 'ModLoader\StarRupture-ModLoader-Core.dll'))
+          if (-not [Text.Encoding]::Latin1.GetString($core).Contains($env:BUILD_TAG, [StringComparison]::Ordinal)) {
+            throw "the build tag $($env:BUILD_TAG) is not compiled into StarRupture-ModLoader-Core.dll"
+          }
+          "Build tag $($env:BUILD_TAG) is in the Core DLL."
+
+      - name: Upload the loader for the rig
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACT }}
+          # Same layout as the candidate loader: dwmapi.dll and ModLoader/*.dll, no plugins. A rig input only:
+          # this build trusts the TEST key, so feed-loader-cleanup deletes the artifact once the rig has ended.
+          path: |
+            build/Client Release/dwmapi.dll
+            build/Client Release/ModLoader/*.dll
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Name the build
+        id: out
+        shell: pwsh
+        run: |
+          "artifact=$($env:ARTIFACT)" >> $env:GITHUB_OUTPUT
+          "version=$($env:BUILD_TAG)" >> $env:GITHUB_OUTPUT
+          "expect=Loader=$($env:BUILD_TAG)" >> $env:GITHUB_OUTPUT
+          "Feed-path loader $($env:BUILD_TAG): $($env:TAG) at $($env:LOADER_SHA) plus VMAP_TRUST_TEST_KEY; artifact $($env:ARTIFACT) (a rig input, deleted when the rig ends, not a release)." >> $env:GITHUB_STEP_SUMMARY
+
+  rig-feed:
+    name: client rig (${{ inputs.branch }}, feed path)
+    needs: [map-mode, feed-plan, feed-loader, rig-branch, rig-other]
+    if: ${{ !cancelled() && inputs.branch == 'public' && needs.feed-plan.outputs.state == 'RUN' && needs.feed-loader.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/sr-client-rig.yml
+    with:
+      branch: ${{ inputs.branch }}
+      candidate_run_id: ${{ github.run_id }}
+      candidate_artifact: ${{ needs.feed-loader.outputs.artifact }}
+      expect: ${{ needs.feed-loader.outputs.expect }}
+      tags: ${{ needs.map-mode.outputs.rig_tags }}
+      expect_refused: ${{ needs.map-mode.outputs.expect_refused }}
+      feed_artifact: map-mode-${{ inputs.branch }}
+      feed_seq: ${{ needs.feed-plan.outputs.seq }}
+      feed_cl: ${{ needs.feed-plan.outputs.cl }}
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+
+  # ---- The feed-path loader is deleted once the rig has ended -------------
+  # The feed-path loader trusts the TEST key (k1), so it must not stay downloadable: an artifact
+  # of a public repository can be downloaded by any signed-in GitHub user. It never reaches a
+  # release or the auto-update feed, but it is deleted anyway, as soon as the rig is done with
+  # it, on every outcome (the rig passed, failed, was skipped or the run was cancelled).
+  # Building the loader inside the rig job instead, so that no artifact exists, was not done: the
+  # rig job holds the live Steam login, and no build code (MSBuild, the loader's submodules) runs
+  # there; the rig is also shared by every caller, so a build step in it would be theirs too.
+  # The artifact lives from the upload in feed-loader to the end of the rig. This job is the only
+  # one with actions: write; the caller's permission ceiling (sr-watch) allows it.
+  feed-loader-cleanup:
+    name: delete the feed-path loader
+    needs: [feed-loader, rig-feed]
+    if: ${{ always() && needs.feed-loader.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      ARTIFACT: loader-feed-${{ inputs.branch }}
+    steps:
+      - name: Delete the artifact and check it is gone
+        run: |
+          set -euo pipefail
+          # No artifact is fine: the build may have failed before its upload.
+          ids="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?name=$ARTIFACT" --jq '.artifacts[].id')"
+          for id in $ids; do
+            gh api -X DELETE "repos/$GH_REPO/actions/artifacts/$id" > /dev/null
+            echo "deleted artifact $ARTIFACT ($id)"
+          done
+          left="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts?name=$ARTIFACT" --jq '.artifacts | length')"
+          [ "$left" = 0 ] || { echo "::error::the feed-path loader artifact $ARTIFACT is still there ($left); it trusts the TEST key"; exit 1; }
+          echo "The feed-path loader artifact is gone."
+
+  # ---- Feed gate: PASS, a named SKIP, or FAIL ------------------------------
+  # Runs for the same candidates as the rig gate, on public only. SKIP is a green job and
+  # carries its reason into the run summary; the publish job accepts PASS and SKIP.
+  feed-gate:
+    name: feed gate
+    needs: [map-mode, feed-plan, feed-loader, rig-feed]
+    if: ${{ !cancelled() && inputs.branch == 'public' && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      state: ${{ steps.judge.outputs.state }}
+      reason: ${{ steps.judge.outputs.reason }}
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PLAN_RESULT: ${{ needs.feed-plan.result }}
+      PLAN_STATE: ${{ needs.feed-plan.outputs.state }}
+      PLAN_REASON: ${{ needs.feed-plan.outputs.reason }}
+      TAG: ${{ needs.feed-plan.outputs.tag }}
+      CL: ${{ needs.feed-plan.outputs.cl }}
+      SEQ: ${{ needs.feed-plan.outputs.seq }}
+      LOADER_RESULT: ${{ needs.feed-loader.result }}
+      RIG_RESULT: ${{ needs.rig-feed.result }}
+      RIG_VERDICT: ${{ needs.rig-feed.outputs.verdict }}
+      RIG_REASON: ${{ needs.rig-feed.outputs.reason }}
+      RIG_ARTIFACT: ${{ needs.rig-feed.outputs.artifact }}
+    steps:
+      - name: Judge the feed path
+        id: judge
+        run: |
+          set -euo pipefail
+          node -e '
+            const e = process.env, fs = require("fs");
+            const clean = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+            let state, why;
+            if (e.PLAN_RESULT !== "success") { state = "FAIL"; why = "the plan job ended " + e.PLAN_RESULT; }
+            else if (e.PLAN_STATE === "SKIP") { state = "SKIP"; why = clean(e.PLAN_REASON); }
+            else if (e.PLAN_STATE === "FAIL") { state = "FAIL"; why = clean(e.PLAN_REASON); }
+            else if (e.PLAN_STATE !== "RUN") { state = "FAIL"; why = "the plan reached no state"; }
+            else if (e.LOADER_RESULT !== "success") { state = "FAIL"; why = "the loader built from " + e.TAG + " with VMAP_TRUST_TEST_KEY did not build or the define did not reach the compiler (job " + e.LOADER_RESULT + ")"; }
+            else if (e.RIG_RESULT === "success" && e.RIG_VERDICT === "PASS") { state = "PASS"; why = "the loader applied the seeded feed (seq " + e.SEQ + ") and CL-" + e.CL + " ran on its rows; every plugin passed " + e.RIG_ARTIFACT; }
+            else { state = "FAIL"; why = clean(e.RIG_REASON) || (e.RIG_RESULT === "skipped" ? "the rig did not run" : "no verdict (rig job " + e.RIG_RESULT + ")"); }
+            const logs = e.RIG_ARTIFACT ? " Logs: artifact `" + e.RIG_ARTIFACT + "` of " + e.RUN_URL + "." : "";
+            const md = ["### Feed-path rig gate: " + state, "", why + "." + logs + (state === "SKIP" ? " The skip is the gate working as designed; the feed was not tested in the game this run." : "")];
+            fs.appendFileSync(e.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+            fs.appendFileSync(e.GITHUB_OUTPUT, "state=" + state + "\nreason=" + why + "\n");
+            if (state === "FAIL") { console.log("::error title=Feed-path rig gate::" + why + "; the feed is not published."); process.exit(1); }
+          '
+
   # ---- Rig gate: both verdicts in the run summary, and the chain's visible result ----
   # Runs for every candidate the chain staged (the same cue as push-loader) and writes
   # the decision, the candidate and both rigs' verdict, reason and logs artifact into the
@@ -3204,9 +3786,11 @@ jobs:
   # (reported missing when the job never uploaded it), the jobs API (failed step and
   # its first error line, from the job's annotations or else its log; ci/pipeline-alert.mjs)
   # and the rig jobs' verdict outputs.
+  # The feed-path rig gate (feed-gate) is a line when it did not pass (FAIL, or a gate that ended
+  # otherwise) and an information note when it skipped, with the skip's reason.
   alert:
     name: alert
-    needs: [build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate]
+    needs: [build, plugin-plan, check, record-public, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, feed-loader-cleanup, feed-gate]
     if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # a job log not there yet is fetched again, up to a minute per job
@@ -3231,11 +3815,17 @@ jobs:
       CHECK_RESULT: ${{ needs.check.result }}
       MAP_MODE_RESULT: ${{ needs.map-mode.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
+      RECORD_RESULT: ${{ needs.record-public.result }}
       # The cue that staged map rows should have been pushed, built and put through the rigs.
       STAGED_EXPECTED: ${{ needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
       PUSH_RESULT: ${{ needs.push-loader.result }}
       CANDIDATE_RESULT: ${{ needs.candidate-loader.result }}
       RIG_GATE_RESULT: ${{ needs.rig-gate.result }}
+      # The feed-path rig runs on public only, for the same candidates.
+      FEED_EXPECTED: ${{ needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.branch == 'public' }}
+      FEED_GATE_RESULT: ${{ needs.feed-gate.result }}
+      FEED_GATE_STATE: ${{ needs.feed-gate.outputs.state }}
+      FEED_GATE_REASON: ${{ needs.feed-gate.outputs.reason }}
       BRANCH_RIG_NAME: ${{ inputs.branch }}
       BRANCH_RIG_RESULT: ${{ needs.rig-branch.result }}
       BRANCH_RIG_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
@@ -3300,7 +3890,7 @@ jobs:
             const d = readJson("chain/decision.json");
             const chainThere = fs.existsSync("chain") && fs.readdirSync("chain").length > 0;
 
-            for (const [label, name, result] of [["build-scanner", "build-scanner", e.BUILD_RESULT], ["plugin-plan", "plugin-plan", e.PLAN_RESULT], ["publish the feed", "publish the feed", e.PUBLISH_RESULT]]) {
+            for (const [label, name, result] of [["build-scanner", "build-scanner", e.BUILD_RESULT], ["plugin-plan", "plugin-plan", e.PLAN_RESULT], ["publish the feed", "publish the feed", e.PUBLISH_RESULT], ["record the public build", "record the public build", e.RECORD_RESULT]]) {
               if (result === "failure") lines.push("- job **" + label + "** failed", ...why(name));
             }
             if (e.CHECK_RESULT === "failure") {
@@ -3349,6 +3939,9 @@ jobs:
                 lines.push("  - rig " + x.name + ": " + state + " - " + cause + (x.artifact ? " (logs: artifact " + x.artifact + ")" : ""));
               }
             }
+
+            if (e.FEED_EXPECTED === "true" && e.FEED_GATE_RESULT !== "success" && e.FEED_GATE_RESULT !== "skipped") lines.push("- **feed-path rig gate** did not pass: " + clip(e.FEED_GATE_REASON || "gate " + e.FEED_GATE_RESULT));
+            else if (e.FEED_GATE_STATE === "SKIP") info.push("Feed-path rig gate **skipped**: " + clip(e.FEED_GATE_REASON));
 
             // A newer release of a plugin by another author than the reviewed one the plan and the rig used. Both kept
             // using the reviewed release, so nothing failed: the line is loud, but it neither blocks the

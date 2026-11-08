@@ -10,14 +10,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, parse, parseFeed, parseKeys, prune,
+  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, parse, parseFeed, parseKeys, prune, publicOnly,
   removeKey, replaceBuild, unionKeys,
 } from './version-map.mjs';
+import { PublicBuildsError, appendPublicBuild, currentPublicCL, parsePublicBuilds, publicCLs, readPublicBuilds } from './public-builds.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIX = join(here, 'fixtures', 'version-map');
@@ -553,4 +554,213 @@ test('clOfBuild: the CL of a Steam build id comes from the build rows, in either
   assert.equal(clOfBuild(m, 26271156), 129402);
   assert.equal(clOfBuild(m, '26271157'), null, 'a build the map has not measured');
   for (const odd of ['', undefined, null, 'public', '12 34', '1e3']) assert.equal(clOfBuild(m, odd), null, String(odd));
+});
+
+// ---- The public builds list and the public-only export ------------------------------------------------------
+
+// The loader fixture holds CL-127004 and CL-128786; this adds a third, CL-129402.
+const withThirdCL = () => {
+  const map = parse(fixture('loader.h'));
+  addBuild(map, { cl: 129402, stamp: 0x6499f129, size: 0x0f482000, source: 'steam_build 26461198' });
+  addFunction(map, { key: 'GWorld', kind: 4, cl: 129402, pattern: '48 8B 1D ?? ?? ?? ?? 48 85 DB 74 ?? 41 B0 01', followRipDispAt: 0, rva: 0x0e604e38 });
+  addField(map, { key: 'ACrCrafter::CraftComponent', cl: 129402, offset: 0x6e8, size: 8, mask: 0, member: null });
+  addField(map, { key: 'UCrSomething', cl: 129402, offset: 0, size: 0x120, mask: 0, member: null });
+  return map;
+};
+const listOf = (...cls) => ({ builds: cls.map((cl, i) => ({ cl, buildid: String(25000000 + i), firstSeen: '2026-10-29T21:15:50Z' })) });
+const clsOf = (feed) => [...new Set(parseFeed(feed).builds.map((b) => b.cl))];
+
+test('public-only: a test-only CL is left out with all its rows, a public CL stays', () => {
+  const map = withThirdCL();
+  const r = publicOnly(map, listOf(127004));
+  assert.deepEqual(r.left, [{ cl: 128786, builds: 1, functions: 6, fields: 3 }, { cl: 129402, builds: 1, functions: 1, fields: 2 }]);
+  assert.deepEqual(r.map.builds.map((b) => b.cl), [127004]);
+  assert.ok([...r.map.functions, ...r.map.fields].every((x) => x.cl === 127004));
+  assert.deepEqual(clsOf(exportFeed(r.map)), [127004]);
+  // The input is not changed.
+  assert.equal(map.builds.length, 3);
+});
+
+test('public-only: a CL that was public before stays beside public\'s current CL', () => {
+  const r = publicOnly(withThirdCL(), listOf(127004, 128786));
+  assert.deepEqual(r.left.map((l) => l.cl), [129402]);
+  assert.deepEqual(clsOf(exportFeed(r.map)), [127004, 128786]);
+  // Public's current CL is the newest entry, whatever the order of the CLs.
+  assert.deepEqual(clsOf(exportFeed(publicOnly(withThirdCL(), listOf(128786, 127004)).map)), [127004, 128786]);
+});
+
+test('public-only: nothing left out when every CL was public', () => {
+  const r = publicOnly(withThirdCL(), listOf(127004, 128786, 129402));
+  assert.deepEqual(r.left, []);
+  assert.equal(exportFeed(r.map), exportFeed(withThirdCL()));
+});
+
+test('public-only: public\'s current CL without a build row in the header is refused', () => {
+  assert.throws(() => publicOnly(withThirdCL(), listOf(127004, 130001)), /CL-130001 has no build row/);
+});
+
+test('export-feed --public-builds: leaves out test-only CLs and says which; refuses an unknown public CL', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vmap-public-'));
+  const [h, feed, list] = [join(dir, 'version_map.generated.h'), join(dir, 'feed.txt'), join(dir, 'public-builds.json')];
+  writeFileSync(h, emit(withThirdCL()));
+  const entry = (cl, buildid) => ({ cl, buildid, firstSeen: '2026-10-29T21:15:50Z' });
+  const writeList = (...builds) => writeFileSync(list, JSON.stringify(builds));
+  // A previously public CL (127004) and the current one (128786); 129402 is test-only.
+  writeList(entry(127004, '25646882'), entry(128786, '26271156'));
+  const r = run('export-feed', h, '--out', feed, '--public-builds', list);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /left out CL-129402, not on public: 4 rows \(1 build, 1 function, 2 field\)/);
+  assert.match(r.err, /1 CLs left out/);
+  assert.deepEqual(clsOf(readFileSync(feed, 'utf8')), [127004, 128786]);
+  // Without the option the export is the whole map.
+  assert.equal(run('export-feed', h, '--out', feed).code, 0);
+  assert.deepEqual(clsOf(readFileSync(feed, 'utf8')), [127004, 128786, 129402]);
+  // Public's current CL is not in the header: refused, and no feed is written.
+  writeList(entry(127004, '25646882'), entry(130001, '26999999'));
+  writeFileSync(feed, 'old');
+  const unknown = run('export-feed', h, '--out', feed, '--public-builds', list);
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.err, /CL-130001 has no build row/);
+  assert.equal(readFileSync(feed, 'utf8'), 'old');
+  // Fail closed: the list is missing, empty, or off the format.
+  for (const text of [null, '', '{', '[]']) {
+    if (text === null) rmSync(list, { force: true });
+    else writeFileSync(list, text);
+    const bad = run('export-feed', h, '--out', feed, '--public-builds', list);
+    assert.equal(bad.code, 2, String(text));
+    assert.equal(readFileSync(feed, 'utf8'), 'old');
+  }
+});
+
+const SEED = join(here, '..', 'state', 'public-builds.json');
+const e = (cl, buildid, firstSeen = '2026-10-29T21:15:50Z') => ({ cl, buildid, firstSeen });
+const text = (...builds) => JSON.stringify(builds);
+
+test('the list in state/ reads, and its newest entry is the current public CL', () => {
+  const list = readPublicBuilds(SEED);
+  assert.ok(list.builds.length >= 1);
+  assert.equal(currentPublicCL(list), list.builds.at(-1).cl);
+});
+
+test('the newest entry is the current CL; every entry is a CL that was public', () => {
+  const list = parsePublicBuilds(text(e(127004, '25646882'), e(128786, '26271156', '2026-11-10T08:00:00Z')));
+  assert.equal(currentPublicCL(list), 128786);
+  assert.deepEqual([...publicCLs(list)], [127004, 128786]);
+  // A rollback is a new entry at the end for an older CL.
+  const back = parsePublicBuilds(text(e(127004, '1'), e(128786, '2', '2026-11-10T08:00:00Z'), e(127004, '1', '2026-11-11T08:00:00Z')));
+  assert.equal(currentPublicCL(back), 127004);
+});
+
+test('a missing, empty or damaged list is refused, never read as a shorter list', () => {
+  const bad = [
+    '', '{', '[]', '{}', '{"schema":1,"builds":[]}', text(), 'null',
+    text(e(0, '1')), text(e(1.5, '1')), text(e('1', '1')), text(e(1, 1)), text(e(1, '01')), text(e(1, '1', '2026-10-29')), text(e(1, '1', '2026-13-45T00:00:00Z')),
+    text({ cl: 1, buildid: '1' }), text({ cl: 1, buildid: '1', firstSeen: '2026-10-29T21:15:50Z', note: 'x' }),
+    text(e(1, '1', '2026-11-02T00:00:00Z'), e(2, '2', '2026-11-01T00:00:00Z')),
+  ];
+  for (const t of bad) assert.throws(() => parsePublicBuilds(t), PublicBuildsError, t);
+  assert.throws(() => readPublicBuilds(join(tmpdir(), 'no-such-public-builds.json')), /cannot read/);
+});
+
+test('the command line prints the current CL, and exits 2 with a reason on a bad file', () => {
+  const runList = (...a) => spawnSync(process.execPath, [join(here, 'public-builds.mjs'), ...a], { encoding: 'utf8', windowsHide: true });
+  const ok = runList(SEED);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /^current public CL-\d+; public CLs: /);
+  const dir = mkdtempSync(join(tmpdir(), 'public-builds-'));
+  const f = join(dir, 'p.json');
+  writeFileSync(f, '[]');
+  const empty = runList(f);
+  assert.equal(empty.status, 2);
+  assert.match(empty.stderr, /list is empty/);
+  assert.equal(runList(join(dir, 'missing.json')).status, 2);
+  assert.equal(readFileSync(f, 'utf8'), '[]');
+});
+
+test('append: a new build becomes the last entry, the rest is untouched, and the same build twice is a no-op', () => {
+  const seed = readFileSync(SEED, 'utf8');
+  const first = parsePublicBuilds(seed).builds;
+  const r = appendPublicBuild(seed, { cl: 129999, buildid: '26500000', now: '2026-11-08T00:00:00Z' });
+  assert.equal(r.appended, true);
+  const list = parsePublicBuilds(r.text);
+  assert.deepEqual(list.builds.slice(0, first.length), first, 'older entries are byte for byte what they were');
+  assert.deepEqual(list.builds.at(-1), { cl: 129999, buildid: '26500000', firstSeen: '2026-11-08T00:00:00Z' });
+  assert.equal(currentPublicCL(list), 129999);
+  assert.ok(r.text.startsWith(seed.replace(/\n\]\n$/, ',\n')), 'the file keeps its layout: one entry per line');
+  assert.ok(r.text.endsWith('\n]\n'));
+  const again = appendPublicBuild(r.text, { cl: 129999, buildid: '26500000', now: '2026-11-09T00:00:00Z' });
+  assert.deepEqual(again, { text: r.text, appended: false });
+  // A flip back to an older build is a new entry at the end; the same CL on another build is one too.
+  const back = appendPublicBuild(r.text, { cl: 127004, buildid: '25646882', now: '2026-11-10T00:00:00Z' });
+  assert.equal(back.appended, true);
+  assert.equal(currentPublicCL(parsePublicBuilds(back.text)), 127004);
+  assert.equal(appendPublicBuild(back.text, { cl: 127004, buildid: '25999999', now: '2026-11-11T00:00:00Z' }).appended, true);
+});
+
+test('append: refuses a time that goes backwards, a bad build and a damaged list, and leaves the file as it was', () => {
+  const seed = readFileSync(SEED, 'utf8');
+  const bad = [
+    [seed, { cl: 2, buildid: '2', now: '2020-01-01T00:00:00Z' }],
+    [seed, { cl: 0, buildid: '2', now: '2026-12-01T00:00:00Z' }],
+    [seed, { cl: 2, buildid: 'abc', now: '2026-12-01T00:00:00Z' }],
+    [seed, { cl: 2, buildid: '2', now: '2026-12-01' }],
+    ['[]', { cl: 2, buildid: '2', now: '2026-12-01T00:00:00Z' }],
+    ['{', { cl: 2, buildid: '2', now: '2026-12-01T00:00:00Z' }],
+  ];
+  for (const [t, entry] of bad) assert.throws(() => appendPublicBuild(t, entry), PublicBuildsError, JSON.stringify(entry));
+  const dir = mkdtempSync(join(tmpdir(), 'public-builds-append-'));
+  const f = join(dir, 'p.json');
+  const runList = (...a) => spawnSync(process.execPath, [join(here, 'public-builds.mjs'), ...a], { encoding: 'utf8', windowsHide: true });
+  writeFileSync(f, seed);
+  const ok = runList('append', f, '--cl', '129999', '--buildid', '26500000', '--now', '2026-11-08T00:00:00Z');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /^appended: CL-129999 build 26500000/);
+  const written = readFileSync(f, 'utf8');
+  assert.equal(currentPublicCL(parsePublicBuilds(written)), 129999);
+  const same = runList('append', f, '--cl', '129999', '--buildid', '26500000');
+  assert.equal(same.status, 0, same.stderr);
+  assert.match(same.stdout, /^unchanged/);
+  assert.equal(readFileSync(f, 'utf8'), written);
+  for (const a of [['append', f, '--cl', '130000', '--buildid', '1', '--now', '2020-01-01T00:00:00Z'], ['append', f, '--cl', 'x', '--buildid', '1'], ['append', f, '--cl', '5'], ['append', join(dir, 'none.json'), '--cl', '5', '--buildid', '1']]) {
+    const r = runList(...a);
+    assert.equal(r.status, 2, a.join(' '));
+    assert.match(r.stderr, /^public-builds: /);
+  }
+  assert.equal(readFileSync(f, 'utf8'), written, 'a refused append writes nothing');
+});
+
+// ---- feedDelta: what a feed adds to, or changes in, a header's rows for one CL
+
+test('feedDelta: identical rows are no difference, whatever else the header holds', () => {
+  const header = parse(fixture('loader.h'));
+  const feed = parseFeed(exportFeed(header));
+  for (const cl of [127004, 128786]) assert.deepEqual(feedDelta(feed, header, cl), { added: [], changed: [] }, `CL-${cl}`);
+  // A header that holds more than the feed does is still no difference: a feed removes nothing.
+  const more = { ...header, fields: header.fields.concat({ key: 'ZExtra::Member', cl: 128786, offset: 0x10, size: 4, mask: 0, member: null }) };
+  assert.deepEqual(feedDelta(feed, more, 128786), { added: [], changed: [] });
+});
+
+test('feedDelta: a row the header lacks is added, a row the header has with other values is changed, and only for the CL asked', () => {
+  const header = parse(fixture('loader.h'));
+  const feed = parseFeed(exportFeed(header));
+  // The header lacks one function row and one field row of CL-128786, and one build row.
+  const lacking = {
+    ...header,
+    functions: header.functions.filter((r) => !(r.cl === 128786 && r.key === 'GWorld')),
+    fields: header.fields.filter((r) => !(r.cl === 128786 && r.key === 'UCrSomething::bFlag')),
+  };
+  assert.deepEqual(feedDelta(feed, lacking, 128786), { added: ['field UCrSomething::bFlag', 'function GWorld (fp 0x00000000)'], changed: [] });
+  assert.deepEqual(feedDelta(feed, lacking, 127004), { added: [], changed: [] }, 'another CL is not looked at');
+  assert.deepEqual(feedDelta(feed, { ...header, builds: header.builds.filter((b) => b.cl !== 128786), functions: [], fields: [] }, 128786).added.slice(0, 1), ['build']);
+  // Same keys, other values: an address, an offset, a build stamp.
+  const changed = {
+    ...header,
+    builds: header.builds.map((b) => (b.cl === 128786 ? { ...b, stamp: b.stamp + 1 } : b)),
+    functions: header.functions.map((r) => (r.cl === 128786 && r.key === 'GWorld' ? { ...r, rva: r.rva + 0x10 } : r)),
+    fields: header.fields.map((r) => (r.cl === 128786 && r.key === 'ACrCrafter::CraftComponent' ? { ...r, offset: r.offset + 8 } : r)),
+  };
+  assert.deepEqual(feedDelta(feed, changed, 128786), { added: [], changed: ['build', 'field ACrCrafter::CraftComponent', 'function GWorld (fp 0x00000000)'] });
+  // A CL the header has no rows for at all: everything is added.
+  const d = feedDelta(feed, { ...header, builds: [], functions: [], fields: [] }, 127004);
+  assert.deepEqual([d.changed.length, d.added.length], [0, 1 + header.functions.filter((r) => r.cl === 127004).length + header.fields.filter((r) => r.cl === 127004).length]);
 });
