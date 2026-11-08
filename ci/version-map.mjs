@@ -389,6 +389,12 @@ export function clOfBuild(map, buildid) {
   return hits.length === 1 ? hits[0].cl : null;
 }
 
+// What a map (header or feed) holds for one CL: whether it has the build row and how many function
+// rows. A first publish needs both for each build it carries.
+export function holdsCl(map, cl) {
+  return { build: (map.builds ?? []).some((b) => b.cl === Number(cl)), rows: (map.functions ?? []).filter((r) => r.cl === Number(cl) && !r.absent).length };
+}
+
 // Why two build rows for one CL are not the same build, or null when they are.
 // A build is its CL, Steam build id, image stamp and image size; the label's
 // branch word is not part of it.

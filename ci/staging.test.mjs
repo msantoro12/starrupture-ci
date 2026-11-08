@@ -16,7 +16,7 @@ import { HEADER_PATH, LOADER_REPO, PUSH_BRANCH, PUSH_REPOS, StagingError, branch
 
 const TOOL = join(dirname(fileURLToPath(import.meta.url)), 'staging.mjs');
 
-const ptr = (over = {}) => ({
+const staged = (over = {}) => ({
   cl: 128786, branch: 'public_test_branch', buildid: '26271156', productVersion: '++Earth20+Kobalt-PTR1-CL-128786',
   exeSha256: 'ab'.repeat(32), imageStamp: '0x6b000001', size: 0x0a430000, run: 41160586757,
   scans: [{ exe: 'public_test_branch', buildid: '26271156', ok: true }, { exe: 'public', buildid: '25646882', ok: true }],
@@ -24,10 +24,10 @@ const ptr = (over = {}) => ({
   ...over,
 });
 
-// Effects that fail on anything but the two a beta may use.
+// Effects that fail on anything but the two a staged build may use.
 function effects() {
   const calls = { pushBranch: [], writeIndex: [] };
-  const trap = (name) => () => { throw new Error(`${name} must not run on a beta`); };
+  const trap = (name) => () => { throw new Error(`${name} must not run on a staged build`); };
   return {
     calls,
     fx: new Proxy({ pushBranch: (p) => calls.pushBranch.push(p), writeIndex: (i) => calls.writeIndex.push(i) }, {
@@ -36,9 +36,9 @@ function effects() {
   };
 }
 
-test('replaying the current PTR build gives the loader branch and the index', () => {
+test('replaying the current staged build gives the loader branch and the index', () => {
   const { fx, calls } = effects();
-  const plan = stage(ptr(), { index: {}, effects: fx });
+  const plan = stage(staged(), { index: {}, effects: fx });
   assert.equal(plan.repo, LOADER_REPO);
   assert.equal(plan.branch, 'auto/update-128786');
   assert.equal(calls.pushBranch.length, 1);
@@ -47,22 +47,22 @@ test('replaying the current PTR build gives the loader branch and the index', ()
   assert.equal(e.branch, 'public_test_branch');
   assert.equal(e.buildid, 26271156);
   assert.equal(e.superseded, false);
-  assert.deepEqual(e.repos[LOADER_REPO], { ref: 'auto/update-128786', sha: ptr().repo.sha, tree: ptr().repo.tree, verdict: 'FIXED' });
+  assert.deepEqual(e.repos[LOADER_REPO], { ref: 'auto/update-128786', sha: staged().repo.sha, tree: staged().repo.tree, verdict: 'FIXED' });
   assert.deepEqual(e.verifiedOn, ['public 25646882', 'public_test_branch 26271156']);
 });
 
-test('no signing, no publishing and no release runs on a beta', () => {
+test('no signing, no publishing and no release runs on a staged build', () => {
   const { fx, calls } = effects();
   // Any other effect on the proxy throws, so a call to sign, publish, release or export would fail this test.
-  stage(ptr(), { index: {}, effects: fx });
+  stage(staged(), { index: {}, effects: fx });
   assert.deepEqual(Object.keys(calls).sort(), ['pushBranch', 'writeIndex']);
-  assert.match(stage(ptr(), { index: {}, effects: fx }).message, /not signed, not published/);
+  assert.match(stage(staged(), { index: {}, effects: fx }).message, /not signed, not published/);
   const src = readFileSync(TOOL, 'utf8').replace(/\/\/[^\n]*/g, '');
   assert.doesNotMatch(src, /vmap-sign|exportFeed|release\.yml|gh release|gh workflow/);
 });
 
 test('the record rides in the commit message and reads back', () => {
-  const rec = makeRecord(ptr());
+  const rec = makeRecord(staged());
   assert.deepEqual(parseCommitRecord(commitMessage(rec)), rec);
   assert.throws(() => parseCommitRecord('Add map rows\n'), StagingError);
 });
@@ -74,22 +74,22 @@ test('a newer build at the same CL gets the run id, and a taken name is refused'
 
 test('a newer CL on the same branch supersedes the older one, never deletes it', () => {
   const { fx } = effects();
-  const first = stage(ptr(), { index: {}, effects: fx }).index;
-  const second = stage(ptr({ cl: 128900, buildid: '26300000', run: 5 }), { index: first, effects: fx }).index;
+  const first = stage(staged(), { index: {}, effects: fx }).index;
+  const second = stage(staged({ cl: 128900, buildid: '26300000', run: 5 }), { index: first, effects: fx }).index;
   assert.equal(second['128786'].superseded, true);
   assert.equal(second['128900'].superseded, false);
   assert.deepEqual(Object.keys(second), ['128786', '128900']);
 });
 
-test('both exes must pass for a beta build', () => {
+test('both exes must pass for a staged build', () => {
   const { fx } = effects();
-  assert.throws(() => stage(ptr({ scans: [{ exe: 'public_test_branch', buildid: '1', ok: true }] }), { index: {}, effects: fx }), /no scan on the public exe/);
-  assert.throws(() => stage(ptr({ scans: [{ exe: 'public_test_branch', buildid: '1', ok: true }, { exe: 'public', buildid: '2', ok: false }] }), { index: {}, effects: fx }), /did not pass/);
-  assert.throws(() => stage(ptr({ exeSha256: 'xyz' }), { index: {}, effects: fx }), /sha256/);
+  assert.throws(() => stage(staged({ scans: [{ exe: 'public_test_branch', buildid: '1', ok: true }] }), { index: {}, effects: fx }), /no scan on the public exe/);
+  assert.throws(() => stage(staged({ scans: [{ exe: 'public_test_branch', buildid: '1', ok: true }, { exe: 'public', buildid: '2', ok: false }] }), { index: {}, effects: fx }), /did not pass/);
+  assert.throws(() => stage(staged({ exeSha256: 'xyz' }), { index: {}, effects: fx }), /sha256/);
 });
 
 // A build first seen on public: pushed for the candidate loader and the rig, never staged.
-const pub = (over = {}) => ptr({ branch: 'public', buildid: '26461198', scans: [{ exe: 'public', buildid: '26461198', ok: true }], ...over });
+const pub = (over = {}) => staged({ branch: 'public', buildid: '26461198', scans: [{ exe: 'public', buildid: '26461198', ok: true }], ...over });
 
 test('a build first seen on public gets a branch and a record of the public exe only, and no index entry', () => {
   const { fx, calls } = effects();
@@ -110,22 +110,22 @@ test('a build first seen on public gets a branch and a record of the public exe 
 
 test('a public record is not a staged build when the index is re-derived', () => {
   const { fx } = effects();
-  const a = stage(ptr(), { index: {}, effects: fx });
+  const a = stage(staged(), { index: {}, effects: fx });
   const p = stage(pub({ cl: 129402 }), { index: {}, effects: fx });
   const branches = [
-    { ref: a.branch, sha: ptr().repo.sha, tree: ptr().repo.tree, message: a.message },
-    { ref: p.branch, sha: ptr().repo.sha, tree: ptr().repo.tree, message: p.message },
+    { ref: a.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: a.message },
+    { ref: p.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: p.message },
   ];
   assert.deepEqual(Object.keys(rederive(branches)), ['128786']);
 });
 
 test('the index is re-derived from the fork branches', () => {
   const { fx } = effects();
-  const a = stage(ptr(), { index: {}, effects: fx });
-  const b = stage(ptr({ cl: 128900, buildid: '26300000', run: 5 }), { index: a.index, effects: fx });
+  const a = stage(staged(), { index: {}, effects: fx });
+  const b = stage(staged({ cl: 128900, buildid: '26300000', run: 5 }), { index: a.index, effects: fx });
   const branches = [
-    { ref: b.branch, sha: ptr().repo.sha, tree: ptr().repo.tree, message: b.message },
-    { ref: a.branch, sha: ptr().repo.sha, tree: ptr().repo.tree, message: a.message },
+    { ref: b.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: b.message },
+    { ref: a.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: a.message },
   ];
   assert.deepEqual(rederive(branches), b.index);
 });
@@ -134,12 +134,12 @@ test('the command line stages in dry run and writes the index, and refuses a bad
   const dir = mkdtempSync(join(tmpdir(), 'staging-'));
   const w = (n, d) => { writeFileSync(join(dir, n), JSON.stringify(d)); return join(dir, n); };
   const index = join(dir, 'staged.json');
-  const run = spawnSync(process.execPath, [TOOL, 'stage', '--build', w('b.json', ptr()), '--index', index, '--out', join(dir, 'plan.json')], { encoding: 'utf8', windowsHide: true });
+  const run = spawnSync(process.execPath, [TOOL, 'stage', '--build', w('b.json', staged()), '--index', index, '--out', join(dir, 'plan.json')], { encoding: 'utf8', windowsHide: true });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /would push StarRupture-ModLoader auto\/update-128786; index now lists 1 CLs; nothing signed or published/);
   assert.equal(JSON.parse(readFileSync(index, 'utf8'))['128786'].buildid, 26271156);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'plan.json'), 'utf8')).pushed, [{ repo: LOADER_REPO, branch: 'auto/update-128786', done: false }]);
-  const bad = spawnSync(process.execPath, [TOOL, 'stage', '--build', w('b2.json', ptr({ exeSha256: 'xyz' })), '--index', index], { encoding: 'utf8', windowsHide: true });
+  const bad = spawnSync(process.execPath, [TOOL, 'stage', '--build', w('b2.json', staged({ exeSha256: 'xyz' })), '--index', index], { encoding: 'utf8', windowsHide: true });
   assert.equal(bad.status, 3);
   // A build of public is planned too, and the index file keeps its one entry.
   const plan = join(dir, 'plan-public.json');
@@ -172,7 +172,7 @@ function fork() {
   let n = 0;
   const checkout = () => { const c = join(dir, `co${n++}`); sh(dir, '-c', 'core.autocrlf=false', 'clone', '-q', url, c); return c; };
   const header = (text) => { const p = join(dir, `h${n++}.h`); writeFileSync(p, text); return p; };
-  const plan = { repo: LOADER_REPO, branch: 'auto/update-129402', message: commitMessage(makeRecord(ptr({ cl: 129402, repo: base }))) };
+  const plan = { repo: LOADER_REPO, branch: 'auto/update-129402', message: commitMessage(makeRecord(staged({ cl: 129402, repo: base }))) };
   return { dir, remote, url, base, checkout, header, plan, build: { repo: base } };
 }
 const refs = (f) => sh(f.remote, 'for-each-ref', '--format=%(refname)').split('\n').filter(Boolean).sort();

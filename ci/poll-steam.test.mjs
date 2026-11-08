@@ -110,7 +110,7 @@ test('a stale answer on the second beta is ignored', async () => {
   assert.match(r.log, /stale API answer/);
 });
 
-test('the client matrix names the build id of the other client branch, public and the test branch being each other', async () => {
+test('the client matrix names the build id of the other client branch, public and the other branch being each other', async () => {
   const info = {
     [CLIENT]: { public: branch(101, 1010), public_test_branch: branch(111, 1110) },
     [SERVER]: serverInfo,
@@ -120,7 +120,7 @@ test('the client matrix names the build id of the other client branch, public an
   const m = JSON.parse(r.outputs.client_matrix);
   // Both moved: each check gets the OTHER branch's new id, as of this poll.
   assert.deepEqual(m, [{ branch: 'public', buildid: '101', other_buildid: '111' }, { branch: 'public_test_branch', buildid: '111', other_buildid: '101' }]);
-  // Only the test branch moved: public's recorded id is its current one.
+  // Only the other branch moved: public's recorded id is its current one.
   const one = await withApi({ [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(111, 1110) }, [SERVER]: serverInfo }, (base) => run(base, recorded));
   assert.deepEqual(JSON.parse(one.outputs.client_matrix), [{ branch: 'public_test_branch', buildid: '111', other_buildid: '100' }]);
   // A forced run carries it for every recorded branch.

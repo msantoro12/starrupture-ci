@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Promotion of a staged PTR build when public flips, dry run only (version-map
+// Promotion of a staged build when public flips, dry run only (version-map
 // step 46, design R5 and section 7).
 //
 //   node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json>

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PTR staging, dry-run form (version-map step 45, design R5 "PTR staging").
+// Staging, dry-run form (version-map step 45, design R5 "staging").
 //
 //   node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
 //   node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
@@ -7,14 +7,14 @@
 //   node ci/staging.mjs push --repo <owner/name> --plan <stage-plan.json> --build <build.json> --header <file> \
 //        --checkout <dir> --run-id <id> --run-attempt <n> [--proof true] [--first-publish true]      (the push job of sr-client-check.yml only)
 //
-// A beta build that passed the chain is staged: its map rows sit on the loader
+// A build not on public yet that passed the chain is staged: its map rows sit on the loader
 // fork's `auto/update-<CL>` (a newer build at the same CL gets `-<run>`, so
 // nothing is force-pushed), the commit message carries the record, and
 // state/staged.json is the readable index of those branches. The index holds
 // pointers only; the rows live in the header.
 //
 // A build first seen on `public` is pushed the same way (its rows need a candidate
-// loader and a rig run too) but is not staged: there is no beta to promote it from,
+// loader and a rig run too) but is not staged: there is no staged build to promote it from,
 // so it gets a record naming only the public exe and no entry in the index.
 //
 // Nothing is signed or published while a CL is test-only. That is built in, not
@@ -24,7 +24,7 @@
 //
 // <build.json>:
 //   { cl, branch, buildid, productVersion, exeSha256, imageStamp, size, run,
-//     scans: [{ exe, buildid, ok }],          // the beta exe AND the public exe (public: just that one)
+//     scans: [{ exe, buildid, ok }],          // the staged exe AND the public exe (public: just that one)
 //     repo: { sha, tree, verdict } }          // the loader fork's data commit
 // <branches.json> (rederive): [{ ref, sha, tree, message }], the fork's
 // `auto/update-*` branches with their commit messages.

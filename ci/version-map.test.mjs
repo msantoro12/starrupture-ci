@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, parse, parseFeed, parseKeys, prune,
+  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, parse, parseFeed, parseKeys, prune,
   removeKey, replaceBuild, unionKeys,
 } from './version-map.mjs';
 
@@ -556,6 +556,18 @@ test('clOfBuild: the CL of a Steam build id comes from the build rows, in either
   assert.equal(clOfBuild(m, 26271156), 129402);
   assert.equal(clOfBuild(m, '26271157'), null, 'a build the map has not measured');
   for (const odd of ['', undefined, null, 'public', '12 34', '1e3']) assert.equal(clOfBuild(m, odd), null, String(odd));
+});
+
+test('holdsCl: the build row and the number of present function rows of one CL; an absent row does not count', () => {
+  const m = emptyMap('loader', 127004);
+  addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
+  addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
+  addFunction(m, { key: 'K', kind: 1, cl: 127004, pattern: '48 ??', rva: 0x10 });
+  addAbsent(m, { key: 'G', kind: 1, cl: 129402, owners: ['WAILA'] });
+  assert.deepEqual(holdsCl(m, 127004), { build: true, rows: 1 });
+  assert.deepEqual(holdsCl(m, 129402), { build: true, rows: 0 });
+  assert.deepEqual(holdsCl(m, '127004'), { build: true, rows: 1 });
+  assert.deepEqual(holdsCl(m, 1), { build: false, rows: 0 });
 });
 
 // ---- The feed export carries every CL in the header ----------------------------------------------------------

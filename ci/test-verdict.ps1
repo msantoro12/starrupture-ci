@@ -302,12 +302,12 @@ foreach ($k in $clientCases.Keys) {
 
 # ---- client mode, the two real rig artifacts of run 42399350787 ----------------
 # fixtures\rig-run-42399350787 holds what the rig uploaded for that run, untouched: the
-# public_test_branch rig (candidate loader 556ce13 on CL-129402: one member moved, a
+# CL-129402 rig (candidate loader 556ce13 on CL-129402: one member moved, a
 # compat report written, MiniMap refused as declared) and the public rig (MiniMap
 # loaded, its init fails because the rig runs with [UI] Enabled=0). Only two things are
 # not from the artifacts: set.json of the public rig gains MiniMap's uiOffInitFailure
 # (the rig's set step writes it from plugin-names.json; the run predates the field), and
-# the test branch's compat-report-129402.json was not uploaded by that run, so it is
+# that rig's compat-report-129402.json was not uploaded by that run, so it is
 # written the way the loader's writer does (core/compat_report.cpp at 5172c71, format 3,
 # the same layout as the real CL-128786 report) from what that run's log records: the
 # product version, the layout counts, the four global RVAs and the one TimerActor change
@@ -357,10 +357,10 @@ $szNoRow = Size-Entry 'BetterCheats' 'FMassEntityManager' $null $null $null 'no-
 $szReflOnly = Size-Entry 'Compass' 'FCrPlayerPersonalMarkerData' $null $null 40 'reflected-only'
 $missRow = '{ "name": "Fname_AppendString", "module": "StarRuptureGameSteam-Win64-Shipping.exe", "pattern": "48 89 5C 24 ?? 57", "required": REQ, "found": false }'
 $uiOffErr = "[19:00:31.326] [ERROR] [T:02032] [Plugin:MiniMap] $uiOffText"
-$tb = 'test-branch'
+$tb = 'cl-129402'
 $rigCases = [ordered]@{
  # The two real runs: both must pass
- 'test-branch real'           = @{ Run = $tb;      Mut = { param($c) } }
+ 'cl-129402 real'           = @{ Run = $tb;      Mut = { param($c) } }
  'public real'                = @{ Run = 'public'; Mut = { param($c) } }
  # A compat report is judged by its contents
  'compat safe-off'            = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "safe-off"' };                    Fail = 'compat_report_ok' }
@@ -432,7 +432,7 @@ foreach ($k in $rigCases.Keys) {
         $md = Get-Content -LiteralPath (Join-Path $r.Dir 'summary.md') -Raw -Encoding UTF8
         $mm = $j.plugins | Where-Object { $_.name -eq 'MiniMap' }
         $moved = "layout moved: UCrEnviroWaveTimerSubsystem::TimerActor 0x90${arrow}0x98 (keys-only, no loader feature reads it)"
-        if ($k -eq 'test-branch real') {
+        if ($k -eq 'cl-129402 real') {
             if (@($j.notes) -notcontains $moved) { $problems += 'verdict.json lacks the layout-moved note' }
             if ($md -notmatch [regex]::Escape("Note: $moved")) { $problems += 'summary.md lacks the layout-moved note' }
             if ($mm.state -ne 'refused (as declared)') { $problems += "MiniMap state $($mm.state)" }
@@ -448,7 +448,7 @@ foreach ($k in $rigCases.Keys) {
         }
         if ($k -eq 'sizes unreflected, row' -and @($j.notes) -notcontains 'size row BetterCheats: FMassEntityManager row 0xB0 (CL-129402), reflected none: unreflected, row only') { $problems += 'row-only line missing' }
         if ($k -eq 'sizes mismatch' -and @($j.notes) -notcontains 'size row Codex: FAuSimpleItem row 0x30 (CL-129402), reflected 0x34: MISMATCH') { $problems += 'mismatch line missing' }
-        if ($k -in 'test-branch real', 'sizes empty' -and (@($j.notes) | Where-Object { $_ -like 'size row*' })) { $problems += 'size lines without class-key rows' }
+        if ($k -in 'cl-129402 real', 'sizes empty' -and (@($j.notes) | Where-Object { $_ -like 'size row*' })) { $problems += 'size lines without class-key rows' }
         if ($k -eq 'public real') {
             if ($mm.state -ne 'loaded; init needs the UI layer the rig turns off') { $problems += "MiniMap state $($mm.state)" }
             if ($r.Out -notmatch 'plugins_initialized\s+PASS') { $problems += 'plugins_initialized not PASS' }
@@ -459,7 +459,7 @@ foreach ($k in $rigCases.Keys) {
     'rig {0,-34} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
 }
 
-# ---- client mode, a clean decline: run 42447973574's public_test_branch rig ----------------
+# ---- client mode, a clean decline: run 42447973574's CL-129402 rig ----------------
 # fixtures\rig-run-42447973574\decline holds what that rig uploaded, untouched, except that
 # set.json gains "expectDecline": true (the rig's set step writes it from the expect_decline
 # input, which the run predates). The branch ran CL-129402, the candidate map had no row for

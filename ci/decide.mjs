@@ -56,7 +56,7 @@
 // --test-autopilot is the same for a dispatched test run and also marks the result `test`.
 // --first-publish (the dispatch-only first publish of the feed, never with --test-autopilot): for
 // that one run the autopilot is taken as on for path M and state/autopilot.json is not consulted,
-// and G3 accepts a CL that is not newer than the header's when the G3 result says "firstPublish":
+// and G3 accepts a CL that is not newer than the header's (the header already maps it) when the G3 result says "firstPublish":
 // true as well. Neither half does anything alone. The file is never written. The result carries
 // `firstPublish`. Every other gate, the plugin verdicts and the rate limits apply as always.
 //
@@ -65,7 +65,7 @@
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
 //           ("proof": true, an owner's proof run only: it re-runs a CL the header already maps, which the
 //           client check verified, so any CL passes; "firstPublish": true counts only together with
-//           --first-publish: the header holds a newer CL than the build this run publishes)
+//           --first-publish: the header already maps the CL this run publishes, so it is not newer)
 //   G4:     the raw `sr-aobscan --json` output of the CLIENT exe (target "client"). The
 //           client check alone decides: a dedicated server build, when one exists for the
 //           CL, is scanned for information only and is never a gate. G4 must hold one

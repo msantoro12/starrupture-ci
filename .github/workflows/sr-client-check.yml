@@ -293,6 +293,14 @@ on:
 
 permissions: {}
 
+# A first publish holds one group for its whole run, so a second first_publish dispatch waits for the
+# first to end and then refuses in plugin-plan (a feed exists by then), before any Steam work. Every
+# other run has a group of its own (the run, its attempt and its branch: sr-watch calls this workflow
+# once per branch in one run), so nothing else waits or is cancelled by this.
+concurrency:
+  group: ${{ inputs.first_publish == true && 'sr-first-publish' || format('sr-run-{0}-{1}-{2}', github.run_id, github.run_attempt, inputs.branch) }}
+  cancel-in-progress: false
+
 env:
   APP_ID: '1631270'
   # Steam does not publish the refresh-token lifetime; about 200 days is the
@@ -459,39 +467,6 @@ jobs:
       # <Plugin>=<tag> for each plugin of another author whose newest release is not the reviewed one: the alert's "waiting for review" line.
       review: ${{ steps.plan.outputs.review }}
     steps:
-      # A first publish (first_publish) is judged first too, so a run that cannot be one costs nothing:
-      # the inputs it needs, a base that is a branch of the fork, and a vmap-feed release without a feed.
-      # map-mode, push-loader and the publish job judge the same facts again before they act on it.
-      - name: Check a first publish
-        if: ${{ inputs.first_publish == true }}
-        env:
-          BRANCH: ${{ inputs.branch }}
-          MAP_MODE: ${{ inputs.map_mode == true }}
-          PUBLISH: ${{ inputs.publish == true }}
-          PROOF: ${{ inputs.proof_run == true }}
-          TEST_RUN: ${{ inputs.test_autopilot == true }}
-          LOADER_REPO: ${{ inputs.loader_repo }}
-          LOADER_REF: ${{ inputs.loader_ref }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          [ "$BRANCH" = public ] && [ "$MAP_MODE" = true ] && [ "$PUBLISH" = true ] && [ "$PROOF" = false ] && [ "$TEST_RUN" = false ] \
-            || { echo "::error::first_publish needs branch public, map_mode and publish on, proof_run and test_autopilot off"; exit 2; }
-          [ "$LOADER_REPO" = msantoro12/StarRupture-ModLoader ] \
-            || { echo "::error::first_publish builds on a branch of msantoro12/StarRupture-ModLoader, not $LOADER_REPO"; exit 2; }
-          printf '%s' "$LOADER_REF" | grep -Eq '^auto/update-[0-9]+-[0-9]+-[0-9]+$' \
-            || { echo "::error::first_publish needs loader_ref to be a branch auto/update-<CL>-<run>-<attempt>, not '$LOADER_REF'"; exit 2; }
-          if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > first-release.json 2> first-release.err; then
-            has="$(node -p "String((JSON.parse(require('fs').readFileSync('first-release.json','utf8')).assets ?? []).some((a) => a.name === 'version-map-client.v1.txt'))")"
-            [ "$has" = false ] || { echo "::error::first_publish is refused: the vmap-feed release already carries a feed"; exit 2; }
-          elif grep -q 'HTTP 404' first-release.err; then
-            echo "no vmap-feed release yet"
-          else
-            cat first-release.err; echo "::error::cannot read the vmap-feed release"; exit 2
-          fi
-          echo "First publish: the base is $LOADER_REF of $LOADER_REPO and no feed is published yet."
-
       # The proof input of the feed-path rig (feed_loader_ref) is judged first, so a refused
       # run costs nothing: it is for a run that publishes nothing, and it names a branch of
       # the owner's loader fork, nothing else. The feed-plan job checks it again before it
@@ -508,14 +483,81 @@ jobs:
             || { echo "::error::feed_loader_ref is not a plain branch name of msantoro12/StarRupture-ModLoader"; exit 2; }
           echo "The feed-path rig will build the branch $FEED_LOADER_REF of msantoro12/StarRupture-ModLoader."
 
-      # The one list of the reviewed releases of other authors' plugins (Pin in ci/plugin-names.json), which the rig reads too.
-      - name: Check out the plugin pins
+      # The tools the first-publish proof below reads (ci, the poll's code), and the one list of the reviewed
+      # releases of other authors' plugins (Pin in ci/plugin-names.json), which the rig reads too.
+      - name: Check out the plan tools
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: tool
-          sparse-checkout: ci/plugin-names.json
-          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci
+            .github/sr-pipeline
           persist-credentials: false
+
+      # A first publish (first_publish) is judged first, before any Steam work, so a run that cannot be one costs
+      # nothing (the check job waits for this job to pass): the inputs it needs, a base that is a branch of the
+      # fork, a vmap-feed release without a feed, and a base whose rows include the build the other Steam
+      # branch runs now. map-mode, push-loader and the publish job judge the same facts again before they act on it.
+      - name: Check a first publish
+        if: ${{ inputs.first_publish == true }}
+        env:
+          BRANCH: ${{ inputs.branch }}
+          MAP_MODE: ${{ inputs.map_mode == true }}
+          PUBLISH: ${{ inputs.publish == true }}
+          PROOF: ${{ inputs.proof_run == true }}
+          TEST_RUN: ${{ inputs.test_autopilot == true }}
+          LOADER_REPO: ${{ inputs.loader_repo }}
+          LOADER_REF: ${{ inputs.loader_ref }}
+          BUILDID: ${{ inputs.buildid }}
+          OTHER_BUILDID: ${{ inputs.other_buildid }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [ "$BRANCH" = public ] && [ "$MAP_MODE" = true ] && [ "$PUBLISH" = true ] && [ "$PROOF" = false ] && [ "$TEST_RUN" = false ] \
+            || { echo "::error::first_publish needs branch public, map_mode and publish on, proof_run and test_autopilot off"; exit 2; }
+          [ "$LOADER_REPO" = msantoro12/StarRupture-ModLoader ] \
+            || { echo "::error::first_publish builds on a branch of msantoro12/StarRupture-ModLoader, not $LOADER_REPO"; exit 2; }
+          # The whole string: a newline in the value must not give a second line past the pattern.
+          [[ "$LOADER_REF" =~ ^auto/update-[0-9]+-[0-9]+-[0-9]+$ ]] \
+            || { echo "::error::first_publish needs loader_ref to be a branch auto/update-<CL>-<run>-<attempt>"; exit 2; }
+          if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > first-release.json 2> first-release.err; then
+            has="$(node -p "String((JSON.parse(require('fs').readFileSync('first-release.json','utf8')).assets ?? []).some((a) => a.name === 'version-map-client.v1.txt'))")"
+            [ "$has" = false ] || { echo "::error::first_publish is refused: the vmap-feed release already carries a feed"; exit 2; }
+          elif grep -q 'HTTP 404' first-release.err; then
+            echo "no vmap-feed release yet"
+          else
+            cat first-release.err; echo "::error::cannot read the vmap-feed release"; exit 2
+          fi
+          # The base must hold the rows of the build the other Steam branch runs now (its live build id, or the
+          # dispatch's other_buildid), and that build must not be public's: the feed of a first publish carries
+          # both. A base that lacks them is refused here, before the Steam login.
+          gh api -H "Accept: application/vnd.github.raw+json" "repos/$LOADER_REPO/contents/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h?ref=$LOADER_REF" > base.h \
+            || { echo "::error::cannot read the version map header of $LOADER_REF"; exit 2; }
+          other_buildid="$OTHER_BUILDID"
+          if [ -z "$other_buildid" ]; then
+            other_buildid="$(node tool/.github/sr-pipeline/poll-steam.mjs --live-buildid public_test_branch)" \
+              || { echo "::error::cannot read the live build id of the other Steam branch"; exit 2; }
+          fi
+          public_buildid="$BUILDID"
+          if [ -z "$public_buildid" ]; then
+            public_buildid="$(node tool/.github/sr-pipeline/poll-steam.mjs --live-buildid public)" \
+              || { echo "::error::cannot read the live build id of public"; exit 2; }
+          fi
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parse, clOfBuild, holdsCl } from "./tool/ci/version-map.mjs";
+            const [other, pub] = process.argv.slice(1);
+            const map = parse(readFileSync("base.h", "utf8"), "the base header");
+            const fail = (m) => { console.log("::error::first_publish is refused: " + m); process.exit(2); };
+            const ocl = clOfBuild(map, other);
+            if (ocl === null) fail("the base branch has no build row for build " + other + ", the build the other Steam branch runs now, so its feed would carry no rows for it");
+            const h = holdsCl(map, ocl);
+            if (!h.build || h.rows === 0) fail("the base branch holds no function rows for CL-" + ocl + " (build row: " + h.build + ", function rows: " + h.rows + ")");
+            if (pub === other || clOfBuild(map, pub) === ocl) fail("public and the other Steam branch run the same build (" + other + "), so the feed would not carry two builds");
+            console.log("The base holds " + h.rows + " function rows for CL-" + ocl + ", the build the other branch runs now.");
+          ' "$other_buildid" "$public_buildid"
+          echo "First publish: the base is $LOADER_REF of $LOADER_REPO and no feed is published yet."
 
       - name: Check the plugin list
         id: plan
@@ -1060,7 +1102,8 @@ jobs:
     name: check
     needs: [build, plugin-plan, plugins, key-sources-plan, key-sources]
     # A plugin that does not build fails only itself, not the client check.
-    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.branch && inputs.branch != 'expiry-only' }}
+    # A first publish that plugin-plan refused never reaches the Steam login.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (inputs.first_publish != true || needs.plugin-plan.result == 'success') && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
     timeout-minutes: 120
     environment: steam-client
@@ -2389,7 +2432,7 @@ jobs:
   # loader's header: map-mode assemble and write, field rows from the PDB
   # layouts, decide (ci/decide.mjs, every gate and rate limit), and on path M
   # export the feed, sign it with the TEST key (k1, VMAP_SIGN_KEY_TEST) and
-  # verify it, stage a beta build, and plan the promotion (ci/promote.mjs, a
+  # verify it, stage a build not on public yet, and plan the promotion (ci/promote.mjs, a
   # dry run). The client check alone decides: no dedicated-server scan is read.
   # Reads only artifacts, the header and the vmap-feed release: no Steam login,
   # no plugin code, no game files. The release key signs only in the publish
@@ -2466,8 +2509,17 @@ jobs:
       # The owner's proof run (dispatch only): see the input.
       PROOF: ${{ inputs.proof_run == true }}
       # The first publish (dispatch only): every input it needs is part of the condition, so any other run is an ordinary one.
-      FIRST_PUBLISH: ${{ inputs.first_publish == true && inputs.branch == 'public' && inputs.map_mode == true && inputs.publish == true && inputs.proof_run != true && inputs.test_autopilot != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+      FIRST_PUBLISH: ${{ inputs.first_publish == true && inputs.branch == 'public' && inputs.map_mode == true && inputs.publish == true && inputs.proof_run != true && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' && startsWith(inputs.loader_ref, 'auto/update-') && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+      LOADER_REPO: ${{ inputs.loader_repo }}
     steps:
+      # A first_publish dispatch that is not a first publish (a base outside the fork, a branch that is not an
+      # auto/update-<CL>-<run>-<attempt> one, any other input) stops here: it is never run as an ordinary one.
+      - name: Refuse a first publish that is not one
+        if: ${{ inputs.first_publish == true }}
+        run: |
+          [ "$FIRST_PUBLISH" = true ] && [ "$LOADER_REPO" = msantoro12/StarRupture-ModLoader ] && [[ "$LOADER_REF" =~ ^auto/update-[0-9]+-[0-9]+-[0-9]+$ ]] \
+            || { echo "::error::first_publish needs branch public, map_mode and publish on, proof_run and test_autopilot off, loader_repo msantoro12/StarRupture-ModLoader and loader_ref auto/update-<CL>-<run>-<attempt>"; exit 2; }
+
       - name: Refuse a proof run that could publish
         if: ${{ inputs.proof_run == true }}
         env:
@@ -2670,7 +2722,7 @@ jobs:
           # feed is never built without its member rows.
           # The check writes layout-reference.json only when it has an older build
           # to compare with: the public branch is itself the reference and has
-          # none, and a test branch has none when the public download failed or
+          # none, and another branch has none when the public download failed or
           # is the same build. Without --base, field-rows refuses while any
           # reflected key is listed (it cannot find what moved), so decide holds
           # with that reason; the file is never named when it does not exist.
@@ -2695,7 +2747,7 @@ jobs:
             put("g1.json", { ok: process.env.BUILD_RESULT === "success" });
             put("g2.json", { ok: r.checks?.fail === false });
             // A proof run measures a CL the header already maps again: G3 passes it then. A first publish
-            // builds on a header of a newer CL: decide lets G3 pass it only with --first-publish as well.
+            // builds on a header that already maps its CL (cl equals previousCl): decide lets G3 pass it only with --first-publish as well.
             put("g3.json", { ok: true, cl, previousCl, ...(process.env.PROOF === "true" ? { proof: true } : {}), ...(process.env.FIRST_PUBLISH === "true" ? { firstPublish: true } : {}) });
             // The plugin verdicts: decide holds on any plugin the loader would refuse.
             put("plugins.json", r.plugins ?? { error: "the client check wrote no plugin verdicts" });
@@ -2722,8 +2774,12 @@ jobs:
           # release. No release yet is an empty history and seq 0; any other
           # failure to read it stops the chain.
           if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > release.json 2> release.err; then
-            gh release download vmap-feed --pattern vmap-history.json --dir published || true
-            gh release download vmap-feed --pattern version-map-client.v1.txt --dir published || true
+            # A release without the feed asset is "no feed": a partial upload leaves one. The history of such a
+            # release is not read for a first publish: it names a release that never went out, and the
+            # publish job writes the history again.
+            has_feed="$(node -p "String((JSON.parse(require('fs').readFileSync('release.json','utf8')).assets ?? []).some((a) => a.name === 'version-map-client.v1.txt'))")"
+            if [ "$has_feed" = true ]; then gh release download vmap-feed --pattern version-map-client.v1.txt --dir published; fi
+            if [ "$has_feed" = true ] || [ "$FIRST_PUBLISH" != true ]; then gh release download vmap-feed --pattern vmap-history.json --dir published || true; fi
           elif grep -q 'HTTP 404' release.err; then
             echo "no vmap-feed release yet"
           else
@@ -2755,9 +2811,9 @@ jobs:
           other_buildid="$OTHER_BUILDID"
           if [ -z "$other_buildid" ]; then
             other_buildid="$(node tool/.github/sr-pipeline/poll-steam.mjs --live-buildid "$other_branch")" \
-              || { echo "::error title=Other branch build id::cannot read the live build id of $other_branch from Steam, so its rig cannot know what the loader must do there; pass other_buildid to name it"; exit 2; }
+              || { echo "::error title=Other branch build id::cannot read the live build id of the other Steam branch from Steam, so its rig cannot know what the loader must do there; pass other_buildid to name it"; exit 2; }
           fi
-          case "$other_buildid" in ""|*[!0-9]*) echo "::error title=Other branch build id::the build id of $other_branch is not a number: '$other_buildid'"; exit 2 ;; esac
+          case "$other_buildid" in ""|*[!0-9]*) echo "::error title=Other branch build id::the build id of the other Steam branch is not a number: '$other_buildid'"; exit 2 ;; esac
           other_cl="$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
             import { parse, clOfBuild } from "./tool/ci/version-map.mjs";
@@ -2768,8 +2824,20 @@ jobs:
           # A build the candidate map has no row for cannot be run by the loader: it declines, and the
           # other branch's rig passes only if the decline is clean (decide --other-unmapped).
           other_flag=()
-          if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "$other_branch runs build $other_buildid = CL-$other_cl"
-          else other_flag=(--other-unmapped "$other_branch runs build $other_buildid"); echo "::notice title=Other branch not in the map::$other_branch runs build $other_buildid, which has no row in the candidate map: its rig expects a clean decline"; fi
+          if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "the other branch runs build $other_buildid = CL-$other_cl"
+          else other_flag=(--other-unmapped "the other branch runs build $other_buildid"); echo "::notice title=Other branch not in the map::the other branch runs build $other_buildid, which has no row in the candidate map: its rig expects a clean decline"; fi
+          # A first publish carries both builds: the other branch's live build must be in the header, with
+          # rows, and must not be this run's own. Judged here, before anything is exported or signed.
+          if [ "$FIRST_PUBLISH" = true ]; then
+            [ -n "$other_cl" ] || { echo "::error::first_publish is refused: the base header has no build row for build $other_buildid, the build the other Steam branch runs now, so the feed would carry no rows for it"; exit 2; }
+            [ "$other_cl" != "$cl" ] || { echo "::error::first_publish is refused: public and the other Steam branch run the same CL-$cl, so the feed would not carry two builds"; exit 2; }
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { parse, holdsCl } from "./tool/ci/version-map.mjs";
+              const h = holdsCl(parse(readFileSync(process.argv[1], "utf8"), "the header"), process.argv[2]);
+              if (!h.build || h.rows === 0) { console.log("::error::first_publish is refused: the header holds no function rows for CL-" + process.argv[2] + ", the build the other Steam branch runs now (build row: " + h.build + ", function rows: " + h.rows + ")"); process.exit(2); }
+            ' "$header" "$other_cl"
+          fi
           # The DLLs the rigs will run (out/rig-plugins.json of the check): the refusals declared to a rig are
           # predicted from their own facts, not from the plugin builds this check judged. Without the file
           # nothing is declared and any refusal fails the rig.
@@ -2806,7 +2874,7 @@ jobs:
           fi
           echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"
           echo "expect_decline_other=$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).expectDeclineOther === true")" >> "$GITHUB_OUTPUT"
-          [ -z "$expect_refused_other" ] || echo "::notice title=Loader refuses on CL::expected refusals on $other_branch (CL-$other_cl): $expect_refused_other"
+          [ -z "$expect_refused_other" ] || echo "::notice title=Loader refuses on CL::expected refusals on the other branch (CL-$other_cl): $expect_refused_other"
           # A test run by the dispatch input, the chain's own flag or the decision itself.
           # A candidate that is not M (the autopilot holds it) is never publishable either.
           is_test="$(node -p "const d = JSON.parse(require('fs').readFileSync('decision.json','utf8')); String(process.env.TEST_INPUT === 'true' || process.env.TEST_AUTOPILOT === 'true' || d.test === true || (d.candidate === true && d.decision !== 'M'))")"
@@ -2844,23 +2912,25 @@ jobs:
           [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
           node tool/ci/vmap-sign.mjs sign feed.txt --out feed.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq" --seq "$seq"
           node tool/ci/vmap-sign.mjs verify feed.test-signed.txt --allow-test-key --last-seq "$last_seq" --expect-seq "$seq"
-          # A first publish carries both builds: the CL of this run and the CL the base header was built for.
+          # A first publish carries both builds: the CL of this run and the CL of the build the other Steam branch
+          # runs now (other_cl, proved above). Judged again on the signed feed itself, before it goes any further.
           if [ "$FIRST_PUBLISH" = true ]; then
+            [ -n "$other_cl" ] && [ "$other_cl" != "$cl" ] || { echo "::error::first_publish is refused: no second build to carry"; exit 2; }
             node --input-type=module -e '
               import { readFileSync } from "node:fs";
-              import { parseFeed } from "./tool/ci/version-map.mjs";
+              import { parseFeed, holdsCl } from "./tool/ci/version-map.mjs";
               const NL = String.fromCharCode(10);
               const lines = readFileSync("feed.test-signed.txt", "utf8").split(NL);
               const feed = parseFeed([lines[0], ...lines.slice(2, -2), ""].join(NL), "the feed");
-              for (const cl of process.argv.slice(1).map(Number)) {
-                const build = feed.builds.some((b) => b.cl === cl), rows = feed.functions.filter((r) => r.cl === cl).length;
-                if (!build || rows === 0) { console.log("::error::the first publish feed carries no rows for CL-" + cl + " (build row: " + build + ", function rows: " + rows + ")"); process.exit(2); }
+              for (const cl of process.argv.slice(1)) {
+                const h = holdsCl(feed, cl);
+                if (!h.build || h.rows === 0) { console.log("::error::the first publish feed carries no rows for CL-" + cl + " (build row: " + h.build + ", function rows: " + h.rows + ")"); process.exit(2); }
               }
               console.log("The feed carries rows for CL-" + process.argv.slice(1).join(" and CL-"));
-            ' "$cl" "$PREVIOUS_CL"
+            ' "$cl" "$other_cl"
           fi
 
-          # Stage a beta build; plan the promotion. For a beta build the plan is
+          # Stage a build not on public yet; plan the promotion. For such a build the plan is
           # for the day public flips to this exact build; for public, it is the
           # real plan.
           node --input-type=module -e '
@@ -2886,7 +2956,7 @@ jobs:
             writeFileSync("verify.json", JSON.stringify({ ok: r.checks?.fail === false && d.pluginsOk === true, exe: process.env.BRANCH, buildid }));
           '
           if [ -f tool/state/staged.json ]; then cp tool/state/staged.json staged.json; else echo '{}' > staged.json; fi
-          # A beta build is staged (branch and index entry). A build first seen on public gets the
+          # A build not on public yet is staged (branch and index entry). A build first seen on public gets the
           # same branch for its candidate loader and the rig, with no index entry (ci/staging.mjs).
           node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json
           node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("stage-plan.json","utf8")); if (p.index) fs.writeFileSync("staged.json", JSON.stringify(p.index, null, 1));'
@@ -2937,7 +3007,7 @@ jobs:
   # ---- Publish: the feed signed with the release key ---------------------
   # Publishes with nobody at the keyboard, when and only when every one of these holds:
   #   - the run is for public (the feed it signs carries every build in the loader's map, the
-  #     build the other Steam branch runs included);
+  #     build the other Steam branch runs included; owner, 2026-11-08: every build we can reach);
   #   - the publish input is on (sr-watch passes it, a dispatch sets it; a dispatch without it is
   #     a dry run) - and it is never a test_autopilot run;
   #   - decide chose M, which it does only with state/autopilot.json enabled: with the autopilot
@@ -3038,11 +3108,18 @@ jobs:
           '
           # The live seq, read again now: another publish may have landed since the chain ran.
           # No release yet is seq 0; a release that cannot be read, or a feed that does not verify, stops.
+          # A release without the feed asset is no feed either (a partial upload leaves one): seq 0, and the
+          # re-run signs again. A feed asset that does not verify stops the job; it is never replaced.
           last_seq=0
           if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > live-release.json 2> live-release.err; then
-            gh release download vmap-feed --pattern version-map-client.v1.txt --dir live
-            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
-            [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
+            has_feed="$(node -p "String((JSON.parse(require('fs').readFileSync('live-release.json','utf8')).assets ?? []).some((a) => a.name === 'version-map-client.v1.txt'))")"
+            if [ "$has_feed" = true ]; then
+              gh release download vmap-feed --pattern version-map-client.v1.txt --dir live
+              last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+              [ -n "$last_seq" ] || { echo "::error::the published feed does not verify"; exit 2; }
+            else
+              echo "the vmap-feed release has no feed asset yet"
+            fi
           elif grep -q 'HTTP 404' live-release.err; then
             echo "no vmap-feed release yet"
           else
@@ -3094,9 +3171,12 @@ jobs:
           '
           gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
           # The history first: if only one upload lands, the history may name a release that is not out
-          # (a re-run signs again), never a feed that the history does not know.
+          # (a re-run signs again: a release without the feed asset counts as no feed), never a feed that the
+          # history does not know. The first publish uploads the feed without --clobber, so a feed that is
+          # there is never replaced.
           gh release upload vmap-feed vmap-history.json --clobber
-          gh release upload vmap-feed version-map-client.v1.txt --clobber
+          if [ "$FIRST_PUBLISH" = true ]; then gh release upload vmap-feed version-map-client.v1.txt
+          else gh release upload vmap-feed version-map-client.v1.txt --clobber; fi
 
       - name: Verify what was published
         run: |
@@ -3125,10 +3205,10 @@ jobs:
   # A missing key fails the job with its name; it never skips quietly. A test run
   # and a run whose chain held have nothing to push and skip. A build first seen on
   # public is pushed too.
-  # The base is not the fork: the header was read from loader_repo (AlienX's released
-  # line, main), so the checkout is that repository at that exact commit, with its full
-  # history, and the branch is pushed to the fork on top of it. The fork's own branches
-  # are never the base.
+  # The base is loader_repo at the commit the header was read from (AlienX's released line,
+  # main, unless a dispatch names another), checked out with its full history; the branch
+  # is pushed to the fork on top of it. Only a first publish takes a branch of the fork
+  # (auto/update-<CL>-<run>-<attempt>) as its base, and then only as the first step checks.
   push-loader:
     name: push the map rows to the loader fork
     needs: [map-mode]
@@ -3150,6 +3230,14 @@ jobs:
       # A first publish whose candidate header is its base's own has no commit to push: the base is the candidate.
       FIRST_PUBLISH: ${{ needs.map-mode.outputs.first_publish == 'true' }}
     steps:
+      - name: Check the first-publish base
+        if: ${{ needs.map-mode.outputs.first_publish == 'true' }}
+        env:
+          LOADER_REF: ${{ inputs.loader_ref }}
+        run: |
+          [ "$LOADER_REPO" = "$PUSH_REPO" ] && [[ "$LOADER_REF" =~ ^auto/update-[0-9]+-[0-9]+-[0-9]+$ ]] \
+            || { echo "::error::first_publish builds on a branch auto/update-<CL>-<run>-<attempt> of $PUSH_REPO; nothing was pushed"; exit 2; }
+
       - name: Check the deploy key
         env:
           DEPLOY_KEY: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}
@@ -3794,8 +3882,6 @@ jobs:
       RIG_VERDICT: ${{ needs.rig-feed.outputs.verdict }}
       RIG_REASON: ${{ needs.rig-feed.outputs.reason }}
       RIG_ARTIFACT: ${{ needs.rig-feed.outputs.artifact }}
-      BRANCH_NAME: ${{ inputs.branch }}
-      OTHER_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
       OTHER_STATE: ${{ needs.feed-plan.outputs.other_state }}
       OTHER_REASON: ${{ needs.feed-plan.outputs.other_reason }}
       OTHER_CL: ${{ needs.feed-plan.outputs.other_cl }}
@@ -3821,9 +3907,11 @@ jobs:
               return ["FAIL", clean(rigReason) || (result === "skipped" ? "the rig did not run" : "no verdict (rig job " + result + ")")];
             };
             // The second leg exists only when the plan reached it (its state is set); a plan that failed early has none.
-            const legs = e.PLAN_RESULT !== "success" ? [[e.BRANCH_NAME, ["FAIL", "the plan job ended " + e.PLAN_RESULT]]]
-              : [[e.BRANCH_NAME, judge(e.PLAN_STATE, e.PLAN_REASON, e.CL, e.RIG_RESULT, e.RIG_VERDICT, e.RIG_REASON)],
-                ...(e.OTHER_STATE ? [[e.OTHER_NAME, judge(e.OTHER_STATE, e.OTHER_REASON, e.OTHER_CL, e.OTHER_RIG_RESULT, e.OTHER_RIG_VERDICT, e.OTHER_RIG_REASON)]] : [])];
+            // The legs are named by their CL, never by a Steam branch.
+            const mine = e.CL ? "CL-" + e.CL : "this build", other = e.OTHER_CL ? "CL-" + e.OTHER_CL : "the other build";
+            const legs = e.PLAN_RESULT !== "success" ? [[mine, ["FAIL", "the plan job ended " + e.PLAN_RESULT]]]
+              : [[mine, judge(e.PLAN_STATE, e.PLAN_REASON, e.CL, e.RIG_RESULT, e.RIG_VERDICT, e.RIG_REASON)],
+                ...(e.OTHER_STATE ? [[other, judge(e.OTHER_STATE, e.OTHER_REASON, e.OTHER_CL, e.OTHER_RIG_RESULT, e.OTHER_RIG_VERDICT, e.OTHER_RIG_REASON)]] : [])];
             const state = legs.some(([, l]) => l[0] === "FAIL") ? "FAIL" : legs.some(([, l]) => l[0] === "PASS") ? "PASS" : "SKIP";
             const why = legs.map(([name, l]) => (legs.length > 1 ? name + ": " : "") + l[1]).join("; ");
             const logs = [e.RIG_ARTIFACT && "artifact `" + e.RIG_ARTIFACT + "`", e.OTHER_RIG_ARTIFACT && "artifact `" + e.OTHER_RIG_ARTIFACT + "`"].filter(Boolean);
@@ -3855,14 +3943,14 @@ jobs:
       CANDIDATE_RESULT: ${{ needs.candidate-loader.result }}
       CANDIDATE_VERSION: ${{ needs.candidate-loader.outputs.version }}
       CANDIDATE_SHA: ${{ needs.candidate-loader.outputs.sha }}
-      BRANCH_NAME: ${{ inputs.branch }}
+      BRANCH_NAME: this branch
       BRANCH_RESULT: ${{ needs.rig-branch.result }}
       BRANCH_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
       BRANCH_REASON: ${{ needs.rig-branch.outputs.reason }}
       BRANCH_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
       BRANCH_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused }}
       OTHER_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused_other }}
-      OTHER_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      OTHER_NAME: the other branch
       OTHER_RESULT: ${{ needs.rig-other.result }}
       OTHER_VERDICT: ${{ needs.rig-other.outputs.verdict }}
       OTHER_REASON: ${{ needs.rig-other.outputs.reason }}
@@ -3955,13 +4043,13 @@ jobs:
       FEED_GATE_RESULT: ${{ needs.feed-gate.result }}
       FEED_GATE_STATE: ${{ needs.feed-gate.outputs.state }}
       FEED_GATE_REASON: ${{ needs.feed-gate.outputs.reason }}
-      BRANCH_RIG_NAME: ${{ inputs.branch }}
+      BRANCH_RIG_NAME: this branch
       BRANCH_RIG_RESULT: ${{ needs.rig-branch.result }}
       BRANCH_RIG_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
       BRANCH_RIG_REASON: ${{ needs.rig-branch.outputs.reason }}
       BRANCH_RIG_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
       BRANCH_RIG_REVIEW: ${{ needs.rig-branch.outputs.review }}
-      OTHER_RIG_NAME: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      OTHER_RIG_NAME: the other branch
       OTHER_RIG_RESULT: ${{ needs.rig-other.result }}
       OTHER_RIG_VERDICT: ${{ needs.rig-other.outputs.verdict }}
       OTHER_RIG_REASON: ${{ needs.rig-other.outputs.reason }}

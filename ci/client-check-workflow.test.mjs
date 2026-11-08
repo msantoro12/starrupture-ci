@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addBuild, emit, emptyMap, parse, parseFeed } from './version-map.mjs';
+import { addBuild, addFunction, emit, emptyMap, parse, parseFeed } from './version-map.mjs';
 import { firstLogError } from './pipeline-alert.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -153,7 +153,7 @@ test('build label: the map-mode step labels a build "steam_build <build id>" and
   assert.ok(line, 'the step writes scans.json');
   assert.match(line, /source: "steam_build " \+ process\.argv\[1\]/);
   assert.ok(!/BRANCH|branch/.test(line), 'the label is built from the build id only');
-  assert.ok(!/source: [^,]*test_branch/.test(wf), 'no workflow step labels a build with the test branch');
+  assert.ok(!/source: [^,]*test_branch/.test(wf), 'no workflow step labels a build with a Steam branch');
 });
 
 // ---- New builds: map mode measures what the loader does not run on yet ----
@@ -448,7 +448,7 @@ test('public: a build first seen on public is staged too, so it is pushed and ge
   const stage = mm.indexOf('node tool/ci/staging.mjs stage --build build.json --index staged.json --out stage-plan.json');
   assert.ok(stage > 0);
   assert.ok(mm.indexOf('echo "staged=true" >> "$GITHUB_OUTPUT"') > stage);
-  // A public scan is recorded once: the reference build is the public exe only for a beta branch.
+  // A public scan is recorded once: the reference build is the public exe only for a branch other than public.
   assert.ok(mm.includes('if (r.reference?.status === "used" && process.env.BRANCH !== "public") scans.push('));
   // push-loader has no branch condition either.
   assert.ok(!/inputs\.branch/.test(job('push-loader').match(/\n {4}if: [^\n]+\n/)[0]));
@@ -518,7 +518,7 @@ const evalExpr = (expr, ctx) => {
     .replace(/!cancelled\(\)|always\(\)/g, 'true')
     .replace(/needs\.([\w-]+)\./g, 'needs["$1"].')
     .replace(/!=/g, '!==').replace(/([^=!<>])==(?!=)/g, '$1===');
-  return new Function('needs', 'inputs', 'github', 'contains', `return (${js});`)(ctx.needs, ctx.inputs, ctx.github ?? { workflow_ref: SR_WATCH_REF }, contains);
+  return new Function('needs', 'inputs', 'github', 'contains', 'startsWith', `return (${js});`)(ctx.needs, ctx.inputs, ctx.github ?? { workflow_ref: SR_WATCH_REF }, contains, (a, b) => String(a).startsWith(b));
 };
 const okNeeds = () => ({
   'map-mode': { result: 'success', outputs: { test: 'false', decision: 'M', publishable: 'true', staged: 'true', expect_refused: '' } },
@@ -1142,11 +1142,11 @@ test('other branch: the CL comes from the dispatch input or a live Steam read th
     const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env });
     return { status: r.status, out: r.stdout, err: r.stderr };
   };
-  // A public check, the watcher saw the test branch on build 26271156 (CL-129402): the input is used, Steam is not asked.
+  // A public check, the watcher saw the other branch on build 26271156 (CL-129402): the input is used, Steam is not asked.
   const a = run({ branch: 'public', otherBuildid: '26271156' });
   assert.equal(a.status, 0, a.err);
   assert.match(a.out, /cl=\[129402\] flag=\[--other-cl 129402\] id=\[26271156\]/);
-  assert.match(a.out, /public_test_branch runs build 26271156 = CL-129402/);
+  assert.match(a.out, /the other branch runs build 26271156 = CL-129402/);
   assert.ok(!/live read/.test(a.err), 'an explicit other_buildid is never second-guessed');
   // A dispatch without the input reads the other branch's live id, as the watcher's poll does.
   const b = run({ branch: 'public_test_branch', live: '25646882' });
@@ -1158,14 +1158,14 @@ test('other branch: the CL comes from the dispatch input or a live Steam read th
   // A build the candidate map has no row for: no CL, declared unmapped (decide then expects a clean decline).
   const c = run({ branch: 'public', otherBuildid: '999' });
   assert.equal(c.status, 0, c.err);
-  assert.match(c.out, /cl=\[\] flag=\[--other-unmapped public_test_branch runs build 999\] id=\[999\]/);
-  assert.match(c.out, /::notice title=Other branch not in the map::public_test_branch runs build 999, which has no row in the candidate map: its rig expects a clean decline/);
-  assert.match(run({ branch: 'public', live: '26999999' }).out, /--other-unmapped public_test_branch runs build 26999999/);
+  assert.match(c.out, /cl=\[\] flag=\[--other-unmapped the other branch runs build 999\] id=\[999\]/);
+  assert.match(c.out, /::notice title=Other branch not in the map::the other branch runs build 999, which has no row in the candidate map: its rig expects a clean decline/);
+  assert.match(run({ branch: 'public', live: '26999999' }).out, /--other-unmapped the other branch runs build 26999999/);
   // Fails closed: a live read that fails, or prints no number, or an input that is no number, stops the chain.
   for (const odd of [{ live: null }, { live: '' }, { live: 'html' }, { otherBuildid: 'not-a-build' }]) {
     const r = run({ branch: 'public', ...odd });
     assert.equal(r.status, 2, JSON.stringify(odd));
-    assert.match(r.out + r.err, /::error title=Other branch build id::(cannot read the live build id of public_test_branch from Steam|the build id of public_test_branch is not a number)/, JSON.stringify(odd));
+    assert.match(r.out + r.err, /::error title=Other branch build id::(cannot read the live build id of the other Steam branch from Steam|the build id of the other Steam branch is not a number)/, JSON.stringify(odd));
     assert.ok(!/cl=\[/.test(r.out), 'no CL is declared after a failure');
   }
   // The id recorded on main (state/steam.json) is never the source: it names the build of the last merged update PR.
@@ -1175,7 +1175,7 @@ test('other branch: the CL comes from the dispatch input or a live Steam read th
 test('other branch: the step turns decision.json into the other rig\'s input, and refuses a name outside the rig\'s grammar', { skip: !bash }, () => {
   const mm = job('map-mode');
   const start = mm.indexOf('          expect_refused_other="$(node -p');
-  const end = mm.indexOf('\n', mm.indexOf('Loader refuses on CL::expected refusals on $other_branch')) + 1;
+  const end = mm.indexOf('\n', mm.indexOf('Loader refuses on CL::expected refusals on the other branch')) + 1;
   assert.ok(start > 0 && end > start);
   const snippet = mm.slice(start, end).replace(/^ {10}/gm, '');
   const run = (decision) => {
@@ -1186,7 +1186,7 @@ test('other branch: the step turns decision.json into the other rig\'s input, an
   };
   const a = run({ decision: 'HOLD', expectRefused: [], expectRefusedOther: ['MiniMap'] });
   assert.deepEqual([a.status, a.out], [0, 'expect_refused_other=MiniMap\nexpect_decline_other=false\n']);
-  assert.match(a.log, /expected refusals on public_test_branch \(CL-129402\): MiniMap/);
+  assert.match(a.log, /expected refusals on the other branch \(CL-129402\): MiniMap/);
   assert.equal(run({ decision: 'M', expectRefusedOther: ['Codex', 'MiniMap'] }).out, 'expect_refused_other=Codex MiniMap\nexpect_decline_other=false\n');
   assert.equal(run({ decision: 'M', expectRefusedOther: [] }).out, 'expect_refused_other=\nexpect_decline_other=false\n');
   // A build the map has no row for: the other branch's rig is told to expect a clean decline.
@@ -1367,9 +1367,10 @@ test('B1 plan: the job reads the pins from the repository, with a read-only toke
   const j = job('plugin-plan');
   assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
   assert.match(j, /\n {6}review: \$\{\{ steps\.plan\.outputs\.review \}\}\n/);
-  const co = stepText(j, 'Check out the plugin pins');
-  assert.ok(co.includes('path: tool') && co.includes('sparse-checkout: ci/plugin-names.json') && co.includes('persist-credentials: false'));
-  assert.ok(j.indexOf('- name: Check out the plugin pins') < j.indexOf('- name: Check the plugin list'), 'the pins are there before the plan reads them');
+  const co = stepText(j, 'Check out the plan tools');
+  assert.ok(co.includes('path: tool') && /sparse-checkout: \|\n\s+ci\n\s+\.github\/sr-pipeline\n/.test(co) && co.includes('persist-credentials: false'));
+  assert.ok(j.indexOf('- name: Check out the plan tools') < j.indexOf('- name: Check the plugin list'), 'the pins are there before the plan reads them');
+  assert.ok(j.indexOf('- name: Check out the plan tools') < j.indexOf('- name: Check a first publish'), 'the tools are there before the first-publish proof reads them');
   const al = job('alert');
   assert.match(al, /\n {6}PLAN_REVIEW: \$\{\{ needs\.plugin-plan\.outputs\.review \}\}\n/);
   assert.ok(al.includes('[e.PLAN_REVIEW, e.BRANCH_RIG_REVIEW, e.OTHER_RIG_REVIEW]'));
@@ -2122,7 +2123,7 @@ test('publish gates (unattended): the public run of sr-watch publishes on its ow
   assert.equal(run(), true, 'sr-watch (publish: true), public, M, publishable, both rigs PASS: publishes');
   assert.equal(run(() => {}, { ...okInputs(), publish: false }), false, 'the publish input off: a dry run');
   // Each gate alone stops it.
-  assert.equal(run(() => {}, { ...okInputs(), branch: 'public_test_branch' }), false, 'a test-branch run never publishes');
+  assert.equal(run(() => {}, { ...okInputs(), branch: 'public_test_branch' }), false, 'a run for the other branch never publishes');
   assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; n['map-mode'].outputs.publishable = 'false'; n['map-mode'].outputs.test = 'true'; }), false, 'autopilot off: HOLD, a held candidate counts as a test, publish skipped');
   assert.equal(run((n) => { n['map-mode'].outputs.decision = 'HOLD'; }), false, 'a HOLD alone');
   assert.equal(run((n) => { n['map-mode'].outputs.publishable = 'false'; }), false, 'promote says not publishable');
@@ -2197,7 +2198,7 @@ test('the feed carries every build: export-feed has no list option, runs once in
 });
 
 // The publish job's steps, run against stubs: gh, the signer and the exporter write what they are asked and log their arguments.
-const publishFixture = ({ liveSeq = 100, chainSeq = '200', planSeq = null, exportText = 'FEED\n', feedText = 'FEED\n', publishedKey = 'k2', publishedSeq = undefined, release = true } = {}) => {
+const publishFixture = ({ liveSeq = 100, chainSeq = '200', planSeq = null, exportText = 'FEED\n', feedText = 'FEED\n', publishedKey = 'k2', publishedSeq = undefined, release = true, feedAsset = true } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'publish-job-'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   mkdirSync(join(dir, 'chain'));
@@ -2228,7 +2229,7 @@ writeFileSync(a[a.indexOf('--out') + 1], ${JSON.stringify(exportText)});
   writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash
 printf 'gh %s\\n' "$*" >> calls.log
 case "$1 $2" in
-  "api repos/"*) ${release ? 'echo "{}"; exit 0' : 'echo "gh: Not Found (HTTP 404)" >&2; exit 1'} ;;
+  "api repos/"*) ${release ? `echo '${JSON.stringify({ assets: feedAsset ? [{ name: 'version-map-client.v1.txt' }, { name: 'vmap-history.json' }] : [{ name: 'vmap-history.json' }] })}'; exit 0` : 'echo "gh: Not Found (HTTP 404)" >&2; exit 1'} ;;
   "release download") dest=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && dest="$2"; shift; done; mkdir -p "$dest"; if [ "$dest" = live ]; then echo LIVE > live/version-map-client.v1.txt; else cp version-map-client.v1.txt vmap-history.json "$dest"/; [ -n "$TAMPER" ] && echo x >> "$dest"/vmap-history.json; fi ;;
 esac
 exit 0
@@ -2274,6 +2275,12 @@ test('publish job: the chain seq must still rise above the live seq, the plan mu
   r = runPublishStep(fx, step);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(readFileSync(join(fx.dir, 'last-seq.txt'), 'utf8').trim(), '0');
+  // A release whose feed asset is missing (a partial upload left only the history) is no feed either: seq 0, and the run goes on.
+  fx = publishFixture({ feedAsset: false });
+  r = runPublishStep(fx, step);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(readFileSync(join(fx.dir, 'last-seq.txt'), 'utf8').trim(), '0');
+  assert.ok(!callsOf(fx.dir).some((c) => /^gh release download/.test(c)), 'nothing is downloaded when there is no feed asset');
 });
 
 test('publish job: signs with the chain seq, records it in the history, uploads, then verifies the published copy (signature, seq, sha256)', { skip: !bash }, () => {
@@ -2514,7 +2521,7 @@ test('feed_loader_ref: a dispatch input only; sr-watch cannot set it; checked ea
   assert.ok(!call.includes('feed_loader_ref'), 'a call cannot pass it');
   assert.ok(!watch.slice(watch.indexOf('  client-check:\n')).includes('feed_loader_ref'), 'the unattended chain never sets it');
   const plan = job('plugin-plan');
-  assert.ok(plan.indexOf('- name: Check the feed-path loader ref') > 0 && plan.indexOf('- name: Check the feed-path loader ref') < plan.indexOf('- name: Check out the plugin pins'), 'refused before any other step');
+  assert.ok(plan.indexOf('- name: Check the feed-path loader ref') > 0 && plan.indexOf('- name: Check the feed-path loader ref') < plan.indexOf('- name: Check out the plan tools'), 'refused before any other step');
   // Both reads of the input take it only from a run of this workflow itself.
   for (const j of [plan, job('feed-plan')]) assert.match(j, /FEED_LOADER_REF: \$\{\{ contains\(github\.workflow_ref, '\/\.github\/workflows\/sr-client-check\.yml@'\) && inputs\.feed_loader_ref \|\| '' \}\}/);
   assert.ok(job('feed-loader').includes('repository: ${{ needs.feed-plan.outputs.owner }}/StarRupture-ModLoader'));
@@ -2704,41 +2711,158 @@ test('proof_run: the write step takes only a CL the header already maps', { skip
 
 // ------------------------------------------------------------ first publish (dispatch-only, one publish)
 
-test('first_publish: a dispatch input only; sr-watch and calls cannot set it; the chain mark needs every condition', () => {
+test('first_publish: a dispatch input only; sr-watch and calls cannot set it; the chain mark needs every condition, the base included', () => {
   assert.match(dispatch, /\n {6}first_publish:\n {8}description: [^\n]*\n {8}type: boolean\n {8}default: false\n/);
   assert.ok(!call.includes('first_publish'), 'a call cannot pass it');
   assert.ok(!watch.includes('first_publish'), 'the unattended chain never sets it');
   const expr = job('map-mode').match(/\n {6}FIRST_PUBLISH: (\$\{\{ [^\n]*\}\})\n/)[1];
   const mark = (inputs, workflow_ref = 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main') =>
-    evalExpr(expr, { needs: {}, inputs: { first_publish: true, branch: 'public', map_mode: true, publish: true, proof_run: false, test_autopilot: false, ...inputs }, github: { workflow_ref } });
+    evalExpr(expr, { needs: {}, inputs: { first_publish: true, branch: 'public', map_mode: true, publish: true, proof_run: false, test_autopilot: false, loader_repo: 'msantoro12/StarRupture-ModLoader', loader_ref: 'auto/update-129402-55-1', ...inputs }, github: { workflow_ref } });
   assert.equal(mark({}), true);
-  for (const off of [{ first_publish: false }, { first_publish: null }, { branch: 'public_test_branch' }, { map_mode: false }, { publish: false }, { proof_run: true }, { test_autopilot: true }]) assert.equal(mark(off), false, JSON.stringify(off));
+  for (const off of [{ first_publish: false }, { first_publish: null }, { branch: 'public_test_branch' }, { map_mode: false }, { publish: false }, { proof_run: true }, { test_autopilot: true }, { loader_repo: 'AlienXAXS/StarRupture-ModLoader' }, { loader_ref: 'main' }, { loader_ref: '' }]) assert.equal(mark(off), false, JSON.stringify(off));
   assert.equal(mark({}, SR_WATCH_REF), false, 'a run called from sr-watch is never a first publish');
 });
 
-test('first_publish: the plugin-plan step refuses what is not a first publish, a base outside the fork, and a feed that exists', { skip: !bash }, () => {
+test('first_publish: map-mode and push-loader judge the base again, and a first_publish dispatch that is not one stops there', { skip: !bash }, () => {
+  const refuse = job('map-mode');
+  const script = runOf(refuse, 'Refuse a first publish that is not one');
+  assert.match(step(refuse, 'Refuse a first publish that is not one'), /\n {8}if: \$\{\{ inputs\.first_publish == true \}\}\n/);
+  const run = (script, env = {}) => sh(script, tmpdir(), { FIRST_PUBLISH: 'true', LOADER_REPO: 'msantoro12/StarRupture-ModLoader', PUSH_REPO: 'msantoro12/StarRupture-ModLoader', LOADER_REF: 'auto/update-129402-55-1', ...env });
+  assert.equal(run(script).status, 0);
+  assert.equal(run(script, { FIRST_PUBLISH: 'false' }).status, 2, 'the mark did not come out true');
+  assert.equal(run(script, { LOADER_REPO: 'AlienXAXS/StarRupture-ModLoader' }).status, 2);
+  for (const ref of ['main', 'auto/update-1-2', 'auto/update-1-2-3\nmain', 'auto/update-1-2-3\n::warning::x']) assert.equal(run(script, { LOADER_REF: ref }).status, 2, JSON.stringify(ref));
+  const push = job('push-loader');
+  const pushScript = runOf(push, 'Check the first-publish base');
+  assert.match(step(push, 'Check the first-publish base'), /\n {8}if: \$\{\{ needs\.map-mode\.outputs\.first_publish == 'true' \}\}\n/);
+  assert.ok(push.indexOf('- name: Check the first-publish base') < push.indexOf('- name: Check the deploy key'), 'before the deploy key is read');
+  assert.equal(run(pushScript).status, 0);
+  assert.equal(run(pushScript, { LOADER_REPO: 'AlienXAXS/StarRupture-ModLoader' }).status, 2);
+  assert.equal(run(pushScript, { LOADER_REF: 'auto/update-1-2-3\nmain' }).status, 2);
+});
+
+test('first_publish: a refused one never reaches the Steam login, and a second one waits for the first', () => {
+  assert.match(jobIf('check'), /\(inputs\.first_publish != true \|\| needs\.plugin-plan\.result == 'success'\)/);
+  const check = job('check');
+  assert.match(check, /\n {4}needs: \[[^\]]*plugin-plan[^\]]*\]\n/);
+  const co = (inputs, planResult) => evalExpr(jobIf('check'), { needs: { build: { result: 'success' }, 'plugin-plan': { result: planResult } }, inputs: { branch: 'public', ...inputs } });
+  assert.equal(co({ first_publish: true }, 'success'), true);
+  assert.equal(co({ first_publish: true }, 'failure'), false, 'a first publish plugin-plan refused');
+  assert.equal(co({ first_publish: false }, 'failure'), true, 'an ordinary run does not wait on it');
+  // One group for every first publish, held for the whole run; any other run has its own.
+  const group = wf.match(/\nconcurrency:\n {2}group: ([^\n]*)\n {2}cancel-in-progress: false\n/);
+  assert.ok(group, 'a workflow-level concurrency group');
+  assert.match(group[1], /inputs\.first_publish == true && 'sr-first-publish' \|\| format\('sr-run-\{0\}-\{1\}-\{2\}', github\.run_id, github\.run_attempt, inputs\.branch\)/);
+});
+
+test('first_publish: the plugin-plan step refuses what is not a first publish, a base outside the fork, a base without the other build\'s rows, and a feed that exists', { skip: !bash }, () => {
   const script = runOf(job('plugin-plan'), 'Check a first publish');
   assert.match(step(job('plugin-plan'), 'Check a first publish'), /\n {8}if: \$\{\{ inputs\.first_publish == true \}\}\n/);
-  const run = (env = {}, release = '404') => {
+  const header = (cls) => {
+    const m = emptyMap('loader', 127004);
+    addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
+    if (cls.includes(129402)) addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
+    for (const cl of cls) addFunction(m, { key: 'K', kind: 1, cl, pattern: '48 ??', rva: 0x10 });
+    return emit(m);
+  };
+  const both = header([127004, 129402]);
+  const proofOnly = header([127004]);
+  const run = (env = {}, { release = '404', base = both, live = '26271156' } = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'first-publish-'));
     mkdirSync(join(dir, 'bin'));
-    writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash\nr="${release}"\nif [ "$r" = 404 ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi\nif [ "$r" = feed ]; then echo '{"assets":[{"name":"version-map-client.v1.txt"}]}'; exit 0; fi\nif [ "$r" = empty ]; then echo '{"assets":[]}'; exit 0; fi\necho "gh: boom" >&2; exit 1\n`);
+    cpSync(here, join(dir, 'tool', 'ci'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
+    mkdirSync(join(dir, 'tool', '.github', 'sr-pipeline'), { recursive: true });
+    writeFileSync(join(dir, 'tool', '.github', 'sr-pipeline', 'poll-steam.mjs'), "console.error('live read: ' + process.argv.slice(2).join(' '));\nconsole.log(process.argv[3] === 'public' ? '25646882' : process.env.STUB_LIVE);\n");
+    writeFileSync(join(dir, 'base.src'), base);
+    writeFileSync(join(dir, 'bin', 'gh'), '#!/bin/bash\nr="' + release + '"\nif [ "$2" = -H ]; then cat base.src; exit 0; fi\nif [ "$r" = 404 ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi\nif [ "$r" = feed ]; then echo \'{"assets":[{"name":"version-map-client.v1.txt"}]}\'; exit 0; fi\nif [ "$r" = empty ]; then echo \'{"assets":[]}\'; exit 0; fi\necho "gh: boom" >&2; exit 1\n');
     chmodSync(join(dir, 'bin', 'gh'), 0o755);
-    return sh(script, dir, { PATH: join(dir, 'bin') + delimiter + process.env.PATH, BRANCH: 'public', MAP_MODE: 'true', PUBLISH: 'true', PROOF: 'false', TEST_RUN: 'false', LOADER_REPO: 'msantoro12/StarRupture-ModLoader', LOADER_REF: 'auto/update-129402-55-1', GH_TOKEN: 'x', GH_REPO: 'o/r', ...env });
+    return sh(script, dir, { PATH: join(dir, 'bin') + delimiter + process.env.PATH, BRANCH: 'public', MAP_MODE: 'true', PUBLISH: 'true', PROOF: 'false', TEST_RUN: 'false', LOADER_REPO: 'msantoro12/StarRupture-ModLoader', LOADER_REF: 'auto/update-129402-55-1', BUILDID: '', OTHER_BUILDID: '', STUB_LIVE: live, GH_TOKEN: 'x', GH_REPO: 'o/r', ...env });
   };
-  assert.equal(run().status, 0, 'no release yet');
-  assert.equal(run({}, 'empty').status, 0, 'a release without a feed');
+  const good = run();
+  assert.equal(good.status, 0, good.stdout + good.stderr);
+  assert.match(good.stdout, /The base holds 1 function rows for CL-129402/);
+  assert.match(good.stderr, /live read: --live-buildid public_test_branch/, 'the other branch\'s live id is read when the dispatch names none');
+  assert.equal(run({}, { release: 'empty' }).status, 0, 'a release without a feed');
+  assert.equal(run({ OTHER_BUILDID: '26271156', BUILDID: '25646882' }, { live: '' }).status, 0, 'the inputs are used and Steam is not asked');
   for (const env of [{ BRANCH: 'public_test_branch' }, { MAP_MODE: 'false' }, { PUBLISH: 'false' }, { PROOF: 'true' }, { TEST_RUN: 'true' }]) {
     const r = run(env);
     assert.equal(r.status, 2, JSON.stringify(env));
     assert.match(r.stdout, /first_publish needs branch public, map_mode and publish on, proof_run and test_autopilot off/);
   }
   assert.equal(run({ LOADER_REPO: 'AlienXAXS/StarRupture-ModLoader' }).status, 2, 'only the fork');
-  for (const ref of ['main', 'auto/update-129402', 'auto/update-129402-55-1-x', 'feat/x']) assert.equal(run({ LOADER_REF: ref }).status, 2, ref);
-  const have = run({}, 'feed');
+  // The whole value must match: a newline cannot carry a second line past the pattern, and nothing is echoed back.
+  for (const ref of ['main', 'auto/update-129402', 'auto/update-129402-55-1-x', 'feat/x', 'main\nauto/update-1-2-3', 'auto/update-1-2-3\n::warning::x', 'auto/update-1-2-3\n']) {
+    const r = run({ LOADER_REF: ref });
+    assert.equal(r.status, 2, JSON.stringify(ref));
+    assert.ok(!r.stdout.includes('::warning::x'), 'the value is not echoed');
+  }
+  const have = run({}, { release: 'feed' });
   assert.equal(have.status, 2);
   assert.match(have.stdout, /vmap-feed release already carries a feed/);
-  assert.equal(run({}, 'err').status, 2, 'an unreadable release is not a 404');
+  assert.equal(run({}, { release: 'err' }).status, 2, 'an unreadable release is not a 404');
+  // B1: a base that has no rows for the other branch's live build (a proof-run branch of CL-127004 only) is refused, with the reason.
+  const proof = run({}, { base: proofOnly });
+  assert.equal(proof.status, 2);
+  assert.match(proof.stdout, /first_publish is refused: the base branch has no build row for build 26271156, the build the other Steam branch runs now/);
+  // A build row without function rows is no base either.
+  const noRows = (() => { const m = parse(both, 'x'); m.functions = m.functions.filter((r) => r.cl !== 129402); return emit(m); })();
+  const bare = run({}, { base: noRows });
+  assert.equal(bare.status, 2);
+  assert.match(bare.stdout, /holds no function rows for CL-129402/);
+  // Both branches on one build: the feed would carry one build.
+  const same = run({ OTHER_BUILDID: '25646882', BUILDID: '25646882' });
+  assert.equal(same.status, 2);
+  assert.match(same.stdout, /run the same build/);
+  // An unreadable live id stops it too.
+  assert.equal(run({}, { live: '' }).status, 2, 'no live id');
+});
+
+test('first_publish: map-mode proves the other build twice, before anything is exported and again on the signed feed', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  const first = mm.indexOf('if [ "$FIRST_PUBLISH" = true ]; then\n            [ -n "$other_cl" ] ||');
+  assert.ok(first > 0 && first < mm.indexOf('node tool/ci/version-map.mjs export-feed'), 'before the export');
+  const second = mm.indexOf('[ -n "$other_cl" ] && [ "$other_cl" != "$cl" ] ||');
+  assert.ok(second > mm.indexOf('feed.test-signed.txt'), 'again on the feed signed with the TEST key');
+  assert.ok(mm.includes(`' "$cl" "$other_cl"`), 'the feed is checked for the other branch\'s CL, not the header\'s built CL (the same on every branch)');
+  // The proof block, run against headers.
+  const start = mm.indexOf('          if [ "$FIRST_PUBLISH" = true ]; then\n            [ -n "$other_cl" ] ||');
+  const end = mm.indexOf('          fi\n', start) + '          fi\n'.length;
+  const block = mm.slice(start, end).replace(/^ {10}/gm, '');
+  const header = (cls) => {
+    const m = emptyMap('loader', 127004);
+    addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
+    if (cls.includes(129402)) addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
+    for (const cl of cls) addFunction(m, { key: 'K', kind: 1, cl, pattern: '48 ??', rva: 0x10 });
+    return emit(m);
+  };
+  const runWith = ({ cls, otherCl, cl = '127004' }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'first-proof-'));
+    cpSync(here, join(dir, 'tool', 'ci'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
+    writeFileSync(join(dir, 'h.h'), header(cls));
+    return sh('set -euo pipefail\nheader=h.h\nother_buildid=26271156\nother_cl="' + otherCl + '"\ncl="' + cl + '"\n' + block + 'echo proved', dir, { FIRST_PUBLISH: 'true' });
+  };
+  assert.equal(runWith({ cls: [127004, 129402], otherCl: '129402' }).status, 0);
+  const none = runWith({ cls: [127004], otherCl: '' });
+  assert.equal(none.status, 2, 'a 127004-only proof branch has no row for the other build');
+  assert.match(none.stdout, /first_publish is refused: the base header has no build row for build 26271156/);
+  const same = runWith({ cls: [127004, 129402], otherCl: '127004' });
+  assert.equal(same.status, 2);
+  assert.match(same.stdout, /run the same CL-127004/);
+  const bare = runWith({ cls: [127004], otherCl: '129402' });
+  assert.equal(bare.status, 2);
+  assert.match(bare.stdout, /holds no function rows for CL-129402/);
+});
+
+test('first_publish: the feed is uploaded without --clobber, so a feed that is there is never replaced; any other publish replaces it', { skip: !bash }, () => {
+  const upload = (first) => {
+    const fx = publishFixture();
+    writeFileSync(join(fx.dir, 'last-seq.txt'), '0\n');
+    const r = runPublishStep(fx, 'Sign with the release key, verify, publish', { FIRST_PUBLISH: first });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    return callsOf(fx.dir).filter((c) => c.startsWith('gh release upload vmap-feed version-map-client.v1.txt'));
+  };
+  assert.deepEqual(upload('true'), ['gh release upload vmap-feed version-map-client.v1.txt']);
+  assert.deepEqual(upload('false'), ['gh release upload vmap-feed version-map-client.v1.txt --clobber']);
 });
 
 test('first_publish: the publish job never reads the autopilot, refuses a chain mark that disagrees, and refuses when a feed is published', { skip: !bash }, () => {
@@ -2766,13 +2890,14 @@ test('first_publish: the publish job never reads the autopilot, refuses a chain 
 });
 
 test('feed gate: two legs, the CL the run checked and the CL of the other branch; any failed leg fails the gate, a skipped leg does not', { skip: !bash }, () => {
-  const one = feedJudgeRun({ BRANCH_NAME: 'public', OTHER_NAME: 'public_test_branch', OTHER_STATE: 'RUN', OTHER_CL: '129402', OTHER_RIG_RESULT: 'success', OTHER_RIG_VERDICT: 'PASS' });
+  const one = feedJudgeRun({ OTHER_STATE: 'RUN', OTHER_CL: '129402', OTHER_RIG_RESULT: 'success', OTHER_RIG_VERDICT: 'PASS' });
   assert.deepEqual([one.status, one.state], [0, 'PASS']);
-  assert.match(one.reason, /public: .*CL-130001.*; public_test_branch: .*CL-129402/);
-  const bad = feedJudgeRun({ BRANCH_NAME: 'public', OTHER_NAME: 'public_test_branch', OTHER_STATE: 'RUN', OTHER_CL: '129402', OTHER_RIG_RESULT: 'failure', OTHER_RIG_VERDICT: 'FAIL', OTHER_RIG_REASON: 'no rows for CL-129402' });
+  assert.match(one.reason, /CL-130001: .*CL-130001.*; CL-129402: .*CL-129402/);
+  assert.ok(!/public/.test(one.reason), 'a leg is named by its CL, never by a Steam branch');
+  const bad = feedJudgeRun({ OTHER_STATE: 'RUN', OTHER_CL: '129402', OTHER_RIG_RESULT: 'failure', OTHER_RIG_VERDICT: 'FAIL', OTHER_RIG_REASON: 'no rows for CL-129402' });
   assert.deepEqual([bad.status, bad.state], [1, 'FAIL']);
-  assert.match(bad.reason, /public_test_branch: no rows for CL-129402/);
-  const skipped = feedJudgeRun({ BRANCH_NAME: 'public', OTHER_NAME: 'public_test_branch', OTHER_STATE: 'SKIP', OTHER_REASON: 'CL-129402 is already in the compiled map of v9.9.9' });
+  assert.match(bad.reason, /CL-129402: no rows for CL-129402/);
+  const skipped = feedJudgeRun({ OTHER_STATE: 'SKIP', OTHER_REASON: 'CL-129402 is already in the compiled map of v9.9.9' });
   assert.deepEqual([skipped.status, skipped.state], [0, 'PASS'], 'the checked leg passed, the other leg has nothing to test');
   const both = feedJudgeRun({ PLAN_STATE: 'SKIP', PLAN_REASON: 'a', OTHER_STATE: 'SKIP', OTHER_REASON: 'b' });
   assert.equal(both.state, 'SKIP');

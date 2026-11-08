@@ -224,7 +224,7 @@ test('the ini switches: no auto-update, INFO logging, no UI', () => {
   assert.match(launch, /New-IniText/);
 });
 
-test('launch: steamcmd beta branch verified, firewall, app id, args, and the retry rule', () => {
+test('launch: steamcmd branch verified, firewall, app id, args, and the retry rule', () => {
   assert.match(launch, /-beta/);
   assert.match(launch, /BetaKey/);
   assert.match(launch, /New-NetFirewallRule[^\n]*-Direction Outbound -Action Block -Program/);
@@ -563,7 +563,7 @@ test('rig set: a plugin of another author without a reviewed pin, or with a malf
   assert.equal(resolveWithMock('-Branch public').r.status, 0);
 });
 
-test('rig set: expect_refused MiniMap is accepted for the test branch, and a tag override can only name the reviewed release', (t) => {
+test('rig set: expect_refused MiniMap is accepted for the branch that runs CL-129402, and a tag override can only name the reviewed release', (t) => {
   const out = resolveWithMock(`-Branch public_test_branch -ExpectRefused 'MiniMap' -Tags 'MiniMap=${PIN_TAG}'`);
   if (!out) return t.skip('no PowerShell on this machine');
   assert.equal(out.r.status, 0, out.text);

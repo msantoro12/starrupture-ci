@@ -91,7 +91,7 @@ node ci/version-map.mjs export-feed <header> --out <file>
   verified `add-function` of the same kind replaces it, and `add-absent` never
   replaces a verified row.
 - `replace-build` records a new exe for a CL already in the table (the same CL
-  rebuilt, as a beta's public rebuild may be) and drops every row of that CL,
+  rebuilt, as a rebuild on public may be) and drops every row of that CL,
   so each is verified again on the new exe and added back.
 - `remove-key` drops a key's rows on every build and every `fp`: the way out of
   an orphan after the code renames or drops a hookName or field.
