@@ -2703,7 +2703,7 @@ jobs:
             const r = read("res/result.json");
             put("g1.json", { ok: process.env.BUILD_RESULT === "success" });
             put("g2.json", { ok: r.checks?.fail === false });
-            // A proof run measures the CL the header was built for again: G3 passes the same CL then.
+            // A proof run measures a CL the header already maps again: G3 passes it then.
             put("g3.json", { ok: true, cl, previousCl, ...(process.env.PROOF === "true" ? { proof: true } : {}) });
             // The plugin verdicts: decide holds on any plugin the loader would refuse.
             put("plugins.json", r.plugins ?? { error: "the client check wrote no plugin verdicts" });

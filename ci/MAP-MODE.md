@@ -750,7 +750,7 @@ A proof run of this path (dispatch only, publish off) can name `feed_loader_ref`
 for example a branch without public's rows, so the feed is their only source. It is refused
 with `publish` on or a name that is not a plain branch, and `sr-watch` cannot set it.
 
-`proof_run` (dispatch only, `public` with `publish` and `test_autopilot` off, else map mode refuses it) carries the CL public already runs, which the header already maps, through the whole chain: G3 passes the same CL, its field rows take the build as its own reference, the candidate goes to `auto/update-<CL>-<run>-<attempt>` (never the plain name), both rigs, the rig gate and the feed path run, nothing is added to `state/public-builds.json`, and the run is marked a test, so it never publishes.
+`proof_run` (dispatch only, `public` with `publish` and `test_autopilot` off, else map mode refuses it) carries the CL public already runs, which the header already maps, through the whole chain: G3 passes the same CL, its field rows take the build as its own reference, the candidate goes to `auto/update-<CL>-<run>-<attempt>` (never the plain name), both rigs and the rig gate run, nothing is added to `state/public-builds.json`, and the run is marked a test, so it never publishes. The push needs the candidate to differ from the loader's header (it adds the CL's field rows while the header lacks them). The feed-path rig runs only when the feed adds or changes rows over the loader it builds: pair `proof_run` with `feed_loader_ref` (a branch without the CL's rows) to be sure it runs.
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 `sr-watch.yml`) is the unattended path M on one build. It reads only the check

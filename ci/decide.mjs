@@ -52,7 +52,8 @@
 // Gate result shapes:
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
-//           ("proof": true, an owner's proof run only: the same CL again passes; an older one still holds)
+//           ("proof": true, an owner's proof run only: it re-runs a CL the header already maps, which the
+//           client check verified, so any CL passes)
 //   G4:     the raw `sr-aobscan --json` output of the CLIENT exe (target "client"). The
 //           client check alone decides: a dedicated server build, when one exists for the
 //           CL, is scanned for information only and is never a gate. G4 must hold one
@@ -131,7 +132,7 @@ function checkG3(loaded) {
   if (v.ok !== true) return { error: 'G3: gate did not pass (ok is not true)' };
   if (!isCl(v.cl)) return { error: 'G3: cl is missing or not a plain number' };
   if (!isCl(v.previousCl)) return { error: 'G3: previousCl is missing or not a plain number' };
-  if (Number(v.cl) < Number(v.previousCl) || (Number(v.cl) === Number(v.previousCl) && v.proof !== true)) {
+  if (v.proof !== true && Number(v.cl) <= Number(v.previousCl)) {
     return { error: `G3: CL-${v.cl} is not newer than CL-${v.previousCl}` };
   }
   return { cl: v.cl };
