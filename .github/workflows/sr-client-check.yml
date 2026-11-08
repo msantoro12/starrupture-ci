@@ -295,7 +295,7 @@ env:
   # branches use headers, plugin_presets.h among them, that only that branch has). Move it with
   # sr-update's pin, never alone. Only the MiniMap key-scan recipe names another (see key-sources-plan).
   KEY_SDK_REPO: msantoro12/StarRupture-Plugin-SDK
-  KEY_SDK_REF: daec5d40844a52009bc00d8e0d9aaeef49b8c6ce
+  KEY_SDK_REF: ade390f06af5f99bc643a26cf76bfddd224f5249
 
 jobs:
   # ---- sr-aobscan, built from the loader's live patterns (no secrets) ------
