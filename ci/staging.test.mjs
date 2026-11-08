@@ -214,6 +214,21 @@ test('a branch that holds another tree is never overwritten: the push goes to a 
   assert.deepEqual(refs(f), ['refs/heads/auto/update-129402', 'refs/heads/auto/update-129402-78-2', 'refs/heads/main']);
 });
 
+test('a proof run pushes only the run-suffixed name, never the plain auto/update-<CL>', () => {
+  const f = fork();
+  const r = push(f, { proof: true, runId: 78, runAttempt: 2 });
+  assert.equal(r.pushed, true);
+  assert.equal(r.branch, 'auto/update-129402-78-2');
+  assert.deepEqual(refs(f), ['refs/heads/auto/update-129402-78-2', 'refs/heads/main'], 'the plain name stays free for the unattended chain');
+  // The same rows again are found there; other rows have nowhere to go.
+  assert.equal(push(f, { proof: true, runId: 78, runAttempt: 2 }).pushed, false);
+  assert.throws(() => push(f, { proof: true, runId: 78, runAttempt: 2, header: f.header('rows C\n') }), /auto\/update-129402-78-2 exists with another tree/);
+  // A proof run never takes the plain name, even when it is free and holds the same tree.
+  const g = fork();
+  push(g, { header: g.header('same\n') });
+  assert.equal(push(g, { proof: true, header: g.header('same\n') }).branch, 'auto/update-129402-77-1');
+});
+
 test('git never sees a force, a tag, a delete or a ref outside auto/update-<CL>', () => {
   const f = fork();
   const calls = [];

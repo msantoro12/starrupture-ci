@@ -295,6 +295,13 @@ test('fail closed: G3 CL', () => {
   holds(decide(base({ g3: ok({ ok: true, cl: '127999', previousCl: 'x' }) })), /previousCl/);
 });
 
+test('G3 proof: an owner\'s proof run passes the same CL again, never an older one', () => {
+  assert.equal(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '127004', proof: true }) })).decision, 'M');
+  holds(decide(base({ g3: ok({ ok: true, cl: '120000', previousCl: '127004', proof: true }) })), /not newer/);
+  // Only the boolean: anything else is not a proof run.
+  for (const proof of ['true', 1, false, null]) holds(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '127004', proof }) })), /not newer/);
+});
+
 test('fail closed: G4 must be a consistent client scan; a server scan is never the gate', () => {
   const good = aob([aobRow('GetWorld')]);
   holds(decide(base({ g4: ok({ ...good, target: 'server' }) })), /expected "client"/);
