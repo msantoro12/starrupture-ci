@@ -357,7 +357,7 @@ $szNoRow = Size-Entry 'BetterCheats' 'FMassEntityManager' $null $null $null 'no-
 $szReflOnly = Size-Entry 'Compass' 'FCrPlayerPersonalMarkerData' $null $null 40 'reflected-only'
 $missRow = '{ "name": "Fname_AppendString", "module": "StarRuptureGameSteam-Win64-Shipping.exe", "pattern": "48 89 5C 24 ?? 57", "required": REQ, "found": false }'
 $uiOffErr = "[19:00:31.326] [ERROR] [T:02032] [Plugin:MiniMap] $uiOffText"
-$tb = 'cl-129402'
+$tb = 'test-branch'
 $rigCases = [ordered]@{
  # The two real runs: both must pass
  'cl-129402 real'           = @{ Run = $tb;      Mut = { param($c) } }
