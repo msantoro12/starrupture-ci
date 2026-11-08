@@ -132,7 +132,7 @@ test('report and alert state the real cause, and say how to check the build agai
 
 test('map mode: runs only on a successful check, and names the cause when there is no scanner result', () => {
   const mm = job(check, 'map-mode');
-  assert.match(mm, /\n {4}if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' && \(needs\.record-public\.result == 'success' \|\| needs\.record-public\.result == 'skipped'\) \}\}\n/);
+  assert.match(mm, /\n {4}if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' \}\}\n/);
   const write = step(mm, 'Write the update into the header');
   const guard = write.indexOf('if [ ! -f res/scanner.json ]; then');
   assert.ok(guard > 0, 'guards the scanner result');

@@ -1,20 +1,20 @@
 #!/usr/bin/env node
-// PTR staging, dry-run form (version-map step 45, design R5 "PTR staging").
+// Staging, dry-run form (version-map step 45, design R5 "staging").
 //
 //   node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
 //   node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
 //   node ci/staging.mjs target --repo <owner/name> --plan <stage-plan.json>      (the allowlist check alone)
 //   node ci/staging.mjs push --repo <owner/name> --plan <stage-plan.json> --build <build.json> --header <file> \
-//        --checkout <dir> --run-id <id> --run-attempt <n> [--proof true]      (the push job of sr-client-check.yml only)
+//        --checkout <dir> --run-id <id> --run-attempt <n> [--proof true] [--first-publish true]      (the push job of sr-client-check.yml only)
 //
-// A beta build that passed the chain is staged: its map rows sit on the loader
+// A build not on public yet that passed the chain is staged: its map rows sit on the loader
 // fork's `auto/update-<CL>` (a newer build at the same CL gets `-<run>`, so
 // nothing is force-pushed), the commit message carries the record, and
 // state/staged.json is the readable index of those branches. The index holds
 // pointers only; the rows live in the header.
 //
 // A build first seen on `public` is pushed the same way (its rows need a candidate
-// loader and a rig run too) but is not staged: there is no beta to promote it from,
+// loader and a rig run too) but is not staged: there is no staged build to promote it from,
 // so it gets a record naming only the public exe and no entry in the index.
 //
 // Nothing is signed or published while a CL is test-only. That is built in, not
@@ -24,7 +24,7 @@
 //
 // <build.json>:
 //   { cl, branch, buildid, productVersion, exeSha256, imageStamp, size, run,
-//     scans: [{ exe, buildid, ok }],          // the beta exe AND the public exe (public: just that one)
+//     scans: [{ exe, buildid, ok }],          // the staged exe AND the public exe (public: just that one)
 //     repo: { sha, tree, verdict } }          // the loader fork's data commit
 // <branches.json> (rederive): [{ ref, sha, tree, message }], the fork's
 // `auto/update-*` branches with their commit messages.
@@ -157,10 +157,13 @@ const defaultGit = (args, { cwd } = {}) => execFileSync('git', args, { cwd, enco
 // header from) that changes only HEADER_PATH, and pushes it as plan.branch, or as plan.branch
 // with the run id when that branch exists with another tree. A proof run (proof: true) only ever
 // takes the run-suffixed name, so it never writes the plain auto/update-<CL>. opts: { repo, plan,
-// build, header, checkout, runId, runAttempt, proof?, url? }; git is replaceable for tests.
+// build, header, checkout, runId, runAttempt, proof?, firstPublish?, url? }; git is replaceable for tests.
+// A first publish (firstPublish: true, with proof: true) whose candidate header is the base's own
+// header has nothing to commit: its base is a branch of the fork already, so the base commit is the
+// candidate (branch '', pushed false). Any other run with no rows to push is refused.
 // Returns { branch, sha, tree, pushed }.
 export function pushLoader(opts, git = defaultGit) {
-  const { repo, plan, build, header, checkout, runId, runAttempt, proof = false } = opts;
+  const { repo, plan, build, header, checkout, runId, runAttempt, proof = false, firstPublish = false } = opts;
   need(plan && plan.repo === LOADER_REPO && typeof plan.branch === 'string' && typeof plan.message === 'string', 'the stage plan holds no loader branch and message');
   checkTarget(repo, plan.branch);
   need(/^[0-9]+$/.test(String(runId)) && /^[0-9]+$/.test(String(runAttempt)), 'run id and attempt must be numeric');
@@ -171,6 +174,7 @@ export function pushLoader(opts, git = defaultGit) {
   copyFileSync(header, `${checkout}/${HEADER_PATH}`);
   g('add', '--', HEADER_PATH);
   const changed = g('diff', '--cached', '--name-only').split('\n').filter(Boolean);
+  if (firstPublish && changed.length === 0) return { branch: '', sha: build.repo.sha, tree: build.repo.tree, pushed: false };
   need(changed.length > 0, 'the candidate header equals the loader header; there are no rows to push');
   need(changed.length === 1 && changed[0] === HEADER_PATH, `the commit would change more than the header: ${changed.join(', ')}`);
   g('-c', 'user.name=github-actions[bot]', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com', 'commit', '-q', '-m', plan.message);
@@ -221,8 +225,8 @@ export function main(argv) {
       return 0;
     }
     if (cmd === 'push' && o.repo && o.plan && o.build && o.header && o.checkout && o['run-id'] && o['run-attempt']) {
-      const r = pushLoader({ repo: o.repo, plan: readJson(o.plan), build: readJson(o.build), header: o.header, checkout: o.checkout, runId: o['run-id'], runAttempt: o['run-attempt'], proof: o.proof === 'true' });
-      process.stderr.write(r.pushed ? `pushed ${r.branch} at ${r.sha} to ${o.repo}\n` : `${r.branch} already holds this tree at ${r.sha}; nothing to push\n`);
+      const r = pushLoader({ repo: o.repo, plan: readJson(o.plan), build: readJson(o.build), header: o.header, checkout: o.checkout, runId: o['run-id'], runAttempt: o['run-attempt'], proof: o.proof === 'true', firstPublish: o['first-publish'] === 'true' });
+      process.stderr.write(r.pushed ? `pushed ${r.branch} at ${r.sha} to ${o.repo}\n` : r.branch === '' ? `the candidate header is the base header; the base commit ${r.sha} is the candidate\n` : `${r.branch} already holds this tree at ${r.sha}; nothing to push\n`);
       process.stdout.write(`branch=${r.branch}\nsha=${r.sha}\n`);
       return 0;
     }
@@ -235,7 +239,7 @@ export function main(argv) {
     process.stderr.write(`refused: ${e.message}\n`);
     return 3;
   }
-  process.stderr.write('usage: staging.mjs stage --build <f> --index <f> [--branches <f>] [--out <f>]\n       staging.mjs rederive --branches <f> --out <f>\n       staging.mjs target --repo <owner/name> --plan <f>\n       staging.mjs push --repo <owner/name> --plan <f> --build <f> --header <f> --checkout <dir> --run-id <n> --run-attempt <n> [--proof true]\n');
+  process.stderr.write('usage: staging.mjs stage --build <f> --index <f> [--branches <f>] [--out <f>]\n       staging.mjs rederive --branches <f> --out <f>\n       staging.mjs target --repo <owner/name> --plan <f>\n       staging.mjs push --repo <owner/name> --plan <f> --build <f> --header <f> --checkout <dir> --run-id <n> --run-attempt <n> [--proof true] [--first-publish true]\n');
   return 2;
 }
 

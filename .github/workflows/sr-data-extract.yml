@@ -27,7 +27,7 @@ name: SR data extract
 #     STEAM_CI_USERNAME, STEAM_CI_LOGIN_CACHE
 #   outputs
 #     artifact_name  sr-data-<branch>-<buildid>, or empty if nothing was uploaded. The branch
-#                    is in the name because a build promoted from the test branch to public
+#                    is in the name because a build promoted from another branch to public
 #                    keeps its build id: a consumer dedupes on branch + buildid.
 #     status         ok | login-failed | usmap-failed | cleanup-failed | extract-failed.
 #                    login-failed: Steam did not accept the saved CI login (rejected,

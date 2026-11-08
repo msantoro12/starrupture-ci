@@ -60,7 +60,7 @@ node ci/version-map.mjs replace-build <header> --cl <CL> --stamp <hex> --size <h
 node ci/version-map.mjs remove-key <header> --key <key>
 node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
 node ci/version-map.mjs check <header> [--keys <keys.txt>]...
-node ci/version-map.mjs export-feed <header> --out <file> [--public-builds <state/public-builds.json>]
+node ci/version-map.mjs export-feed <header> --out <file>
 ```
 
 - `init` writes an empty map and refuses to overwrite a file. `--built-cl` is
@@ -91,7 +91,7 @@ node ci/version-map.mjs export-feed <header> --out <file> [--public-builds <stat
   verified `add-function` of the same kind replaces it, and `add-absent` never
   replaces a verified row.
 - `replace-build` records a new exe for a CL already in the table (the same CL
-  rebuilt, as a beta's public rebuild may be) and drops every row of that CL,
+  rebuilt, as a rebuild on public may be) and drops every row of that CL,
   so each is verified again on the new exe and added back.
 - `remove-key` drops a key's rows on every build and every `fp`: the way out of
   an orphan after the code renames or drops a hookName or field.
@@ -101,9 +101,9 @@ node ci/version-map.mjs export-feed <header> --out <file> [--public-builds <stat
   below and prints one line per problem. `--keys` may be given once per tracked
   component; the rule then runs over the union of the lists.
 - `export-feed` writes the loader map as the feed (below) to `--out`, which must
-  not be the header. With `--public-builds` it writes only the CLs on the public
-  builds list (below) and prints each CL it left out with its row count; it refuses
-  when the list cannot be read or the header has no row for the current public CL.
+  not be the header. Every CL in the header goes into the feed, and a feed over
+  the size cap (`FEED_MAX_BYTES`, half of the 1 MiB every loader accepts) is refused
+  with its size.
 
 Exit codes: 0 ok; 3 `check` found a coverage problem; 2 usage error, a header off
 the format, or a conflicting row. A command that fails leaves the header alone.
@@ -290,36 +290,6 @@ field	ACrCharacterPlayerBase::ADSMoveSpeed	128786	0x13C8	0x4	0x00	ADSMoveSpeedSc
 `parseFeed` reads a feed back strictly: any line off the format is
 an error, a scoped row with no `fp` or with 0 included, and the map it reads
 must export to the same bytes.
-
-## The public builds list
-
-The feed only carries builds that are on public. The one list of those is
-`state/public-builds.json` on `main` of this repository, which anyone can read, with no login, at
-
-```
-https://raw.githubusercontent.com/msantoro12/starrupture-ci/main/state/public-builds.json
-```
-
-```json
-[
-  { "cl": 127004, "buildid": "25646882", "firstSeen": "2026-10-29T21:15:50Z" }
-]
-```
-
-- The file is a JSON array with one entry per build that went onto Steam's public branch: its CL (a whole number), its
-  Steam build id (a string) and the UTC time we first saw it there (`YYYY-MM-DDTHH:MM:SSZ`).
-- The list only grows, at the end. An entry is never edited or removed, and times never go
-  backwards down the file. When public goes back to an older build, that build is added
-  again as a new last entry.
-- **Which CLs may be in a feed:** every CL in the list. **Public's current CL** is the
-  last entry. Rows for any other CL (the build row and every function, field and size row
-  of it) are left out of the feed.
-- A list that is missing, cannot be read, is empty or is off this format is an error, and
-  nothing is exported or released. A header with no build row for the current public CL
-  is also refused, because that feed would not cover the build players run.
-- `ci/public-builds.mjs` reads and checks the list (`node ci/public-builds.mjs <file>`
-  prints the current CL); `export-feed --public-builds` uses it. A check that wants the
-  same rule elsewhere fetches the URL above and applies the points above.
 
 ## What never goes in
 

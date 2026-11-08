@@ -61,7 +61,7 @@ test('a different CL runs the normal flow with the staged exe as a second refere
   assert.doesNotMatch(text, /would sign/);
 });
 
-test('a superseded staged CL is listed and skipped, a newer PTR CL stays staged', () => {
+test('a superseded staged CL is listed and skipped, a newer CL stays staged', () => {
   const index = stagedIndex(build(), build({ cl: 128900, buildid: '26300000', run: 9 }), build({ cl: 128950, branch: 'beta_two', buildid: '26400000', run: 11, scans: [{ exe: 'beta_two', buildid: '26400000', ok: true }, { exe: 'public', buildid: '25646882', ok: true }] }));
   const r = plan(inputs({ index, pub: flip({ cl: 128900, buildid: '26300000' }) }));
   const text = r.lines.join('\n');

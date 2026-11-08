@@ -302,6 +302,26 @@ test('G3 proof: an owner\'s proof run passes a CL already mapped, the built one 
   for (const proof of ['true', 1, false, null]) holds(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '127004', proof }) })), /not newer/);
 });
 
+test('first publish: it passes a CL that is not newer and skips the autopilot, only with the flag and the G3 mark together', () => {
+  const g3 = (over = {}) => ok({ ok: true, cl: '127004', previousCl: '127004', firstPublish: true, ...over });
+  const off = ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 });
+  // The bypass is the run's own: the flag and the mark, with the autopilot off and the CL not newer.
+  const fp = decide(base({ firstPublish: true, g3: g3(), autopilot: off }));
+  assert.equal(fp.decision, 'M');
+  assert.equal(fp.firstPublish, true);
+  // The mark without the flag, or the flag without the mark, bypasses nothing.
+  holds(decide(base({ g3: g3() })), /not newer/);
+  holds(decide(base({ firstPublish: true, g3: g3({ firstPublish: undefined }) })), /not newer/);
+  for (const firstPublish of ['true', 1, false, null]) holds(decide(base({ firstPublish: true, g3: g3({ firstPublish }) })), /not newer/);
+  // Without the flag the autopilot still holds a run.
+  holds(decide(base({ g3: ok({ ok: true, cl: '127999', previousCl: '127004' }), autopilot: off })), /autopilot/);
+  // The rest of the gates apply as always: a failed check or a missing G3 still holds it.
+  holds(decide(base({ firstPublish: true, g3: g3(), autopilot: off, g1: ok({ ok: false }) })), /./);
+  holds(decide(base({ firstPublish: true, g3: g3(), autopilot: off, g4: ok(aob([aobRow('GetWorld', 'MISSING')])) })), /./);
+  // Never a test run.
+  holds(decide(base({ firstPublish: true, testAutopilot: true, g3: g3() })), /never a test run/);
+});
+
 test('fail closed: G4 must be a consistent client scan; a server scan is never the gate', () => {
   const good = aob([aobRow('GetWorld')]);
   holds(decide(base({ g4: ok({ ...good, target: 'server' }) })), /expected "client"/);
@@ -471,6 +491,21 @@ test('cli: exit 1 for a path C hold and for an unverified SDK global', () => {
   const g = runCli(cliFiles({ g4: aob([aobRow('GetWorld')], { noGlobals: true }) }));
   assert.equal(g.status, 1);
   assert.match(g.out.reasons.join(), /SDK global/);
+});
+
+test('cli: --first-publish decides M with the autopilot file off and leaves that file untouched; without it the same files HOLD', () => {
+  const off = { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 };
+  const files = cliFiles({ autopilot: off, g3: { ok: true, cl: '127004', previousCl: '127004', firstPublish: true } });
+  const plain = runCli(files);
+  assert.equal(plain.status, 1);
+  assert.equal(plain.out.decision, 'HOLD');
+  const fp = runCli(files, ['--first-publish']);
+  assert.equal(fp.status, 0);
+  assert.equal(fp.out.decision, 'M');
+  assert.equal(fp.out.firstPublish, true);
+  assert.deepEqual(JSON.parse(readFileSync(join(fp.dir, 'autopilot.json'), 'utf8')), off, 'state/autopilot.json is read by nobody and written by nobody');
+  // Never with a test run.
+  assert.notEqual(runCli(files, ['--first-publish', '--test-autopilot']).status, 0);
 });
 
 test('cli: an input that is a directory is a HOLD', () => {
@@ -724,7 +759,7 @@ test('M: a key gone on the new build is a note naming the plugin', () => {
   assert.match(r.notes.join(' '), /1 member\(s\) gone on CL-127999, each an absent row.*UFoo::Gone \(BetterCheats\)/);
 });
 
-// ------------------------------------------------------------ map run 3 (CL-129402, test branch)
+// ------------------------------------------------------------ map run 3 (CL-129402)
 // The real probe files of the third map run: the per-plugin verdict rows of BetterCheats and MiniMap
 // (the client check's plugins.json) and the field-rows report the same run wrote (the candidate map's rows).
 
@@ -874,12 +909,12 @@ test("cli: the decision names the plugins the rig must expect refused, in the ri
 // ------------------------------------------------------------ leg C2: expected refusals on the other branch
 // The rig of the other Steam branch declares what the loader's own rule predicts for the build that
 // branch runs (--other-cl), from the plugin metadata this check scanned. MiniMap is interface v70, made
-// for CL-127004: refused on CL-129402 (the test branch), loaded on CL-127004 (public).
+// for CL-127004: refused on CL-129402, loaded on CL-127004.
 
 const PUBLIC_CL = { g3: ok({ ok: true, cl: '127004', previousCl: '126000' }) };
 const v = (name, interfaceVersion, gameBuild, extra = {}) => ({ name, verdict: 'PASS', plugin: { interfaceVersion, gameBuild, hasLoadHooks: true }, ...extra });
 
-test('other branch: a public check while the test branch is on CL-129402 declares MiniMap for the other rig', () => {
+test('other branch: a public check while the other branch is on CL-129402 declares MiniMap for the other rig', () => {
   const r = decide(run3Inputs({ ...PUBLIC_CL, otherCl: 129402 }));
   assert.deepEqual(r.expectRefused, [], 'nothing is refused on the build this check is for');
   assert.deepEqual(r.expectRefusedOther, ['MiniMap']);
@@ -888,7 +923,7 @@ test('other branch: a public check while the test branch is on CL-129402 declare
   assert.ok(!r.expectRefusedOther.includes('BetterCheats'));
 });
 
-test('other branch: a test-branch check declares nothing for public, where MiniMap loads', () => {
+test('other branch: a check of the other branch declares nothing for public, where MiniMap loads', () => {
   const r = decide(run3Inputs({ otherCl: 127004 }));
   assert.deepEqual(r.expectRefused, ['MiniMap'], 'refused on the build this check is for');
   assert.deepEqual(r.expectRefusedOther, [], 'public is strict: nothing is expected refused there');
@@ -1061,7 +1096,7 @@ test('cli: --rig-plugins feeds the lists, and a missing or broken file declares 
   assert.deepEqual(runCli(files).out.expectRefused, [], 'no flag: no file given');
 });
 
-// ------------------------------------------------------------ live run 1 (run 42393906454, CL-129402, test branch)
+// ------------------------------------------------------------ live run 1 (run 42393906454, CL-129402)
 // The real rig-plugins.json of that run: AlienX's Latest releases are interface v75, made on CL-127004, and the
 // candidate loader (gss/loader-work) accepts [70, 74], so the scanner gave REFUSED for nine of them; MiniMap v1.2.0
 // is v70, refused off CL-127004 by the loader's own rule.
