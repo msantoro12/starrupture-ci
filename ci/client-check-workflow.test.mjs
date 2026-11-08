@@ -1737,7 +1737,7 @@ test('carry: map mode uploads carry.json with its other files, and the gate runs
 // ---- Key sources: fork builds scanned for map keys only ----------------------------------------------------
 
 const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls'];
-const KEY_PIN = 'bfd12a08506a494a89d07a139e734c96101abbff';
+const KEY_PIN = '52fa40a0793bc91edce7044303327c6bc588d7c0';
 const HEX40 = 'a'.repeat(40);
 // The Plugin SDK the key sources build against: the one pin, in the workflow env (the Loader agent moves it with sr-update's).
 const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: 'daec5d40844a52009bc00d8e0d9aaeef49b8c6ce' };
@@ -1745,7 +1745,7 @@ const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: 'daec5d40844a5
 const nodeScriptOf = (j, name) => runOf(j, name).match(/node -e '\n([\s\S]*)\n'\s*$/)[1];
 
 test('key sources: both triggers default to the nine work branches and the pinned MiniMap key-scan build', () => {
-  const want = [...KEY_NINE.map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`), `msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build:${KEY_PIN}`];
+  const want = [...KEY_NINE.map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`), `msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:${KEY_PIN}`];
   for (const s of [call, dispatch]) assert.deepEqual(defaultOf(s, 'key_sources').split(' '), want);
 });
 
@@ -1765,7 +1765,7 @@ test('key sources: the default list is accepted, MiniMap gets its key-scan recip
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(entries.length, 10);
   const mini = entries.find((e) => e.name === 'MiniMap');
-  assert.deepEqual([mini.recipe, mini.pin, mini.branch, mini.tag, mini.component], ['keyscan', KEY_PIN, 'ci/hosted-build', 'msantoro12/StarRupture-Plugin-MiniMap@ci/hosted-build', 'MiniMap@ci/hosted-build']);
+  assert.deepEqual([mini.recipe, mini.pin, mini.branch, mini.tag, mini.component], ['keyscan', KEY_PIN, 'feat/full-version-map', 'msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map', 'MiniMap@feat/full-version-map']);
   assert.equal(mini.pluginSdkRepo, 'AlienXAXS/StarRupture-Plugin-SDK');
   assert.equal(mini.pluginSdkRef, 'd66217e63aeb80917656800c42a1a107e3be238d');
   for (const e of entries.filter((x) => x !== mini)) {

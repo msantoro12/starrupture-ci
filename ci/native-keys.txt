@@ -19,6 +19,7 @@ BetterCheats FMassEntityManager::ConstSharedFragmentsContainer
 BetterDrone ACrPlayerControllerBase::PlayerControlState
 BetterDrone USceneComponent::ComponentToWorld 0x1F0 0x60 0x00
 BetterDrone FTransform::Translation 0x20 0x18 0x00
+BetterDrone UCrUW_MapMenuMapArea::MapAreaMatrix optional
 WAILA ACrPackageTransportReplicator::SendingTime
 WAILA UMassEntitySubsystem::EntityManager optional
 ProductionViewer FCrGridEntityHandle::EntityHandle
@@ -82,3 +83,45 @@ MiniMap FMassEnemyStateFragment::State optional
 MiniMap FTransform::Translation 0x20 0x18 0x00 optional
 MiniMap UCrPlayerMapMenuDataComponent::FOWData optional
 MiniMap UTexture::SRGB optional
+
+# MiniMap's building-picture capture reads these world, level, engine, actor,
+# component and subsystem members at fixed offsets: the Game-SDK folds them into
+# padding, or does not describe them. The capture turns off on a build with no
+# row for them, so each line is optional. A bit member resolves as its byte and
+# mask. AActor::ActorHasBegunPlay is a two-bit enum, which the PDB does not
+# describe as one bit: the run names it when it cannot be read.
+MiniMap UWorld::WorldType optional
+MiniMap UWorld::bIsWorldInitialized optional
+MiniMap UWorld::bActorsInitialized optional
+MiniMap UWorld::bIsTearingDown optional
+MiniMap UWorld::bBegunPlay optional
+MiniMap UWorld::bHasEverBeenInitialized optional
+MiniMap UEngine::WorldList optional
+MiniMap FWorldContext::ThisCurrentWorld optional
+MiniMap UTextureRenderTarget::bNeedsTwoCopies optional
+MiniMap UCrElectricityGraphSubsystem::EntityManager optional
+MiniMap UCrEntityGridSubsystem::EntityManager optional
+MiniMap UTickableWorldSubsystem::bInitialized optional
+MiniMap UWorld::Scene optional
+MiniMap UWorld::SubsystemCollection optional
+MiniMap FSubsystemCollectionBase::SubsystemMap optional
+MiniMap FSubsystemCollectionBase::SubsystemArrayMap optional
+MiniMap FSubsystemCollectionBase::Outer optional
+MiniMap FSubsystemCollectionBase::bPopulating optional
+MiniMap FSubsystemCollectionBase::bIterating optional
+MiniMap USubsystem::InternalOwningSubsystem optional
+MiniMap UStruct::SuperStruct optional
+MiniMap ULevel::Actors optional
+MiniMap FStreamingLevelsToConsider::LevelsToProcess optional
+MiniMap FStreamingLevelsToConsider::StreamingLevelsBeingConsidered optional
+MiniMap UActorComponent::OwnerPrivate optional
+MiniMap UActorComponent::WorldPrivate optional
+MiniMap UActorComponent::bRegistered optional
+MiniMap UActorComponent::bRenderStateCreated optional
+MiniMap UActorComponent::bHasBeenInitialized optional
+MiniMap UActorComponent::bHasBegunPlay optional
+MiniMap ULightComponent::SceneProxy optional
+MiniMap ULightComponent::bAddedToSceneVisible 0x3a0 0x1 0x01 optional
+MiniMap AActor::bHasFinishedSpawning optional
+MiniMap AActor::bActorInitialized optional
+MiniMap AActor::ActorHasBegunPlay 0x5d 0x1 0x18 optional

@@ -410,7 +410,12 @@ a plugin uses or requests, as a UClass already did.
   Without `--uses`, every class is taken to be used by its compiled size.
 - A class that is gone degrades every plugin with a key in it.
 - A row that is not verified never ships: a native key the report has no entry for, or
-  that does not resolve for another reason, is refused (exit 3, header untouched).
+  that does not resolve for another reason, is refused (exit 3, header untouched) when a
+  plugin requires it. When only `optional` lines ask for it (MiniMap's building-picture
+  members, for one), it is an absent row instead: that request goes off, and the key and the
+  scanner's answer (`BITFIELD`, `AMBIGUOUS`, `NOMEMBER`) are in `absent`, in the plugin's
+  `degraded` list and in the run summary. A native key gets a row on the CL a run maps and
+  on no other, so a CL that was mapped before a line was added gets it from a proof run.
 
 A rename is not guessed. `FTransform::Translation` and `::Scale3D` keep the size the key list
 was built with, because the PDB sizes them as the 32-byte SIMD register and
@@ -661,7 +666,7 @@ scanned for its keys alone, so every key it requests gets a row on every build.
 
 Input `key_sources` (both triggers): space-separated `msantoro12/StarRupture-Plugin-<Name>@<branch>[:<commit>]`.
 The default is the nine plugins on `gss/plugin-work`, plus the MiniMap key-scan build
-(`ci/hosted-build`, pinned to a commit). Only `msantoro12` plugin repositories are accepted, the ref
+(`feat/full-version-map`, pinned to a commit; its Plugin SDK stays `d66217e`). Only `msantoro12` plugin repositories are accepted, the ref
 is a branch name (never a pull request ref or a tag), and a ref with no commit pin is accepted only
 for the nine plugins on `gss/plugin-work`; anything else needs `:<40-digit commit>`, which must be the
 branch head or in its history. Nothing from an issue or a fork pull request is ever built.
