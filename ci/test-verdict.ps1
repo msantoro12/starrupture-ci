@@ -459,6 +459,77 @@ foreach ($k in $rigCases.Keys) {
     'rig {0,-34} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
 }
 
+# ---- client mode, a clean decline: run 42447973574's public_test_branch rig ----------------
+# fixtures\rig-run-42447973574\decline holds what that rig uploaded, untouched, except that
+# set.json gains "expectDecline": true (the rig's set step writes it from the expect_decline
+# input, which the run predates). The branch ran CL-129402, the candidate map had no row for
+# it: the loader logged the version mismatch, aborted the hook installation, parked the main
+# thread at the Stage 1 gate for 180 s and released it with one ERROR line, loaded no plugin,
+# and the game was still running when the rig stopped it.
+$decFx = Join-Path (Join-Path (Join-Path $PSScriptRoot 'fixtures') 'rig-run-42447973574') 'decline'
+$decSig = '[05:37:00.000] [INFO ] [T:03008] '
+$decErr = '[05:37:00.000] [ERROR] [T:03008] '
+function New-DeclineCase([string]$Name, [scriptblock]$Mutate) {
+    $d = Join-Path $root "decline-$Name"; New-Item -ItemType Directory $d | Out-Null
+    $c = @{
+        ml = [string[]](Get-Content -LiteralPath (Join-Path $decFx 'modloader.log') -Encoding UTF8)
+        boot = Get-Content -LiteralPath (Join-Path $decFx 'boot.json') -Raw | ConvertFrom-Json
+        set = Get-Content -LiteralPath (Join-Path $decFx 'set.json') -Raw | ConvertFrom-Json
+    }
+    $c.set | Add-Member -NotePropertyName expectDecline -NotePropertyValue $true -Force
+    & $Mutate $c
+    Set-Content (Join-Path $d 'modloader.log') $c.ml -Encoding utf8
+    $c.boot | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $d 'boot.json') -Encoding utf8
+    $c.set | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $d 'set.json') -Encoding utf8
+    foreach ($f in 'proxy.log', 'autoupdate.log', 'dll-hashes.json') { Copy-Item (Join-Path $decFx $f) $d }
+    $shell = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
+    $out = & $shell -NoProfile -File $verdict -OutDir $d -Client 2>&1
+    [pscustomobject]@{ Case = $Name; Exit = $LASTEXITCODE; Out = ($out -join "`n"); Dir = $d }
+}
+$declineCases = [ordered]@{
+ 'decline real'                 = @{ Mut = { param($c) } }
+ # Not a decline: the same log judged as a boot, which it fails on every check a boot needs
+ 'declined but a boot expected' = @{ Mut = { param($c) $c.set.PSObject.Properties.Remove('expectDecline') };                                          Fail = 'game_version_ok' }
+ # Each way a decline can go wrong
+ 'no mismatch line'             = @{ Mut = { param($c) $c.ml = @($c.ml | Where-Object { $_ -notmatch 'VERSION MISMATCH' }) };                            Fail = 'loader_declined' }
+ 'no abort line'                = @{ Mut = { param($c) $c.ml = @($c.ml | Where-Object { $_ -notmatch 'Hook installation aborted' }) };                  Fail = 'loader_declined' }
+ 'empty log'                    = @{ Mut = { param($c) $c.ml = @() };                                                                                    Fail = 'loader_declined' }
+ 'game version ok'              = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] Game version OK: ++Earth20+Kobalt-PTR2-CL-129402" };            Fail = 'no_game_version_ok' }
+ 'hooks installed'              = @{ Mut = { param($c) $c.ml += "$($decSig)[init] Engine hooks installed in 12 ms" };                                  Fail = 'no_hooks_installed' }
+ 'boot finished'                = @{ Mut = { param($c) $c.ml += "$($decSig)[init] Boot sequence finished in 9000 ms" };                                Fail = 'no_hooks_installed' }
+ 'plugin read'                  = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] Plugin info - Name: BetterCheats, Version: v0.23.0, Author: AlienX, Interface: 74" }; Fail = 'no_plugin_activity' }
+ 'plugin loaded'                = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] Successfully loaded plugin DLL: BetterCheats v0.23.0 (PluginInit deferred)" }; Fail = 'no_plugin_activity' }
+ 'plugin initialised'           = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] InitAllLoadedPlugins: 3 initialized, 0 failed (of 3 deferred)" }; Fail = 'no_plugin_activity' }
+ 'crash marker'                 = @{ Mut = { param($c) $c.ml += "$($decErr)[CrashReporter] *** FATAL ENGINE CRASH *** -- suppressing CrashReportClient upload" }; Fail = 'no_crash_markers' }
+ 'other error'                  = @{ Mut = { param($c) $c.ml += "$($decErr)[ImGuiBackend] D3D12CreateDevice failed" };                                  Fail = 'no_loader_errors' }
+ 'second mismatch-like error'   = @{ Mut = { param($c) $c.ml += "$($decErr)[init] Stage 1 failed" };                                                      Fail = 'no_loader_errors' }
+ 'game exited'                  = @{ Mut = { param($c) $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 53 };            Fail = 'client_alive_at_end' }
+ 'game not alive'               = @{ Mut = { param($c) $c.boot.alive_at_end = $false };                                                                 Fail = 'client_alive_at_end' }
+ 'crash dump'                   = @{ Mut = { param($c) $c.boot.crash_files = @('Crashes\crash.dmp') };                                                  Fail = 'no_crash_files' }
+ 'crash dialog'                 = @{ Mut = { param($c) $c.boot.crash_dialog = 'The game has crashed' };                                                 Fail = 'no_crash_dialog' }
+ 'update traffic'               = @{ Mut = { param($c) $c.ml += "$($decSig)[AutoUpdate] Manifest URL: https://example.invalid/manifest-client.json (compiled-in default)" }; Fail = 'no_update_check' }
+}
+foreach ($k in $declineCases.Keys) {
+    $r = New-DeclineCase $k $declineCases[$k].Mut
+    $mustFail = $declineCases[$k].Fail
+    $want = if ($mustFail) { 1 } else { 0 }
+    $failed = ($r.Out -split "`n" | Where-Object { $_ -match ' FAIL\s*$' -and $_ -notmatch '^VERDICT' } | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
+    $problems = @()
+    if ($r.Exit -ne $want) { $problems += "exit $($r.Exit), want $want" }
+    if ($mustFail -and (($failed -split ',') -notcontains $mustFail)) { $problems += "check $mustFail did not fail" }
+    if (-not $mustFail -and $failed) { $problems += "unexpected failures: $failed" }
+    if ($k -eq 'decline real') {
+        $j = Get-Content -LiteralPath (Join-Path $r.Dir 'verdict.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.reason -notmatch 'declined the build cleanly') { $problems += "reason: $($j.reason)" }
+        if (@($j.plugins | Where-Object { $_.state -notlike 'not loaded*' }).Count -gt 0) { $problems += 'a plugin row is not "not loaded"' }
+        foreach ($n in 'loader_declined', 'no_game_version_ok', 'no_hooks_installed', 'no_plugin_activity', 'no_loader_errors', 'client_alive_at_end') { if ($r.Out -notmatch "$n\s+PASS") { $problems += "$n not PASS" } }
+        # The decline replaces the boot checks, it does not add to them.
+        if ($r.Out -match '(?m)^(plugin_loaded_|game_version_ok\s|preflight_)') { $problems += 'a boot check ran in decline mode' }
+    }
+    if ($problems.Count -gt 0) { $bad++ }
+    'decline {0,-30} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
+}
+
 # Client mode keeps the logs' text off the console and out of GITHUB_STEP_SUMMARY: the
 # evidence goes to files in the output folder, which the workflow publishes after its leak
 # gate. Server mode still appends to the summary.

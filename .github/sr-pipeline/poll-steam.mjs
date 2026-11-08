@@ -3,6 +3,12 @@
 // compares them with the recorded state. No dependencies (Node 18+ fetch).
 //
 //   node poll-steam.mjs --state <steam.json> --out-dir <dir> [--force]
+//   node poll-steam.mjs --live-buildid <client branch>
+//
+// The second form reads one client branch's current build id from the same API, with the same
+// retries and shape checks, and prints just the number on stdout (the log goes to stderr). It
+// reads no state and writes none. It exits 1 with the cause on stderr when the id cannot be read,
+// and never falls back to a recorded one.
 //
 // <steam.json> is the baseline checked out from main. The updated state is
 // written only on a real build id change or a first-time seed.
@@ -43,10 +49,13 @@ const opt = (name) => {
 const statePath = opt('--state');
 const outDir = opt('--out-dir');
 const force = args.includes('--force');
-if (!statePath || !outDir) {
-  console.error('usage: poll-steam.mjs --state <steam.json> --out-dir <dir> [--force]');
+const liveBranch = opt('--live-buildid');
+if (!liveBranch && (!statePath || !outDir)) {
+  console.error('usage: poll-steam.mjs --state <steam.json> --out-dir <dir> [--force] | --live-buildid <client branch>');
   process.exit(2);
 }
+// The attempt log of a request: stdout carries only the answer in the live form.
+const log = liveBranch ? console.error : console.log;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const warn = (msg) => console.log(`::warning::${msg}`);
@@ -64,7 +73,7 @@ async function fetchJson(url, check) {
       return check(json);
     } catch (e) {
       lastErr = e;
-      console.log(`  attempt ${attempt}/${ATTEMPTS} failed for ${url}: ${e.message}`);
+      log(`  attempt ${attempt}/${ATTEMPTS} failed for ${url}: ${e.message}`);
       if (attempt < ATTEMPTS) await sleep(BACKOFF_MS[attempt - 1]);
     }
   }
@@ -104,6 +113,22 @@ async function fetchNewestNews() {
     console.log(`  news lookup failed (not fatal): ${e.message}`);
     return null;
   }
+}
+
+if (liveBranch) {
+  const app = APPS[0];
+  let id;
+  let why = '';
+  try {
+    const found = (await fetchBranches(app))[liveBranch];
+    if (!found) throw new Error(`Steam lists no open branch '${liveBranch}' for ${app.name}`);
+    id = found.buildid;
+  } catch (e) {
+    why = `could not read the live build id of ${app.name}/${liveBranch}: ${e.message}`;
+  }
+  // Written whole before exit: a piped stdout can still hold the answer when exit() runs.
+  await new Promise((done) => (why ? process.stderr : process.stdout).write(`${why || id}\n`, done));
+  process.exit(why ? 1 : 0);
 }
 
 function loadState() {

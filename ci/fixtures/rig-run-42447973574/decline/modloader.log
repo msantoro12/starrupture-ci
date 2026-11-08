@@ -1,0 +1,34 @@
+[05:36:51.466] [INFO ] [T:03800] ======================================================
+[05:36:51.466] [INFO ] [T:03800]   StarRupture Mod Loader Core loaded
+[05:36:51.466] [INFO ] [T:03800] ======================================================
+[05:36:51.466] [INFO ] [T:03800] [init] Build: cand-42447973574-4c166fc (client), PID 9212
+[05:36:51.466] [INFO ] [T:03800] [init] Executable: D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe
+[05:36:51.476] [INFO ] [T:03800] [init] Core_Attach on thread 3800 (main thread is 3800)
+[05:36:51.476] [INFO ] [T:03800] [init] Migrating legacy config/plugin files...
+[05:36:51.476] [INFO ] [T:03800] [init] Legacy file migration done
+[05:36:51.476] [INFO ] [T:03800] [init] ImGui DLL present: D:\sr-client\StarRupture\Binaries\Win64\ModLoader\StarRupture-ImGui.dll
+[05:36:51.476] [INFO ] [T:03800] [init] Sync events created
+[05:36:51.476] [INFO ] [T:03800] Core_Attach on main thread -- deferring init via QueueUserAPC
+[05:36:51.476] [INFO ] [T:03800] [init] Core_Attach complete -- returning to the proxy
+[05:36:51.478] [INFO ] [T:03800] [init] Main-thread APC fired -- starting Stage 1 with the game held
+[05:36:51.478] [INFO ] [T:03800] [init] Init thread started (tid 3008)
+[05:36:51.478] [INFO ] [T:03800] [init] Main thread parked at the Stage 1 gate (timeout 180000 ms)
+[05:36:51.478] [INFO ] [T:03008] [init] ---- Stage 1: hook installation (init thread 3008) ----
+[05:36:51.478] [INFO ] [T:03008] [init] Executable check passed
+[05:36:51.478] [INFO ] [T:03008] [init] Main thread held: parked on the Stage 1 gate
+[05:36:51.478] [INFO ] [T:03008] Process ID: 9212
+[05:36:51.478] [INFO ] [T:03008] Executable: D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe
+[05:36:51.478] [INFO ] [T:03008] Working directory: D:\sr-client\StarRupture\Binaries\Win64
+[05:36:51.478] [INFO ] [T:03008] Command line: "D:\sr-client\StarRupture\Binaries\Win64\StarRuptureGameSteam-Win64-Shipping.exe" -nullrhi -unattended -nosound -log
+[05:36:51.478] [INFO ] [T:03008] Main module base: 0x7FF65A400000
+[05:36:51.478] [INFO ] [T:03008] Main module size: 0xF482000 (250376 KB)
+[05:36:51.478] [INFO ] [T:03008] Main module entry: 0x7FF669848310
+[05:36:51.478] [INFO ] [T:03008] OS version: Windows 10 or greater
+[05:36:51.478] [INFO ] [T:03008] OS type: Server
+[05:36:51.478] [INFO ] [T:03008] System RAM: 16378 MB total, 12760 MB available
+[05:36:51.488] [INFO ] [T:03008] [init] Splash window shown
+[05:36:51.488] [INFO ] [T:03008] [ModLoader] Logger initialized (using Log:: backend)
+[05:36:51.488] [INFO ] [T:03008] [ModLoader] [VersionFeed] No feed request (stage 1): [AutoUpdate] Enabled is off
+[05:36:51.490] [ERROR] [T:03008] [ModLoader] VERSION MISMATCH: expected '...-CL-127004 or ...-CL-128786', got '++Earth20+Kobalt-PTR2-CL-129402'
+[05:36:51.490] [ERROR] [T:03008] [ModLoader] Hook installation aborted -- update to the correct game build.
+[05:39:51.482] [ERROR] [T:03800] [init] Stage 1 gate returned 258 after 180000 ms -- releasing the main thread anyway

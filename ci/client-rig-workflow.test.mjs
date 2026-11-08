@@ -50,7 +50,7 @@ test('triggers: dispatch and call only, no schedule, no pull request, one set of
   const names = (s) => [...s.matchAll(/\n {6}([a-z_]+):\n {8}description:/g)].map((m) => m[1]);
   const dispatch = on.slice(on.indexOf('  workflow_dispatch:'), on.indexOf('  workflow_call:'));
   const call = on.slice(on.indexOf('  workflow_call:'), on.indexOf('    outputs:'));
-  const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'remove_plugins'];
+  const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'expect_decline', 'remove_plugins'];
   // The feed inputs name an artifact of the calling run: a dispatch has none, so only a call takes them.
   const feedInputs = ['feed_artifact', 'feed_seq', 'feed_cl'];
   assert.deepEqual(names(dispatch), want);
@@ -581,6 +581,29 @@ test('rig set: expect_refused MiniMap is accepted for the test branch, and a tag
   const codex = resolveWithMock("-Branch public -Tags 'Codex=v0.9.0'");
   assert.equal(codex.r.status, 0, codex.text);
   assert.ok(codex.uris.includes('https://api.github.com/repos/AlienXAXS/StarRupture-Plugin-Codex/releases/tags/v0.9.0'));
+});
+
+test('rig set: expect_decline marks the plan, is only true or false, and cannot be asked for beside expect_refused', (t) => {
+  const plain = resolveWithMock('-Branch public_test_branch');
+  if (!plain) return t.skip('no PowerShell on this machine');
+  assert.equal(plain.plan.expectDecline, false, 'a build the map has a row for is a boot, as before');
+  assert.equal(resolveWithMock("-Branch public_test_branch -ExpectDecline 'false'").plan.expectDecline, false);
+  const decline = resolveWithMock("-Branch public_test_branch -ExpectDecline 'true'");
+  assert.equal(decline.r.status, 0, decline.text);
+  assert.equal(decline.plan.expectDecline, true);
+  const bad = resolveWithMock("-Branch public_test_branch -ExpectDecline 'yes'");
+  assert.notEqual(bad.r.status, 0);
+  assert.match(bad.text, /expect_decline is 'yes', not true or false/);
+  const both = resolveWithMock("-Branch public_test_branch -ExpectDecline 'true' -ExpectRefused 'MiniMap'");
+  assert.notEqual(both.r.status, 0);
+  assert.match(both.text, /expect_decline and expect_refused exclude each other/);
+});
+
+test('rig workflow: expect_decline reaches the set step through the environment, not the script text', () => {
+  assert.equal(wf.match(/\n {6}expect_decline:\n {8}description:/g)?.length, 2, 'declared by both triggers');
+  assert.match(wf, /\n {6}EXPECT_DECLINE: \$\{\{ inputs\.expect_decline \}\}\n/);
+  assert.ok(wf.includes('-ExpectDecline $env:EXPECT_DECLINE'));
+  assert.ok(!/-ExpectDecline \$\{\{/.test(wf), 'never interpolated into the command');
 });
 
 test('rig artifact: its name carries the branch, the candidate and the run, so two rigs of one run do not collide', () => {

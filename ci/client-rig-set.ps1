@@ -14,6 +14,8 @@
 #   -Tags "Compass=v0.20.0 Loader=v1.23.0"   release to take instead of Latest
 #   -Expect "Waila=v0.21.0"                  version the log must show, instead of the release tag
 #   -ExpectRefused "Codex"                   plugins that must be refused on this build
+#   -ExpectDecline true                      the build is one the loader's map has no row for: the rig passes
+#                                            only if the loader declines cleanly and loads nothing (not with -ExpectRefused)
 #   -RemovePlugins "Codex"                   dropped from the install but still expected
 # Names are the loader, or a plugin by repo name, log name or asset name, in any case.
 # A name in -Expect that is not one of the ten is an extra plugin to expect.
@@ -38,6 +40,7 @@ param(
     [string]$Tags = '',
     [string]$Expect = '',
     [string]$ExpectRefused = '',
+    [string]$ExpectDecline = '',
     [string]$RemovePlugins = '',
     [string]$CandidateDir = '',
     [string]$FeedFile = '',
@@ -206,6 +209,9 @@ function Resolve-Plan {
         if ($expMap.ContainsKey($c)) { throw "expect names '$c' twice" }
         $expMap[$c] = $expIn[$k]
     }
+    if ($ExpectDecline -cnotin '', 'true', 'false') { throw "expect_decline is '$ExpectDecline', not true or false" }
+    $decline = $ExpectDecline -ceq 'true'
+    if ($decline -and $ExpectRefused.Trim()) { throw 'expect_decline and expect_refused exclude each other: a loader that declines the build refuses nothing, it loads nothing' }
     $refused = @{}
     foreach ($n in (Read-Names $ExpectRefused)) { $c = Find-Entry $n; $refused[$(if ($c) { $c } else { $n })] = $true }
     $removed = @{}
@@ -327,7 +333,7 @@ function Resolve-Plan {
     $ids = @($downloads | ForEach-Object { "$($_.repo)@$($_.tag)/$($_.name)#$($_.id):$(if ($_.digest) { $_.digest } else { $_.updated })" } | Sort-Object)
     $key = (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($ids -join ',')) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16)
 
-    [ordered]@{ branch = $Branch; owner = $Owner; loader = $loader; plugins = @($entries); downloads = @($downloads); cacheKey = $key; review = @($review); feed = $feed } |
+    [ordered]@{ branch = $Branch; expectDecline = $decline; owner = $Owner; loader = $loader; plugins = @($entries); downloads = @($downloads); cacheKey = $key; review = @($review); feed = $feed } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $PlanPath -Encoding utf8
 
     Write-Host "Loader $($loader.tag) (expect $($loader.expect))$(if ($overLoader) { ', replaced in part by the candidate' })"
@@ -447,6 +453,7 @@ function Install-Set {
             $row
         })
     }
+    if ($plan.PSObject.Properties['expectDecline'] -and $plan.expectDecline) { $set.expectDecline = $true }
     if ($plan.feed) { $set.feed = [ordered]@{ seq = [int64]$plan.feed.seq; cl = [int]$plan.feed.cl } }
     [IO.File]::WriteAllText((Join-Path $OutDir 'set.json'), ($set | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
     Write-Host "Installed on branch $($plan.branch), build ${build}:"

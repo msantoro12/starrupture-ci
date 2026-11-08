@@ -4,7 +4,7 @@
 //   node ci/decide.mjs --repo ModLoader --autopilot state/autopilot.json \
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json \
 //       [--fields field-rows.json] --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
-//       [--other-cl 129402] [--rig-plugins rig-plugins.json]
+//       [--other-cl 129402 | --other-unmapped "public runs build 123"] [--rig-plugins rig-plugins.json]
 //
 // Prints the decision as JSON on stdout. Exit codes: 0 = path M (map-only update: the
 // rows go into the loader's map and ship as a signed feed), 10 = path B (auto-fix of
@@ -28,6 +28,11 @@
 //     branch's rig input; see expectedRefusals). Nothing else reads it: a CL the pipeline cannot name
 //     is not passed, and the list is then empty, so every refusal on that branch is unexpected and
 //     fails the rig.
+//   --other-unmapped "<branch> runs build <id>", the other Steam branch's build when the candidate map has no
+//     row for it (so no CL to give --other-cl): the decision lists `expectDeclineOther: true`, the
+//     other branch's rig input expect_decline, and a note naming the expectation. The rig then passes
+//     only if the loader declines cleanly there (the version-mismatch line, no plugin loaded, no crash,
+//     the game still running; ci/verdict.ps1 -Client) and fails otherwise. Not with --other-cl.
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
 //   GObjects, GNames, AppendString or GWorld not resolved (G4 scan) -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty) and the field rows do not
@@ -493,6 +498,11 @@ export function decide(inputs) {
       r.otherCl = Number(inputs.otherCl);
       r.expectRefusedOther = r.otherCl === Number(cl) ? r.expectRefused : rigRows === null ? [] : expectedRefusals(rigRows, r.otherCl);
     }
+    // The other branch's build is not in the candidate map: the loader has nothing to run it with, so it must decline.
+    if (inputs.otherUnmapped !== undefined && inputs.otherUnmapped !== null) {
+      r.expectDeclineOther = true;
+      notes.push(`${inputs.otherUnmapped}, not in this candidate map: expects a clean decline (the version-mismatch line, no plugin loaded, no crash, the game still running)`);
+    }
     if (inputs.testAutopilot || inputs.candidate) {
       if (inputs.testAutopilot) r.test = true;
       else r.candidate = true;
@@ -605,6 +615,12 @@ function otherClOf(text) {
   return Number(text);
 }
 
+// --other-unmapped is a short plain label for the summary; it comes from the workflow, but nothing else is accepted.
+function otherUnmappedOf(text) {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_ .-]{0,79}$/.test(String(text))) throw new Error(`--other-unmapped is not a plain label: ${text}`);
+  return String(text);
+}
+
 function main() {
   let args;
   try {
@@ -613,8 +629,10 @@ function main() {
     args.testAutopilot = argv.includes('--test-autopilot');
     args.candidate = argv.includes('--candidate');
     if (args['other-cl'] !== undefined) args.otherCl = otherClOf(args['other-cl']);
+    if (args['other-unmapped'] !== undefined) args.otherUnmapped = otherUnmappedOf(args['other-unmapped']);
+    if (args.otherCl !== undefined && args.otherUnmapped !== undefined) throw new Error('--other-cl and --other-unmapped exclude each other');
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n] [--rig-plugins f] [--test-autopilot | --candidate]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate]`);
     process.exit(2);
   }
   let result;
@@ -628,6 +646,7 @@ function main() {
       ...(args.fields === undefined ? {} : { fields: loadJson(args.fields) }),
       ...(args['rig-plugins'] === undefined ? {} : { rigPlugins: loadJson(args['rig-plugins']) }),
       ...(args.otherCl === undefined ? {} : { otherCl: args.otherCl }),
+      ...(args.otherUnmapped === undefined ? {} : { otherUnmapped: args.otherUnmapped }),
     });
   } catch (e) {
     result = { decision: 'HOLD', path: null, cl: null, repo: args.repo ?? null, ship: false, reasons: [`internal error: ${e.message}`], notes: [] };
