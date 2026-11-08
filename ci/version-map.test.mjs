@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, parse, parseFeed, parseKeys, prune, publicOnly,
+  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, parse, parseFeed, parseKeys, prune, publicOnly,
   removeKey, replaceBuild, unionKeys,
 } from './version-map.mjs';
 import { PublicBuildsError, appendPublicBuild, currentPublicCL, parsePublicBuilds, publicCLs, readPublicBuilds } from './public-builds.mjs';
@@ -727,4 +727,40 @@ test('append: refuses a time that goes backwards, a bad build and a damaged list
     assert.match(r.stderr, /^public-builds: /);
   }
   assert.equal(readFileSync(f, 'utf8'), written, 'a refused append writes nothing');
+});
+
+// ---- feedDelta: what a feed adds to, or changes in, a header's rows for one CL
+
+test('feedDelta: identical rows are no difference, whatever else the header holds', () => {
+  const header = parse(fixture('loader.h'));
+  const feed = parseFeed(exportFeed(header));
+  for (const cl of [127004, 128786]) assert.deepEqual(feedDelta(feed, header, cl), { added: [], changed: [] }, `CL-${cl}`);
+  // A header that holds more than the feed does is still no difference: a feed removes nothing.
+  const more = { ...header, fields: header.fields.concat({ key: 'ZExtra::Member', cl: 128786, offset: 0x10, size: 4, mask: 0, member: null }) };
+  assert.deepEqual(feedDelta(feed, more, 128786), { added: [], changed: [] });
+});
+
+test('feedDelta: a row the header lacks is added, a row the header has with other values is changed, and only for the CL asked', () => {
+  const header = parse(fixture('loader.h'));
+  const feed = parseFeed(exportFeed(header));
+  // The header lacks one function row and one field row of CL-128786, and one build row.
+  const lacking = {
+    ...header,
+    functions: header.functions.filter((r) => !(r.cl === 128786 && r.key === 'GWorld')),
+    fields: header.fields.filter((r) => !(r.cl === 128786 && r.key === 'UCrSomething::bFlag')),
+  };
+  assert.deepEqual(feedDelta(feed, lacking, 128786), { added: ['field UCrSomething::bFlag', 'function GWorld (fp 0x00000000)'], changed: [] });
+  assert.deepEqual(feedDelta(feed, lacking, 127004), { added: [], changed: [] }, 'another CL is not looked at');
+  assert.deepEqual(feedDelta(feed, { ...header, builds: header.builds.filter((b) => b.cl !== 128786), functions: [], fields: [] }, 128786).added.slice(0, 1), ['build']);
+  // Same keys, other values: an address, an offset, a build stamp.
+  const changed = {
+    ...header,
+    builds: header.builds.map((b) => (b.cl === 128786 ? { ...b, stamp: b.stamp + 1 } : b)),
+    functions: header.functions.map((r) => (r.cl === 128786 && r.key === 'GWorld' ? { ...r, rva: r.rva + 0x10 } : r)),
+    fields: header.fields.map((r) => (r.cl === 128786 && r.key === 'ACrCrafter::CraftComponent' ? { ...r, offset: r.offset + 8 } : r)),
+  };
+  assert.deepEqual(feedDelta(feed, changed, 128786), { added: [], changed: ['build', 'field ACrCrafter::CraftComponent', 'function GWorld (fp 0x00000000)'] });
+  // A CL the header has no rows for at all: everything is added.
+  const d = feedDelta(feed, { ...header, builds: [], functions: [], fields: [] }, 127004);
+  assert.deepEqual([d.changed.length, d.added.length], [0, 1 + header.functions.filter((r) => r.cl === 127004).length + header.fields.filter((r) => r.cl === 127004).length]);
 });

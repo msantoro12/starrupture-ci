@@ -50,11 +50,13 @@ test('triggers: dispatch and call only, no schedule, no pull request, one set of
   const names = (s) => [...s.matchAll(/\n {6}([a-z_]+):\n {8}description:/g)].map((m) => m[1]);
   const dispatch = on.slice(on.indexOf('  workflow_dispatch:'), on.indexOf('  workflow_call:'));
   const call = on.slice(on.indexOf('  workflow_call:'), on.indexOf('    outputs:'));
-  const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'remove_plugins', 'feed_artifact', 'feed_seq', 'feed_cl'];
+  const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'remove_plugins'];
+  // The feed inputs name an artifact of the calling run: a dispatch has none, so only a call takes them.
+  const feedInputs = ['feed_artifact', 'feed_seq', 'feed_cl'];
   assert.deepEqual(names(dispatch), want);
-  assert.deepEqual(names(call), want);
+  assert.deepEqual(names(call), [...want, ...feedInputs]);
   assert.match(dispatch, /branch:\n(?:.*\n)*?\s+default: public\n/);
-  for (const n of want.slice(1)) assert.match(call, new RegExp(`${n}:\\n(?:.*\\n)*?\\s+default: ''`), `${n} defaults to empty`);
+  for (const n of [...want.slice(1), ...feedInputs]) assert.match(call, new RegExp(`${n}:\\n(?:.*\\n)*?\\s+default: ''`), `${n} defaults to empty`);
 });
 
 test('workflow_call outputs: verdict, reason and artifact, from the job', () => {

@@ -504,8 +504,8 @@ rows from the same run. `state/autopilot.json` ships with `enabled: false`: unti
 is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
 
 The autopilot gates publishing only, not the candidate. `--candidate` (the
-unattended chain: `map_mode` on, `publish` off, not a `test_autopilot` run, which
-is what `sr-watch.yml` calls) keeps that `HOLD` and its reason, and adds `wouldBe`
+unattended chain: `map_mode` on, not a `test_autopilot` run, which
+is what `sr-watch.yml` calls, with `publish: true`; the publish input does not change the candidate) keeps that `HOLD` and its reason, and adds `wouldBe`
 and `candidate: true`. When `wouldBe` is `M`, the only thing that held it was the
 autopilot, and the chain runs on: export, TEST-key signing and verify, staging (and
 the push of the staged branch), and `promote.mjs plan --test-autopilot`, which plans
@@ -724,7 +724,7 @@ sr-watch (poll Steam, every build)
   -> candidate-loader (build the candidate loader and plugins)
   -> rig-branch + rig-other (client rig on each Steam branch)
   -> rig-gate (both PASS)
-  -> feed-plan, feed-loader, rig-feed, feed-gate (public only: the feed-path rig, PASS or a named skip)
+  -> feed-plan, feed-loader, rig-feed, feed-loader-cleanup, feed-gate (public only: the feed-path rig, PASS or a named skip)
   -> publish (public only, autopilot on, rigs and feed gate pass; sign k2, upload, verify the upload)
   -> vmap-publish.yml (loader repo, every 15 min: verify, upload to Latest)
   -> players' loaders
@@ -734,11 +734,21 @@ The feed-path rig (public only) tests the feed the way players get it. It builds
 loader of AlienX's Latest release tag with one define, `VMAP_TRUST_TEST_KEY`, set in the
 `CL` environment variable of the build step (no source change; the build log must show
 it reached the compiler). The rig puts this run's TEST-signed feed in the loader's feed
-cache and the verdict checks that the loader applied it and that the running build's
-rows came from it. A missing feed, or a feed without the CL, fails. If the CL is already
-in the release tag's compiled map the gate skips with that reason, because the rows would
-come from the map, not the feed. Publish needs the gate to PASS or skip. The build is a
-rig input kept one day, never a release asset.
+cache and the verdict checks that the loader applied it and took rows from it. A missing
+feed, or a feed without the CL, fails. The gate compares the feed's rows for the running CL
+with the release tag's compiled map (`feedDelta` in `version-map.mjs`). It skips, with that
+reason, only when the feed adds no row and changes no row for that CL: then the loader runs on
+the compiled rows with or without the feed. A row the tag lacks, or holds with other values,
+is a row the feed delivers, so the rig runs and has to pass. Publish needs the gate to PASS
+or skip. The build is a rig input, never a release asset. It trusts the TEST key, so the
+`feed-loader-cleanup` job deletes its artifact as soon as the rig has ended, on every outcome.
+It is not built inside the rig job because that job holds the live Steam login and no build code
+runs there.
+
+A proof run of this path (dispatch only, publish off) can name `feed_loader_ref`, a branch of
+`msantoro12/StarRupture-ModLoader`, which the rig then builds instead of the Latest release,
+for example a branch without public's rows, so the feed is their only source. It is refused
+with `publish` on or a name that is not a plain branch, and `sr-watch` cannot set it.
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 `sr-watch.yml`) is the unattended path M on one build. It reads only the check
@@ -772,13 +782,13 @@ no plugin code, no game file.
    The chain writes `verify.json` from this run's re-scan and marks the run publishable
    for a promotion, or for `public`'s own build on a new CL with nothing staged (the
    normal flow).
-5. The `publish` job, below ("The publish path"). `sr-watch.yml` passes only the Steam
-   login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, by name, so the called `check` job
-   reads them from `steam-client`), `VMAP_SIGN_KEY_TEST` and the loader fork's deploy key
-   `SR_DEPLOYKEY_MODLOADER` and the nine plugin forks' deploy keys
-   (`SR_DEPLOYKEY_<PLUGIN>`, read by the `auto-apply` job in `fork-push`); no `secrets: inherit`,
-   no release key: the release key is an environment secret that only the `publish` job
-   reads. Its `client-check` job grants `contents: write` as a ceiling: GitHub checks every
+5. The `publish` job, below ("The publish path"). `sr-watch.yml` passes `publish: true` and
+   only these secrets, by name: the Steam login (`STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`, so the
+   called `check` job reads them from `steam-client`), `VMAP_SIGN_KEY_TEST`, the loader fork's deploy key
+   `SR_DEPLOYKEY_MODLOADER`, the nine plugin forks' deploy keys
+   (`SR_DEPLOYKEY_<PLUGIN>`, read by the `auto-apply` job in `fork-push`) and the release key
+   `VMAP_SIGN_KEY`; no `secrets: inherit`. The release key is an environment secret of
+   `vmap-sign` that only the `publish` job reads, and it reads empty there unless the caller passes it. Its `client-check` job grants `contents: write` as a ceiling: GitHub checks every
    called job against the caller's permissions when it parses the call; each called job still
    sets its own, and only `record-public` and `publish` ask for write.
 
@@ -789,13 +799,17 @@ these hold:
 
 1. The run is for `public`. A test-branch run never publishes and never touches the public
    list: the game's devs asked for no loader on the test branch.
-2. It is the chain `sr-watch` runs, or a dispatch with the `publish` input on. A dispatch
-   without it is a dry run, and a `test_autopilot` run never publishes.
+2. The `publish` input is on: `sr-watch` passes it, a dispatch sets it, and nothing infers it
+   from who called. A dispatch without it is a dry run, and a `test_autopilot` run never publishes.
 3. `decide` says `M`. That needs `state/autopilot.json` enabled; while it is off the decision
    is `HOLD` and the job is skipped.
 4. `promote.mjs` marks the run publishable, and no test mark is on `decision.json` or
    `promote-plan.json` (checked again in the job).
 5. Both client rigs ended with verdict `PASS` on the candidate loader.
+6. The feed gate ended `PASS`, or `SKIP` because the feed adds and changes no row for the running CL.
+
+Just before it signs, the job reads `state/autopilot.json` on main again and stops unless it is
+enabled and allows path M, so turning the autopilot off stops a chain that is already running.
 
 It runs in the `vmap-sign` environment (main only), one at a time (`concurrency: vmap-publish`).
 It signs the feed the chain staged with the release key k2, uploads it and `vmap-history.json`
