@@ -414,7 +414,8 @@ a plugin uses or requests, as a UClass already did.
   plugin requires it. When only `optional` lines ask for it (MiniMap's building-picture
   members, for one), it is an absent row instead: that request goes off, and the key and the
   scanner's answer (`BITFIELD`, `AMBIGUOUS`, `NOMEMBER`) are in `absent`, in the plugin's
-  `degraded` list and in the run summary. A native key gets a row on the CL a run maps and
+  `degraded` list and in the run summary, and a feature that needs the member stays off until the
+  scanner can read it. A native key gets a row on the CL a run maps and
   on no other, so a CL that was mapped before a line was added gets it from a proof run.
 
 A rename is not guessed. `FTransform::Translation` and `::Scale3D` keep the size the key list

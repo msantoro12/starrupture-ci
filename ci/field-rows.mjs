@@ -211,7 +211,8 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
     if (n.result !== 'OK') {
       // The PDB could not say (a bitfield wider than one bit, two class records, a key it cannot read). Only optional
       // requesters: that request goes off and the key is named in the report and the run summary; a row that is
-      // not verified never ships, and a plugin that needs it, or the loader, holds the map.
+      // not verified never ships, and a plugin that needs it, or the loader, holds the map. A plugin that lists the
+      // key only through reflection counts as optional here too, as it does for a key that is gone.
       const d = demand(key);
       if (!d.loader && !d.required.length) { gone(key, 'native', `could not be read from the PDB (${n.result})`); continue; }
       problems.push(`native ${key}: not found on the new build (${n.result}); an unverified row never ships`);

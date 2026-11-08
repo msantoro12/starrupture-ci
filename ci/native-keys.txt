@@ -89,7 +89,8 @@ MiniMap UTexture::SRGB optional
 # padding, or does not describe them. The capture turns off on a build with no
 # row for them, so each line is optional. A bit member resolves as its byte and
 # mask. AActor::ActorHasBegunPlay is a two-bit enum, which the PDB does not
-# describe as one bit: the run names it when it cannot be read.
+# describe as one bit: the run names it when it cannot be read, and the capture
+# stays off on every build until the scanner reports it.
 MiniMap UWorld::WorldType optional
 MiniMap UWorld::bIsWorldInitialized optional
 MiniMap UWorld::bActorsInitialized optional
