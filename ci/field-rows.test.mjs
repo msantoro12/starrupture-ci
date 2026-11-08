@@ -453,3 +453,90 @@ test('key source: a check or a live read from a key source is not an alert; the 
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).alerts, [`${MM_WHO}: compiles the size of ACrGameStateBase, which changed on CL-130000; that build needs SR_SIZE_CHECK or live`]);
 });
+
+// ---- MiniMap's building-picture members, BetterDrone's map matrix and Compass's engine reads ----
+//
+// The report is made up from what the PDBs of both builds were read to hold (the same offsets on the
+// test build and on public; bMapMenuOpen's is invented). The keys come from the real ci/native-keys.txt.
+
+const M1 = [
+  ['MiniMap', 'UWorld::WorldType', 0x18a, 1, 0], ['MiniMap', 'UWorld::bIsWorldInitialized', 0x18b, 1, 0x40],
+  ['MiniMap', 'UWorld::bActorsInitialized', 0x18c, 1, 0x80], ['MiniMap', 'UWorld::bIsTearingDown', 0x18d, 1, 0x20],
+  ['MiniMap', 'UWorld::bBegunPlay', 0x18d, 1, 0x01], ['MiniMap', 'UWorld::bHasEverBeenInitialized', 0x18f, 1, 0x02],
+  ['MiniMap', 'UEngine::WorldList', 0x11c8, 0x10, 0], ['MiniMap', 'FWorldContext::ThisCurrentWorld', 0x2c0, 8, 0],
+  ['MiniMap', 'UTextureRenderTarget::bNeedsTwoCopies', 0x144, 1, 0x01],
+  ['MiniMap', 'UCrElectricityGraphSubsystem::EntityManager', 0x290, 0x10, 0], ['MiniMap', 'UCrEntityGridSubsystem::EntityManager', 0xf0, 0x10, 0],
+  ['MiniMap', 'UTickableWorldSubsystem::bInitialized', 0x38, 1, 0xff],
+  ['MiniMap', 'UWorld::Scene', 0x258, 8, 0], ['MiniMap', 'UWorld::SubsystemCollection', 0x9f0, 0xc0, 0],
+  ['MiniMap', 'FSubsystemCollectionBase::SubsystemMap', 0x8, 0x50, 0], ['MiniMap', 'FSubsystemCollectionBase::SubsystemArrayMap', 0x58, 0x50, 0],
+  ['MiniMap', 'FSubsystemCollectionBase::Outer', 0xb0, 8, 0], ['MiniMap', 'FSubsystemCollectionBase::bPopulating', 0xb8, 1, 0xff],
+  ['MiniMap', 'FSubsystemCollectionBase::bIterating', 0xb9, 1, 0xff], ['MiniMap', 'USubsystem::InternalOwningSubsystem', 0x28, 8, 0],
+  ['MiniMap', 'UStruct::SuperStruct', 0x40, 8, 0], ['MiniMap', 'ULevel::Actors', 0xa0, 0x10, 0],
+  ['MiniMap', 'FStreamingLevelsToConsider::LevelsToProcess', 0x10, 0x10, 0], ['MiniMap', 'FStreamingLevelsToConsider::StreamingLevelsBeingConsidered', 0x20, 4, 0],
+  ['MiniMap', 'UActorComponent::OwnerPrivate', 0xa0, 8, 0], ['MiniMap', 'UActorComponent::WorldPrivate', 0xa8, 8, 0],
+  ['MiniMap', 'UActorComponent::bRegistered', 0x94, 1, 0x01], ['MiniMap', 'UActorComponent::bRenderStateCreated', 0x94, 1, 0x02],
+  ['MiniMap', 'UActorComponent::bHasBeenInitialized', 0x97, 1, 0x08], ['MiniMap', 'UActorComponent::bHasBegunPlay', 0x97, 1, 0x20],
+  ['MiniMap', 'ULightComponent::SceneProxy', 0x340, 8, 0], ['MiniMap', 'ULightComponent::bAddedToSceneVisible', 0x3a0, 1, 0x01],
+  ['MiniMap', 'AActor::bHasFinishedSpawning', 0x5c, 1, 0x01], ['MiniMap', 'AActor::bActorInitialized', 0x5c, 1, 0x02],
+  ['MiniMap', 'AActor::ActorHasBegunPlay', null],
+  ['BetterDrone', 'UCrUW_MapMenuMapArea::MapAreaMatrix', 0x500, 0x40, 0],
+  ['Compass', 'UObject::ObjectFlags', 0x8, 4, 0], ['Compass', 'UObject::InternalIndex', 0xc, 4, 0], ['Compass', 'FUObjectItem::Flags', 0x8, 4, 0],
+  ['Compass', 'UStreamableRenderAsset::NeverStream', 0xc0, 1, 0x01], ['Compass', 'UTexture::bAsyncResourceReleaseHasBeenStarted', 0x10c, 1, 0x04],
+  ['Compass', 'ACrPlayerControllerBase::bMapMenuOpen', 0x7a1, 1, 0x01],
+];
+const m1Native = () => {
+  const lines = readFileSync(join(here, 'native-keys.txt'), 'utf8').split(/\r?\n/).filter((l) => {
+    const m = /^(\S+)\s+(\S+::\S+)/.exec(l);
+    return m && M1.some(([p, k]) => p === m[1] && k === m[2]);
+  });
+  return keysFromCheck(lines.join('\n') + '\n', '');
+};
+const m1Report = () => M1.map(([, key, off, size, mask]) => (off === null ? { key, result: 'BITFIELD' } : ent(key, off, size, mask)));
+
+test('M1: ci/native-keys.txt lists the 35 MiniMap members, BetterDrone\'s map matrix and Compass\'s reads; the first two are optional', () => {
+  const keys = m1Native();
+  assert.equal(M1.filter(([p]) => p === 'MiniMap').length, 35);
+  assert.equal(keys.native.size, M1.length, 'every key of the table has a line');
+  for (const [p, key] of M1.filter(([p]) => p === 'MiniMap' || p === 'BetterDrone')) {
+    assert.ok(keys.optionalFields.has(key), `${p} ${key} is optional`);
+    assert.deepEqual(keys.owners.get(key), [p]);
+  }
+});
+
+test('M1: a map run writes a row for every one of them on the test build and on a public CL that is its own reference', () => {
+  for (const cl of [130000, 127004]) {
+    const out = fieldRows(header(), { cl, keys: m1Native(), next: m1Report(), base: null });
+    assert.deepEqual(out.problems, [], `CL-${cl}`);
+    const rows = parse(out.text).fields.filter((r) => r.cl === cl);
+    for (const [p, key, off, size, mask] of M1.filter(([, , off]) => off !== null)) {
+      const r = rows.find((x) => x.key === key);
+      assert.ok(r, `${p} ${key} has a row on CL-${cl}`);
+      assert.deepEqual([r.offset, r.size, r.mask], [off, size, mask], key);
+    }
+    assert.equal(out.added, M1.length - 1);
+  }
+});
+
+test('M1: a member the PDB cannot describe (a two-bit enum) is an absent row that names the key and the answer, not a silent drop or a refusal', () => {
+  const out = fieldRows(header(), { cl: 130000, keys: m1Native(), next: m1Report(), base: null });
+  assert.deepEqual(out.problems, []);
+  assert.equal(parse(out.text).fields.filter((r) => r.cl === 130000 && r.key === 'AActor::ActorHasBegunPlay').length, 0);
+  assert.deepEqual(out.absent, [{ key: 'AActor::ActorHasBegunPlay', why: 'could not be read from the PDB (BITFIELD)', severity: 'low', owners: ['MiniMap'] }]);
+  assert.deepEqual(out.degraded, { MiniMap: [{ key: 'AActor::ActorHasBegunPlay', severity: 'low', why: 'could not be read from the PDB (BITFIELD) (optional)' }] });
+  assert.ok(parse(out.text).absentFields.some((r) => r.cl === 130000 && r.key === 'AActor::ActorHasBegunPlay'));
+  // AMBIGUOUS is the same for an optional line; a plugin that requires the key still holds the map.
+  const amb = m1Report().map((e) => (e.key === 'UWorld::Scene' ? { key: e.key, result: 'AMBIGUOUS' } : e));
+  const ambOut = fieldRows(header(), { cl: 130000, keys: m1Native(), next: amb, base: null });
+  assert.deepEqual(ambOut.problems, []);
+  assert.ok(ambOut.absent.some((a) => a.key === 'UWorld::Scene' && a.why.includes('AMBIGUOUS')));
+  const strict = keysFromCheck('MiniMap AActor::ActorHasBegunPlay optional\nOther AActor::ActorHasBegunPlay\n', '');
+  const held = fieldRows(header(), { cl: 130000, keys: strict, next: [{ key: 'AActor::ActorHasBegunPlay', result: 'BITFIELD' }], base: null });
+  assert.equal(held.text, null);
+  assert.ok(held.problems.some((p) => p.includes('AActor::ActorHasBegunPlay') && p.includes('BITFIELD')));
+});
+
+test('M1: an optional native key the scanner was never asked for is named as such', () => {
+  const out = fieldRows(header(), { cl: 130000, keys: m1Native(), next: m1Report().filter((e) => e.key !== 'ULevel::Actors'), base: null });
+  assert.deepEqual(out.problems, []);
+  assert.ok(out.absent.some((a) => a.key === 'ULevel::Actors' && a.why.includes('scanner was not asked')));
+});

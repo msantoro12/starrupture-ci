@@ -36,8 +36,11 @@
 // a lazy lookup). A key no plugin requests or looks up is a note. A key the
 // loader itself reads is refused (exit 3): every plugin depends on the loader.
 // A rename is not guessed. A native key the report has no entry for, or that
-// does not resolve for any other reason, is refused: a row that is not
-// verified never ships.
+// does not resolve for any other reason (a bitfield wider than one bit,
+// AMBIGUOUS), is refused when a plugin requires it: a row that is not
+// verified never ships. When only optional lines ask for it, it is an absent
+// row like the cases above, and the report and the run summary name the key and
+// the scanner's answer.
 //
 // A class whose size changed: a note when no component depends on its whole
 // size, or when the only ones read it live (`size <Class> live`, SR_SIZE: the
@@ -200,12 +203,20 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
     if (!n) {
       // Only optional requesters: the feature goes off, the rest still get rows.
       const d = demand(key);
-      if (!d.loader && !d.required.length) { gone(key, 'native', "not in the new build's report"); continue; }
+      if (!d.loader && !d.required.length) { gone(key, 'native', "not in the new build's report (the scanner was not asked for it)"); continue; }
       problems.push(`native ${key}: the new build's report has no entry`);
       continue;
     }
     if (GONE.has(n.result)) { gone(key, 'native', `not on the new build (${n.result})`); continue; }
-    if (n.result !== 'OK') { problems.push(`native ${key}: not found on the new build (${n.result}); an unverified row never ships`); continue; }
+    if (n.result !== 'OK') {
+      // The PDB could not say (a bitfield wider than one bit, two class records, a key it cannot read). Only optional
+      // requesters: that request goes off and the key is named in the report and the run summary; a row that is
+      // not verified never ships, and a plugin that needs it, or the loader, holds the map.
+      const d = demand(key);
+      if (!d.loader && !d.required.length) { gone(key, 'native', `could not be read from the PDB (${n.result})`); continue; }
+      problems.push(`native ${key}: not found on the new build (${n.result}); an unverified row never ships`);
+      continue;
+    }
     let size = n.size;
     if (REFLECTED_SIZE_KEYS.has(key)) {
       const built = keys.native.get(key);
