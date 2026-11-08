@@ -310,7 +310,7 @@ env:
   # The Plugin SDK every key source builds against, and the one place that names it: the owner's fork
   # branch gss/sdk-dev at the commit sr-update builds the installed plugins against (the plugin work
   # branches use headers, plugin_presets.h among them, that only that branch has). Move it with
-  # sr-update's pin, never alone. Only the MiniMap key-scan recipe names another (see key-sources-plan).
+  # sr-update's pin, never alone.
   KEY_SDK_REPO: msantoro12/StarRupture-Plugin-SDK
   KEY_SDK_REF: 3367cfaf1d701049c7cf1a597094e61ea86ae6db
 
@@ -879,7 +879,7 @@ jobs:
             // readback adapter, so its key-scan build (MiniMapKeyScanOnly, no engine) is used, on the Plugin SDK
             // commit it was written against. Every other key source builds on KEY_SDK_REPO at KEY_SDK_REF (the workflow env).
             const RECIPES = {
-              MiniMap: { recipe: "keyscan", pluginSdkRepo: "AlienXAXS/StarRupture-Plugin-SDK", pluginSdkRef: "d66217e63aeb80917656800c42a1a107e3be238d" },
+              MiniMap: { recipe: "keyscan" },
             };
             const fail = (why) => { console.log("::error title=Key sources::" + why); process.exit(1); };
             const env = process.env;
@@ -901,7 +901,7 @@ jobs:
               const repo = "msantoro12/StarRupture-Plugin-" + name;
               const r = RECIPES[name];
               entries.push({ name, repo, branch, pin: pin || "", tag: repo + "@" + branch, component: name + "@" + branch,
-                recipe: r ? r.recipe : "standard", pluginSdkRepo: r ? r.pluginSdkRepo : env.KEY_SDK_REPO, pluginSdkRef: r ? r.pluginSdkRef : env.KEY_SDK_REF });
+                recipe: r ? r.recipe : "standard", pluginSdkRepo: env.KEY_SDK_REPO, pluginSdkRef: env.KEY_SDK_REF });
             }
             fs.writeFileSync("key-sources-unresolved.json", JSON.stringify(entries));
             console.log(entries.length + " key source(s) accepted");

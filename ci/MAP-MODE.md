@@ -662,7 +662,7 @@ scanned for its keys alone, so every key it requests gets a row on every build.
 
 Input `key_sources` (both triggers): space-separated `msantoro12/StarRupture-Plugin-<Name>@<branch>[:<commit>]`.
 The default is the nine plugins on `gss/plugin-work`, plus the MiniMap key-scan build
-(`feat/full-version-map`, pinned to a commit; its Plugin SDK stays `d66217e`). Only `msantoro12` plugin repositories are accepted, the ref
+(`feat/full-version-map`, pinned to a commit). Only `msantoro12` plugin repositories are accepted, the ref
 is a branch name (never a pull request ref or a tag), and a ref with no commit pin is accepted only
 for the nine plugins on `gss/plugin-work`; anything else needs `:<40-digit commit>`, which must be the
 branch head or in its history. Nothing from an issue or a fork pull request is ever built.
@@ -673,8 +673,8 @@ Jobs (map mode only; none holds a secret or an environment):
    `git ls-remote` (the pin is verified with `gh api compare`). It logs `<repo>@<branch> = <sha>` for each.
 2. `key-sources` (Windows, one leg per source, `fail-fast: false`) builds exactly that commit and uploads it as
    `keysrc-<branch>-<name>` for one day. A plugin is built the way the `plugins` job builds one. MiniMap
-   needs the Unreal Engine headers for its readback adapter, so it is built `MiniMapKeyScanOnly` on the Plugin SDK
-   commit it was written against (`d66217e`): the DLL reports `<version>-keyscan` and refuses at PluginInit,
+   needs the Unreal Engine headers for its readback adapter, so it is built `MiniMapKeyScanOnly` on the same Plugin SDK
+   commit as every key source: the DLL reports `<version>-keyscan` and refuses at PluginInit,
    but every key request runs first. A MiniMap build without `-keyscan` in it is not taken. These DLLs are
    never installed, released or published.
 3. The `check` job (it alone has the game files) downloads the artifacts after the login cache is removed, scans each with

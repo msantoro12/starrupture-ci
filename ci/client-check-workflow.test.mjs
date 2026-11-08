@@ -1766,8 +1766,7 @@ test('key sources: the default list is accepted, MiniMap gets its key-scan recip
   assert.equal(entries.length, 10);
   const mini = entries.find((e) => e.name === 'MiniMap');
   assert.deepEqual([mini.recipe, mini.pin, mini.branch, mini.tag, mini.component], ['keyscan', KEY_PIN, 'feat/full-version-map', 'msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map', 'MiniMap@feat/full-version-map']);
-  assert.equal(mini.pluginSdkRepo, 'AlienXAXS/StarRupture-Plugin-SDK');
-  assert.equal(mini.pluginSdkRef, 'd66217e63aeb80917656800c42a1a107e3be238d');
+  assert.deepEqual([mini.pluginSdkRepo, mini.pluginSdkRef], [KEY_SDK.repo, KEY_SDK.ref], 'MiniMap builds on the pinned fork SDK too');
   for (const e of entries.filter((x) => x !== mini)) {
     assert.deepEqual([e.recipe, e.branch, e.pin, e.repo], ['standard', 'gss/plugin-work', '', `msantoro12/StarRupture-Plugin-${e.name}`]);
     assert.equal(e.tag, `${e.repo}@gss/plugin-work`);
@@ -1815,7 +1814,7 @@ test('key sources: the Plugin SDK pin is in one place, the workflow env, and eve
   assert.match(wf, new RegExp(`\\n  KEY_SDK_REPO: ${KEY_SDK.repo}\\n  KEY_SDK_REF: ${KEY_SDK.ref}\\n`));
   assert.match(wf, /^env:\n(?:  .*\n|\n)*  KEY_SDK_REF: /m, 'it is in the workflow-level env');
   // The plan hands it to each standard entry, and the build leg checks out whatever its plan entry names.
-  assert.match(runOf(job('key-sources-plan'), 'Check the key source list'), /pluginSdkRepo: r \? r\.pluginSdkRepo : env\.KEY_SDK_REPO, pluginSdkRef: r \? r\.pluginSdkRef : env\.KEY_SDK_REF/);
+  assert.match(runOf(job('key-sources-plan'), 'Check the key source list'), /pluginSdkRepo: env\.KEY_SDK_REPO, pluginSdkRef: env\.KEY_SDK_REF/);
   const leg = job('key-sources');
   assert.match(leg, /repository: \$\{\{ matrix\.pluginSdkRepo \}\}\n\s+ref: \$\{\{ matrix\.pluginSdkRef \}\}/);
   assert.ok(!/KEY_SDK|StarRupture-Plugin-SDK/.test(leg.replace(/^ *#.*\n/gm, '').replace(/matrix\.pluginSdk\w+/g, '')), 'the build leg names no SDK of its own');
