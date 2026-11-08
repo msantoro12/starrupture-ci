@@ -2922,7 +2922,7 @@ test('key sources: SR_KEY_SOURCE_BUILD is defined by the two key-source build st
   assert.deepEqual(defining, ['Build the key source (Client Release)', 'Build the key-scan build (Client Release)']);
   for (const s of steps.filter((x) => x.includes('SR_KEY_SOURCE_BUILD'))) assert.match(s, /\n {8}env:\n {10}CL: \/DSR_KEY_SOURCE_BUILD\n/);
   // Both steps are in the key-sources job, so no other job (candidate loader, plugins, scanner, rig) gets it.
-  assert.equal(job('key-sources').split('SR_KEY_SOURCE_BUILD').length - 1, 2);
+  assert.equal(job('key-sources').replace(/^ *#.*\n/gm, '').split('SR_KEY_SOURCE_BUILD').length - 1, 2);
   assert.equal(code.split('SR_KEY_SOURCE_BUILD').length - 1, 2, 'no job-level or workflow-level define');
   // The key source carries a version that stands out in ModLoader.log.
   assert.match(runOf(job('key-sources'), 'Build the key source (Client Release)'), /\/p:ModLoaderBuildTag=keysource `/);
