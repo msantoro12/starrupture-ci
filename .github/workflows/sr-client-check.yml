@@ -2873,7 +2873,10 @@ jobs:
   #     disabled the decision is HOLD and this job is skipped ("publish skipped");
   #   - the chain marked it publishable (ci/promote.mjs isPublishable) and is not a test run;
   #   - both client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
-  #     loader: a failed, cancelled or skipped rig keeps the feed unsigned.
+  #     loader: a failed, cancelled or skipped rig keeps the feed unsigned;
+  #   - the feed gate (feed-gate) ended PASS, or SKIP with its reason (the CL is already in the
+  #     compiled map of the release the feed-path rig would run): the feed as players read it
+  #     was tested in the real game, or could not be.
   # The promote step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
   # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
   # environment, deployments from main only). It signs the chain's feed with the chain's one seq
@@ -2882,8 +2885,8 @@ jobs:
   # signature, seq and sha256.
   publish:
     name: publish the feed
-    needs: [check, map-mode, rig-branch, rig-other]
-    if: ${{ !cancelled() && inputs.test_autopilot != true && (inputs.publish == true || !contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@')) && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' }}
+    needs: [check, map-mode, rig-branch, rig-other, feed-gate]
+    if: ${{ !cancelled() && inputs.test_autopilot != true && (inputs.publish == true || !contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@')) && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' && needs.feed-gate.result == 'success' && (needs.feed-gate.outputs.state == 'PASS' || needs.feed-gate.outputs.state == 'SKIP') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -3289,6 +3292,283 @@ jobs:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
 
+  # ---- Feed-path rig: the feed the loader reads, in the real game --------
+  # The two rigs above run the candidate loader with its map rows compiled in. Players run
+  # the released loader and get the new build's rows from the signed feed, so this gate runs
+  # that path: a loader built from AlienX's Latest release tag, unchanged except for one
+  # compiler define (VMAP_TRUST_TEST_KEY, so it trusts the TEST key k1 this run's feed is
+  # signed with), on the public Steam branch with the same plugin set as the public candidate
+  # rig, its feed cache seeded with this run's TEST-signed public-only feed. It passes only
+  # when the loader's log shows the feed verified and applied (seq), the running build's
+  # CL rows came from the feed (the tag's compiled map has no row for that CL, so they cannot
+  # come from anywhere else), and every plugin loads under the same verdict rules and expected
+  # refusals as the public candidate rig (ci/verdict.ps1, the "feed" record of set.json).
+  # It skips, with its reason in the summary, when the CL is already in the tag's compiled map
+  # (then the feed would prove nothing), and it fails when the feed is missing or does not carry
+  # the CL. The publish job needs this gate's PASS or its named skip.
+  # Which route: the define comes from the CL environment variable of the build step (cl.exe
+  # prepends it to every compile), so the loader source is unchanged; no patch, no source edit.
+  # The cache is seeded, the fetch is not tried: the rig turns [AutoUpdate] off, no feed URL is
+  # compiled in (this build passes no VmapFeedUrl), and the rig's firewall blocks every exe of
+  # the install, so no request can leave and the outcome does not depend on the compiled-in URL.
+  # The verdict still fails a run that logs a fetch. The build is a rig input only: a one-day
+  # artifact, never a release asset. It runs after the two candidate rigs, in the same Steam
+  # concurrency group (the rig workflow's), and on the public branch only.
+  feed-plan:
+    name: feed-path rig plan
+    needs: [map-mode, rig-branch, rig-other]
+    if: ${{ always() && inputs.branch == 'public' && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.plan.outputs.state }}
+      reason: ${{ steps.plan.outputs.reason }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.plan.outputs.sha }}
+      cl: ${{ steps.plan.outputs.cl }}
+      seq: ${{ steps.plan.outputs.seq }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
+      SEQ: ${{ needs.map-mode.outputs.seq }}
+      RIG_TAGS: ${{ needs.map-mode.outputs.rig_tags }}
+    steps:
+      - name: Check out the tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      # A missing artifact is a FAIL state of the plan, not a crash of the job: the gate names it.
+      - name: Download the chain
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: map-mode-${{ inputs.branch }}
+          path: chain
+
+      - name: Plan the feed-path rig
+        id: plan
+        run: |
+          set -uo pipefail
+          finish() { r="$(printf '%s' "$2" | tr '\r\n' '  ')"; echo "state=$1" >> "$GITHUB_OUTPUT"; echo "reason=$r" >> "$GITHUB_OUTPUT"; echo "$1: $r"; exit 0; }
+          # Whether the build rows of a feed ("feed": its signed file) or of a header hold a CL.
+          has_build() {
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { parse, parseFeed } from "./tool/ci/version-map.mjs";
+              const NL = String.fromCharCode(10);
+              const [kind, file, cl] = process.argv.slice(1);
+              const text = readFileSync(file, "utf8");
+              const lines = text.split(NL);
+              const map = kind === "feed" ? parseFeed([lines[0], ...lines.slice(2, -2), ""].join(NL), file) : parse(text, file);
+              process.stdout.write((map.builds ?? []).some((b) => b.cl === Number(cl)) ? "yes" : "no");
+            ' "$@"
+          }
+          case "$MOD_OWNER" in msantoro12|AlienXAXS) ;; *) finish FAIL "MOD_OWNER '$MOD_OWNER' is not an owner the pipeline reads" ;; esac
+          [ -f chain/feed.test-signed.txt ] || finish FAIL "the map-mode artifact holds no TEST-signed feed (feed.test-signed.txt): this run produced no feed to seed"
+          case "$SEQ" in ''|0*|*[!0-9]*) finish FAIL "the chain carries no usable seq ('$SEQ')" ;; esac
+          out="$(node tool/ci/vmap-sign.mjs verify chain/feed.test-signed.txt --allow-test-key --expect-seq "$SEQ" 2>&1)" || finish FAIL "the TEST-signed feed does not verify: $out"
+          [ "$out" = "ok seq=$SEQ key=k1 TEST-KEY" ] || finish FAIL "the feed is not signed with the TEST key k1 at seq $SEQ: $out"
+          cl="$(node -p "String(JSON.parse(require('fs').readFileSync('chain/decision.json','utf8')).cl ?? '')" 2>/dev/null || true)"
+          case "$cl" in ''|0*|*[!0-9]*) finish FAIL "decision.json names no CL for the running build ('$cl')" ;; esac
+          in_feed="$(has_build feed chain/feed.test-signed.txt "$cl" 2>&1)" || finish FAIL "the feed does not parse: $in_feed"
+          [ "$in_feed" = yes ] || finish FAIL "the feed carries no build row for CL-$cl, the running build"
+          # The release the rig runs: the Latest of the loader repository, or the tag the rig's tags name.
+          tag=""
+          for pair in ${RIG_TAGS:-}; do case "$pair" in Loader=*) tag="${pair#Loader=}" ;; esac; done
+          if [ -z "$tag" ]; then tag="$(gh api "repos/$MOD_OWNER/StarRupture-ModLoader/releases/latest" --jq .tag_name 2>/dev/null)" || finish FAIL "cannot read the Latest release of $MOD_OWNER/StarRupture-ModLoader"; fi
+          printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._+-]{0,40}$' || finish FAIL "the loader release tag '$tag' is not a plain tag"
+          sha="$(gh api "repos/$MOD_OWNER/StarRupture-ModLoader/commits/$tag" --jq .sha 2>/dev/null)" || finish FAIL "cannot resolve the loader tag $tag to a commit"
+          printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || finish FAIL "the loader tag $tag does not resolve to a commit ('$sha')"
+          # The map the tag compiles in: its header at that commit.
+          gh api -H "Accept: application/vnd.github.raw+json" "repos/$MOD_OWNER/StarRupture-ModLoader/contents/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h?ref=$sha" > tag-header.h 2> tag-header.err \
+            || finish FAIL "cannot read the compiled map of $tag: $(head -c 200 tag-header.err)"
+          in_header="$(has_build header tag-header.h "$cl" 2>&1)" || finish FAIL "the compiled map of $tag does not parse: $in_header"
+          { echo "tag=$tag"; echo "sha=$sha"; echo "cl=$cl"; echo "seq=$SEQ"; } >> "$GITHUB_OUTPUT"
+          if [ "$in_header" = yes ]; then
+            finish SKIP "CL-$cl is already in the compiled map of $tag, so a run would show nothing about the feed (the rows would come from the map, not the feed)"
+          fi
+          finish RUN "CL-$cl is not in the compiled map of $tag; the feed (seq $SEQ) is its only source"
+
+  feed-loader:
+    name: feed-path loader
+    needs: [feed-plan]
+    if: ${{ !cancelled() && needs.feed-plan.outputs.state == 'RUN' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # No secrets and no environment: this job builds loader code and ships it to the rig as a one-day artifact.
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.out.outputs.artifact }}
+      expect: ${{ steps.out.outputs.expect }}
+      version: ${{ steps.out.outputs.version }}
+    env:
+      TAG: ${{ needs.feed-plan.outputs.tag }}
+      LOADER_SHA: ${{ needs.feed-plan.outputs.sha }}
+      LOADER_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
+      # A plain token the rig's expect value takes; the loader prints it as "[init] Build: <tag> (client)".
+      BUILD_TAG: feedrig-${{ github.run_id }}-${{ needs.feed-plan.outputs.tag }}
+      ARTIFACT: loader-feed-${{ inputs.branch }}
+      MSBUILD_LOG: msbuild-feed.log
+    steps:
+      - name: Check out the loader at the release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.MOD_OWNER || 'AlienXAXS' }}/StarRupture-ModLoader
+          ref: ${{ needs.feed-plan.outputs.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check it is that commit
+        shell: pwsh
+        run: |
+          $head = git rev-parse HEAD
+          if ($head -ne $env:LOADER_SHA) { throw "checked out $head, the plan named $($env:LOADER_SHA)" }
+          "Loader $($env:LOADER_OWNER)/StarRupture-ModLoader $($env:TAG) at $head"
+
+      # After the loader checkout, so its clean step does not remove it.
+      - name: Check out the build action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-actions
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      # The one difference from the release build: the define that makes the loader trust the TEST
+      # key. cl.exe reads it from the CL environment variable, so nothing in the source changes.
+      # /Bt+ makes every compile print its timing, which proves in the build log that cl.exe read
+      # this variable (the define and the timing flag arrive together).
+      - name: Build Client Release with VMAP_TRUST_TEST_KEY
+        uses: ./ci-actions/.github/actions/build-loader
+        env:
+          CL: /DVMAP_TRUST_TEST_KEY /Bt+
+        with:
+          configuration: Client Release
+          build_tag: ${{ env.BUILD_TAG }}
+          manifest_url: ${{ github.server_url }}/${{ vars.MOD_OWNER || 'AlienXAXS' }}/StarRupture-ModLoader/releases/latest/download/manifest-client.json
+          log_file: ${{ env.MSBUILD_LOG }}
+
+      - name: Check the define reached the compiler
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:MSBUILD_LOG)) { throw 'the build wrote no MSBuild log, so the define cannot be checked' }
+          $log = Get-Content -LiteralPath $env:MSBUILD_LOG
+          # The file that reads the define was compiled, and cl.exe printed the timing the same variable asked for.
+          $timed = @($log | Where-Object { $_ -match 'time\(.*c1xx\.dll\)=' })
+          $feedUnit = @($log | Where-Object { $_ -match 'version_feed\.cpp' })
+          if ($feedUnit.Count -eq 0) { throw 'the build log never names version_feed.cpp: the file that reads VMAP_TRUST_TEST_KEY was not compiled in this build' }
+          if ($timed.Count -eq 0) { throw 'the build log has no /Bt+ timing line: cl.exe did not read the CL environment variable, so VMAP_TRUST_TEST_KEY was not defined' }
+          "cl.exe read the CL environment variable: $($timed.Count) timed compile line(s), version_feed.cpp compiled."
+
+      - name: Check the build
+        shell: pwsh
+        run: |
+          $dir = 'build\Client Release'
+          foreach ($f in 'dwmapi.dll', 'ModLoader\StarRupture-ModLoader-Core.dll') {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) { throw "the build has no $f" }
+          }
+          $core = [IO.File]::ReadAllBytes((Join-Path $dir 'ModLoader\StarRupture-ModLoader-Core.dll'))
+          if (-not [Text.Encoding]::Latin1.GetString($core).Contains($env:BUILD_TAG, [StringComparison]::Ordinal)) {
+            throw "the build tag $($env:BUILD_TAG) is not compiled into StarRupture-ModLoader-Core.dll"
+          }
+          "Build tag $($env:BUILD_TAG) is in the Core DLL."
+
+      - name: Upload the loader for the rig
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTIFACT }}
+          # Same layout as the candidate loader: dwmapi.dll and ModLoader/*.dll, no plugins. A rig input only.
+          path: |
+            build/Client Release/dwmapi.dll
+            build/Client Release/ModLoader/*.dll
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Name the build
+        id: out
+        shell: pwsh
+        run: |
+          "artifact=$($env:ARTIFACT)" >> $env:GITHUB_OUTPUT
+          "version=$($env:BUILD_TAG)" >> $env:GITHUB_OUTPUT
+          "expect=Loader=$($env:BUILD_TAG)" >> $env:GITHUB_OUTPUT
+          "Feed-path loader $($env:BUILD_TAG): $($env:TAG) at $($env:LOADER_SHA) plus VMAP_TRUST_TEST_KEY; artifact $($env:ARTIFACT) (one day, a rig input, not a release)." >> $env:GITHUB_STEP_SUMMARY
+
+  rig-feed:
+    name: client rig (${{ inputs.branch }}, feed path)
+    needs: [map-mode, feed-plan, feed-loader, rig-branch, rig-other]
+    if: ${{ !cancelled() && inputs.branch == 'public' && needs.feed-plan.outputs.state == 'RUN' && needs.feed-loader.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/sr-client-rig.yml
+    with:
+      branch: ${{ inputs.branch }}
+      candidate_run_id: ${{ github.run_id }}
+      candidate_artifact: ${{ needs.feed-loader.outputs.artifact }}
+      expect: ${{ needs.feed-loader.outputs.expect }}
+      tags: ${{ needs.map-mode.outputs.rig_tags }}
+      expect_refused: ${{ needs.map-mode.outputs.expect_refused }}
+      feed_artifact: map-mode-${{ inputs.branch }}
+      feed_seq: ${{ needs.feed-plan.outputs.seq }}
+      feed_cl: ${{ needs.feed-plan.outputs.cl }}
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+
+  # ---- Feed gate: PASS, a named SKIP, or FAIL ------------------------------
+  # Runs for the same candidates as the rig gate, on public only. SKIP is a green job and
+  # carries its reason into the run summary; the publish job accepts PASS and SKIP.
+  feed-gate:
+    name: feed gate
+    needs: [map-mode, feed-plan, feed-loader, rig-feed]
+    if: ${{ always() && inputs.branch == 'public' && needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      state: ${{ steps.judge.outputs.state }}
+      reason: ${{ steps.judge.outputs.reason }}
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PLAN_RESULT: ${{ needs.feed-plan.result }}
+      PLAN_STATE: ${{ needs.feed-plan.outputs.state }}
+      PLAN_REASON: ${{ needs.feed-plan.outputs.reason }}
+      TAG: ${{ needs.feed-plan.outputs.tag }}
+      CL: ${{ needs.feed-plan.outputs.cl }}
+      SEQ: ${{ needs.feed-plan.outputs.seq }}
+      LOADER_RESULT: ${{ needs.feed-loader.result }}
+      RIG_RESULT: ${{ needs.rig-feed.result }}
+      RIG_VERDICT: ${{ needs.rig-feed.outputs.verdict }}
+      RIG_REASON: ${{ needs.rig-feed.outputs.reason }}
+      RIG_ARTIFACT: ${{ needs.rig-feed.outputs.artifact }}
+    steps:
+      - name: Judge the feed path
+        id: judge
+        run: |
+          set -euo pipefail
+          node -e '
+            const e = process.env, fs = require("fs");
+            const clean = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+            let state, why;
+            if (e.PLAN_RESULT !== "success") { state = "FAIL"; why = "the plan job ended " + e.PLAN_RESULT; }
+            else if (e.PLAN_STATE === "SKIP") { state = "SKIP"; why = clean(e.PLAN_REASON); }
+            else if (e.PLAN_STATE === "FAIL") { state = "FAIL"; why = clean(e.PLAN_REASON); }
+            else if (e.PLAN_STATE !== "RUN") { state = "FAIL"; why = "the plan reached no state"; }
+            else if (e.LOADER_RESULT !== "success") { state = "FAIL"; why = "the loader built from " + e.TAG + " with VMAP_TRUST_TEST_KEY did not build or the define did not reach the compiler (job " + e.LOADER_RESULT + ")"; }
+            else if (e.RIG_RESULT === "success" && e.RIG_VERDICT === "PASS") { state = "PASS"; why = "the loader applied the seeded feed (seq " + e.SEQ + ") and CL-" + e.CL + " ran on its rows; every plugin passed " + e.RIG_ARTIFACT; }
+            else { state = "FAIL"; why = clean(e.RIG_REASON) || (e.RIG_RESULT === "skipped" ? "the rig did not run" : "no verdict (rig job " + e.RIG_RESULT + ")"); }
+            const logs = e.RIG_ARTIFACT ? " Logs: artifact `" + e.RIG_ARTIFACT + "` of " + e.RUN_URL + "." : "";
+            const md = ["### Feed-path rig gate: " + state, "", why + "." + logs + (state === "SKIP" ? " The skip is the gate working as designed; the feed was not tested in the game this run." : "")];
+            fs.appendFileSync(e.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
+            fs.appendFileSync(e.GITHUB_OUTPUT, "state=" + state + "\nreason=" + why + "\n");
+            if (state === "FAIL") { console.log("::error title=Feed-path rig gate::" + why + "; the feed is not published."); process.exit(1); }
+          '
+
   # ---- Rig gate: both verdicts in the run summary, and the chain's visible result ----
   # Runs for every candidate the chain staged (the same cue as push-loader) and writes
   # the decision, the candidate and both rigs' verdict, reason and logs artifact into the
@@ -3371,9 +3651,11 @@ jobs:
   # (reported missing when the job never uploaded it), the jobs API (failed step and
   # its first error line, from the job's annotations or else its log; ci/pipeline-alert.mjs)
   # and the rig jobs' verdict outputs.
+  # The feed-path rig gate (feed-gate) is a line when it did not pass (FAIL, or a gate that ended
+  # otherwise) and an information note when it skipped, with the skip's reason.
   alert:
     name: alert
-    needs: [build, plugin-plan, check, record-public, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate]
+    needs: [build, plugin-plan, check, record-public, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, feed-gate]
     if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # a job log not there yet is fetched again, up to a minute per job
@@ -3404,6 +3686,11 @@ jobs:
       PUSH_RESULT: ${{ needs.push-loader.result }}
       CANDIDATE_RESULT: ${{ needs.candidate-loader.result }}
       RIG_GATE_RESULT: ${{ needs.rig-gate.result }}
+      # The feed-path rig runs on public only, for the same candidates.
+      FEED_EXPECTED: ${{ needs.map-mode.result == 'success' && needs.map-mode.outputs.staged == 'true' && inputs.test_autopilot != true && inputs.branch == 'public' }}
+      FEED_GATE_RESULT: ${{ needs.feed-gate.result }}
+      FEED_GATE_STATE: ${{ needs.feed-gate.outputs.state }}
+      FEED_GATE_REASON: ${{ needs.feed-gate.outputs.reason }}
       BRANCH_RIG_NAME: ${{ inputs.branch }}
       BRANCH_RIG_RESULT: ${{ needs.rig-branch.result }}
       BRANCH_RIG_VERDICT: ${{ needs.rig-branch.outputs.verdict }}
@@ -3517,6 +3804,9 @@ jobs:
                 lines.push("  - rig " + x.name + ": " + state + " - " + cause + (x.artifact ? " (logs: artifact " + x.artifact + ")" : ""));
               }
             }
+
+            if (e.FEED_EXPECTED === "true" && e.FEED_GATE_RESULT !== "success") lines.push("- **feed-path rig gate** did not pass: " + clip(e.FEED_GATE_REASON || "gate " + e.FEED_GATE_RESULT));
+            else if (e.FEED_GATE_STATE === "SKIP") info.push("Feed-path rig gate **skipped**: " + clip(e.FEED_GATE_REASON));
 
             // A newer release of a plugin by another author than the reviewed one the plan and the rig used. Both kept
             // using the reviewed release, so nothing failed: the line is loud, but it neither blocks the

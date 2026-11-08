@@ -59,7 +59,7 @@ test('every caller of the client check or the rig passes both Steam secrets by n
     }
   }
   assert.ok(callers.includes('sr-watch.yml:client-check'), `sr-watch calls the client check (found: ${callers.join(', ')})`);
-  for (const rigJob of ['rig-branch', 'rig-other']) {
+  for (const rigJob of ['rig-branch', 'rig-other', 'rig-feed']) {
     assert.ok(callers.includes(`sr-client-check.yml:${rigJob}`), `the client check calls the rig in ${rigJob} (found: ${callers.join(', ')})`);
   }
 });

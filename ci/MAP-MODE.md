@@ -724,10 +724,21 @@ sr-watch (poll Steam, every build)
   -> candidate-loader (build the candidate loader and plugins)
   -> rig-branch + rig-other (client rig on each Steam branch)
   -> rig-gate (both PASS)
-  -> publish (public only, autopilot on, rigs PASS; sign k2, upload, verify the upload)
+  -> feed-plan, feed-loader, rig-feed, feed-gate (public only: the feed-path rig, PASS or a named skip)
+  -> publish (public only, autopilot on, rigs and feed gate pass; sign k2, upload, verify the upload)
   -> vmap-publish.yml (loader repo, every 15 min: verify, upload to Latest)
   -> players' loaders
 ```
+
+The feed-path rig (public only) tests the feed the way players get it. It builds the
+loader of AlienX's Latest release tag with one define, `VMAP_TRUST_TEST_KEY`, set in the
+`CL` environment variable of the build step (no source change; the build log must show
+it reached the compiler). The rig puts this run's TEST-signed feed in the loader's feed
+cache and the verdict checks that the loader applied it and that the running build's
+rows came from it. A missing feed, or a feed without the CL, fails. If the CL is already
+in the release tag's compiled map the gate skips with that reason, because the rows would
+come from the map, not the feed. Publish needs the gate to PASS or skip. The build is a
+rig input kept one day, never a release asset.
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 `sr-watch.yml`) is the unattended path M on one build. It reads only the check
