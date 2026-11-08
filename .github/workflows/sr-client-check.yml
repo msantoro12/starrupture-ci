@@ -312,7 +312,7 @@ env:
   # branches use headers, plugin_presets.h among them, that only that branch has). Move it with
   # sr-update's pin, never alone. Only the MiniMap key-scan recipe names another (see key-sources-plan).
   KEY_SDK_REPO: msantoro12/StarRupture-Plugin-SDK
-  KEY_SDK_REF: ade390f06af5f99bc643a26cf76bfddd224f5249
+  KEY_SDK_REF: 3367cfaf1d701049c7cf1a597094e61ea86ae6db
 
 jobs:
   # ---- sr-aobscan, built from the loader's live patterns (no secrets) ------
@@ -1001,23 +1001,27 @@ jobs:
         uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
 
       # The way the plugins job builds one (Rule3Check off: this build is only scanned for keys).
+      # SR_KEY_SOURCE_BUILD is defined here and in the key-scan build below, and in no other build: it makes
+      # the SDK's PLUGIN_MAP_PATTERN(p) give p, where every other build gets nullptr. CL reaches every cl.exe
+      # of the step. The version tag is "keysource", so a stray key-source DLL stands out in ModLoader.log.
       - name: Build the key source (Client Release)
         if: matrix.recipe == 'standard'
         shell: pwsh
         working-directory: plugin
+        env:
+          CL: /DSR_KEY_SOURCE_BUILD
         run: |
           $ErrorActionPreference = 'Stop'
           # Built against the interface of the loader being checked, as it is in game.
           Copy-Item ..\loader-interface\StarRupture-ModLoader-Core\plugins\plugin_interface.h ..\plugin-sdk\include\plugin_interface.h -Force
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
-          $tag = if (Test-Path version) { (Get-Content version -Raw).Trim() } else { 'dev' }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
             /p:PostBuildEventUseInBuild=false `
             /p:Rule3Check=false `
-            /p:ModLoaderBuildTag="$tag" `
+            /p:ModLoaderBuildTag=keysource `
             /p:GameSDKRoot="$env:GITHUB_WORKSPACE\game-sdk" `
             /p:PluginSDKInclude="$env:GITHUB_WORKSPACE\plugin-sdk\include" `
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
@@ -1035,6 +1039,8 @@ jobs:
         if: matrix.recipe == 'keyscan'
         shell: pwsh
         working-directory: plugin
+        env:
+          CL: /DSR_KEY_SOURCE_BUILD
         run: |
           $ErrorActionPreference = 'Stop'
           # The game build the Game SDK was generated from, when it says (the SDK commit pinned by the Plugin SDK).

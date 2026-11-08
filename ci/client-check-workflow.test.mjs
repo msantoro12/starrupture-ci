@@ -1740,7 +1740,7 @@ const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'P
 const KEY_PIN = '52fa40a0793bc91edce7044303327c6bc588d7c0';
 const HEX40 = 'a'.repeat(40);
 // The Plugin SDK the key sources build against: the one pin, in the workflow env (the Loader agent moves it with sr-update's).
-const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: 'ade390f06af5f99bc643a26cf76bfddd224f5249' };
+const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: '3367cfaf1d701049c7cf1a597094e61ea86ae6db' };
 // The node program of a step's `node -e '...'` run block.
 const nodeScriptOf = (j, name) => runOf(j, name).match(/node -e '\n([\s\S]*)\n'\s*$/)[1];
 
@@ -2913,4 +2913,17 @@ test('feed gate: the alert names a gate that did not pass and notes a skip', () 
   assert.match(a, /FEED_EXPECTED: \$\{\{ needs\.map-mode\.result == 'success'[^}]*inputs\.branch == 'public' \}\}/);
   assert.ok(a.includes('feed-path rig gate** did not pass'));
   assert.ok(a.includes('Feed-path rig gate **skipped**'));
+});
+
+test('key sources: SR_KEY_SOURCE_BUILD is defined by the two key-source build steps and by no other build', () => {
+  const code = wf.replace(/^ *#.*\n/gm, '');
+  const steps = code.split(/\n {6}- /);
+  const defining = steps.filter((s) => s.includes('SR_KEY_SOURCE_BUILD')).map((s) => s.match(/name: (.*)/)[1]);
+  assert.deepEqual(defining, ['Build the key source (Client Release)', 'Build the key-scan build (Client Release)']);
+  for (const s of steps.filter((x) => x.includes('SR_KEY_SOURCE_BUILD'))) assert.match(s, /\n {8}env:\n {10}CL: \/DSR_KEY_SOURCE_BUILD\n/);
+  // Both steps are in the key-sources job, so no other job (candidate loader, plugins, scanner, rig) gets it.
+  assert.equal(job('key-sources').replace(/^ *#.*\n/gm, '').split('SR_KEY_SOURCE_BUILD').length - 1, 2);
+  assert.equal(code.split('SR_KEY_SOURCE_BUILD').length - 1, 2, 'no job-level or workflow-level define');
+  // The key source carries a version that stands out in ModLoader.log.
+  assert.match(runOf(job('key-sources'), 'Build the key source (Client Release)'), /\/p:ModLoaderBuildTag=keysource `/);
 });
