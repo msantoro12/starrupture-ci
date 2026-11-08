@@ -132,3 +132,43 @@ test('the client matrix names the build id of the other client branch, public an
   const alone = await withApi({ [CLIENT]: { public: branch(105, 1050) }, [SERVER]: serverInfo }, (base) => run(base, solo));
   assert.deepEqual(JSON.parse(alone.outputs.client_matrix), [{ branch: 'public', buildid: '105', other_buildid: '' }]);
 });
+
+// --live-buildid <branch>: one branch's current id, from the API, nothing recorded.
+function runLive(base, liveBranch) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [SCRIPT, '--live-buildid', liveBranch], {
+      env: { ...process.env, SR_STEAMCMD_API: base, SR_NEWS_API: base },
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    p.stdout.on('data', (d) => { stdout += d; });
+    p.stderr.on('data', (d) => { stderr += d; });
+    p.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test('--live-buildid prints the live id of the branch alone, ignoring any recorded state', async () => {
+  const info = { [CLIENT]: { public: branch(101, 1010), public_test_branch: branch(111, 1110) }, [SERVER]: serverInfo };
+  const r = await withApi(info, (base) => runLive(base, 'public_test_branch'));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, '111\n');
+  const other = await withApi(info, (base) => runLive(base, 'public'));
+  assert.equal(other.stdout, '101\n');
+});
+
+test('--live-buildid fails closed when the branch is not listed, naming it, with nothing on stdout', async () => {
+  const info = { [CLIENT]: { public: branch(101, 1010) }, [SERVER]: serverInfo };
+  const r = await withApi(info, (base) => runLive(base, 'public_test_branch'));
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /could not read the live build id of StarRupture\/public_test_branch: Steam lists no open branch 'public_test_branch'/);
+});
+
+test('--live-buildid fails closed when the API does not answer, after the poll\'s retries', { timeout: 60000 }, async () => {
+  const r = await withApi({}, (base) => runLive(base, 'public'));
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /attempt 3\/3 failed/);
+  assert.match(r.stderr, /could not read the live build id of StarRupture\/public: HTTP 404/);
+});

@@ -46,6 +46,14 @@
 #                                       <logName>", and nothing else for the plugin, passes it
 #                                       as loaded and one fewer is expected to initialise
 #       ],
+#       "expectDecline": true,          optional: the build is one the loader's map has no row for
+#                                       (client-rig-set.ps1 -ExpectDecline). The rig passes only on a
+#                                       clean decline: the version-mismatch line and the aborted hook
+#                                       installation logged, no game-version OK, no engine hooks, no
+#                                       plugin read or initialised, no crash file, dialog or marker,
+#                                       no other ERROR line, and the game process still alive when the
+#                                       rig stopped it. The 180 s Stage 1 gate release line is the one
+#                                       ERROR the decline itself causes. Everything else fails.
 #       "feed": { "seq": 41, "cl": 130000 }   optional: the run seeded the loader's feed cache with
 #                                       this feed (client-rig-set.ps1 -FeedFile). The loader must
 #                                       log it applied, with that seq, before the game version gate;
@@ -375,6 +383,90 @@ function Short([string]$Text, [int]$Max = 150) {
 # A log line without its time, level and thread prefix.
 function Bare([string]$Line) { return ($Line -replace '^\[[\d:.]+\]\s+\[\w+\s*\]\s+\[T:\d+\]\s+', '') }
 
+# ---- result: the checks so far as the reason, verdict.json and the summary table ----
+function Set-ClientResult($set, [string]$loaderExpect, [string]$logLoader, $rows, [int]$wantInit, [string]$passNote) {
+    $failed = @($results | Where-Object { -not $_.Pass })
+    $seen = @{}; $firsts = @()
+    foreach ($f in $failed) {
+        if (-not $seen.ContainsKey($f.Evidence) -and $firsts.Count -lt 3) { $seen[$f.Evidence] = $true; $firsts += "$($f.Name) ($(Short $f.Evidence))" }
+    }
+    $reason = if ($failed.Count -eq 0) { "All $($results.Count) checks passed: " + $(if ($passNote) { "loader $logLoader $passNote." } else { "loader $logLoader and $($wantInit) plugin(s) loaded at their expected versions." }) }
+              else { "$($failed.Count) of $($results.Count) checks failed, first: " + ($firsts -join '; ') + '.' }
+    $loaderState = if ($logLoader -and $logLoader -ceq $loaderExpect) { 'ok' } elseif ($logLoader) { 'wrong version' } else { 'missing' }
+    $script:VerdictJson = [ordered]@{
+        verdict = $(if ($failed.Count -eq 0) { 'PASS' } else { 'FAIL' })
+        reason  = $reason
+        notes   = @($script:Notes)
+        loader  = [ordered]@{ expected = $loaderExpect; logVersion = $logLoader; state = $loaderState }
+        plugins = @($rows)
+    }
+    $cell = { param($t) ([string]$t -replace '\|', '\|') -replace '`', "'" }
+    $md = New-Object System.Collections.Generic.List[string]
+    $md.Add("Branch $(Get-Prop $set 'branch' 'n/a'), build $(Get-Prop $set 'buildId' 'n/a'). $reason")
+    foreach ($n in $script:Notes) { $md.Add(''); $md.Add("Note: $n") }
+    $md.Add('')
+    $md.Add('| Plugin | Expected | In log | State | Note |')
+    $md.Add('|---|---|---|---|---|')
+    $md.Add("| Loader | $(& $cell $loaderExpect) | $(& $cell $logLoader) | $loaderState | |")
+    foreach ($r in $rows) { $md.Add("| $(& $cell $r.name) | $(& $cell $r.expected) | $(& $cell $r.logVersion) | $(& $cell $r.state) | $(& $cell $r.note) |") }
+    $script:LeadMd = @($md)
+}
+
+# ---- A clean decline (set.json expectDecline) ----
+# The loader met a build its map has no row for. What it does then is fixed: it logs the version
+# mismatch and that it aborted hook installation, parks the main thread at the Stage 1 gate until
+# the gate times out (180 s), releases it with one ERROR line, and the game starts unmodified:
+# no hook, no plugin. Passing needs positive evidence of that and of nothing else.
+function Invoke-DeclineChecks($ml, $au, $hashes, [bool]$haveLog) {
+    $mismatch = First-Match $ml '\[ModLoader\] VERSION MISMATCH: expected '
+    $aborted = First-Match $ml '\[ModLoader\] Hook installation aborted'
+    Add-Check 'loader_declined' (($null -ne $mismatch) -and ($null -ne $aborted)) $(
+        if ($mismatch -and $aborted) { "$mismatch  /  $aborted" } elseif ($mismatch) { "no 'Hook installation aborted' line after: $mismatch" } else { '' })
+    $gv = First-Match $ml 'Game version OK:'
+    Add-Check 'no_game_version_ok' ($haveLog -and $null -eq $gv) $(if ($gv) { "FOUND: $gv" } elseif ($haveLog) { 'no Game version OK line' } else { '' })
+    $hooks = First-Match $ml '\[init\] Engine hooks installed in|\[init\] Boot sequence finished in|\[init\] Pattern preflight passed in'
+    Add-Check 'no_hooks_installed' ($haveLog -and $null -eq $hooks) $(if ($hooks) { "FOUND: $hooks" } elseif ($haveLog) { 'no hook, preflight or boot-finished line' } else { '' })
+    $plug = First-Match $ml 'Loading plugin:|Plugin info - Name:|Successfully loaded plugin DLL:|Plugin initialized:|InitAllLoadedPlugins: [1-9]\d* initialized'
+    Add-Check 'no_plugin_activity' ($haveLog -and $null -eq $plug) $(if ($plug) { "FOUND: $plug" } elseif ($haveLog) { 'no plugin was read or initialised' } else { '' })
+
+    $crashRe = 'CRASHED|FATAL ENGINE CRASH|\[PluginGuard\]'
+    $crash = $null
+    if ($ml) { foreach ($l in $ml) { if ($l -match $crashRe) { $crash = $l; break } } }
+    Add-Check 'no_crash_markers' ($haveLog -and $null -eq $crash) $(if ($crash) { "FOUND: $crash" } elseif ($haveLog) { 'no CRASHED, FATAL ENGINE CRASH or PluginGuard line' } else { '' })
+
+    # The only ERROR lines a decline writes: the mismatch, the abort and the Stage 1 gate's release.
+    $errLines = @()
+    if ($ml) {
+        foreach ($l in $ml) {
+            if ($l -notmatch '^\[[\d:.]+\]\s+\[ERROR\s*\]' -or $l -match $crashRe) { continue }
+            if ($l -cmatch '\[ModLoader\] (VERSION MISMATCH: expected |Hook installation aborted)' -or $l -cmatch '\[init\] Stage 1 gate returned \d+ after \d+ ms -- releasing the main thread anyway$') { continue }
+            $errLines += $l
+        }
+    }
+    Add-Check 'no_loader_errors' ($haveLog -and $errLines.Count -eq 0) $(
+        if ($errLines.Count -gt 0) { "$($errLines.Count) found, first: $($errLines[0])" } elseif ($haveLog) { 'no ERROR line but the decline itself' } else { '' })
+
+    $manifest = First-Match $ml 'Manifest URL'
+    Add-Check 'no_update_check' ($haveLog -and $null -eq $manifest) $(if ($manifest) { "FOUND: $manifest" } elseif ($haveLog) { 'no Manifest URL line' } else { '' })
+    $auOff = First-Match $au '(?i)disabled via modloader\.ini'
+    Add-Check 'autoupdate_log_disabled' ($null -ne $auOff) $auOff
+    $changed = @(); $nDll = 0
+    if ($hashes) {
+        foreach ($e in $hashes.PSObject.Properties) {
+            $nDll++
+            $b = [string](Get-Prop $e.Value 'before' ''); $a = [string](Get-Prop $e.Value 'after' '')
+            if (-not $b -or -not $a -or $b -ine $a) { $changed += $e.Name }
+        }
+    }
+    Add-Check 'dll_hashes_unchanged' ($nDll -gt 0 -and $changed.Count -eq 0) $(
+        if ($nDll -eq 0) { '' } elseif ($changed.Count -gt 0) { 'CHANGED: ' + ($changed -join '; ') } else { "$nDll DLL(s), sha256 equal before and after" })
+    $script:Notes = @()
+}
+
+function Get-DeclineRows($specs) {
+    foreach ($s in $specs) { [pscustomobject]@{ name = $s.Repo; expected = $s.Expect; logVersion = ''; state = 'not loaded (the loader declined this build)'; note = '' } }
+}
+
 function Invoke-ClientVerdict {
     $boot = Read-Json (Join-Path $OutDir 'boot.json')
     $set = Read-Json (Join-Path $OutDir 'set.json')
@@ -443,6 +535,13 @@ function Invoke-ClientVerdict {
     $logLoader = ''
     if ($buildLine -and $buildLine -match '\[init\] Build: (.+?) \(client\), PID') { $logLoader = $Matches[1] }
     Add-Check 'loader_build_line' ([bool]($buildLine -and $loaderExpect -ne '' -and ($logLoader -ceq $loaderExpect))) $(if ($buildLine) { "$buildLine  (expected $loaderExpect)" } else { '' })
+    # A build the candidate map has no row for: judged as a decline, not as a boot. The handoff checks are not
+    # run: the loader declined before reading any plugin, so there is nothing to hand off.
+    if ([bool](Get-Prop $set 'expectDecline' $false)) {
+        Invoke-DeclineChecks $ml $au $hashes $haveLog
+        Set-ClientResult $set $loaderExpect $logLoader @(Get-DeclineRows $specs) 0 'declined the build cleanly: it logged the version mismatch, loaded no plugin and the game kept running'
+        return
+    }
     $clientBuild = First-Match $ml 'Running client build of modloader'
     Add-Check 'loader_client_build' ($null -ne $clientBuild) $clientBuild
     $gv = First-Match $ml 'Game version OK:'
@@ -699,32 +798,7 @@ function Invoke-ClientVerdict {
     Add-Check 'no_loader_errors' ($haveLog -and $errLines.Count -eq 0) $(
         if ($errLines.Count -gt 0) { "$($errLines.Count) found, first: $($errLines[0])" } elseif ($haveLog) { 'no unexpected ERROR line in ModLoader.log' } else { '' })
 
-    # ---- result ----
-    $failed = @($results | Where-Object { -not $_.Pass })
-    $seen = @{}; $firsts = @()
-    foreach ($f in $failed) {
-        if (-not $seen.ContainsKey($f.Evidence) -and $firsts.Count -lt 3) { $seen[$f.Evidence] = $true; $firsts += "$($f.Name) ($(Short $f.Evidence))" }
-    }
-    $reason = if ($failed.Count -eq 0) { "All $($results.Count) checks passed: loader $logLoader and $($wantInit) plugin(s) loaded at their expected versions." }
-              else { "$($failed.Count) of $($results.Count) checks failed, first: " + ($firsts -join '; ') + '.' }
-    $loaderState = if ($logLoader -and $logLoader -ceq $loaderExpect) { 'ok' } elseif ($logLoader) { 'wrong version' } else { 'missing' }
-    $script:VerdictJson = [ordered]@{
-        verdict = $(if ($failed.Count -eq 0) { 'PASS' } else { 'FAIL' })
-        reason  = $reason
-        notes   = @($script:Notes)
-        loader  = [ordered]@{ expected = $loaderExpect; logVersion = $logLoader; state = $loaderState }
-        plugins = @($rows)
-    }
-    $cell = { param($t) ([string]$t -replace '\|', '\|') -replace '`', "'" }
-    $md = New-Object System.Collections.Generic.List[string]
-    $md.Add("Branch $(Get-Prop $set 'branch' 'n/a'), build $(Get-Prop $set 'buildId' 'n/a'). $reason")
-    foreach ($n in $script:Notes) { $md.Add(''); $md.Add("Note: $n") }
-    $md.Add('')
-    $md.Add('| Plugin | Expected | In log | State | Note |')
-    $md.Add('|---|---|---|---|---|')
-    $md.Add("| Loader | $(& $cell $loaderExpect) | $(& $cell $logLoader) | $loaderState | |")
-    foreach ($r in $rows) { $md.Add("| $(& $cell $r.name) | $(& $cell $r.expected) | $(& $cell $r.logVersion) | $(& $cell $r.state) | $(& $cell $r.note) |") }
-    $script:LeadMd = @($md)
+    Set-ClientResult $set $loaderExpect $logLoader $rows $wantInit ''
 }
 
 if ($Client) {

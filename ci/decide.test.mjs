@@ -956,6 +956,41 @@ test('cli: --other-cl puts the prediction in decision.json in the rig grammar, a
   for (const bad of ['abc', '0', '-1', '12.5', '']) assert.equal(runCli(files, ['--other-cl', bad]).status, 2, `--other-cl ${JSON.stringify(bad)}`);
 });
 
+// The other branch runs a build the candidate map has no row for (--other-unmapped): its rig must see a clean decline.
+test('other branch unmapped: the decision expects a clean decline there and says so in a note', () => {
+  const r = decide(base({ otherUnmapped: 'public_test_branch runs build 123456' }));
+  assert.equal(r.expectDeclineOther, true);
+  assert.equal(r.otherCl, undefined);
+  assert.equal(r.expectRefusedOther, undefined);
+  assert.ok(r.notes.includes('public_test_branch runs build 123456, not in this candidate map: expects a clean decline (the version-mismatch line, no plugin loaded, no crash, the game still running)'), r.notes.join(' | '));
+  // It changes nothing of the decision for this branch.
+  const plain = decide(base());
+  assert.equal(r.decision, plain.decision);
+  assert.deepEqual(r.expectRefused, plain.expectRefused);
+});
+
+test('other branch mapped (or unnamed): no decline is expected', () => {
+  assert.equal(decide(base({ otherCl: 127004 })).expectDeclineOther, undefined);
+  assert.equal(decide(base()).expectDeclineOther, undefined);
+  assert.equal(decide(base({ otherUnmapped: null })).expectDeclineOther, undefined);
+});
+
+test('other branch unmapped on a held decision still expects the decline', () => {
+  const r = decide(base({ otherUnmapped: 'public runs build 77', g1: ok({ ok: false }) }));
+  assert.equal(r.decision, 'HOLD');
+  assert.equal(r.expectDeclineOther, true);
+});
+
+test('cli: --other-unmapped puts expectDeclineOther in decision.json, takes only a plain label and not with --other-cl', () => {
+  const files = cliFiles({ g3: { ok: true, cl: '127004', previousCl: '126000' } });
+  const r = runCli(files, ['--other-unmapped', 'public runs build 99']);
+  assert.equal(r.out.expectDeclineOther, true);
+  assert.match(r.out.notes.join(' '), /public runs build 99, not in this candidate map: expects a clean decline/);
+  assert.equal(runCli(files).out.expectDeclineOther, undefined);
+  for (const bad of ['', 'a;b', '$(x)', 'x'.repeat(81)]) assert.equal(runCli(files, ['--other-unmapped', bad]).status, 2, `--other-unmapped ${JSON.stringify(bad)}`);
+  assert.equal(runCli(files, ['--other-unmapped', 'public runs build 99', '--other-cl', '127004']).status, 2);
+});
+
 // ------------------------------------------------------------ the refusals declared to a rig come from the DLLs it runs
 // The rig runs the Latest released plugins and the pinned third-party ones, not the plugin builds the check
 // judged (see rig-plugins.json). The same loader rule, applied to the facts of those very DLLs.

@@ -72,7 +72,7 @@ on:
         type: string
         default: ''
       other_buildid:
-        description: 'Build id of the other client branch (public or public_test_branch) as the watcher saw it; its CL decides which refusals the rig of that branch expects'
+        description: 'Build id of the other client branch (public or public_test_branch); its CL decides which refusals the rig of that branch expects. Empty: read live from Steam'
         type: string
         default: ''
       pr:
@@ -190,7 +190,7 @@ on:
         type: string
         default: ''
       other_buildid:
-        description: 'Build id of the other client branch (blank: the one recorded in state/steam.json on main); its CL decides which refusals the rig of that branch expects'
+        description: 'Build id of the other client branch (blank: read live from Steam); its CL decides which refusals the rig of that branch expects, and a build the candidate map has no row for must be declined cleanly'
         type: string
         default: ''
       pr:
@@ -290,6 +290,12 @@ env:
   # commonly observed value. Warn this many days ahead.
   LOGIN_DAYS: '200'
   WARN_DAYS: '30'
+  # The Plugin SDK every key source builds against, and the one place that names it: the owner's fork
+  # branch gss/sdk-dev at the commit sr-update builds the installed plugins against (the plugin work
+  # branches use headers, plugin_presets.h among them, that only that branch has). Move it with
+  # sr-update's pin, never alone. Only the MiniMap key-scan recipe names another (see key-sources-plan).
+  KEY_SDK_REPO: msantoro12/StarRupture-Plugin-SDK
+  KEY_SDK_REF: daec5d40844a52009bc00d8e0d9aaeef49b8c6ce
 
 jobs:
   # ---- sr-aobscan, built from the loader's live patterns (no secrets) ------
@@ -758,7 +764,9 @@ jobs:
   # keysrc-<branch>-<name> (not plugin-<branch>-*, which the check job reads as the
   # plugin builds), and it is never released or published: the artifact only hands the
   # DLL to the check job, which scans it on the downloaded exe. Nothing here holds a
-  # secret. A key source that fails to build or to scan fails map mode with its cause.
+  # secret. A key source that fails to build or to scan does not fail map mode: the keys only it
+  # requests get no rows, and the map-mode job names it in the run summary and as an alert line
+  # of the pipeline-alert issue (the "Settle the key sources" step).
   key-sources-plan:
     name: key-sources-plan
     if: ${{ inputs.map_mode == true && inputs.branch && inputs.branch != 'expiry-only' }}
@@ -773,8 +781,6 @@ jobs:
       - name: Check the key source list
         env:
           KEY_SOURCES: ${{ inputs.key_sources }}
-          PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
-          PLUGIN_SDK_REF: ${{ inputs.plugin_sdk_ref }}
           GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
           LOADER_REPO: ${{ inputs.loader_repo }}
         run: |
@@ -787,13 +793,12 @@ jobs:
             const WORK = "gss/plugin-work";
             // A repository that is not built the way the nine are: MiniMap needs Unreal Engine headers for its
             // readback adapter, so its key-scan build (MiniMapKeyScanOnly, no engine) is used, on the Plugin SDK
-            // commit it was written against.
+            // commit it was written against. Every other key source builds on KEY_SDK_REPO at KEY_SDK_REF (the workflow env).
             const RECIPES = {
               MiniMap: { recipe: "keyscan", pluginSdkRepo: "AlienXAXS/StarRupture-Plugin-SDK", pluginSdkRef: "d66217e63aeb80917656800c42a1a107e3be238d" },
             };
             const fail = (why) => { console.log("::error title=Key sources::" + why); process.exit(1); };
             const env = process.env;
-            if (!/^(msantoro12|AlienXAXS)\/StarRupture-Plugin-SDK$/.test(env.PLUGIN_SDK_REPO || "")) fail(`plugin_sdk_repo "${env.PLUGIN_SDK_REPO}" is not allowed`);
             if (!/^(msantoro12|AlienXAXS)\/StarRupture-Game-SDK$/.test(env.GAME_SDK_REPO || "")) fail(`game_sdk_repo "${env.GAME_SDK_REPO}" is not allowed`);
             if (!/^(msantoro12|AlienXAXS)\/StarRupture-ModLoader$/.test(env.LOADER_REPO || "")) fail(`loader_repo "${env.LOADER_REPO}" is not allowed`);
             const part = "[A-Za-z0-9][A-Za-z0-9._-]*";
@@ -812,7 +817,7 @@ jobs:
               const repo = "msantoro12/StarRupture-Plugin-" + name;
               const r = RECIPES[name];
               entries.push({ name, repo, branch, pin: pin || "", tag: repo + "@" + branch, component: name + "@" + branch,
-                recipe: r ? r.recipe : "standard", pluginSdkRepo: r ? r.pluginSdkRepo : env.PLUGIN_SDK_REPO, pluginSdkRef: r ? r.pluginSdkRef : env.PLUGIN_SDK_REF });
+                recipe: r ? r.recipe : "standard", pluginSdkRepo: r ? r.pluginSdkRepo : env.KEY_SDK_REPO, pluginSdkRef: r ? r.pluginSdkRef : env.KEY_SDK_REF });
             }
             fs.writeFileSync("key-sources-unresolved.json", JSON.stringify(entries));
             console.log(entries.length + " key source(s) accepted");
@@ -866,8 +871,9 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.key-sources-plan.outputs.matrix) }}
-    # Unlike the plugins job, a step that fails fails the job: map mode needs every key source,
-    # and the map-mode job stops with the cause when one is missing.
+    # A step that fails fails this leg, and no other: the leg is continue-on-error, so the jobs after it still
+    # run, and the map-mode job reads which key sources have a scan and alerts on the ones that have none.
+    continue-on-error: true
     steps:
       - name: Check out the key source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1002,7 +1008,7 @@ jobs:
         env:
           TAG: ${{ matrix.tag }}
         run: |
-          Write-Host "::error title=Key source $($env:TAG)::it did not build; map mode stops, since the keys it requests would get no rows on this build"
+          Write-Host "::error title=Key source $($env:TAG)::it did not build; map mode goes on without the keys only it requests, and says so in the summary and the alert"
 
   # ---- Job A: Steam login, download, offline checks ------------------------
   # The only job that can read the login secret: environment steam-client,
@@ -1690,7 +1696,7 @@ jobs:
       - name: Scan the key sources
         id: keysrc
         if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && needs.key-sources-plan.outputs.any == 'true'
-        # The map-mode job stops with the cause of a key source that failed; the client check itself is not changed by one.
+        # The map-mode job names a key source that failed in its summary and as an alert line; the client check itself is not changed by one.
         continue-on-error: true
         timeout-minutes: 30
         shell: pwsh
@@ -1968,7 +1974,7 @@ jobs:
           # Key sources (map mode, out/keysrc.json): the keys their sources request, read from the same Game SDK.
           # Each is a component of its own that is not in $components, so layout.json, its pdb-diff and the
           # gate that reads them never see it; only the key list and the uses file below do. The result is
-          # recorded in keysrc.json (layout: ok), which the map-mode job requires.
+          # recorded in keysrc.json (layout: ok), which the scans builder of the map-mode job requires of a source's scan.
           $keysrc = if (Test-Path out\keysrc.json) { Get-Content out\keysrc.json -Raw | ConvertFrom-Json } else { $null }
           $keyParts = [Collections.Generic.List[object]]::new()
           if ($keysrc) {
@@ -2460,6 +2466,9 @@ jobs:
       # there (decide --other-cl). Empty when that build's CL is not in the candidate map, so every
       # refusal on that branch is unexpected.
       expect_refused_other: ${{ steps.chain.outputs.expect_refused_other }}
+      # 'true' when that build's CL is not in the candidate map (decide --other-unmapped): the loader has no rows
+      # for it, so the other branch's rig passes only on a clean decline (rig input expect_decline).
+      expect_decline_other: ${{ steps.chain.outputs.expect_decline_other }}
       # The releases the rigs run, as the rig's tags input takes them (Name=tag, space separated; empty when the check could not
       # resolve them, and then the rigs resolve the Latest themselves and nothing is declared for them).
       rig_tags: ${{ steps.chain.outputs.rig_tags }}
@@ -2500,6 +2509,7 @@ jobs:
           sparse-checkout: |
             ci
             state
+            .github/sr-pipeline
           persist-credentials: false
 
       # The list on main, read after the record-public job: tool/ is the commit the run started on.
@@ -2529,31 +2539,44 @@ jobs:
           path: res
 
       # A key source that did not build, scan or have its keys read leaves the keys only it requests without
-      # rows on this build, and the update would go out missing them: stop here with the cause.
-      - name: Require the key sources
+      # rows on this build. That does not fail map mode: the update goes on without them, and the cause is
+      # named here: in the run summary, as a warning, and as an alert line (alerts.json, which the alert job
+      # puts in the pipeline-alert issue). Only a key source list that could not be resolved stops the run.
+      - name: Settle the key sources
         env:
           KEY_PLAN: ${{ needs.key-sources-plan.result }}
           KEY_ANY: ${{ needs.key-sources-plan.outputs.any }}
-          KEY_BUILD: ${{ needs.key-sources.result }}
+          PLAN: ${{ needs.key-sources-plan.outputs.matrix }}
         run: |
           set -euo pipefail
           if [ "$KEY_PLAN" != success ]; then echo "::error title=Key sources::the key source list was refused or could not be resolved (key-sources-plan: $KEY_PLAN); map mode stops"; exit 2; fi
           if [ "$KEY_ANY" != true ]; then echo "::notice title=Key sources::none listed"; exit 0; fi
-          if [ "$KEY_BUILD" != success ]; then echo "::error title=Key sources::a key source did not build (key-sources: $KEY_BUILD); map mode stops, since the keys it requests would get no rows"; exit 2; fi
           node -e '
-            // keysrc.json is written by the check job, one entry per key source.
+            // keysrc.json is written by the check job, one entry per key source; PLAN is the list the legs were built from.
             const fs = require("fs");
-            if (!fs.existsSync("res/keysrc.json")) { console.log("::error title=Key sources::the check job recorded no key source result (res/keysrc.json), so none was scanned"); process.exit(2); }
-            const { sources } = JSON.parse(fs.readFileSync("res/keysrc.json", "utf8"));
-            let bad = 0;
-            for (const s of sources) {
-              const why = s.status !== "ok" ? (s.error || "it was not scanned")
+            const plan = JSON.parse(process.env.PLAN || "[]");
+            const got = new Map();
+            if (fs.existsSync("res/keysrc.json")) for (const s of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) got.set(s.name, s);
+            const alerts = [];
+            const md = ["", "### Key sources", ""];
+            for (const p of plan) {
+              const s = got.get(p.name);
+              const why = !s ? "the check job recorded no result for it, so it was not scanned"
+                : s.status !== "ok" ? (s.error || "it was not scanned")
                 : s.layout === "ok" ? ""
                 : s.layout ? "its keys were not read: " + s.layout : "its keys were not read (the layout step stopped before the key sources)";
-              if (why) { bad++; console.log(`::error title=Key source ${s.tag}::${why}`); }
-              else console.log(`${s.tag} ${s.sha}: ${s.keys} keyed requests`);
+              if (why) {
+                const line = `key source ${p.tag} (${String(p.sha).slice(0, 12)}, checked the branch, not an installed DLL): ${why}; map mode went on without the keys only it requests`;
+                alerts.push(line);
+                md.push("- **FAILED** " + line);
+                console.log(`::warning title=Key source ${p.tag}::${why}; map mode goes on without its keys`);
+              } else {
+                md.push(`- ${p.tag} ${String(p.sha).slice(0, 12)}: ${s.keys} keyed requests`);
+                console.log(`${p.tag} ${p.sha}: ${s.keys} keyed requests`);
+              }
             }
-            if (bad) { console.log(`::error title=Key sources::${bad} of ${sources.length} failed; map mode stops, since the keys they request would get no rows`); process.exit(2); }
+            fs.writeFileSync("alerts.json", JSON.stringify({ alerts }, null, 2) + "\n");
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join("\n") + "\n");
           '
 
       - name: Write the update into the header
@@ -2598,13 +2621,13 @@ jobs:
               const tracked = built.includes(name);
               scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
             }
-            // Key sources (res/keysrc.json, from the check job; every one is ok, the step above checked):
+            // Key sources (res/keysrc.json, from the check job; the step above named the ones that failed, and those are left out here):
             // fork builds scanned for their keys only. After the released scans, so a key both ask for stays one
             // row and the row of the released plugin comes first in the order of ci/map-mode.mjs; the tag names where a row came from.
             const commits = [];
             if (fs.existsSync("res/keysrc.json")) {
               for (const k of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) {
-                if (k.status !== "ok" || !/^[A-Za-z0-9_-]+$/.test(k.name)) continue;
+                if (k.status !== "ok" || k.layout !== "ok" || !/^[A-Za-z0-9_-]+$/.test(k.name)) continue;
                 const file = "res/keysrc-" + k.name + ".json";
                 const owner = JSON.parse(fs.readFileSync(file, "utf8")).plugin?.name;
                 if (!owner) continue;
@@ -2751,23 +2774,28 @@ jobs:
           test_flag=()
           [ "$TEST_AUTOPILOT" = true ] && test_flag=(--test-autopilot)
           [ "$CANDIDATE" = true ] && test_flag=(--candidate)
-          # The other Steam branch's current build: its id from the watcher (else the id recorded on
-          # main), its CL from the build rows of the candidate map (the row this run just wrote
-          # included). Unknown means no --other-cl: no refusal is expected there and any one fails.
+          # The other Steam branch's current build: the id the dispatch names (other_buildid; sr-watch passes its
+          # poll's), else read live from Steam the way the watcher's poll reads it. Never the id recorded on main:
+          # that is the build as of the last merged update PR, so after the other branch moved it names a build
+          # that no longer runs there. An id that cannot be read stops the chain here, with the cause.
           other_branch=public; [ "$BRANCH" = public ] && other_branch=public_test_branch
           other_buildid="$OTHER_BUILDID"
           if [ -z "$other_buildid" ]; then
-            other_buildid="$(node -p "JSON.parse(require('fs').readFileSync('tool/state/steam.json','utf8')).apps?.['1631270']?.branches?.[process.argv[1]]?.buildid ?? ''" "$other_branch" 2>/dev/null || true)"
+            other_buildid="$(node tool/.github/sr-pipeline/poll-steam.mjs --live-buildid "$other_branch")" \
+              || { echo "::error title=Other branch build id::cannot read the live build id of $other_branch from Steam, so its rig cannot know what the loader must do there; pass other_buildid to name it"; exit 2; }
           fi
+          case "$other_buildid" in ""|*[!0-9]*) echo "::error title=Other branch build id::the build id of $other_branch is not a number: '$other_buildid'"; exit 2 ;; esac
           other_cl="$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
             import { parse, clOfBuild } from "./tool/ci/version-map.mjs";
             const cl = clOfBuild(parse(readFileSync(process.argv[1], "utf8"), "the header"), process.argv[2]);
             if (cl !== null) process.stdout.write(String(cl));
           ' "$header" "$other_buildid")"
+          # A build the candidate map has no row for cannot be run by the loader: it declines, and the
+          # other branch's rig passes only if the decline is clean (decide --other-unmapped).
           other_flag=()
           if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "$other_branch runs build $other_buildid = CL-$other_cl"
-          else echo "::notice title=Other branch unknown::$other_branch build '${other_buildid:-unknown}' has no row in the candidate map: its rig expects no refusals"; fi
+          else other_flag=(--other-unmapped "$other_branch runs build $other_buildid"); echo "::notice title=Other branch not in the map::$other_branch runs build $other_buildid, which has no row in the candidate map: its rig expects a clean decline"; fi
           # The DLLs the rigs will run (out/rig-plugins.json of the check): the refusals declared to a rig are
           # predicted from their own facts, not from the plugin builds this check judged. Without the file
           # nothing is declared and any refusal fails the rig.
@@ -2803,6 +2831,7 @@ jobs:
             echo "::error::expectRefusedOther is not a list of plugin names the rig takes: $expect_refused_other"; exit 2
           fi
           echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"
+          echo "expect_decline_other=$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).expectDeclineOther === true")" >> "$GITHUB_OUTPUT"
           [ -z "$expect_refused_other" ] || echo "::notice title=Loader refuses on CL::expected refusals on $other_branch (CL-$other_cl): $expect_refused_other"
           # A test run by the dispatch input, the chain's own flag or the decision itself.
           # A candidate that is not M (the autopilot holds it) is never publishable either.
@@ -2909,6 +2938,7 @@ jobs:
           path: |
             version_map.generated.h
             map-mode-report.json
+            alerts.json
             carry.json
             observations.json
             field-rows.json
@@ -3379,6 +3409,8 @@ jobs:
       expect: ${{ needs.candidate-loader.outputs.expect }}
       tags: ${{ needs.map-mode.outputs.rig_tags }}
       expect_refused: ${{ needs.map-mode.outputs.expect_refused_other }}
+      # A build the candidate map has no row for: this rig passes only on a clean decline.
+      expect_decline: ${{ needs.map-mode.outputs.expect_decline_other }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
@@ -3985,7 +4017,7 @@ jobs:
               .map((t) => "- new " + t.split("=")[0] + " release " + t.split("=")[1] + " waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in `ci/plugin-names.json`");
             // Lines the map writers left in their reports (alerts): a stale fork branch, a fork build that compiles a changed
             // size. Loud like the review lines, and for the same reason they block nothing.
-            for (const f of ["chain/map-mode-report.json", "chain/field-rows.json"]) {
+            for (const f of ["chain/map-mode-report.json", "chain/field-rows.json", "chain/alerts.json"]) {
               for (const x of [].concat(readJson(f)?.alerts ?? [])) if (typeof x === "string" && x) review.push("- " + clip(x, 400));
             }
 

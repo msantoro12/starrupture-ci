@@ -112,9 +112,16 @@ Policy (owner), in plain words:
 - Expected refusals on the other branch: `expect_refused_other` is `decision.json`'s
   `expectRefusedOther`, which `decide.mjs` computes from `--other-cl N` (the CL the other
   branch's Steam build id has in the candidate map's build rows; the watcher passes the id
-  as `other_buildid`, a dispatched check reads it from `state/steam.json`). Unknown CL:
-  nothing is declared, so a refusal there is a loud fail. A plugin of interface v72 or later
+  as `other_buildid`; a dispatch without it reads the other branch's live build id from Steam,
+  with the code of the watcher's poll, and stops the chain with a message if it cannot; an
+  explicit `other_buildid` wins). A build the map has no row for: nothing is declared as refused. A plugin of interface v72 or later
   that is not built here has no known migration flag and is not predicted.
+- A build the candidate map has no row for on the other branch: the loader cannot run it and
+  declines. `decide.mjs --other-unmapped` sets `expectDeclineOther`, map mode passes
+  `expect_decline: true` to `rig-other`, and that rig passes only on a clean decline: the
+  version-mismatch line and the aborted hook installation are logged, no plugin is read or
+  initialised, nothing crashes, and the game process is still alive when the rig stops it. The
+  summary names the expectation. Anything else fails the rig. A CL in the map is judged as before.
 - Plugins of other authors are pinned. A rig plugin whose owner is neither msantoro12 nor
   AlienXAXS (MiniMap) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
   in the client check as well as in the rig: the check's `plugin-plan` reads the same Pin,
@@ -495,7 +502,7 @@ With `--other-cl N` (the CL the other Steam branch runs) decide also writes `oth
 metadata. Only the loader rule counts there: the scanner's REFUSED verdict and a probe note
 are about the scanned CL, not another build. The map-mode job exposes it as
 `expect_refused_other`, the `expect_refused` input of `rig-other`. Without `--other-cl`
-the field is absent and the other rig expects no refusal.
+the field is absent and the other rig expects no refusal; `--other-unmapped` (a build the map has no row for) sets `expectDeclineOther` instead, see above.
 
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
 same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,
@@ -675,8 +682,13 @@ Jobs (map mode only; none holds a secret or an environment):
    as a component named `<Name>@<branch>`: in `layout-keys.txt` and `layout-uses.txt` (so field and size
    rows exist for them) but not in `layout.json`, so no gate or pdb-diff reads them. The step records
    `layout: ok` in `keysrc.json`. A key source never changes what the check job reports.
-4. The `map-mode` job requires every key source: the step "Require the key sources" fails the job, naming the source and the
-   cause, when the list was refused, a source did not build, was not scanned or had no keys read. Then the
+4. A key source that did not build, was not scanned or had no keys read does not fail map mode. The step
+   "Settle the key sources" names it in the run summary and as a line of the pipeline-alert issue
+   (`key source <repo>@<branch> (<sha12>, checked the branch, not an installed DLL): <cause>`, from
+   `alerts.json`), and map mode goes on without the keys only that source requests. A list that was
+   refused or could not be resolved still stops the run. Every source builds against the Plugin SDK fork
+   branch `gss/sdk-dev` at the commit `KEY_SDK_REF` in the workflow `env`, the one place that names it
+   (move it with sr-update's pin; MiniMap's key-scan keeps its own). Then the
    scans builder adds each source's scan after the released plugin scans: owner the name the plugin reports,
    `tracked: true`, rank `current`, tag `<repo>@<branch>`.
 
