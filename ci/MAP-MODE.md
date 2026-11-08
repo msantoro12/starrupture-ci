@@ -698,6 +698,17 @@ plugin verdicts, `expect_refused`, rule 3 or auto-apply; it is not in the client
 (`ci/client-rig-set.ps1` reads the `plugins` input); it is not a candidate, not staged and not in the feed. Tests
 (`ci/client-check-workflow.test.mjs`) hold each of these.
 
+**Patterns in key sources (for plugin authors).** A key source is built with `SR_KEY_SOURCE_BUILD` defined (the
+version tag of its DLL is `keysource`); no shipped build has it. Wrap a global function key's pattern in
+`PLUGIN_MAP_PATTERN(...)` (Plugin SDK, `plugin_map.h`): the map run still sees the pattern and records the
+row, while a shipped build passes `nullptr` and the loader uses only the row. A site (scoped) key must keep
+its pattern at run time, so do not wrap it.
+
+```cpp
+// Global function key: the pattern is only for the map run.
+PluginMap::FunctionAs<void (*)(SDK::UWorld*)>(scan, self, "UWorld::BeginPlay", PLUGIN_MAP_PATTERN(kBeginPlayPattern));
+```
+
 **Duplicate observations.** A key a released plugin and a key source both request is one row: rows group by
 (key, fp), and the first resolved row in the order of the Step 27 plan supplies the locator. Released scans come
 first in `scans.json`, and the sort keeps input order among equal owners and ranks, so the released plugin's row
