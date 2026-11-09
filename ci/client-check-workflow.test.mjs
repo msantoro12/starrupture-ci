@@ -1740,7 +1740,7 @@ const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'P
 const KEY_PIN = '52fa40a0793bc91edce7044303327c6bc588d7c0';
 const HEX40 = 'a'.repeat(40);
 // The Plugin SDK the key sources build against: the one pin, in the workflow env (the Loader agent moves it with sr-update's).
-const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: '3367cfaf1d701049c7cf1a597094e61ea86ae6db' };
+const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: '52b48fcc1632f0b713695919c7ba7978111dc428' };
 // The node program of a step's `node -e '...'` run block.
 const nodeScriptOf = (j, name) => runOf(j, name).match(/node -e '\n([\s\S]*)\n'\s*$/)[1];
 
