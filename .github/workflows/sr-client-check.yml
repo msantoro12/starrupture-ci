@@ -312,7 +312,7 @@ env:
   # branches use headers, plugin_presets.h among them, that only that branch has). Move it with
   # sr-update's pin, never alone.
   KEY_SDK_REPO: msantoro12/StarRupture-Plugin-SDK
-  KEY_SDK_REF: 3367cfaf1d701049c7cf1a597094e61ea86ae6db
+  KEY_SDK_REF: 52b48fcc1632f0b713695919c7ba7978111dc428
 
 jobs:
   # ---- sr-aobscan, built from the loader's live patterns (no secrets) ------
