@@ -540,3 +540,47 @@ test('M1: an optional native key the scanner was never asked for is named as suc
   assert.deepEqual(out.problems, []);
   assert.ok(out.absent.some((a) => a.key === 'ULevel::Actors' && a.why.includes('scanner was not asked')));
 });
+
+// ---- A loader line marked optional in native-keys.txt ----
+
+const HEAP = 'FD3D12Resource::Heap';
+const loaderKey = (lines) => keysFromCheck(lines, '');
+const heapRun = (lines, result) => fieldRows(header(), { cl: 130000, keys: loaderKey(lines), next: [result], base: null });
+
+test('a ModLoader optional native key that is NOMEMBER is an absent row and a low note, not a problem', () => {
+  const out = heapRun(`ModLoader ${HEAP} optional\n`, { key: HEAP, result: 'NOMEMBER' });
+  assert.deepEqual(out.problems, []);
+  assert.ok(out.text, 'the header is still written');
+  assert.deepEqual(out.absent, [{ key: HEAP, why: 'not on the new build (NOMEMBER)', severity: 'low', owners: ['ModLoader'] }]);
+  assert.deepEqual(out.degraded, { ModLoader: [{ key: HEAP, severity: 'low', why: 'not on the new build (NOMEMBER) (optional)' }] });
+  assert.ok(parse(out.text).absentFields.some((r) => r.cl === 130000 && r.key === HEAP));
+  for (const result of ['NOTYPE', 'BITFIELD']) assert.deepEqual(heapRun(`ModLoader ${HEAP} optional\n`, { key: HEAP, result }).problems, [], result);
+});
+
+test('the same ModLoader key without optional still refuses', () => {
+  const out = heapRun(`ModLoader ${HEAP}\n`, { key: HEAP, result: 'NOMEMBER' });
+  assert.equal(out.text, null);
+  assert.ok(out.problems.some((p) => p.includes(HEAP) && p.includes('the loader itself reads it')));
+});
+
+test('a ModLoader optional native key that resolves gets a field row', () => {
+  const out = heapRun(`ModLoader ${HEAP} optional\n`, ent(HEAP, 0x30, 8, 0));
+  assert.deepEqual(out.problems, []);
+  const r = row(out.text, HEAP);
+  assert.deepEqual([r.offset, r.size, r.mask], [0x30, 8, 0]);
+});
+
+test('a key the loader lists as optional and a plugin requires is still treated as the plugin\'s required key', () => {
+  const lines = `ModLoader ${HEAP} optional\nP ${HEAP}\n`;
+  // Gone on the new build: the required plugin is degraded at high severity, as for any required key.
+  const gone = heapRun(lines, { key: HEAP, result: 'NOMEMBER' });
+  assert.deepEqual(gone.problems, []);
+  assert.equal(gone.absent[0].severity, 'high');
+  assert.deepEqual(gone.absent[0].owners, ['ModLoader', 'P']);
+  // Not readable, or not in the report: the required plugin holds the map.
+  const unread = heapRun(lines, { key: HEAP, result: 'BITFIELD' });
+  assert.equal(unread.text, null);
+  assert.ok(unread.problems.some((p) => p.includes(HEAP) && p.includes('BITFIELD')));
+  const unscanned = fieldRows(header(), { cl: 130000, keys: loaderKey(lines), next: [], base: null });
+  assert.ok(unscanned.problems.some((p) => p.includes('has no entry')));
+});

@@ -383,6 +383,12 @@ on every build. The word `size` is only for reading. `optional` works as on a me
 line: a struct gone from a build gets an absent row and the plugin takes its fallback.
 It has no built values and no anchor.
 
+A line may name `ModLoader` as the owner: the loader itself reads that member. Without
+`optional`, a build that lacks it holds the update, since every plugin depends on the loader.
+With `optional` the loader can do without it, so a build that lacks it (`NOMEMBER`, `NOTYPE` or
+unreadable) gets an absent row and a low-severity note on `ModLoader`, and the update goes on.
+A plugin that lists the same key without `optional` still counts it as required.
+
 The gate is per plugin, over what that plugin requests. `--uses` is the client check's
 `layout-uses.txt`: per component, its keys (`key`), the members its code requests
 (`request`: `SR_FIELD`, its two-argument wrappers, a hand-written `"Class::Member"`), the

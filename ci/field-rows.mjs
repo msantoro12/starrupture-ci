@@ -34,7 +34,9 @@
 // that one request off, and the plugin is reported degraded: high severity for
 // a required request, low for an optional one (an `optional` key-list line, or
 // a lazy lookup). A key no plugin requests or looks up is a note. A key the
-// loader itself reads is refused (exit 3): every plugin depends on the loader.
+// loader itself reads is refused (exit 3): every plugin depends on the loader,
+// unless its `ModLoader` line in native-keys.txt says `optional`: then it is an
+// absent row like a plugin's optional key.
 // A rename is not guessed. A native key the report has no entry for, or that
 // does not resolve for any other reason (a bitfield wider than one bit,
 // AMBIGUOUS), is refused when a plugin requires it: a row that is not
@@ -171,7 +173,8 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
     const d = { loader: LOADER_FIELD_KEYS.has(key), required: [], optional: [] };
     const owners = ownersOf(key);
     for (const o of owners) {
-      if (o === LOADER) { d.loader = true; continue; }
+      // A loader line marked optional is a request the loader can do without: absent row, loader feature off.
+      if (o === LOADER) { if (optionalBy.get(key)?.has(o)) d.optional.push(o); else d.loader = true; continue; }
       const native = keys.owners?.get(key)?.includes(o);
       const requested = native || !uses || uses.requests.get(o)?.has(key);
       const lazy = uses?.lazy.get(o)?.has(memberOf(key));

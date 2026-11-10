@@ -2926,3 +2926,11 @@ test('key sources: SR_KEY_SOURCE_BUILD is defined by the two key-source build st
   // The key source carries a version that stands out in ModLoader.log.
   assert.match(runOf(job('key-sources'), 'Build the key source (Client Release)'), /\/p:ModLoaderBuildTag=keysource `/);
 });
+
+test('the keys step appends ModLoader\'s native keys to keys-ModLoader.txt, as it does for each plugin', () => {
+  const loaderKeys = wf.indexOf("Invoke-Native 'keys (loader)'");
+  const add = wf.indexOf("if ($native.ContainsKey('ModLoader')) { Add-Content \"$work\\keys-ModLoader.txt\" $native['ModLoader'] }");
+  assert.ok(loaderKeys > 0 && add > loaderKeys, 'ModLoader keys are appended right after the loader key list is written');
+  assert.ok(add < wf.indexOf("$components.Add('ModLoader')"));
+  assert.ok(wf.includes('if ($native.ContainsKey($m.name)) { Add-Content "$work\\keys-$($m.name).txt" $native[$m.name] }'));
+});
