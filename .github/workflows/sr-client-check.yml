@@ -2044,6 +2044,7 @@ jobs:
           $loaderTable = Join-Path $work 'loader-table.h'
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core/core/layout_table.generated.h" -OutFile $loaderTable -TimeoutSec 60
           node $lt keys $loaderTable --out "$work\keys-ModLoader.txt" --uses-out "$work\uses-ModLoader.txt"; Invoke-Native 'keys (loader)'
+          if ($native.ContainsKey('ModLoader')) { Add-Content "$work\keys-ModLoader.txt" $native['ModLoader'] }
           $components.Add('ModLoader')
           foreach ($m in $metas) {
             Get-Source $m.repo $m.sha "$work\src-$($m.name)"

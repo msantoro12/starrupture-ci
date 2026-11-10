@@ -383,6 +383,12 @@ on every build. The word `size` is only for reading. `optional` works as on a me
 line: a struct gone from a build gets an absent row and the plugin takes its fallback.
 It has no built values and no anchor.
 
+A line may name `ModLoader` as the owner: the loader itself reads that member. Without
+`optional`, a build that lacks it holds the update, since every plugin depends on the loader.
+With `optional` the loader can do without it, so a build that lacks it (`NOMEMBER`, `NOTYPE` or
+unreadable) gets an absent row and a low-severity note on `ModLoader`, and the update goes on.
+A plugin that lists the same key without `optional` still counts it as required.
+
 The gate is per plugin, over what that plugin requests. `--uses` is the client check's
 `layout-uses.txt`: per component, its keys (`key`), the members its code requests
 (`request`: `SR_FIELD`, its two-argument wrappers, a hand-written `"Class::Member"`), the
@@ -396,8 +402,8 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update: every plugin
-  depends on it.
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+  `native-keys.txt` line says `optional`: every plugin depends on the loader.
 - A class whose size changed is a note when nothing depends on its whole size or the
   only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
   game answers with its own size on every build), and
