@@ -402,8 +402,8 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update: every plugin
-  depends on it.
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+  `native-keys.txt` line says `optional`: every plugin depends on the loader.
 - A class whose size changed is a note when nothing depends on its whole size or the
   only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
   game answers with its own size on every build), and

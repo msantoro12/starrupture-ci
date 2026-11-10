@@ -1,4 +1,4 @@
-# Game members the plugins read at a fixed offset because the Game-SDK has
+# Game members the plugins (and the loader, as ModLoader) read at a fixed offset because the Game-SDK has
 # no name for them (Dumper-7 folds them into Pad_* bytes: not reflected).
 # sr-client-check reads each one from the PDB of every build it checks,
 # beside the plugin's used classes. Format: <plugin name> <Class::Member>,

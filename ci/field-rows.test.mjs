@@ -584,3 +584,32 @@ test('a key the loader lists as optional and a plugin requires is still treated 
   const unscanned = fieldRows(header(), { cl: 130000, keys: loaderKey(lines), next: [], base: null });
   assert.ok(unscanned.problems.some((p) => p.includes('has no entry')));
 });
+
+test('a ModLoader optional key the scanner was not asked for is an absent row, with or without a uses file', () => {
+  const lines = `ModLoader ${HEAP} optional\n`;
+  for (const uses of [null, parseUses(`ModLoader key ${HEAP}\n`)]) {
+    const out = fieldRows(header(), { cl: 130000, keys: loaderKey(lines), next: [], base: null, uses });
+    assert.deepEqual(out.problems, []);
+    assert.ok(out.absent.some((a) => a.key === HEAP && a.severity === 'low' && a.why.includes('scanner was not asked')));
+    const ok = fieldRows(header(), { cl: 130000, keys: loaderKey(lines), next: [ent(HEAP, 0x30, 8, 0)], base: null, uses });
+    assert.deepEqual(ok.problems, []);
+    assert.equal(row(ok.text, HEAP).offset, 0x30);
+  }
+});
+
+test('a loader field key (LOADER_FIELD_KEYS) is still refused when missing, even with an optional ModLoader line', () => {
+  const key = [...LOADER_FIELD_KEYS][0];
+  const out = fieldRows(header(), { cl: 130000, keys: loaderKey(`ModLoader ${key} optional\n`), next: [{ key, result: 'NOMEMBER' }], base: null });
+  assert.equal(out.text, null);
+  assert.ok(out.problems.some((p) => p.includes(key) && p.includes('the loader itself reads it')));
+});
+
+test('ci/native-keys.txt lists the loader\'s two optional heap members', () => {
+  const text = readFileSync(join(here, 'native-keys.txt'), 'utf8');
+  const keys = keysFromCheck(text, '');
+  for (const key of ['FD3D12Resource::Heap', 'FD3D12Heap::Heap']) {
+    assert.deepEqual(keys.owners.get(key), ['ModLoader'], key);
+    assert.ok(keys.optionalBy.get(key).has('ModLoader'), key);
+    assert.ok(keys.optionalFields.has(key), key);
+  }
+});
