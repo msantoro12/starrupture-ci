@@ -452,6 +452,13 @@ built for as well as the new one.
   hash is the same. "Uploaded by the Actions bot" means an Actions job of this repository:
   anyone who can push a workflow here could upload as the bot, and could change `main`
   as well. The recorded run is not looked up, because runs age out and the file must not.
+- The file is also checked against the header itself. Every key that has a field row in
+  the header for that CL and an entry in the file must agree on offset, size and bool
+  mask (a class key is a size only; the two `FTransform` keys keep the register's size, so
+  their size is not compared). One disagreement refuses the file, and so does a file that
+  covers fewer than half of the header's rows for that CL. A key that resolves on the new
+  build but not on the reference build is new there: it gets a row from the new build's
+  values and a note, and holds nothing.
 - If any of that is missing, nothing is guessed. The run holds, and the hold names what
   is missing ("no reference layout to find what moved: no stored layout for CL-N ...").
   A stored file that lacks a key added later cannot be filled in once Steam has stopped

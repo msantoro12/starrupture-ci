@@ -273,6 +273,14 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
           rows.push(rowOf(m.key, cl, m.next));
           covered.add(classOf(m.key));
         }
+        // A key only the new build resolves is new on this build: its row comes from the new values, like a moved key.
+        for (const m of diff.added) {
+          if (isClassKey(m.key) || REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: new on this build; the reference does not resolve it`); continue; }
+          if (!Number.isInteger(m.next.offset)) { problems.push(`${m.key}: the new report gives no offset`); continue; }
+          rows.push(rowOf(m.key, cl, m.next));
+          covered.add(classOf(m.key));
+          notes.push(`${m.key}: new on this build; the reference does not resolve it, so the row is the new build's`);
+        }
         for (const m of diff.missing) {
           if (!isClassKey(m.key)) { gone(m.key, 'field', 'resolves on the reference build only (removed or renamed)'); continue; }
           // A class that is gone: its member keys get their absent rows above;

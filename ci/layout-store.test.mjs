@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { emit, parse } from './version-map.mjs';
 import { SCHEMA, assetName, buildRecord, main, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
 
 const HEADER = readFileSync(new URL('./fixtures/version-map/loader.h', import.meta.url), 'utf8');
@@ -11,7 +12,7 @@ const BUILT = { cl: 127004, buildid: '25646882', stamp: 1760600498, size: 171909
 const SHA = 'a'.repeat(64);
 
 const entry = (key, offset) => ({ key, result: 'OK', offset, size: 8, boolMask: 0 });
-const KEYS = [entry('AFoo::Bar', 16), entry('AFoo::Baz', 24), entry('UWorld::GameState', 0x120)];
+const KEYS = [entry('ACrCrafter::CraftComponent', 1752), entry('AFoo::Bar', 16), entry('AFoo::Baz', 24), entry('UWorld::GameState', 0x120)];
 
 const result = (over = {}) => ({
   download: { betaKey: 'public', installed: true, buildid: BUILT.buildid },
@@ -45,7 +46,7 @@ test('record: an installed public build becomes a record keyed by its CL and exe
   assert.equal(r.exeSha256, SHA);
   assert.equal(r.imageStamp, BUILT.stamp);
   assert.equal(r.imageSize, BUILT.size);
-  assert.deepEqual(r.keys.map((k) => k.key), ['AFoo::Bar', 'AFoo::Baz', 'UWorld::GameState']);
+  assert.deepEqual(r.keys.map((k) => k.key), ['ACrCrafter::CraftComponent', 'AFoo::Bar', 'AFoo::Baz', 'UWorld::GameState']);
 });
 
 test('record: refuses a build that is not an installed public one', () => {
@@ -69,9 +70,9 @@ const stored = (record, over = {}) => { const text = JSON.stringify(record); ret
 test('record: the same exe again adds keys and keeps the stored ones; another exe is refused', () => {
   const first = make();
   const more = make({ layoutText: layoutText([...KEYS, entry('AFoo::New', 40)]), existing: stored(first) });
-  assert.deepEqual(more.keys.map((k) => k.key), ['AFoo::Bar', 'AFoo::Baz', 'AFoo::New', 'UWorld::GameState']);
+  assert.deepEqual(more.keys.map((k) => k.key), ['ACrCrafter::CraftComponent', 'AFoo::Bar', 'AFoo::Baz', 'AFoo::New', 'UWorld::GameState']);
   const fewer = make({ layoutText: layoutText([KEYS[0]]), existing: stored(more) });
-  assert.equal(fewer.keys.length, 4, 'a later run with fewer keys loses none');
+  assert.equal(fewer.keys.length, 5, 'a later run with fewer keys loses none');
   assert.throws(() => make({ result: result({ checks: { exe: { cl: '127004', sha256: 'b'.repeat(64) } } }), existing: stored(first) }), /another exe.*exeSha256/);
   assert.throws(() => make({ result: result({ download: { betaKey: 'public', installed: true, buildid: '1' } }), existing: stored(first) }), /another exe.*buildid/);
   assert.throws(() => make({ scanner: scanner({ imageStamp: 1 }), existing: stored(first) }), /another exe.*imageStamp/);
@@ -98,7 +99,7 @@ test('record: sameLayout tells a run that adds nothing from one that adds a key'
 test('reference: a record of the built CL, bound to the header build and uploaded by the Actions bot, is the base', () => {
   const out = ref();
   assert.equal(out.cl, 127004);
-  assert.deepEqual(out.keys.map((k) => k.key), ['AFoo::Bar', 'AFoo::Baz', 'UWorld::GameState']);
+  assert.deepEqual(out.keys.map((k) => k.key), ['ACrCrafter::CraftComponent', 'AFoo::Bar', 'AFoo::Baz', 'UWorld::GameState']);
 });
 
 test('reference: accepts a record whose upload was long ago (nothing about the recorded run is looked up)', () => {
@@ -157,6 +158,47 @@ test('reference: refuses a record that lacks a reflected key now listed, naming 
   refuses({ args: { fields: many } }, /8 reflected keys.*\+3 more/);
 });
 
+// ---- cross-check against the header's field rows ------------------------------
+
+const hrow = (key, offset, size, mask = 0) => ({ key, cl: BUILT.cl, offset, size, mask, member: null });
+// The fixture header with its CL-127004 field rows replaced by `rows`.
+const headerWith = (rows) => {
+  const map = parse(HEADER);
+  map.fields = [...map.fields.filter((r) => r.cl !== BUILT.cl), ...rows];
+  return emit(map);
+};
+const rec = (keys) => { const text = JSON.stringify(make({ layoutText: layoutText(keys) }), null, 2) + '\n'; return { recordText: text, release: releaseFor(text) }; };
+const RECS = [entry('AFoo::Bar', 16), { key: 'UCrBig', result: 'OK', size: 0x40 }, { key: 'FTransform::Translation', result: 'OK', offset: 0x20, size: 0x20, boolMask: 0 },
+  { key: 'UCrFlag::bOn', result: 'OK', offset: 0x565, size: 1, boolMask: 0x10 }];
+const HROWS = [hrow('AFoo::Bar', 16, 8), hrow('UCrBig', 0, 0x40), hrow('FTransform::Translation', 0x20, 0x18), hrow('UCrFlag::bOn', 0x565, 1, 0x10)];
+const cross = (rows, recs = RECS, over = {}) => ref({ ...rec(recs), args: { headerText: headerWith(rows), fields: new Set(), ...over } });
+const swap = (key, patch) => RECS.map((k) => (k.key === key ? { ...k, ...patch } : k));
+
+test('cross-check: equal data passes, the register size exception is honoured, a header key the record lacks is ignored', () => {
+  assert.equal(cross(HROWS).cl, 127004);
+  assert.equal(cross([...HROWS, hrow('AFoo::NotInRecord', 8, 8)]).cl, 127004);
+});
+
+test('cross-check: a wrong offset, size or mask refuses and names the key with both values', () => {
+  assert.throws(() => cross(HROWS, swap('AFoo::Bar', { offset: 24 })), /disagrees.*1 of 4 keys.*AFoo::Bar: header 0x10\/0x8\/0x0, record 0x18\/0x8\/0x0/);
+  assert.throws(() => cross(HROWS, swap('AFoo::Bar', { size: 4 })), /AFoo::Bar: header 0x10\/0x8\/0x0, record 0x10\/0x4\/0x0/);
+  assert.throws(() => cross(HROWS, swap('UCrFlag::bOn', { boolMask: 0x20 })), /UCrFlag::bOn: header 0x565\/0x1\/0x10, record 0x565\/0x1\/0x20/);
+  assert.throws(() => cross(HROWS, swap('UCrBig', { size: 0x48 })), /UCrBig: header 0x0\/0x40\/0x0, record 0x0\/0x48\/0x0/);
+  assert.throws(() => cross(HROWS, swap('UCrBig', { result: 'NOTYPE' })), /UCrBig: header 0x0\/0x40\/0x0, record NOTYPE/);
+});
+
+test('cross-check: many mismatches are counted and only the first few named', () => {
+  const rows = Array.from({ length: 5 }, (_, i) => hrow(`X::k${i}`, 8, 8));
+  const recs = rows.map((r) => entry(r.key, 16));
+  assert.throws(() => cross(rows, recs), /5 of 5 keys.*X::k0.*X::k1.*X::k2.*\+2 more/);
+});
+
+test('cross-check: refuses when fewer than half of the header rows could be compared', () => {
+  const more = (n) => Array.from({ length: n }, (_, i) => hrow(`M::k${i}`, 8, 8));
+  assert.throws(() => cross([...HROWS, ...more(5)]), /entry for only 4 of the header's 9 field rows.*too few/);
+  assert.equal(cross([...HROWS, ...more(4)]).cl, 127004, 'exactly half is enough');
+});
+
 test('reference: refuses malformed records', () => {
   for (const bad of ['not json', '{}', JSON.stringify({ ...make(), schema: 2 }), JSON.stringify({ ...make(), exeSha256: 'zz' }),
     JSON.stringify({ ...make(), keys: 'x' }), JSON.stringify({ ...make(), keys: [{ key: 'A::b', result: 'OK' }] }), JSON.stringify({ ...make(), buildid: 'abc' })]) {
@@ -197,7 +239,7 @@ test('command line: record writes the asset, reference writes the base report an
   const args = ['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json')];
   const ok = run(args);
   assert.equal(ok.code, 0, ok.err);
-  assert.equal(JSON.parse(readFileSync(p('base.json'), 'utf8')).keys.length, 3);
+  assert.equal(JSON.parse(readFileSync(p('base.json'), 'utf8')).keys.length, 4);
   const gone = run(args.map((a) => (a === p('rec.json') ? p('missing.json') : a)));
   assert.equal(gone.code, 3);
   assert.match(gone.err, /listed on release vmap-layouts but could not be downloaded/);
