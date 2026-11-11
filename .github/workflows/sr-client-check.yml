@@ -45,7 +45,8 @@ name: SR client check
 # Nexus or upload-to-the-world step, the fork keys exist only for the owner's
 # own forks (the auto-apply job checks the repository), and the result artifact
 # holds reports, never a plugin binary. What it does write is the loader's own
-# version map feed: the signed feed on the vmap-feed release (publish), described at its job.
+# version map feed: the signed feed on the vmap-feed release (publish), described at its job, and the layout
+# of each public build on the vmap-layouts release (layout-store, from main only), described at its job.
 #
 # Login: a separate Steam account that owns the game, never the owner's main
 # account. Its steamcmd login cache (config.vdf) is the secret
@@ -2462,7 +2463,10 @@ jobs:
   # stops serving the build once public moves. It runs only from this repository's main: the workflow has no pull
   # request trigger and the check job's environment takes deployments from main only, so no fork or other ref
   # reaches it. It reads the check's own artifact and writes with the job's token; no environment, no secret, and
-  # no code from anywhere but main. A CL already stored is extended only for the same exe, never overwritten.
+  # the only code it runs is this repository's ci/ at main. A CL already stored is extended only for the same exe
+  # and only when an Actions job uploaded the stored asset, never overwritten; an unchanged one is not uploaded
+  # again, and an upload is read back. The build cannot be fetched again once public moves, so this job is red
+  # (not a warning) when the check left nothing to store.
   layout-store:
     name: store the public layout
     needs: [check]
@@ -2497,19 +2501,29 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f res/layout-target.json ] || [ ! -f res/result.json ] || [ ! -f res/scanner.json ]; then
-            echo "::warning title=Layout store::the check's artifact has no layout, result or scanner file; nothing is stored for this build"
-            exit 0
+            echo "::error title=Layout store::the check's artifact has no layout, result or scanner file, so nothing is stored for this build and the next update will hold until this build is checked again while Steam still serves it"
+            exit 1
           fi
           cl="$(node -p "String(JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.cl ?? '')")"
-          [[ "$cl" =~ ^[0-9]+$ ]] || { echo "::warning title=Layout store::the check recorded no CL for the exe; nothing is stored"; exit 0; }
+          [[ "$cl" =~ ^[0-9]+$ ]] || { echo "::error title=Layout store::the check recorded no CL for the exe, so nothing is stored"; exit 1; }
+          name="layout-CL-$cl.json"
           gh release view vmap-layouts > /dev/null 2>&1 || gh release create vmap-layouts --latest=false --title "Reference layouts" --notes "The layout of each public build, one asset per CL, written by the client check. The field rows of the next update compare against it."
-          mkdir -p stored
-          gh release download vmap-layouts --pattern "layout-CL-$cl.json" --dir stored 2> /dev/null || true
+          mkdir -p stored verify
+          gh api "repos/$GH_REPO/releases/tags/vmap-layouts" > stored/release.json
+          listed="$(node -p "String((JSON.parse(require('fs').readFileSync('stored/release.json','utf8')).assets ?? []).some((a) => a.name === process.argv[1]))" "$name")"
+          # A stored asset that cannot be downloaded fails the job: it is never replaced by a record built from this run alone.
           existing=()
-          if [ -f "stored/layout-CL-$cl.json" ]; then existing=(--existing "stored/layout-CL-$cl.json"); fi
-          node tool/ci/layout-store.mjs record --out "layout-CL-$cl.json" --result res/result.json --scanner res/scanner.json --layout res/layout-target.json \
+          if [ "$listed" = true ]; then
+            gh release download vmap-layouts --pattern "$name" --dir stored
+            existing=(--existing "stored/$name" --release stored/release.json)
+          fi
+          node tool/ci/layout-store.mjs record --out "$name" --result res/result.json --scanner res/scanner.json --layout res/layout-target.json \
             --run "$RUN_ID" --sha "$WORKFLOW_SHA" "${existing[@]}"
-          gh release upload vmap-layouts "layout-CL-$cl.json" --clobber
+          # Nothing is written when the stored asset already holds these keys: it stays as it is.
+          [ -f "$name" ] || exit 0
+          gh release upload vmap-layouts "$name" --clobber
+          gh release download vmap-layouts --pattern "$name" --dir verify --clobber
+          cmp "$name" "verify/$name" || { echo "::error title=Layout store::$name on the release is not the file that was uploaded"; exit 1; }
 
   # ---- Map mode: the update as rows in the loader's version map -----------
   # The unattended path M chain, on the scans the check job uploaded and the

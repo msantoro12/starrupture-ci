@@ -226,7 +226,7 @@ jobs:
     # autopilot on and every gate passed (ci/MAP-MODE.md, "The publish path").
     # These permissions are a ceiling, not a grant: GitHub checks every called
     # job against them when it parses the call, before any if. Each called job
-    # sets its own, and only publish (vmap-sign environment, main only) asks for contents: write. actions: read is the client rig's
+    # sets its own, and only publish (vmap-sign environment, main only) and layout-store (main only, no environment) ask for contents: write. actions: read is the client rig's
     # (sr-client-check calls sr-client-rig, which reads the candidate run's
     # artifacts); without it here the nested call would not parse. actions: write is the
     # feed-loader-cleanup job's, which deletes the feed-path loader artifact once the rig has ended.

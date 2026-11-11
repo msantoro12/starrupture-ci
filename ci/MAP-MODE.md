@@ -402,7 +402,7 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
 - A class whose size changed is a note when nothing depends on its whole size or the
   only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
@@ -440,17 +440,22 @@ built for as well as the new one.
 - `public` has no older build to download: Steam stops serving it once `public`
   moves. So every `public` map-mode check keeps the layout it scanned, one file per CL
   (`layout-CL-<CL>.json`), on this repository's `vmap-layouts` release. The `layout-store`
-  job writes it, with the job's own token, only from `main`.
+  job writes it, with the job's own token, only from `main`. A file already stored for a CL
+  is extended with new keys only for the same exe, and only if an Actions job uploaded it;
+  an unchanged one is not uploaded again. The job is red when the check left nothing to
+  store, because that build cannot be fetched again once `public` moves.
 - When `public` moves, field rows read the file for the CL the header was built for.
   `ci/layout-store.mjs reference` accepts it only if all of these hold: it is for that CL;
   its Steam build id, image stamp and image size are the header's build row for that CL;
-  the release says the Actions bot uploaded it (a person cannot be that uploader); it has
+  the release says the Actions bot uploaded it (a hand upload does not count); it has
   an entry for every reflected key now listed; and, for a re-run of the same CL, the exe
-  hash is the same.
+  hash is the same. "Uploaded by the Actions bot" means an Actions job of this repository:
+  anyone who can push a workflow here could upload as the bot, and could change `main`
+  as well. The recorded run is not looked up, because runs age out and the file must not.
 - If any of that is missing, nothing is guessed. The run holds, and the hold names what
   is missing ("no reference layout to find what moved: no stored layout for CL-N ...").
-  An older record that lacks a newly added key is refreshed by one `public` check of that
-  build, while Steam still serves it.
+  A stored file that lacks a key added later cannot be filled in once Steam has stopped
+  serving that build: the update holds until the header is built for a newer CL.
 - The one-time seed, so the build `public` runs today is stored before it moves:
   `gh workflow run sr-client-check.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f map_mode=true -f test_autopilot=true`.
   Dispatch it a second time to see the stored layout read back.

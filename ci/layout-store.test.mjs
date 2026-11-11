@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { SCHEMA, assetName, buildRecord, main, readRecord, referenceFor } from './layout-store.mjs';
+import { SCHEMA, assetName, buildRecord, main, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
 
 const HEADER = readFileSync(new URL('./fixtures/version-map/loader.h', import.meta.url), 'utf8');
 // The fixture header: built for CL-127004, whose build row is public build 25646882.
@@ -64,16 +64,33 @@ test('record: refuses a missing or malformed exe hash, CL or image identity', ()
   assert.throws(() => make({ layoutText: 'nope' }), /not JSON/);
 });
 
+const stored = (record, over = {}) => { const text = JSON.stringify(record); return { text, release: releaseFor(text, over) }; };
+
 test('record: the same exe again adds keys and keeps the stored ones; another exe is refused', () => {
   const first = make();
-  const more = make({ layoutText: layoutText([...KEYS, entry('AFoo::New', 40)]), existing: JSON.stringify(first) });
+  const more = make({ layoutText: layoutText([...KEYS, entry('AFoo::New', 40)]), existing: stored(first) });
   assert.deepEqual(more.keys.map((k) => k.key), ['AFoo::Bar', 'AFoo::Baz', 'AFoo::New', 'UWorld::GameState']);
-  const fewer = make({ layoutText: layoutText([KEYS[0]]), existing: JSON.stringify(more) });
+  const fewer = make({ layoutText: layoutText([KEYS[0]]), existing: stored(more) });
   assert.equal(fewer.keys.length, 4, 'a later run with fewer keys loses none');
-  assert.throws(() => make({ result: result({ checks: { exe: { cl: '127004', sha256: 'b'.repeat(64) } } }), existing: JSON.stringify(first) }), /another exe.*exeSha256/);
-  assert.throws(() => make({ result: result({ download: { betaKey: 'public', installed: true, buildid: '1' } }), existing: JSON.stringify(first) }), /another exe.*buildid/);
-  assert.throws(() => make({ scanner: scanner({ imageStamp: 1 }), existing: JSON.stringify(first) }), /another exe.*imageStamp/);
-  assert.throws(() => make({ layoutText: layoutText([entry('AFoo::Bar', 99)]), existing: JSON.stringify(first) }), /another result for AFoo::Bar/);
+  assert.throws(() => make({ result: result({ checks: { exe: { cl: '127004', sha256: 'b'.repeat(64) } } }), existing: stored(first) }), /another exe.*exeSha256/);
+  assert.throws(() => make({ result: result({ download: { betaKey: 'public', installed: true, buildid: '1' } }), existing: stored(first) }), /another exe.*buildid/);
+  assert.throws(() => make({ scanner: scanner({ imageStamp: 1 }), existing: stored(first) }), /another exe.*imageStamp/);
+  assert.throws(() => make({ layoutText: layoutText([entry('AFoo::Bar', 99)]), existing: stored(first) }), /another result for AFoo::Bar/);
+  assert.throws(() => make({ layoutText: layoutText([{ ...entry('AFoo::Bar', 16), size: 4 }]), existing: stored(first) }), /another result for AFoo::Bar/);
+});
+
+test('record: a stored asset an Actions job did not upload is not carried forward', () => {
+  const first = make();
+  assert.throws(() => make({ existing: stored(first, { uploader: { login: 'someone', type: 'User' } }) }), /uploaded by someone \(User\).*not trusted/);
+  assert.throws(() => make({ existing: stored(first, { uploader: null }) }), /uploaded by unknown/);
+  assert.throws(() => make({ existing: { text: JSON.stringify(first), release: { assets: [] } } }), /lists no layout-CL-127004.json/);
+  assert.throws(() => make({ existing: stored(first, { size: 5 }) }), /not the asset the release lists/);
+});
+
+test('record: sameLayout tells a run that adds nothing from one that adds a key', () => {
+  const first = make();
+  assert.equal(sameLayout(readRecord(JSON.stringify(first)), make({ run: 100, at: '2026-12-01T00:00:00Z', existing: stored(first) })), true);
+  assert.equal(sameLayout(readRecord(JSON.stringify(first)), make({ layoutText: layoutText([...KEYS, entry('AFoo::New', 40)]), existing: stored(first) })), false);
 });
 
 // ---- reference ---------------------------------------------------------------
@@ -105,7 +122,11 @@ test('reference: refuses a release that does not list the asset, or lists anothe
 });
 
 test('reference: refuses when nothing is stored for the built CL', () => {
-  refuses({ recordText: null }, /no stored layout for CL-127004.*has no layout-CL-127004.json/);
+  refuses({ recordText: null, release: { assets: [] } }, /no stored layout for CL-127004.*has no layout-CL-127004.json/);
+});
+
+test('reference: says so when the asset is listed but could not be downloaded', () => {
+  refuses({ recordText: null, release: releaseFor('x') }, /layout-CL-127004.json is listed on release vmap-layouts but could not be downloaded/);
 });
 
 test('reference: refuses a record for an older or a newer CL than the header was built for', () => {
@@ -179,6 +200,29 @@ test('command line: record writes the asset, reference writes the base report an
   assert.equal(JSON.parse(readFileSync(p('base.json'), 'utf8')).keys.length, 3);
   const gone = run(args.map((a) => (a === p('rec.json') ? p('missing.json') : a)));
   assert.equal(gone.code, 3);
-  assert.match(gone.err, /no stored layout for CL-127004/);
+  assert.match(gone.err, /listed on release vmap-layouts but could not be downloaded/);
+  writeFileSync(p('empty.json'), JSON.stringify({ assets: [] }));
+  const none = run(args.map((a) => (a === p('release.json') ? p('empty.json') : a === p('rec.json') ? p('missing.json') : a)));
+  assert.equal(none.code, 3);
+  assert.match(none.err, /no stored layout for CL-127004/);
   assert.equal(run(['bogus']).code, 2);
+});
+
+test('command line: record against a stored asset writes nothing when it adds nothing, and refuses a hand upload', () => {
+  const p = inDir({ 'result.json': JSON.stringify(result()), 'scanner.json': JSON.stringify(scanner()), 'layout.json': layoutText() });
+  const base = ['record', '--out', p('rec.json'), '--result', p('result.json'), '--scanner', p('scanner.json'), '--layout', p('layout.json'), '--run', '8', '--sha', 'f'.repeat(40)];
+  assert.equal(run(base).code, 0);
+  const text = readFileSync(p('rec.json'), 'utf8');
+  writeFileSync(p('stored.json'), text);
+  writeFileSync(p('release.json'), JSON.stringify(releaseFor(text)));
+  writeFileSync(p('hand.json'), JSON.stringify(releaseFor(text, { uploader: { login: 'someone', type: 'User' } })));
+  const again = ['record', '--out', p('rec2.json'), ...base.slice(3), '--existing', p('stored.json')];
+  const same = run([...again, '--release', p('release.json')]);
+  assert.equal(same.code, 0, same.err);
+  assert.match(same.out, /nothing to upload/);
+  assert.throws(() => readFileSync(p('rec2.json')), /ENOENT/);
+  const hand = run([...again, '--release', p('hand.json')]);
+  assert.equal(hand.code, 3);
+  assert.match(hand.err, /not trusted/);
+  assert.equal(run(base.concat(['--existing', p('stored.json')])).code, 3, '--existing needs --release');
 });

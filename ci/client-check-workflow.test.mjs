@@ -2961,7 +2961,10 @@ test('layout-store: the writer job runs only for a successful public map-mode ch
   assert.equal(checkouts.length, 1);
   assert.ok(!/repository:|ref:/.test(checkouts[0]), 'the default checkout: this repository at the run\'s ref (main)');
   assert.deepEqual([...j.matchAll(/gh release (?:upload|create|edit|delete) (\S+)( \S+)?/g)].map((m) => m[0]).filter((x) => !x.startsWith('gh release create')),
-    ['gh release upload vmap-layouts "layout-CL-$cl.json"']);
+    ['gh release upload vmap-layouts "$name"']);
+  assert.ok(j.includes('gh release upload vmap-layouts "$name" --clobber'), 'a new asset or an extended one');
+  assert.deepEqual([...j.matchAll(/gh api (\S+)/g)].map((m) => m[1]), ['"repos/$GH_REPO/releases/tags/vmap-layouts"'], 'the only API call is a read of the release');
+  assert.ok(!/gh api[^\n]*(-X|--method|-f |-F |--input)/.test(j));
   assert.ok(j.includes('gh release create vmap-layouts --latest=false'), 'the new release never becomes the repository\'s Latest');
   assert.ok(!/environment: vmap-sign|VMAP_SIGN_KEY/.test(j));
   assert.ok(!/layout-store/.test(job('alert')), 'a store problem is not an alert of the update chain');
@@ -2970,23 +2973,33 @@ test('layout-store: the writer job runs only for a successful public map-mode ch
   assert.ok(!/^ {2}pull_request(_target)?:/m.test(triggers));
 });
 
-test('layout-store: the writer extends a stored CL only with the same exe, and never overwrites another', { skip: !bash }, () => {
+test('layout-store: the writer extends a stored CL only with the same exe and an Actions upload, and never overwrites another', { skip: !bash }, () => {
   const script = runOf(job('layout-store'), 'Store the layout');
-  assert.match(script, /--existing "stored\/layout-CL-\$cl\.json"/);
+  assert.match(script, /--existing "stored\/\$name" --release stored\/release\.json/);
+  assert.ok(!/download[^\n]*\|\| true/.test(script), 'a stored asset that cannot be downloaded fails the job');
+  const BOT = { login: 'github-actions[bot]', type: 'Bot' };
   const fixtures = (sha) => ({
     'res/result.json': { download: { betaKey: 'public', installed: true, buildid: '25646882' }, checks: { exe: { cl: '127004', sha256: sha, productVersion: '1.0-CL-127004' } } },
     'res/scanner.json': { exe: { cl: 127004, imageStamp: 1760600498, imageSize: 171909120 } },
     'res/layout-target.json': { keys: [{ key: 'AFoo::Bar', result: 'OK', offset: 16, size: 8, boolMask: 0 }] },
   });
-  const run = (sha, stored) => {
+  const run = (sha, stored, o = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'lstore-'));
     const files = fixtures(sha);
     cpSync(here, join(dir, 'tool', 'ci'), { recursive: true });
     if (stored) files['stored-asset.json'] = stored;
+    const listed = o.listed ?? Boolean(stored);
+    files['release-api.json'] = { assets: listed ? [{ name: 'layout-CL-127004.json', size: Buffer.byteLength(stored ?? ''), uploader: o.uploader === undefined ? BOT : o.uploader }] : [] };
+    // The fake release: `api` lists the stored asset, a download of `stored` gives it (or fails), a download into `verify` gives back what was uploaded (or something else).
     const gh = `#!/bin/bash
 echo "$*" >> "$FAKE_DIR/calls.log"
+if [ "$1" = api ]; then cat "$FAKE_DIR/release-api.json"; exit 0; fi
 if [ "$1 $2" = "release view" ]; then exit 0; fi
-if [ "$1 $2" = "release download" ]; then [ -f "$FAKE_DIR/stored-asset.json" ] && cp "$FAKE_DIR/stored-asset.json" "$7/$5" ; exit 0; fi
+if [ "$1 $2" = "release download" ]; then
+  if [ "$7" = verify ]; then if [ -n "\${TAMPER:-}" ]; then echo '{}' > "$7/$5"; else cp "$FAKE_DIR/uploaded.json" "$7/$5"; fi; exit 0; fi
+  if [ -n "\${FAIL_DOWNLOAD:-}" ] || [ ! -f "$FAKE_DIR/stored-asset.json" ]; then echo "gh: download failed" >&2; exit 1; fi
+  cp "$FAKE_DIR/stored-asset.json" "$7/$5"; exit 0
+fi
 if [ "$1 $2" = "release upload" ]; then cp "$4" "$FAKE_DIR/uploaded.json" ; exit 0; fi
 exit 1
 `;
@@ -2994,7 +3007,7 @@ exit 1
     mkdirSync(join(dir, 'bin'), { recursive: true });
     writeFileSync(join(dir, 'bin', 'gh'), gh);
     chmodSync(join(dir, 'bin', 'gh'), 0o755);
-    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, RUN_ID: '42', WORKFLOW_SHA: 'f'.repeat(40), PATH: join(dir, 'bin') + delimiter + process.env.PATH } });
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', RUN_ID: '42', WORKFLOW_SHA: 'f'.repeat(40), PATH: join(dir, 'bin') + delimiter + process.env.PATH, ...(o.env ?? {}) } });
     return { r, dir, uploaded: existsSync(join(dir, 'uploaded.json')) ? JSON.parse(readFileSync(join(dir, 'uploaded.json'), 'utf8')) : null };
   };
   const first = run('a'.repeat(64));
@@ -3010,16 +3023,33 @@ exit 1
   assert.notEqual(other.r.status, 0, 'another exe for a stored CL fails the job');
   assert.equal(other.uploaded, null, 'and nothing is uploaded');
   assert.match(other.r.stderr, /already stored for another exe/);
-  const none = run('a'.repeat(64));
-  assert.ok(calls(none.dir).some((l) => l.startsWith('release upload vmap-layouts layout-CL-127004.json --clobber')));
+  assert.ok(calls(first.dir).some((l) => l.startsWith('release upload vmap-layouts layout-CL-127004.json --clobber')));
+  // A stored asset that is not from an Actions job is not carried into a trusted one.
+  const hand = run('a'.repeat(64), JSON.stringify(first.uploaded), { uploader: { login: 'someone', type: 'User' } });
+  assert.notEqual(hand.r.status, 0);
+  assert.equal(hand.uploaded, null);
+  assert.match(hand.r.stderr, /not trusted/);
+  // A listed asset that cannot be downloaded fails the job; it is not replaced by a record of this run alone.
+  const broken = run('a'.repeat(64), JSON.stringify(first.uploaded), { env: { FAIL_DOWNLOAD: '1' } });
+  assert.notEqual(broken.r.status, 0);
+  assert.equal(broken.uploaded, null);
+  // The same keys again: the stored asset stays as it is.
+  const same = run('a'.repeat(64), JSON.stringify(first.uploaded));
+  assert.equal(same.r.status, 0, same.r.stderr);
+  assert.equal(same.uploaded, null);
+  assert.match(same.r.stdout, /nothing to upload/);
+  // An upload that does not read back the same fails the job.
+  const tampered = run('a'.repeat(64), undefined, { env: { TAMPER: '1' } });
+  assert.notEqual(tampered.r.status, 0);
+  assert.match(tampered.r.stdout, /::error title=Layout store::.*is not the file that was uploaded/);
 });
 
-test('layout-store: a build the artifact does not describe stores nothing and does not fail the check', { skip: !bash }, () => {
+test('layout-store: a build the artifact does not describe fails the job, because Steam will not serve it again', { skip: !bash }, () => {
   const script = runOf(job('layout-store'), 'Store the layout');
   const dir = mkdtempSync(join(tmpdir(), 'lstore-'));
   const r = sh(script, dir, {});
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /::warning title=Layout store::.*nothing is stored/);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /::error title=Layout store::.*nothing is stored/);
 });
 
 test('stored_reference: a dispatch input only, and every condition is in the switch that reads the store', () => {
@@ -3120,7 +3150,8 @@ exit 1
     assert.match(r.missing[1], re);
   };
   miss({ release: null }, /release vmap-layouts could not be read: gh: Not Found \(HTTP 404\)/);
-  miss({ asset: null }, /no stored layout for CL-127004/);
+  miss({ asset: null }, /layout-CL-127004.json is listed on release vmap-layouts but could not be downloaded/);
+  miss({ asset: null, release: JSON.stringify({ assets: [] }) }, /no stored layout for CL-127004/);
   miss({ release: release({ login: 'someone', type: 'User' }) }, /uploaded by someone \(User\).*not trusted/);
   miss({ release: release(bot, 3) }, /not the asset the release lists/);
   miss({ asset: record.replace('"cl": 127004', '"cl": 126000') }, /stored layout is for CL-126000, the header was built for CL-127004/);
@@ -3131,6 +3162,9 @@ exit 1
   assert.deepEqual(run({ env: other }).missing, [], 'no store read, no reason: field-rows keeps its old refusal');
   assert.deepEqual(run({ env: { PROOF: 'true' } }).base, ['--base', 'res/layout-target.json']);
   assert.deepEqual(run({ env: { FIRST_PUBLISH: 'true', MAPPED: 'true' } }).base, ['--base', 'res/layout-target.json']);
+  // Public moves to a build the header already maps from the other Steam branch (R2): mapped alone, or a first publish of an unmapped CL, is not a self-reference.
+  assert.deepEqual(run({ env: { MAPPED: 'true' } }).base, ['--base', 'res/layout-stored.json']);
+  assert.deepEqual(run({ env: { FIRST_PUBLISH: 'true', MAPPED: 'false' } }).base, ['--base', 'res/layout-stored.json']);
   // The proof of the stored reference: the store, whatever the live public scan gave.
   const proof = run({ env: { ...other, STORED_REFERENCE: 'true' }, reference: true });
   assert.deepEqual(proof.base, ['--base', 'res/layout-stored.json']);

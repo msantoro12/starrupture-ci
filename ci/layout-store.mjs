@@ -2,7 +2,7 @@
 // The reference layout of the public build, kept per CL as a release asset.
 //
 //   node ci/layout-store.mjs record --out <record.json> --result <result.json> --scanner <scanner.json> --layout <layout-target.json>
-//        --run <run id> --sha <workflow sha> [--at <time>] [--existing <record.json>]
+//        --run <run id> --sha <workflow sha> [--at <time>] [--existing <record.json> --release <release.json>]
 //   node ci/layout-store.mjs reference <header> --record <record.json> --release <release.json> --cl <target CL> --sha256 <target exe sha256>
 //        --native-keys <native-keys.txt> --layout-keys <list> --out <layout report>
 //
@@ -15,8 +15,11 @@
 //
 // record  Builds the asset from the check's own files. It refuses a build that is
 //         not an installed public build. With --existing (the asset already stored
-//         for the same CL) it keeps the older keys and adds the new ones; another
-//         exe for a stored CL is refused, so a CL is never overwritten.
+//         for the same CL, and --release, the release object that lists it) it keeps
+//         the older keys and adds the new ones; another exe for a stored CL is
+//         refused, so a CL is never overwritten, and so is a stored asset an Actions
+//         job did not upload, so a hand-made one is not carried into a trusted one.
+//         When the result equals the stored asset it writes nothing (exit 0).
 // reference
 //         Checks a stored record against the header and writes it as a layout
 //         report for field-rows --base. Exit 3 prints the first thing that is
@@ -26,9 +29,12 @@
 // A record is accepted only when ALL hold: it is the layout of the CL the header
 // was built for; its build id, image stamp and image size are those of the
 // header's build row for that CL; when the new build has the same CL, the exe
-// sha256 is the same; the release asset was uploaded by the Actions bot (this
-// repo's own workflow, with its token: a person or a fork cannot be that
-// uploader); and it has an entry for every reflected key now listed.
+// sha256 is the same; the release asset was uploaded by the Actions bot (an
+// Actions job of this repository, with its token: a hand upload does not count);
+// and it has an entry for every reflected key now listed. The uploader is what
+// the release API reports, so any job of this repository that holds
+// contents: write could upload as the bot: only people who can push a workflow to
+// this repository can do that, and they can change main as well.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -55,6 +61,7 @@ const json = (text, what) => {
 const IDENTITY = ['cl', 'buildid', 'exeSha256', 'imageStamp', 'imageSize'];
 
 // The record for the public build a check scanned, or why there is none.
+// existing: { text, release } when an asset for this CL is already stored (its text, and the release object that lists it).
 export function buildRecord({ result, scanner, layoutText, run, workflowSha, at, existing = null }) {
   const exe = result?.checks?.exe;
   const dl = result?.download;
@@ -84,22 +91,43 @@ export function buildRecord({ result, scanner, layoutText, run, workflowSha, at,
     keys: [...keys].sort((a, b) => cmp(a.key, b.key)),
   };
   if (!existing) return record;
-  const old = readRecord(existing, 'the stored record');
+  checkAsset(existing.release, cl, existing.text);
+  const old = readRecord(existing.text, 'the stored record');
   for (const f of IDENTITY) {
     if (old[f] !== record[f]) throw new MapError(`CL-${cl} is already stored for another exe (${f}: stored ${old[f]}, measured ${record[f]}); nothing is overwritten`);
   }
   const merged = new Map(old.keys.map((k) => [k.key, k]));
   for (const k of record.keys) {
     const had = merged.get(k.key);
-    if (had && JSON.stringify(had) !== JSON.stringify(k)) throw new MapError(`CL-${cl} is already stored with another result for ${k.key}; nothing is overwritten`);
+    if (had && !sameEntry(had, k)) throw new MapError(`CL-${cl} is already stored with another result for ${k.key}; nothing is overwritten`);
     merged.set(k.key, k);
   }
   return { ...record, keys: [...merged.values()].sort((a, b) => cmp(a.key, b.key)) };
 }
 
+const ENTRY = ['key', 'result', 'offset', 'size', 'boolMask'];
+const sameEntry = (a, b) => ENTRY.every((f) => a[f] === b[f]);
+
+// True when two records describe the same build with the same keys and values (run, sha and time are information only).
+export function sameLayout(a, b) {
+  return IDENTITY.every((f) => a[f] === b[f]) && a.keys.length === b.keys.length && a.keys.every((k, i) => sameEntry(k, b.keys[i]));
+}
+
+// The release asset for `cl`, or a MapError naming why it is not trusted: it must be listed, uploaded by the
+// Actions bot, and be the file in hand (same size).
+export function checkAsset(release, cl, text) {
+  const asset = (release?.assets ?? []).find((a) => a?.name === assetName(cl));
+  if (!asset) throw new MapError(`release ${RELEASE} lists no ${assetName(cl)}`);
+  if (asset.uploader?.login !== UPLOADER.login || asset.uploader?.type !== UPLOADER.type) {
+    throw new MapError(`${assetName(cl)} was uploaded by ${asset.uploader?.login ?? 'unknown'} (${asset.uploader?.type ?? 'unknown'}), not by an Actions job of this repository (${UPLOADER.login}); it is not trusted`);
+  }
+  if (asset.size !== Buffer.byteLength(text)) throw new MapError(`${assetName(cl)} is not the asset the release lists (size ${Buffer.byteLength(text)}, listed ${asset.size})`);
+  return asset;
+}
+
 // A stored record, shape-checked. `what` names it in the message.
 export function readRecord(text, what = 'the stored layout') {
-  const doc = typeof text === 'string' ? json(text, what) : text;
+  const doc = json(text, what);
   if (!doc || doc.schema !== SCHEMA) throw new MapError(`${what}: not a layout record of schema ${SCHEMA}`);
   const out = { ...doc };
   out.cl = numberOf(doc.cl, `${what}: cl`, { lo: 1 });
@@ -117,11 +145,17 @@ export function readRecord(text, what = 'the stored layout') {
 
 // The layout report to give field-rows as its base, or a MapError naming what is
 // wrong. `release` is the GitHub release object (assets with uploader and size),
-// `size` the byte length of the downloaded record, `fields` the reflected keys now listed.
+// `recordText` the downloaded record (null when it could not be downloaded), `fields` the reflected keys now listed.
 export function referenceFor({ headerText, recordText, release, targetCl, targetSha256, fields }) {
   const map = parse(headerText, 'the header');
   const built = map.builtCL;
-  if (recordText === null || recordText === undefined) throw new MapError(`no stored layout for CL-${built}, the CL the plugins and the loader were built for (release ${RELEASE} has no ${assetName(built)}); it is stored by a public check of that build while Steam still serves it`);
+  if (recordText === null || recordText === undefined) {
+    const listed = (release?.assets ?? []).some((a) => a?.name === assetName(built));
+    throw new MapError(listed
+      ? `${assetName(built)} is listed on release ${RELEASE} but could not be downloaded`
+      : `no stored layout for CL-${built}, the CL the plugins and the loader were built for (release ${RELEASE} has no ${assetName(built)}); it is stored by a public check of that build while Steam still serves it`);
+  }
+  checkAsset(release, built, recordText);
   const record = readRecord(recordText, assetName(built));
   if (record.cl !== built) throw new MapError(`the stored layout is for CL-${record.cl}, the header was built for CL-${built}`);
   const row = map.builds.find((b) => b.cl === built);
@@ -131,12 +165,6 @@ export function referenceFor({ headerText, recordText, release, targetCl, target
   if (Number(targetCl) === record.cl && String(targetSha256 ?? '').toLowerCase() !== record.exeSha256) {
     throw new MapError(`CL-${built} is stored for the exe ${record.exeSha256.slice(0, 12)}, the build scanned now has ${String(targetSha256 ?? '').slice(0, 12) || 'no sha256'}`);
   }
-  const asset = (release?.assets ?? []).find((a) => a?.name === assetName(built));
-  if (!asset) throw new MapError(`release ${RELEASE} lists no ${assetName(built)}`);
-  if (asset.uploader?.login !== UPLOADER.login || asset.uploader?.type !== UPLOADER.type) {
-    throw new MapError(`${assetName(built)} was uploaded by ${asset.uploader?.login ?? 'unknown'} (${asset.uploader?.type ?? 'unknown'}), not by this repo's workflow (${UPLOADER.login}); it is not trusted`);
-  }
-  if (asset.size !== Buffer.byteLength(recordText)) throw new MapError(`${assetName(built)} is not the asset the release lists (size ${Buffer.byteLength(recordText)}, listed ${asset.size})`);
   const have = new Set(record.keys.map((k) => k.key));
   const missing = [...fields].filter((k) => !have.has(k)).sort(cmp);
   if (missing.length) {
@@ -164,11 +192,16 @@ export function main(argv) {
     if (cmd === 'record') {
       const o = args(rest);
       for (const f of ['out', 'result', 'scanner', 'layout', 'run', 'sha']) if (!o[f]) throw new MapError(`record needs --${f}`);
-      const existingText = o.existing ? readOptional(o.existing) : null;
+      if (!o.existing !== !o.release) throw new MapError('record takes --existing and --release together');
+      const existing = o.existing ? { text: read(o.existing), release: json(read(o.release), o.release) } : null;
       const record = buildRecord({
         result: json(read(o.result), o.result), scanner: json(read(o.scanner), o.scanner), layoutText: read(o.layout),
-        run: o.run, workflowSha: o.sha, at: o.at ?? new Date().toISOString(), existing: existingText,
+        run: o.run, workflowSha: o.sha, at: o.at ?? new Date().toISOString(), existing,
       });
+      if (existing && sameLayout(readRecord(existing.text, 'the stored record'), record)) {
+        process.stdout.write(`layout-store: CL-${record.cl} is already stored with these ${record.keys.length} keys; nothing to upload\n`);
+        return EXIT_OK;
+      }
       writeFileSync(o.out, JSON.stringify(record, null, 2) + '\n');
       process.stdout.write(`layout-store: CL-${record.cl} (build ${record.buildid}), ${record.keys.length} keys\n`);
       return EXIT_OK;
@@ -186,7 +219,7 @@ export function main(argv) {
       process.stdout.write(`layout-store: reference layout = stored CL-${report.cl}\n`);
       return EXIT_OK;
     }
-    process.stderr.write('usage: layout-store.mjs record --out <f> --result <f> --scanner <f> --layout <f> --run <id> --sha <sha> [--at <t>] [--existing <f>]\n       layout-store.mjs reference <header> --record <f> --release <f> --cl <CL> --sha256 <hex> --native-keys <f> --layout-keys <f> --out <f>\n');
+    process.stderr.write('usage: layout-store.mjs record --out <f> --result <f> --scanner <f> --layout <f> --run <id> --sha <sha> [--at <t>] [--existing <f> --release <f>]\n       layout-store.mjs reference <header> --record <f> --release <f> --cl <CL> --sha256 <hex> --native-keys <f> --layout-keys <f> --out <f>\n');
     return EXIT_ERROR;
   } catch (e) {
     if (!(e instanceof MapError) && !(e instanceof ParseError)) throw e;
