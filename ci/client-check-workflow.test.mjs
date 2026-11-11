@@ -134,7 +134,7 @@ test('field-rows: a missing reference layout is never named, and only a refusal 
 test('alert: a failed job or a HOLD other than "nothing new" opens or updates one issue per branch', () => {
   const a = job('alert');
   assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, rig-feed-other, feed-loader-cleanup, feed-gate\]/);
-  assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' \}\}/);
+  assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' && inputs\.refresh_layout != true \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
   assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
   assert.ok(a.includes('result === "failure"'));
@@ -216,7 +216,7 @@ test('new build: the check step reads map_mode, records the flag and keeps the o
 });
 
 test('new build: map mode runs after a passing check only, so a real gate failure still blocks it', () => {
-  assert.match(job('map-mode'), /if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && needs\.check\.result == 'success' \}\}/);
+  assert.match(job('map-mode'), /if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && inputs\.refresh_layout != true && needs\.check\.result == 'success' \}\}/);
   assert.match(job('map-mode'), /put\("g2\.json", \{ ok: r\.checks\?\.fail === false \}\);/, 'G2 still reads the fail flag of the check');
 });
 
@@ -3196,4 +3196,181 @@ exit 1
   const proofMiss = run({ env: { ...other, STORED_REFERENCE: 'true' }, reference: true, asset: null });
   assert.deepEqual(proofMiss.base, [], 'a stored-reference run never falls back to the live scan');
   assert.equal(proofMiss.missing[0], '--base-missing');
+});
+
+// ------------------------------------------------------------ the daily layout refresh (refresh_layout, sr-layout-refresh.yml)
+
+const refreshWf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-layout-refresh.yml'), 'utf8').replace(/\r\n/g, '\n');
+const refreshJob = (name) => {
+  const rest = refreshWf.slice(refreshWf.indexOf(`\n  ${name}:\n`) + 1);
+  const next = rest.slice(1).search(/\n {2}[a-z][\w-]*:\n/);
+  return next < 0 ? rest : rest.slice(0, next + 1);
+};
+const MAIN = { ref: 'refs/heads/main', workflow_ref: SR_WATCH_REF };
+// Which jobs of the client check run for these inputs: every job's own `if` and needs, as GitHub reads them
+// (a job without a status function also needs every job it needs to have succeeded), each run job succeeding.
+const simulate = (inputs, github = MAIN) => {
+  const names = [...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]);
+  const outs = Object.fromEntries(Object.entries(okNeeds()).map(([k, v]) => [k, v.outputs]));
+  Object.assign(outs, { check: { autofix: '[{"name":"x"}]' }, 'feed-plan': { state: 'RUN', other_state: 'RUN' }, 'key-sources-plan': { any: 'true' }, 'plugin-plan': { anyHosted: 'true' } });
+  const res = {};
+  for (let pass = 0; pass < names.length; pass += 1) {
+    for (const n of names) {
+      if (res[n]) continue;
+      const j = job(n);
+      const needs = (j.match(/\n {4}needs: (\[[^\]]*\]|[\w-]+)\n/)?.[1] ?? '').replace(/[[\]\s]/g, '').split(',').filter(Boolean);
+      if (!needs.every((x) => res[x])) continue;
+      const ifLine = j.match(/\n {4}if: (.*)\n/)?.[1];
+      const statusFn = /always\(\)|!cancelled\(\)/.test(ifLine ?? '');
+      const succeeded = needs.every((x) => res[x].result === 'success');
+      const expr = ifLine && (ifLine.startsWith('${{') ? ifLine : `\${{ ${ifLine} }}`);
+      const run = ifLine ? Boolean(evalExpr(expr, { needs: Object.fromEntries(needs.map((x) => [x, res[x]])), inputs, github })) && (statusFn || succeeded) : succeeded;
+      res[n] = run ? { result: 'success', outputs: outs[n] ?? {} } : { result: 'skipped', outputs: {} };
+    }
+  }
+  assert.deepEqual(names.filter((n) => !res[n]), [], 'every job resolved');
+  return names.filter((n) => res[n].result === 'success').sort();
+};
+// What sr-layout-refresh.yml passes (the other inputs are not set), and what sr-watch passes.
+const refreshInputs = () => ({ branch: 'public', map_mode: true, refresh_layout: true });
+
+test('layout refresh: the new input is off by default on both triggers, and sr-watch does not pass it', () => {
+  for (const s of [call, dispatch]) assert.match(s, /\n {6}refresh_layout:\n {8}description: [^\n]+\n {8}type: boolean\n {8}default: false\n/);
+  assert.ok(!/refresh_layout/.test(watch), 'the watcher never refreshes');
+});
+
+test('layout refresh: it runs the check and the store job and no job after them', () => {
+  // The simulation itself: a normal run of sr-watch's shape reaches the whole chain, the publish job included.
+  const normal = simulate({ ...okInputs() });
+  for (const n of ['map-mode', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'feed-gate', 'publish', 'alert', 'report', 'auto-apply', 'layout-store']) {
+    assert.ok(normal.includes(n), `a normal run reaches ${n}`);
+  }
+  assert.deepEqual(simulate(refreshInputs()), ['build', 'check', 'key-sources', 'key-sources-plan', 'layout-store', 'plugin-plan', 'plugins']);
+  // Not the work of one switch alone: with the map job skipped, nothing that needs it can run either.
+  const mm = job('map-mode');
+  assert.match(mm, /\n {4}if: \$\{\{ !cancelled\(\) && inputs\.map_mode == true && inputs\.refresh_layout != true && needs\.check\.result == 'success' \}\}\n/);
+  for (const n of ['push-loader', 'rig-gate', 'feed-plan', 'feed-gate', 'candidate-loader']) assert.match(job(n), /\n {4}needs: \[?[^\n]*(map-mode|push-loader)/, `${n} waits for the map job`);
+});
+
+test('layout refresh: the store job still runs for it on main, and the alert, report and auto-apply jobs do not', () => {
+  const store = (over = {}, github = MAIN, needs = { check: { result: 'success' } }) => evalExpr(jobIf('layout-store'), { needs, inputs: { ...refreshInputs(), ...over }, github });
+  assert.equal(store(), true);
+  assert.equal(store({}, { ref: 'refs/heads/fix/x' }), false, 'not from another ref');
+  assert.equal(store({}, MAIN, { check: { result: 'failure' } }), false, 'not after a failed check');
+  assert.ok(!/refresh_layout/.test(job('layout-store')), 'the store job does not know about the refresh: it stores whatever a public map-mode check scanned');
+  assert.match(job('layout-store'), /\n {4}needs: \[check\]\n/);
+  const needs = { build: { result: 'success' }, 'plugin-plan': { result: 'success' }, check: { result: 'success', outputs: { autofix: '[{"name":"x"}]' } }, 'auto-apply': { result: 'skipped' } };
+  const all = new Proxy(needs, { get: (t, k) => t[k] ?? { result: 'skipped', outputs: {} } });
+  for (const n of ['alert', 'report', 'auto-apply']) {
+    const expr = (job(n).match(/\n {4}if: (.*)\n/)[1]).replace(/^(?!\$\{\{)(.*)$/, '${{ $1 }}');
+    assert.equal(evalExpr(expr, { needs: all, inputs: okInputs() }), true, `${n} runs for a normal run`);
+    assert.equal(evalExpr(expr, { needs: all, inputs: refreshInputs() }), false, `${n} is off for a refresh`);
+  }
+});
+
+test('layout refresh: nothing on the publish path depends on it', () => {
+  for (const n of ['publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'rig-feed-other', 'feed-loader-cleanup', 'feed-gate', 'check', 'layout-store']) {
+    assert.ok(!/refresh_layout/.test(job(n).replace(/^ *#.*\n/gm, '').replace(/\n {4}if: .*\n/, '\n')), `${n} reads no refresh input`);
+  }
+  assert.ok(!/refresh_layout/.test(jobIf('publish')));
+  assert.ok(!/refresh_layout/.test(jobIf('layout-store')));
+  // The only jobs that name it: the map job and the three that report on or push what it makes (and the plan's refusal).
+  const naming = [...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /refresh_layout/.test(job(n).replace(/^ *#.*\n/gm, '')));
+  assert.deepEqual(naming, ['plugin-plan', 'check', 'map-mode', 'alert', 'auto-apply', 'report']);
+});
+
+test('layout refresh: the plan refuses it anywhere but a public map-mode check with every other switch off, before the Steam login', { skip: !bash }, () => {
+  const plan = job('plugin-plan');
+  const script = runOf(plan, 'Check the layout refresh');
+  assert.match(plan, /- name: Check the layout refresh\n {8}if: \$\{\{ inputs\.refresh_layout == true \}\}\n/);
+  const env = plan.slice(plan.indexOf('- name: Check the layout refresh'), plan.indexOf('- name: Check the stored reference'));
+  for (const i of ['publish', 'proof_run', 'test_autopilot', 'first_publish', 'stored_reference']) assert.ok(env.includes(`inputs.${i} == true`), `${i} is one of the refused switches`);
+  const run = (e) => spawnSync(bash, ['-c', script], { encoding: 'utf8', windowsHide: true, env: { ...process.env, BRANCH: 'public', MAP_MODE: 'true', OTHERS: 'false', ...e } });
+  assert.equal(run({}).status, 0);
+  for (const e of [{ BRANCH: 'public_test_branch' }, { BRANCH: 'expiry-only' }, { MAP_MODE: 'false' }, { OTHERS: 'true' }]) {
+    const r = run(e);
+    assert.equal(r.status, 2, JSON.stringify(e));
+    assert.match(r.stdout, /refresh_layout needs branch public and map_mode on/);
+  }
+  // The check job waits for that verdict, as it does for the other refused runs.
+  const needs = (plan_) => ({ build: { result: 'success' }, 'plugin-plan': { result: plan_ }, plugins: { result: 'skipped' }, 'key-sources-plan': { result: 'success' }, 'key-sources': { result: 'success' } });
+  assert.equal(evalExpr(jobIf('check'), { needs: needs('success'), inputs: refreshInputs() }), true);
+  assert.equal(evalExpr(jobIf('check'), { needs: needs('failure'), inputs: refreshInputs() }), false, 'a refused refresh never reaches the login');
+  assert.equal(evalExpr(jobIf('check'), { needs: needs('failure'), inputs: okInputs() }), true, 'a normal run is judged as before');
+});
+
+test('refresh workflow: one daily schedule at a minute no other workflow uses, plus a manual start, main only, no pull request trigger', () => {
+  const triggers = refreshWf.slice(refreshWf.indexOf('\non:\n'), refreshWf.indexOf('\npermissions:'));
+  const crons = [...triggers.matchAll(/- cron: '([^']+)'/g)].map((m) => m[1]);
+  assert.equal(crons.length, 1);
+  const [minute, hour, dom, month, dow] = crons[0].split(' ');
+  assert.deepEqual([dom, month, dow], ['*', '*', '*'], 'every day');
+  assert.match(minute, /^\d+$/);
+  assert.match(hour, /^\d+$/);
+  const taken = new Set([23, 53]); // the planner's minutes
+  const dir = join(here, '..', '.github', 'workflows');
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.yml') && n !== 'sr-layout-refresh.yml')) {
+    for (const m of readFileSync(join(dir, f), 'utf8').matchAll(/- cron: '([^ ']+)/g)) for (const x of m[1].split(',')) taken.add(Number(x));
+  }
+  assert.ok([7, 37, 23, 53].every((x) => taken.has(x)), 'the watcher and the planner are in the list');
+  assert.ok(!taken.has(Number(minute)), `minute ${minute} is free`);
+  assert.match(triggers, /\n {2}workflow_dispatch:\n/);
+  assert.ok(!/pull_request|push:/.test(triggers));
+  assert.match(refreshWf, /\npermissions: \{\}\n/);
+  assert.ok(!/environment:|secrets: inherit/.test(refreshWf.replace(/^ *#.*\n/gm, '')));
+});
+
+test('refresh workflow: it calls the client check for the public build in map mode with the refresh on, and nothing else', () => {
+  const j = refreshJob('refresh');
+  assert.match(j, /\n {4}uses: \.\/\.github\/workflows\/sr-client-check\.yml\n/);
+  assert.deepEqual(mapOf(j, 'with'), { branch: 'public', map_mode: 'true', refresh_layout: 'true' });
+  assert.deepEqual(mapOf(j, 'secrets'), { STEAM_CI_USERNAME: '${{ secrets.STEAM_CI_USERNAME }}', STEAM_CI_LOGIN_CACHE: '${{ secrets.STEAM_CI_LOGIN_CACHE }}' }, 'the Steam login by name and no other secret');
+  assert.ok(!/\n {4}(runs-on|environment|steps):/.test(j), 'a call job has no runner, environment or steps');
+  // Nothing wider than the caller sr-watch already uses for the same called workflow, and nothing it cannot give.
+  const perms = (text) => text.match(/\n {4}permissions:\n((?: {6}\S[^\n]*\n)+)/)[1].split('\n').filter(Boolean).map((l) => l.trim().replace(/\s+#.*$/, ''));
+  assert.deepEqual(perms(j), perms(watch.slice(watch.indexOf('  client-check:\n'))), 'the same ceiling as the watcher\'s call');
+  assert.match(j, /\n {4}needs: idle\n {4}if: \$\{\{ needs\.idle\.outputs\.idle == 'true' \}\}\n/);
+  assert.ok(!/gh workflow run|\n {6}ref:|gh api[^\n]*dispatches/.test(refreshWf.replace(/^ *#.*\n/gm, '')), 'it calls the check at its own ref, it does not dispatch it');
+});
+
+test('refresh workflow: it shares the Steam group of every public check and never cancels a run', () => {
+  assert.match(refreshWf, /\nconcurrency:\n {2}group: sr-layout-refresh\n {2}cancel-in-progress: false\n/);
+  assert.ok(!/group: sr-watch/.test(refreshWf), 'the watcher\'s group is not held while a refresh runs');
+  // The Steam group is the called check job's, keyed by the branch: a refresh of public queues behind a public check.
+  const c = job('check');
+  assert.match(c, /\n {4}concurrency:\n {6}group: sr-client-check-\$\{\{ inputs\.branch \}\}\n {6}cancel-in-progress: false\n/);
+  assert.ok(!/cancel-in-progress: true/.test(wf + refreshWf + watch));
+});
+
+test('refresh workflow: it skips when sr-watch, the client check or the rig has a run going or waiting, and otherwise goes on', { skip: !bash }, () => {
+  const j = refreshJob('idle');
+  assert.match(j, /\n {4}permissions:\n {6}actions: read\n {4}[a-z]/, 'it only reads the runs');
+  const script = runOf(j, 'Look for a run that uses Steam');
+  const pattern = new RegExp(script.match(/test\("([^"]+)"\)/)[1]);
+  for (const p of ['.github/workflows/sr-watch.yml', '.github/workflows/sr-client-check.yml@refs/heads/main', '.github/workflows/sr-client-rig.yml']) assert.ok(pattern.test(p), p);
+  for (const p of ['.github/workflows/sr-layout-refresh.yml', '.github/workflows/sr-build-all.yml', '.github/workflows/sr-node-tests.yml', '.github/workflows/vmap-watchdog.yml']) assert.ok(!pattern.test(p), p);
+  const run = (busy) => {
+    const dir = mkdtempSync(join(tmpdir(), 'idle-'));
+    mkdirSync(join(dir, 'bin'));
+    const gh = '#!/bin/bash\necho "$*" >> "$FAKE_DIR/calls.log"\ns="${2#*status=}"; s="${s%%&*}"\n[ -f "$FAKE_DIR/$s.txt" ] && cat "$FAKE_DIR/$s.txt"\nexit 0\n';
+    writeFileSync(join(dir, 'bin', 'gh'), gh);
+    chmodSync(join(dir, 'bin', 'gh'), 0o755);
+    for (const [status, text] of Object.entries(busy)) writeFileSync(join(dir, `${status}.txt`), text);
+    writeFileSync(join(dir, 'out'), '');
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', GITHUB_OUTPUT: join(dir, 'out'), PATH: join(dir, 'bin') + delimiter + process.env.PATH } });
+    const calls = readFileSync(join(dir, 'calls.log'), 'utf8');
+    const out = readFileSync(join(dir, 'out'), 'utf8').trim();
+    rmSync(dir, { recursive: true, force: true });
+    return { r, calls, out };
+  };
+  const none = run({});
+  assert.equal(none.r.status, 0);
+  assert.equal(none.out, 'idle=true');
+  for (const s of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) assert.ok(none.calls.includes(`status=${s}&`), `looks at ${s} runs`);
+  for (const s of ['queued', 'in_progress', 'waiting']) {
+    const busy = run({ [s]: 'SR Steam watch https://github.com/x/y/actions/runs/1\n' });
+    assert.equal(busy.r.status, 0, 'a skipped refresh is not a failure');
+    assert.equal(busy.out, 'idle=false', `a ${s} run holds it back`);
+    assert.match(busy.r.stdout, /::notice title=Layout refresh skipped::/);
+  }
 });

@@ -8,6 +8,7 @@ They live in `msantoro12/starrupture-ci`. The mod repos are checked out from `va
 .github/workflows/sr-watch.yml        Steam watcher
 .github/workflows/sr-build-all.yml    compile check
 .github/workflows/sr-client-check.yml offline check of a new client build
+.github/workflows/sr-layout-refresh.yml daily refresh of the saved public layout
 .github/sr-pipeline/poll-steam.mjs    the polling script sr-watch runs
 .github/sr-pipeline/README.md         this file
 state/steam.json                      recorded build ids (baseline, on main)
@@ -23,6 +24,10 @@ state/steam.json                      recorded build ids (baseline, on main)
 | `sr-client-rig.yml` | manual; called by another workflow in this repository | Launches the real game client on a hosted Windows runner under the real Steam client and judges the loader's log with `ci/verdict.ps1 -Client`: do the mods load. No schedule, no pull request trigger. See "Client test rig". |
 
 Merging the update PR into main means the update is handled: it advances `state/steam.json`, so the watcher stops reporting that build.
+
+### Keeping the saved layout current
+
+Every public check saves the layout it scanned, as `layout-CL-<CL>.json` on the `vmap-layouts` release, and the next public update uses it as its reference layout. The saved file lists only the keys the plugins asked for when it was saved, and a public check runs only when Steam's public build changes, so a key a plugin adds later would stay out of the file for as long as that build is live, and once Steam stops serving the build it can no longer be added. `sr-layout-refresh.yml` runs at 04:47 UTC every day (or by hand: `gh workflow run sr-layout-refresh.yml --ref main`). It first looks for a run of `sr-watch.yml`, `sr-client-check.yml` or `sr-client-rig.yml` that is going or waiting and skips the day if there is one. Otherwise it calls `sr-client-check.yml` for the public build with `map_mode` and `refresh_layout` on: the same checks and the same keys as a normal public run, then the `store the public layout` job merges the new keys into the saved file for the same exe. Every job after that is off for it, so it opens no alert, pushes no version map rows, builds no candidate loader, starts no test run, publishes nothing, does not count toward the once-per-build limit and changes nothing under `state/`. It uses the same Steam group as every other public check (`sr-client-check-public`), so it waits for a running check and never cancels one, and it does not use the watcher's group, so the watcher keeps polling while a refresh runs. A failed refresh shows red in its own run only. For a single refresh by hand, without the idle look: `gh workflow run sr-client-check.yml --ref main -f branch=public -f map_mode=true -f refresh_layout=true`.
 
 ### Update path per component
 
@@ -109,6 +114,8 @@ Copied from the loader's `release.yml` and the plugins' `release.yml` build step
 | `sr-client-check` / `build-scanner` | `contents: read` | check out the loader, build the scanner |
 | `sr-client-check` / `check` | `contents: read`, environment `steam-client` | the only job that can read the Steam login; checks out no repository |
 | `sr-client-check` / `layout-store` | `contents: write`, no environment, no secret; runs from `main` only | keeps the layout of each public build on the `vmap-layouts` release, for the next update's field rows |
+| `sr-layout-refresh` / `idle` | `actions: read` | lists the runs that are going or waiting |
+| `sr-layout-refresh` / `refresh` (caller) | `contents: write`, `pull-requests: write`, `issues: write`, `actions: write`, `checks: read` (a ceiling, the same as the watcher's call) | covers the called workflow; only `layout-store` (`contents: write`) and the check run for a refresh; passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` by name |
 | `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR; no environment, no secrets |
 | `sr-client-check` / `alert` | `contents: read`, `issues: write`, `pull-requests: write`, `actions: read`, `checks: read` | the alert issue, the `chain-passed-<branch>` label and ready note on the PR, the failed steps, annotations and logs of the run |
 | `sr-client-check` / `login-expiry` | none | reads the repo variable `STEAM_CI_LOGIN_AT` |
