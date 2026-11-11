@@ -254,7 +254,7 @@ on:
         type: boolean
         default: false
       # Dispatch only: sr-watch calls this workflow and cannot pass it. With
-      # state/autopilot.json still disabled, decide reports what it would
+      # state/autopilot.json disabled, decide reports what it would
       # choose and, when that is M, the chain runs on (export, TEST-key sign,
       # promote plan) with nothing publishable. Refused with publish on.
       test_autopilot:
