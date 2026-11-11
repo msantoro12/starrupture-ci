@@ -287,6 +287,14 @@ on:
         description: 'First publish of the feed, once: skips the not-newer hold and the autopilot for this run, refused when a feed is already published (needs public, map_mode, publish, loader_repo msantoro12/StarRupture-ModLoader and loader_ref auto/update-<CL>-<run>-<attempt>)'
         type: boolean
         default: false
+      # Dispatch only (sr-watch cannot pass it: the call does not declare it): the proof of the stored reference
+      # layout. The field rows then take the stored public layout as their base instead of the live public scan,
+      # so the field-rows.json of this run can be compared with a normal run's on the same build. Refused on
+      # public, with publish on, without test_autopilot, with proof_run, and from sr-watch.
+      stored_reference:
+        description: 'Proof run: field rows take the stored public layout as their base, not the live public scan (needs another branch than public, map_mode and test_autopilot on, publish off)'
+        type: boolean
+        default: false
   schedule:
     # Weekly: warn ahead of the saved Steam login expiring.
     - cron: '17 6 * * 1'
@@ -482,6 +490,21 @@ jobs:
           printf '%s' "$FEED_LOADER_REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$' && ! printf '%s' "$FEED_LOADER_REF" | grep -Eq '\.\.|//|/$|\.lock$|\.$' \
             || { echo "::error::feed_loader_ref is not a plain branch name of msantoro12/StarRupture-ModLoader"; exit 2; }
           echo "The feed-path rig will build the branch $FEED_LOADER_REF of msantoro12/StarRupture-ModLoader."
+
+      # stored_reference is judged here too, before any Steam work (the check job waits for this job to pass): it is a
+      # test run of a branch other than public. map-mode judges the same facts again before it reads the store.
+      - name: Check the stored reference
+        if: ${{ inputs.stored_reference == true }}
+        env:
+          BRANCH: ${{ inputs.branch }}
+          MAP_MODE: ${{ inputs.map_mode == true }}
+          PUBLISH: ${{ inputs.publish == true }}
+          PROOF: ${{ inputs.proof_run == true }}
+          TEST_RUN: ${{ inputs.test_autopilot == true }}
+          DISPATCHED: ${{ contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+        run: |
+          [ "$DISPATCHED" = true ] && [ "$BRANCH" != public ] && [ "$MAP_MODE" = true ] && [ "$PUBLISH" = false ] && [ "$TEST_RUN" = true ] && [ "$PROOF" = false ] \
+            || { echo "::error::stored_reference needs a dispatch with a branch other than public, map_mode and test_autopilot on, publish and proof_run off"; exit 2; }
 
       # The tools the first-publish proof below reads (ci, the poll's code), and the one list of the reviewed
       # releases of other authors' plugins (Pin in ci/plugin-names.json), which the rig reads too.
@@ -1108,8 +1131,8 @@ jobs:
     name: check
     needs: [build, plugin-plan, plugins, key-sources-plan, key-sources]
     # A plugin that does not build fails only itself, not the client check.
-    # A first publish that plugin-plan refused never reaches the Steam login.
-    if: ${{ !cancelled() && needs.build.result == 'success' && (inputs.first_publish != true || needs.plugin-plan.result == 'success') && inputs.branch && inputs.branch != 'expiry-only' }}
+    # A first publish or a stored-reference run that plugin-plan refused never reaches the Steam login.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (inputs.first_publish != true || needs.plugin-plan.result == 'success') && (inputs.stored_reference != true || needs.plugin-plan.result == 'success') && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
     timeout-minutes: 120
     environment: steam-client
@@ -2434,6 +2457,60 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # Keeps the layout this public check scanned, one asset per CL on the vmap-layouts release: the next public
+  # update needs it as the reference layout for its field rows (ci/layout-store.mjs, ci/MAP-MODE.md), and Steam
+  # stops serving the build once public moves. It runs only from this repository's main: the workflow has no pull
+  # request trigger and the check job's environment takes deployments from main only, so no fork or other ref
+  # reaches it. It reads the check's own artifact and writes with the job's token; no environment, no secret, and
+  # no code from anywhere but main. A CL already stored is extended only for the same exe, never overwritten.
+  layout-store:
+    name: store the public layout
+    needs: [check]
+    if: ${{ !cancelled() && inputs.map_mode == true && inputs.branch == 'public' && needs.check.result == 'success' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: vmap-layouts
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      WORKFLOW_SHA: ${{ github.sha }}
+    steps:
+      - name: Check out the store tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the scans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: client-check-${{ inputs.branch }}
+          path: res
+
+      - name: Store the layout
+        run: |
+          set -euo pipefail
+          if [ ! -f res/layout-target.json ] || [ ! -f res/result.json ] || [ ! -f res/scanner.json ]; then
+            echo "::warning title=Layout store::the check's artifact has no layout, result or scanner file; nothing is stored for this build"
+            exit 0
+          fi
+          cl="$(node -p "String(JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.cl ?? '')")"
+          [[ "$cl" =~ ^[0-9]+$ ]] || { echo "::warning title=Layout store::the check recorded no CL for the exe; nothing is stored"; exit 0; }
+          gh release view vmap-layouts > /dev/null 2>&1 || gh release create vmap-layouts --latest=false --title "Reference layouts" --notes "The layout of each public build, one asset per CL, written by the client check. The field rows of the next update compare against it."
+          mkdir -p stored
+          gh release download vmap-layouts --pattern "layout-CL-$cl.json" --dir stored 2> /dev/null || true
+          existing=()
+          if [ -f "stored/layout-CL-$cl.json" ]; then existing=(--existing "stored/layout-CL-$cl.json"); fi
+          node tool/ci/layout-store.mjs record --out "layout-CL-$cl.json" --result res/result.json --scanner res/scanner.json --layout res/layout-target.json \
+            --run "$RUN_ID" --sha "$WORKFLOW_SHA" "${existing[@]}"
+          gh release upload vmap-layouts "layout-CL-$cl.json" --clobber
+
   # ---- Map mode: the update as rows in the loader's version map -----------
   # The unattended path M chain, on the scans the check job uploaded and the
   # loader's header: map-mode assemble and write, field rows from the PDB
@@ -2518,6 +2595,8 @@ jobs:
       # The first publish (dispatch only): every input it needs is part of the condition, so any other run is an ordinary one.
       FIRST_PUBLISH: ${{ inputs.first_publish == true && inputs.branch == 'public' && inputs.map_mode == true && inputs.publish == true && inputs.proof_run != true && inputs.test_autopilot != true && inputs.loader_repo == 'msantoro12/StarRupture-ModLoader' && startsWith(inputs.loader_ref, 'auto/update-') && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
       LOADER_REPO: ${{ inputs.loader_repo }}
+      # The proof of the stored reference (dispatch only): every input it needs is part of the condition, so any other run takes its base as usual.
+      STORED_REFERENCE: ${{ inputs.stored_reference == true && inputs.branch != 'public' && inputs.branch != 'expiry-only' && inputs.map_mode == true && inputs.publish != true && inputs.test_autopilot == true && inputs.proof_run != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
     steps:
       # A first_publish dispatch that is not a first publish (a base outside the fork, a branch that is not an
       # auto/update-<CL>-<run>-<attempt> one, any other input) stops here: it is never run as an ordinary one.
@@ -2526,6 +2605,12 @@ jobs:
         run: |
           [ "$FIRST_PUBLISH" = true ] && [ "$LOADER_REPO" = msantoro12/StarRupture-ModLoader ] && [[ "$LOADER_REF" =~ ^auto/update-[0-9]+-[0-9]+-[0-9]+$ ]] \
             || { echo "::error::first_publish needs branch public, map_mode and publish on, proof_run and test_autopilot off, loader_repo msantoro12/StarRupture-ModLoader and loader_ref auto/update-<CL>-<run>-<attempt>"; exit 2; }
+
+      - name: Refuse a stored reference that is not a test run
+        if: ${{ inputs.stored_reference == true }}
+        run: |
+          [ "$STORED_REFERENCE" = true ] \
+            || { echo "::error::stored_reference needs a dispatch with a branch other than public, map_mode and test_autopilot on, publish and proof_run off"; exit 2; }
 
       - name: Refuse a proof run that could publish
         if: ${{ inputs.proof_run == true }}
@@ -2727,20 +2812,45 @@ jobs:
           # fatal here: it writes the report and decide holds. Anything else
           # (exit 2: a missing or malformed input, no report) fails the job, so a
           # feed is never built without its member rows.
-          # The check writes layout-reference.json only when it has an older build
-          # to compare with: the public branch is itself the reference and has
-          # none, and another branch has none when the public download failed or
-          # is the same build. Without --base, field-rows refuses while any
-          # reflected key is listed (it cannot find what moved), so decide holds
-          # with that reason; the file is never named when it does not exist.
+          # Where the reference layout comes from, in this order:
+          #  - a stored-reference proof run: the layout stored for the header's builtCL, never the live public scan;
+          #  - layout-reference.json, which the check writes only when it downloaded an older build to compare with
+          #    (every branch but public, when that download worked);
+          #  - a proof run's CL, or a first publish's when the header holds its build row: already mapped, so the
+          #    build is its own reference;
+          #  - on public: the layout stored for the header's builtCL (ci/layout-store.mjs), checked against the
+          #    header's build row, the exe and the uploader. Steam no longer serves that build once public moves, so
+          #    each public check stores the layout it scanned (the layout-store job).
+          # No usable reference means no --base and a reason (--base-missing): field-rows refuses while any reflected
+          # key is listed (it cannot find what moved), with that reason, and decide holds. Nothing is guessed.
           base=()
-          # A proof run's CL is already mapped (the write step checked), and so is a first publish's when the
-          # header holds its build row: the build is its own reference.
-          if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json)
+          missing=()
+          from_store() {
+            mkdir -p stored
+            if ! gh api "repos/$GH_REPO/releases/tags/vmap-layouts" > stored/release.json 2> stored/release.err; then
+              missing=(--base-missing "release vmap-layouts could not be read: $(tr '\n' ' ' < stored/release.err | cut -c1-160)")
+              echo "field-rows: no stored reference layout: ${missing[1]}"
+              return 0
+            fi
+            gh release download vmap-layouts --pattern "layout-CL-$PREVIOUS_CL.json" --dir stored 2> /dev/null || true
+            exe_sha="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.sha256 ?? ''")"
+            local why
+            if why="$(node tool/ci/layout-store.mjs reference "$header" --record "stored/layout-CL-$PREVIOUS_CL.json" --release stored/release.json --cl "$cl" --sha256 "$exe_sha" \
+                --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --out res/layout-stored.json 2>&1)"; then
+              base=(--base res/layout-stored.json)
+              echo "field-rows: $why"
+            else
+              missing=(--base-missing "$why")
+              echo "field-rows: no stored reference layout: $why"
+            fi
+          }
+          if [ "$STORED_REFERENCE" = true ]; then from_store
+          elif [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json)
           elif [ "$PROOF" = true ] || { [ "$FIRST_PUBLISH" = true ] && [ "$MAPPED" = true ]; }; then base=(--base res/layout-target.json); echo "field-rows: CL-$cl is already mapped by the header: the build is its own reference"
+          elif [ "$BRANCH" = public ]; then from_store
           else echo "field-rows: no reference layout in the check's artifact (branch $BRANCH); running without --base"; fi
           fr=0
-          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" \
+          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" "${missing[@]}" \
             --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --sources commits.json --report field-rows.json || fr=$?
           echo "field-rows: exit $fr"
           if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr): no member rows were written and no report exists; failing the job"; exit "$fr"; fi

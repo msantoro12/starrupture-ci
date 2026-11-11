@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Field rows from the PDBs, into the loader's version map (version-map step 28).
 //
-//   node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>]
+//   node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json> | --base-missing <reason>]
 //        (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt>])
 //        [--report <file>]
 //
@@ -147,7 +147,7 @@ export function parseUses(text, where = 'uses') {
 
 // Plans the rows. next/base: arrays of { key, result, offset?, size?, boolMask? };
 // uses: parseUses() or null. Returns { problems, rows, absent, covered, notes, degraded }.
-export function planFieldRows(keys, next, base, cl, uses = null, sources = new Map()) {
+export function planFieldRows(keys, next, base, cl, uses = null, sources = new Map(), baseMissing = null) {
   const problems = [];
   const notes = [];
   const alerts = [];
@@ -261,7 +261,7 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
   };
 
   if (fields.length) {
-    if (!base) problems.push('reflected field keys are listed but no --base report was given to find what moved');
+    if (!base) problems.push(baseMissing ? `no reference layout to find what moved: ${baseMissing}` : 'reflected field keys are listed but no --base report was given to find what moved');
     else {
       let diff;
       try { diff = diffLayoutReports(selectKeys(base, fields, '--base'), selectKeys(next, fields, '--next')); } catch (e) { problems.push(e.message); }
@@ -318,11 +318,11 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
 }
 
 // The header text with the rows added, or the reasons it was refused.
-export function fieldRows(headerText, { cl, keys, next, base, uses = null, sources = new Map() }) {
+export function fieldRows(headerText, { cl, keys, next, base, uses = null, sources = new Map(), baseMissing = null }) {
   const map = parse(headerText, 'the header');
   if (map.flavour !== 'loader') throw new MapError('field rows go into the loader map; this header is a plugin map');
   if (!map.builds.some((b) => b.cl === cl)) throw new MapError(`CL-${cl} is not in the build table; add the build first (map-mode.mjs write, or version-map.mjs add-build)`);
-  const plan = planFieldRows(keys, next, base, cl, uses, sources);
+  const plan = planFieldRows(keys, next, base, cl, uses, sources, baseMissing);
   const problems = [...plan.problems];
   const out = parse(emit(map), 'the header');
   let added = 0;
@@ -395,7 +395,7 @@ export function main(argv) {
   const fromCheck = o['native-keys'] !== undefined || o['layout-keys'] !== undefined;
   const keysOk = fromCheck ? !!(o['native-keys'] && o['layout-keys']) && !o.keys.length : o.keys.length > 0 && o.uses === undefined;
   if (cmd !== 'write' || !header || !o.cl || !o.next || !keysOk || !/^\d+$/.test(o.cl)) {
-    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt> [--sources <commits.json>]]) [--report <file>]\n');
+    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json> | --base-missing <reason>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt> [--sources <commits.json>]]) [--report <file>]\n');
     return EXIT_ERROR;
   }
   try {
@@ -405,7 +405,7 @@ export function main(argv) {
     const uses = o.uses ? parseUses(readFileSync(o.uses, 'utf8'), o.uses) : null;
     const next = parseLayoutReport(readFileSync(o.next, 'utf8'), o.next);
     const base = o.base ? parseLayoutReport(readFileSync(o.base, 'utf8'), o.base) : null;
-    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses, sources: o.sources ? keySourcesOf(readFileSync(o.sources, 'utf8')) : new Map() });
+    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses, sources: o.sources ? keySourcesOf(readFileSync(o.sources, 'utf8')) : new Map(), baseMissing: o['base-missing'] ?? null });
     const report = { written: !!out.text, cl: Number(o.cl), added: out.added, rows: out.rows, absent: out.absent, degraded: out.degraded, covered: out.covered, notes: out.notes, alerts: out.alerts, problems: out.problems };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.text) {

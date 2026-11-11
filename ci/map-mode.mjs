@@ -71,7 +71,7 @@ export function kindOf(v) {
   return k;
 }
 
-function numberOf(v, what, { lo = 0, hi = 0xffffffff } = {}) {
+export function numberOf(v, what, { lo = 0, hi = 0xffffffff } = {}) {
   const n = typeof v === 'number' ? v : typeof v === 'string' && /^(0[xX][0-9A-Fa-f]+|\d+)$/.test(v) ? Number(v) : NaN;
   if (!Number.isInteger(n) || n < lo || n > hi) throw new MapError(`${what} ${JSON.stringify(v)} is not a number in ${lo}..${hi}`);
   return n;

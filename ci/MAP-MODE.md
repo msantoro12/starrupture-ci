@@ -402,7 +402,7 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
 - A class whose size changed is a note when nothing depends on its whole size or the
   only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
@@ -429,6 +429,37 @@ reflection as an FVector (review N2). The output holds keys and numbers only.
 Classes and objects found by name at run time (Blueprint classes, assets) are not in the
 PDB, so their existence is not checked here.
 It runs after `write` (the build must be in the table).
+
+### Where the reference layout comes from
+
+Field rows record what moved, so they need the layout of the build the plugins were
+built for as well as the new one.
+
+- A check of any branch but `public` downloads the live `public` build and scans it:
+  that is `layout-reference.json`.
+- `public` has no older build to download: Steam stops serving it once `public`
+  moves. So every `public` map-mode check keeps the layout it scanned, one file per CL
+  (`layout-CL-<CL>.json`), on this repository's `vmap-layouts` release. The `layout-store`
+  job writes it, with the job's own token, only from `main`.
+- When `public` moves, field rows read the file for the CL the header was built for.
+  `ci/layout-store.mjs reference` accepts it only if all of these hold: it is for that CL;
+  its Steam build id, image stamp and image size are the header's build row for that CL;
+  the release says the Actions bot uploaded it (a person cannot be that uploader); it has
+  an entry for every reflected key now listed; and, for a re-run of the same CL, the exe
+  hash is the same.
+- If any of that is missing, nothing is guessed. The run holds, and the hold names what
+  is missing ("no reference layout to find what moved: no stored layout for CL-N ...").
+  An older record that lacks a newly added key is refreshed by one `public` check of that
+  build, while Steam still serves it.
+- The one-time seed, so the build `public` runs today is stored before it moves:
+  `gh workflow run sr-client-check.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f map_mode=true -f test_autopilot=true`.
+  Dispatch it a second time to see the stored layout read back.
+- To compare a stored base with the live-scan base on a build that really moved, dispatch a
+  test run of the other Steam branch (`-f branch=<the other branch>`) with
+  `-f stored_reference=true -f map_mode=true -f test_autopilot=true`. It takes the stored
+  layout as its base instead of the live scan, so its `field-rows.json` (in the map-mode
+  artifact) can be compared with the one of a normal run on the same build. It is refused
+  on `public`, with publish on, without `test_autopilot`, and from sr-watch.
 
 ## Step 29: `tail-check.mjs`
 
@@ -799,9 +830,11 @@ no plugin code, no game file.
    `layout-reference.json`, `layout-keys.txt`, `ci/native-keys.txt`). A refusal (exit 3) does
    not fail the job; it writes the report and decide holds. Any other failure (exit 2, a
    missing or malformed input) fails the job. The check writes `layout-reference.json` only
-   when it has an older build to compare with (not on the `public` branch, which is itself
-   the reference); without it the step runs with no `--base` and field-rows refuses while a
-   reflected key is listed, so decide holds with that reason.
+   when it has an older build to compare with (not on the `public` branch, which has no older
+   build to download). On `public` the step reads the stored layout instead (see "Where the
+   reference layout comes from" under Step 28). With no reference at all the step runs with no
+   `--base` and field-rows refuses while a reflected key is listed, so decide holds with that
+   reason.
 3. `decide.mjs` with the gates built from the check: G1 the builds, G2 the check, G3
    the CL against the one the header was built for, G4 the client registry scan (the
    client check alone decides; no dedicated-server scan is read), G5 the classes
