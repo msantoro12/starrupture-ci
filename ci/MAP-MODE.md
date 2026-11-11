@@ -461,8 +461,8 @@ built for as well as the new one.
   values and a note, and holds nothing.
 - The header carries few field rows, so the file is checked the same way against the
   field rows of this repository's published version map as well, when the run can
-  download it from the `vmap-feed` release and an Actions job uploaded it. If it is missing,
-  unreadable or has no rows for that CL, the run prints one line saying the wider check was
+  download it from the `vmap-feed` release and the release lists it as uploaded by an Actions job.
+  If the version map is missing, unreadable, uploaded by anyone else or has no rows for that CL, the run prints one line saying the wider check was
   skipped and goes on with the header's rows; a disagreement still refuses the file.
 - If any of that is missing, nothing is guessed. The run holds, and the hold names what
   is missing ("no reference layout to find what moved: no stored layout for CL-N ...").

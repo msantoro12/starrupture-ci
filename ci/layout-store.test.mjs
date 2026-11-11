@@ -235,7 +235,7 @@ test('published cross-check: a wrong offset, size or mask in the record refuses 
   assert.throws(() => wide(published([...PROWS, hrow('UCrFlag2::bOn', 0x10, 1, 0x4)]), flagged(0x8)), /UCrFlag2::bOn: version map 0x10\/0x1\/0x4, record 0x10\/0x1\/0x8/);
 });
 
-test('published cross-check: the register size exception is honoured and a renamed member is not counted', () => {
+test('published cross-check: a renamed member is not compared and does not count', () => {
   const renamed = { ...hrow('AFoo::Old', 8, 8), member: 'Renamed' };
   assert.equal(wide(published([...PROWS, renamed]), [...RECS2, { key: 'AFoo::Old', result: 'NOMEMBER', size: 0 }]).skipped, null);
 });
@@ -326,8 +326,13 @@ test('command line: --published names a directory; its file is cross-checked, an
   assert.equal(none.code, 0, none.err);
   assert.match(none.out, /wider cross-check against the published version map was skipped: no version-map-client.v1.txt was downloaded/);
   assert.match(run(args).out, /skipped: no published version map was given/);
+  writeFileSync(join(sub, 'release.json'), 'not json');
+  const bad = run([...args, '--published', sub]);
+  assert.equal(bad.code, 0, bad.err);
+  assert.match(bad.out, /skipped: release vmap-feed lists no version-map-client.v1.txt/, 'an unreadable release listing is a skip, not a refusal');
+  writeFileSync(join(sub, 'release.json'), JSON.stringify(pub.release));
   writeFileSync(join(sub, PUBLISHED.asset), pub.text.replace('AFoo::Bar\t127004\t0x10', 'AFoo::Bar\t127004\t0x18'));
-  assert.equal(run([...args, '--published', sub]).code, 3, 'a changed file is not the one the release lists');
+  assert.equal(run([...args, '--published', sub]).code, 3, 'a changed offset in the file refuses');
 });
 
 test('command line: record against a stored asset writes nothing when it adds nothing, and refuses a hand upload', () => {

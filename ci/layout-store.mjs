@@ -282,8 +282,9 @@ export function main(argv) {
       const o = args(more);
       for (const f of ['record', 'release', 'cl', 'native-keys', 'layout-keys', 'out']) if (!header || !o[f]) throw new MapError(`reference needs <header> and --${f}`);
       // The published version map and the JSON of the release that lists it, in one directory.
-      const published = o.published ? { text: readOptional(join(o.published, PUBLISHED.asset)), release: readOptional(join(o.published, 'release.json')) } : null;
-      if (published?.release) published.release = json(published.release, 'the published version map release');
+      // Anything unreadable there is the same as absent: the wider check is skipped, never a refusal.
+      const soft = (f, parse = (t) => t) => { try { return parse(read(join(o.published, f))); } catch { return null; } };
+      const published = o.published ? { text: soft(PUBLISHED.asset), release: soft('release.json', (t) => JSON.parse(t.replace(/^﻿/, ''))) } : null;
       const fields = keysFromCheck(read(o['native-keys']), read(o['layout-keys'])).fields;
       const report = referenceFor({
         headerText: read(header), recordText: readOptional(o.record), release: json(read(o.release), o.release),
