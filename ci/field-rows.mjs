@@ -14,8 +14,8 @@
 //   - a row for every `native` key (a member the game does not reflect): its
 //     offset, size and bool mask on the new build, found by the key's own text;
 //   - a row for every `field` key (reflected) whose offset, size or mask differs
-//     between the reference and the new build. Reflection gives the live offset on
-//     any build, so a row only records the move;
+//     between the reference and the new build, or that only the new build resolves.
+//     Reflection gives the live offset on any build, so a row only records the move;
 //   - and, moved or not, a row for each of the loader's own field keys
 //     (LOADER_FIELD_KEYS): the loader reads an unmoved reflected key by
 //     reflection, but its signed-feed check (version_feed.cpp DropUncovered)

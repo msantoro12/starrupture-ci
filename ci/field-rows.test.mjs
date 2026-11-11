@@ -662,3 +662,11 @@ test('a reflected key that only the new build resolves gets a row from the new v
   assert.equal(out.notes.filter((n) => n.startsWith('UCrNeither::Thing')).length, 1);
   assert.equal(out.added, 5);
 });
+
+test('a class key that only the new build resolves gets a note and no field row', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field UCrNewClass\n')]);
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ent('UCrNewClass', 0, 0x30)], base: [...base(), gone('UCrNewClass')] });
+  assert.deepEqual(out.problems, []);
+  assert.equal(row(out.text, 'UCrNewClass'), undefined);
+  assert.ok(out.notes.some((n) => n.startsWith('UCrNewClass: new on this build')));
+});

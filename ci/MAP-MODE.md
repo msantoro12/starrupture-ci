@@ -363,7 +363,7 @@ the check job). A key on that list that is not native is a reflected field.
 `--next` and `--base` are `sr-aobscan --layout --json` reports of the new build and
 the reference build over the same key list. For the new CL it writes a row for
 every `native` key (offset, size, bool mask, found by the key's own text) and for
-every reflected `field` key whose offset, size or mask moved.
+every reflected `field` key whose offset, size or mask moved or that only the new build resolves.
 
 It also writes a **class-key row** (the key is the class name alone, offset 0, size N,
 mask 0) for the size of every class a component requests (`size <Class>
@@ -454,8 +454,8 @@ built for as well as the new one.
   as well. The recorded run is not looked up, because runs age out and the file must not.
 - The file is also checked against the header itself. Every key that has a field row in
   the header for that CL and an entry in the file must agree on offset, size and bool
-  mask (a class key is a size only; the two `FTransform` keys keep the register's size, so
-  their size is not compared). One disagreement refuses the file, and so does a file that
+  mask (a class key is a size only; the two `FTransform` keys hold the register's size in the
+  file and the built size in the header, so their size is not compared). One disagreement refuses the file, and so does a file that
   covers fewer than half of the header's rows for that CL. A key that resolves on the new
   build but not on the reference build is new there: it gets a row from the new build's
   values and a note, and holds nothing.

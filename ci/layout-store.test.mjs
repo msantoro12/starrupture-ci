@@ -199,6 +199,11 @@ test('cross-check: refuses when fewer than half of the header rows could be comp
   assert.equal(cross([...HROWS, ...more(4)]).cl, 127004, 'exactly half is enough');
 });
 
+test('cross-check: a header row for a renamed member is not compared and does not count', () => {
+  const renamed = { ...hrow('AFoo::Old', 8, 8), member: 'Renamed' };
+  assert.equal(cross([...HROWS, renamed], [...RECS, { key: 'AFoo::Old', result: 'NOMEMBER', size: 0 }]).cl, 127004);
+});
+
 test('reference: refuses malformed records', () => {
   for (const bad of ['not json', '{}', JSON.stringify({ ...make(), schema: 2 }), JSON.stringify({ ...make(), exeSha256: 'zz' }),
     JSON.stringify({ ...make(), keys: 'x' }), JSON.stringify({ ...make(), keys: [{ key: 'A::b', result: 'OK' }] }), JSON.stringify({ ...make(), buildid: 'abc' })]) {
