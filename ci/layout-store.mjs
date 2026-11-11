@@ -209,6 +209,13 @@ function publishedRows(text, release, built) {
   }
 }
 
+// A plugin can add a reflected key after the layout was saved. Up to MISSING_FLOOR such keys are always
+// allowed, and above that up to 1 in MISSING_SHARE_DENOMINATOR of the listed ones. They get no reference
+// entry; field-rows writes their rows from the new build's values.
+const MISSING_FLOOR = 10;
+const MISSING_SHARE_DENOMINATOR = 20;
+const namesOf = (keys) => `${keys.length} reflected key${keys.length === 1 ? '' : 's'} (${keys.slice(0, 5).join(', ')}${keys.length > 5 ? `, +${keys.length - 5} more` : ''})`;
+
 // The layout report to give field-rows as its base, or a MapError naming what is
 // wrong. `release` is the GitHub release object (assets with uploader and size),
 // `recordText` the downloaded record (null when it could not be downloaded), `fields` the reflected keys now listed.
@@ -237,11 +244,12 @@ export function referenceFor({ headerText, recordText, release, targetCl, target
   const wider = published ? publishedRows(published.text, published.release, built) : { why: 'no published version map was given' };
   if (wider.rows) crossCheck(wider.rows, built, record, 'version map');
   const have = new Set(record.keys.map((k) => k.key));
-  const missing = [...fields].filter((k) => !have.has(k)).sort(cmp);
-  if (missing.length) {
-    throw new MapError(`the stored layout of CL-${built} has no entry for ${missing.length} reflected key${missing.length === 1 ? '' : 's'} now listed (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? `, +${missing.length - 5} more` : ''}); a public check of that build, while Steam still serves it, adds them`);
+  const listed = new Set(fields);
+  const missing = [...listed].filter((k) => !have.has(k)).sort(cmp);
+  if (missing.length > MISSING_FLOOR && missing.length * MISSING_SHARE_DENOMINATOR > listed.size) {
+    throw new MapError(`the stored layout of CL-${built} has no entry for ${namesOf(missing)} now listed, more than the ${MISSING_FLOOR} always allowed and more than 1 in ${MISSING_SHARE_DENOMINATOR} of the ${listed.size} listed; a public check of that build, while Steam still serves it, adds them`);
   }
-  return { cl: record.cl, keys: record.keys, skipped: wider.why ?? null };
+  return { cl: record.cl, keys: record.keys, skipped: wider.why ?? null, missing };
 }
 
 function args(rest) {
@@ -291,6 +299,8 @@ export function main(argv) {
         targetCl: Number(o.cl), targetSha256: o.sha256, fields, published,
       });
       if (report.skipped) process.stdout.write(`layout-store: the wider cross-check against the published version map was skipped: ${report.skipped}\n`);
+      if (report.missing.length) process.stdout.write(`layout-store: the stored layout has no entry for ${namesOf(report.missing)} now listed; their rows come from the new build
+`);
       writeFileSync(o.out, JSON.stringify({ keys: report.keys }, null, 2) + '\n');
       process.stdout.write(`layout-store: reference layout = stored CL-${report.cl}\n`);
       return EXIT_OK;

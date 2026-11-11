@@ -69,6 +69,31 @@ test('every native key gets a row, and a reflected key that moved gets one too',
   assert.equal(out.added, 4);
 });
 
+test('a reflected key the reference has no entry for gets its row from the new build, with a note', () => {
+  const noEntry = base().filter((k) => k.key !== 'UCrSomething::bFlag');
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: noEntry });
+  assert.deepEqual(out.problems, []);
+  assert.equal(row(out.text, 'UCrSomething::bFlag').offset, 0x565);
+  assert.equal(row(out.text, 'UCrSomething::bFlag').mask, 0x10);
+  assert.ok(out.notes.some((n) => n.startsWith('UCrSomething::bFlag: new on this build; the reference has no entry for it')));
+  // The same key listed as unresolved in a reference that has it takes the same path with the other wording.
+  const notOk = base().map((k) => (k.key === 'UCrSomething::bFlag' ? { key: k.key, result: 'NOMEMBER' } : k));
+  const live = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: notOk });
+  assert.equal(live.text, out.text);
+  assert.ok(live.notes.some((n) => n.includes('the reference does not resolve it')));
+});
+
+test('a reflected key with no entry in the reference that the new build does not resolve holds the run', () => {
+  const noEntry = base().filter((k) => k.key !== 'UCrSomething::bFlag');
+  const newer = next().map((k) => (k.key === 'UCrSomething::bFlag' ? { key: k.key, result: 'NOMEMBER' } : k));
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: newer, base: noEntry });
+  assert.equal(out.text, null);
+  assert.deepEqual(out.problems, ['UCrSomething::bFlag: the saved layout has no entry for it and the new build does not resolve it']);
+  // With an entry that does not resolve either, it stays a note, as before.
+  const both = fieldRows(header(), { cl: 130000, keys: keys(), next: newer, base: base().map((k) => (k.key === 'UCrSomething::bFlag' ? { key: k.key, result: 'NOMEMBER' } : k)) });
+  assert.deepEqual(both.problems, []);
+});
+
 test('the loader field keys get a row on a new CL even when they did not move; other unmoved keys do not', () => {
   const k = unionKeys([parseKeys(KEYS + 'field UWorld::GameState\nfield UWorld::LineBatchers\nfield UWorld::NetDriver\n')]);
   const same = [ent('UWorld::GameState', 0x1b0, 8), ent('UWorld::LineBatchers', 0xf0, 0x20), ent('UWorld::NetDriver', 0x38, 8)];

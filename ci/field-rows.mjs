@@ -145,6 +145,9 @@ export function parseUses(text, where = 'uses') {
   return uses;
 }
 
+// The result given to a listed key the reference has no entry for.
+const NO_ENTRY = 'NO_ENTRY';
+
 // Plans the rows. next/base: arrays of { key, result, offset?, size?, boolMask? };
 // uses: parseUses() or null. Returns { problems, rows, absent, covered, notes, degraded }.
 export function planFieldRows(keys, next, base, cl, uses = null, sources = new Map(), baseMissing = null) {
@@ -264,7 +267,10 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
     if (!base) problems.push(baseMissing ? `no reference layout to find what moved: ${baseMissing}` : 'reflected field keys are listed but no --base report was given to find what moved');
     else {
       let diff;
-      try { diff = diffLayoutReports(selectKeys(base, fields, '--base'), selectKeys(next, fields, '--next')); } catch (e) { problems.push(e.message); }
+      // A listed key the reference has no entry for (a plugin added it after the layout was saved) is read as not resolved there.
+      const known = new Set(base.map((k) => k.key));
+      const padded = [...base, ...fields.filter((k) => !known.has(k)).map((key) => ({ key, result: NO_ENTRY }))];
+      try { diff = diffLayoutReports(selectKeys(padded, fields, '--base'), selectKeys(next, fields, '--next')); } catch (e) { problems.push(e.message); }
       if (diff) {
         for (const m of [...diff.moved, ...diff.changed]) {
           if (REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: PDB size is the register's; no row`); covered.add(classOf(m.key)); continue; }
@@ -275,11 +281,12 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
         }
         // A key only the new build resolves is new on this build: its row comes from the new values, like a moved key.
         for (const m of diff.added) {
-          if (isClassKey(m.key) || REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: new on this build; the reference does not resolve it`); continue; }
+          const why = m.base === NO_ENTRY ? 'the reference has no entry for it' : 'the reference does not resolve it';
+          if (isClassKey(m.key) || REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: new on this build; ${why}`); continue; }
           if (!Number.isInteger(m.next.offset)) { problems.push(`${m.key}: the new report gives no offset`); continue; }
           rows.push(rowOf(m.key, cl, m.next));
           covered.add(classOf(m.key));
-          notes.push(`${m.key}: new on this build; the reference does not resolve it, so the row is the new build's`);
+          notes.push(`${m.key}: new on this build; ${why}, so the row is the new build's`);
         }
         for (const m of diff.missing) {
           if (!isClassKey(m.key)) { gone(m.key, 'field', 'resolves on the reference build only (removed or renamed)'); continue; }
@@ -291,6 +298,7 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
           covered.add(m.key);
         }
         for (const u of diff.unresolved) {
+          if (u.base === NO_ENTRY) { problems.push(`${u.key}: the saved layout has no entry for it and the new build does not resolve it`); continue; }
           if (LOADER_FIELD_KEYS.has(u.key)) problems.push(`${u.key}: the loader reads it and needs a row, but it resolves on neither build`);
           else notes.push(`${u.key}: resolves on neither build; reflection decides`);
         }
