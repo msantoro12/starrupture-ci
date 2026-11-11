@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { emit, parse } from './version-map.mjs';
-import { SCHEMA, assetName, buildRecord, main, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
+import { emit, exportFeed, parse } from './version-map.mjs';
+import { PUBLISHED, SCHEMA, assetName, buildRecord, main, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
 
 const HEADER = readFileSync(new URL('./fixtures/version-map/loader.h', import.meta.url), 'utf8');
 // The fixture header: built for CL-127004, whose build row is public build 25646882.
@@ -204,6 +204,62 @@ test('cross-check: a header row for a renamed member is not compared and does no
   assert.equal(cross([...HROWS, renamed], [...RECS, { key: 'AFoo::Old', result: 'NOMEMBER', size: 0 }]).cl, 127004);
 });
 
+// ---- cross-check against the published version map ------------------------------
+
+// A published file as the publish job writes it: the export, a seq line after the format line and a sig line last.
+const published = (rows) => {
+  const map = parse(HEADER);
+  map.builtCL = null;
+  map.functions = [];
+  map.fields = rows;
+  const lines = exportFeed(map).split('\n');
+  const text = [lines[0], 'seq\t1', ...lines.slice(1, -1), `sig\tk2\t${'A'.repeat(86)}==`, ''].join('\n');
+  return { text, release: { assets: [{ name: PUBLISHED.asset, size: Buffer.byteLength(text), uploader: BOT }] } };
+};
+const listed = (text, over = {}) => ({ text, release: { assets: [{ name: PUBLISHED.asset, size: Buffer.byteLength(text), uploader: BOT, ...over }] } });
+const wide = (pub, recs = RECS2) => ref({ ...rec(recs), args: { headerText: headerWith(HROWS), fields: new Set(), published: pub } });
+const PROWS = [...HROWS, hrow('AFoo::Baz', 24, 8)];
+const RECS2 = [...RECS, entry('AFoo::Baz', 24)];
+const patched = (key, patch) => RECS2.map((k) => (k.key === key ? { ...k, ...patch } : k));
+
+test('published cross-check: equal data passes with nothing skipped, and a row the record lacks is ignored', () => {
+  assert.equal(wide(published(PROWS)).skipped, null);
+  assert.equal(wide(published([...PROWS, hrow('AFoo::NotInRecord', 8, 8)])).skipped, null);
+});
+
+test('published cross-check: a wrong offset, size or mask in the record refuses and names the key', () => {
+  const pub = published(PROWS);
+  assert.throws(() => wide(pub, patched('AFoo::Baz', { offset: 32 })), /disagrees with the version map's field rows.*1 of 5 keys.*AFoo::Baz: version map 0x18\/0x8\/0x0, record 0x20\/0x8\/0x0/);
+  assert.throws(() => wide(pub, patched('AFoo::Baz', { size: 4 })), /AFoo::Baz: version map 0x18\/0x8\/0x0, record 0x18\/0x4\/0x0/);
+  const flagged = (mask) => [...RECS2, { key: 'UCrFlag2::bOn', result: 'OK', offset: 0x10, size: 1, boolMask: mask }];
+  assert.throws(() => wide(published([...PROWS, hrow('UCrFlag2::bOn', 0x10, 1, 0x4)]), flagged(0x8)), /UCrFlag2::bOn: version map 0x10\/0x1\/0x4, record 0x10\/0x1\/0x8/);
+});
+
+test('published cross-check: a renamed member is not compared and does not count', () => {
+  const renamed = { ...hrow('AFoo::Old', 8, 8), member: 'Renamed' };
+  assert.equal(wide(published([...PROWS, renamed]), [...RECS2, { key: 'AFoo::Old', result: 'NOMEMBER', size: 0 }]).skipped, null);
+});
+
+test('published cross-check: fewer than half of its rows in the record refuses', () => {
+  const more = Array.from({ length: 6 }, (_, i) => hrow(`M::k${i}`, 8, 8));
+  assert.throws(() => wide(published([...PROWS, ...more])), /entry for only 5 of the version map's 11 field rows.*too few/);
+});
+
+test('published cross-check: a file that is absent, unreadable, without rows for the built CL or not the bot\'s is skipped with a reason, and the header still checks', () => {
+  const good = published(PROWS);
+  const skip = (pub, re) => { const r = wide(pub); assert.match(r.skipped, re); assert.equal(r.cl, 127004); };
+  skip(null, /no published version map was given/);
+  skip({ text: null, release: good.release }, /no version-map-client.v1.txt was downloaded from release vmap-feed/);
+  skip({ ...good, release: null }, /release vmap-feed lists no version-map-client.v1.txt/);
+  skip(listed(good.text, { uploader: { login: 'someone', type: 'User' } }), /uploaded by someone \(User\).*not trusted/);
+  skip(listed(good.text, { size: 3 }), /not the asset the release lists/);
+  skip(listed('not a version map\n'), /no seq or sig line/);
+  skip(listed(good.text.replace('field\tAFoo::Bar\t127004', 'field\tAFoo::Bar\tx127004')), /^version-map-client.v1.txt: /);
+  skip(published(PROWS.map((r) => ({ ...r, cl: 128786 }))), /has no field rows for CL-127004/);
+  // The header's check does not depend on the published file: a bad record still refuses when the file is unusable.
+  assert.throws(() => ref({ ...rec(swap('AFoo::Bar', { offset: 24 })), args: { headerText: headerWith(HROWS), fields: new Set(), published: { text: null, release: null } } }), /disagrees with the header's field rows/);
+});
+
 test('reference: refuses malformed records', () => {
   for (const bad of ['not json', '{}', JSON.stringify({ ...make(), schema: 2 }), JSON.stringify({ ...make(), exeSha256: 'zz' }),
     JSON.stringify({ ...make(), keys: 'x' }), JSON.stringify({ ...make(), keys: [{ key: 'A::b', result: 'OK' }] }), JSON.stringify({ ...make(), buildid: 'abc' })]) {
@@ -253,6 +309,30 @@ test('command line: record writes the asset, reference writes the base report an
   assert.equal(none.code, 3);
   assert.match(none.err, /no stored layout for CL-127004/);
   assert.equal(run(['bogus']).code, 2);
+});
+
+test('command line: --published names a directory; its file is cross-checked, and a missing one is skipped with one line', () => {
+  const pub = published([hrow('ACrCrafter::CraftComponent', 1752, 8), hrow('AFoo::Bar', 16, 8)]);
+  const text = JSON.stringify(make(), null, 2) + '\n';
+  const p = inDir({ 'header.h': HEADER, 'rec.json': text, 'release.json': JSON.stringify(releaseFor(text)), 'native-keys.txt': '', 'layout-keys.txt': [...FIELDS].join('\n') + '\n' });
+  const sub = mkdtempSync(join(tmpdir(), 'layout-store-pub-'));
+  writeFileSync(join(sub, PUBLISHED.asset), pub.text);
+  writeFileSync(join(sub, 'release.json'), JSON.stringify(pub.release));
+  const args = ['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json')];
+  const ok = run([...args, '--published', sub]);
+  assert.equal(ok.code, 0, ok.err);
+  assert.doesNotMatch(ok.out, /skipped/);
+  const none = run([...args, '--published', join(sub, 'nowhere')]);
+  assert.equal(none.code, 0, none.err);
+  assert.match(none.out, /wider cross-check against the published version map was skipped: no version-map-client.v1.txt was downloaded/);
+  assert.match(run(args).out, /skipped: no published version map was given/);
+  writeFileSync(join(sub, 'release.json'), 'not json');
+  const bad = run([...args, '--published', sub]);
+  assert.equal(bad.code, 0, bad.err);
+  assert.match(bad.out, /skipped: release vmap-feed lists no version-map-client.v1.txt/, 'an unreadable release listing is a skip, not a refusal');
+  writeFileSync(join(sub, 'release.json'), JSON.stringify(pub.release));
+  writeFileSync(join(sub, PUBLISHED.asset), pub.text.replace('AFoo::Bar\t127004\t0x10', 'AFoo::Bar\t127004\t0x18'));
+  assert.equal(run([...args, '--published', sub]).code, 3, 'a changed offset in the file refuses');
 });
 
 test('command line: record against a stored asset writes nothing when it adds nothing, and refuses a hand upload', () => {
