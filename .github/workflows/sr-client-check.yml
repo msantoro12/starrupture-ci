@@ -2847,10 +2847,14 @@ jobs:
               return 0
             fi
             gh release download vmap-layouts --pattern "layout-CL-$PREVIOUS_CL.json" --dir stored 2> /dev/null || true
+            # The published version map widens the record's cross-check; any failure to read it only skips that check.
+            mkdir -p published-ref
+            gh api "repos/$GH_REPO/releases/tags/vmap-feed" > published-ref/release.json 2> /dev/null || rm -f published-ref/release.json
+            gh release download vmap-feed --pattern version-map-client.v1.txt --dir published-ref 2> /dev/null || true
             exe_sha="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.sha256 ?? ''")"
             local why
             if why="$(node tool/ci/layout-store.mjs reference "$header" --record "stored/layout-CL-$PREVIOUS_CL.json" --release stored/release.json --cl "$cl" --sha256 "$exe_sha" \
-                --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --out res/layout-stored.json 2>&1)"; then
+                --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --out res/layout-stored.json --published published-ref 2>&1)"; then
               base=(--base res/layout-stored.json)
               echo "field-rows: $why"
             else

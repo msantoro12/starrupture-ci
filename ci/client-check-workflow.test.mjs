@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addBuild, addFunction, emit, emptyMap, parse, parseFeed } from './version-map.mjs';
+import { addBuild, addFunction, emit, emptyMap, exportFeed, parse, parseFeed } from './version-map.mjs';
 import { firstLogError } from './pipeline-alert.mjs';
 import { buildRecord } from './layout-store.mjs';
 
@@ -3109,7 +3109,17 @@ test('field rows: where the reference layout comes from, run against a stand-in 
     run: 1, workflowSha: 'f'.repeat(40), at: '2026-11-11T00:00:00Z',
   }), null, 2) + '\n';
   const release = (uploader = bot, size = Buffer.byteLength(record)) => JSON.stringify({ assets: [{ name: 'layout-CL-127004.json', size, uploader }] });
-  const run = ({ env = {}, release: rel = release(), asset = record, reference = false } = {}) => {
+  // The published version map as the publish job writes it, with the field rows of the stand-in record.
+  const feedOf = (offset = 16) => {
+    const map = parse(headerText);
+    map.builtCL = null;
+    map.functions = [];
+    map.fields = [{ key: 'ACrCrafter::CraftComponent', cl: 127004, member: null, offset: 1752, size: 8, mask: 0 }, { key: 'AFoo::Bar', cl: 127004, member: null, offset, size: 8, mask: 0 }];
+    const lines = exportFeed(map).split('\n');
+    return [lines[0], 'seq\t1', ...lines.slice(1, -1), `sig\tk2\t${'A'.repeat(86)}==`, ''].join('\n');
+  };
+  const feedRelease = (feed, uploader = bot) => JSON.stringify({ assets: [{ name: 'version-map-client.v1.txt', size: Buffer.byteLength(feed), uploader }] });
+  const run = ({ env = {}, release: rel = release(), asset = record, reference = false, feed = null, feedRel = feed === null ? null : feedRelease(feed) } = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'refsel-'));
     cpSync(here, join(dir, 'tool', 'ci'), { recursive: true });
     mkdirSync(join(dir, 'res'), { recursive: true });
@@ -3119,8 +3129,12 @@ test('field rows: where the reference layout comes from, run against a stand-in 
     if (reference) writeFileSync(join(dir, 'res', 'layout-reference.json'), '{"keys":[]}');
     if (rel !== null) writeFileSync(join(dir, 'release.json'), rel);
     if (asset !== null) writeFileSync(join(dir, 'asset.json'), asset);
+    if (feed !== null) writeFileSync(join(dir, 'feed.txt'), feed);
+    if (feedRel !== null) writeFileSync(join(dir, 'feed-release.json'), feedRel);
     mkdirSync(join(dir, 'bin'), { recursive: true });
     writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash
+if [ "$1" = api ] && [[ "$2" == *vmap-feed ]]; then [ -f "$FAKE_DIR/feed-release.json" ] && { cat "$FAKE_DIR/feed-release.json"; exit 0; }; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+if [ "$1 $2 $3" = "release download vmap-feed" ]; then [ -f "$FAKE_DIR/feed.txt" ] && cp "$FAKE_DIR/feed.txt" "$7/$5"; exit 0; fi
 if [ "$1" = api ]; then [ -f "$FAKE_DIR/release.json" ] && { cat "$FAKE_DIR/release.json"; exit 0; }; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
 if [ "$1 $2" = "release download" ]; then [ -f "$FAKE_DIR/asset.json" ] && cp "$FAKE_DIR/asset.json" "$7/$5"; exit 0; fi
 exit 1
@@ -3155,6 +3169,16 @@ exit 1
   miss({ release: release({ login: 'someone', type: 'User' }) }, /uploaded by someone \(User\).*not trusted/);
   miss({ release: release(bot, 3) }, /not the asset the release lists/);
   miss({ asset: record.replace('"cl": 127004', '"cl": 126000') }, /stored layout is for CL-126000, the header was built for CL-127004/);
+  // The published version map widens the cross-check: used when it is the bot's upload, skipped with one line when it is not there.
+  const wide = run({ feed: feedOf() });
+  assert.deepEqual(wide.base, ['--base', 'res/layout-stored.json']);
+  assert.doesNotMatch(wide.out, /skipped/);
+  assert.match(run().out, /skipped: no version-map-client.v1.txt was downloaded from release vmap-feed/, 'no published file: skipped, the run goes on');
+  assert.deepEqual(run().base, ['--base', 'res/layout-stored.json']);
+  const notBot = run({ feed: feedOf(), feedRel: feedRelease(feedOf(), { login: 'someone', type: 'User' }) });
+  assert.match(notBot.out, /skipped: version-map-client.v1.txt was uploaded by someone \(User\)/);
+  assert.deepEqual(notBot.base, ['--base', 'res/layout-stored.json']);
+  miss({ feed: feedOf(24) }, /disagrees with the version map's field rows.*AFoo::Bar: version map 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0/);
   // A non-public check keeps its own comparison, and a proof run or a mapped first publish its self-reference.
   const other = { BRANCH: 'public_test_branch' };
   assert.deepEqual(run({ env: other, reference: true }).base, ['--base', 'res/layout-reference.json']);

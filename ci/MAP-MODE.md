@@ -402,7 +402,7 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
 - A class whose size changed is a note when nothing depends on its whole size or the
   only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
@@ -459,6 +459,11 @@ built for as well as the new one.
   covers fewer than half of the header's rows for that CL. A key that resolves on the new
   build but not on the reference build is new there: it gets a row from the new build's
   values and a note, and holds nothing.
+- The header carries few field rows, so the file is checked the same way against the
+  field rows of this repository's published version map as well, when the run can
+  download it from the `vmap-feed` release and an Actions job uploaded it. If it is missing,
+  unreadable or has no rows for that CL, the run prints one line saying the wider check was
+  skipped and goes on with the header's rows; a disagreement still refuses the file.
 - If any of that is missing, nothing is guessed. The run holds, and the hold names what
   is missing ("no reference layout to find what moved: no stored layout for CL-N ...").
   A stored file that lacks a key added later cannot be filled in once Steam has stopped
