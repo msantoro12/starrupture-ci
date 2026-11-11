@@ -3336,22 +3336,23 @@ test('refresh workflow: it calls the client check for the public build in map mo
   assert.ok(!/gh workflow run|\n {6}ref:|gh api[^\n]*dispatches/.test(refreshWf.replace(/^ *#.*\n/gm, '')), 'it calls the check at its own ref, it does not dispatch it');
 });
 
-test('refresh workflow: it shares the Steam group of every public check and never cancels a run', () => {
-  assert.match(refreshWf, /\nconcurrency:\n {2}group: sr-layout-refresh\n {2}cancel-in-progress: false\n/);
-  assert.ok(!/group: sr-watch/.test(refreshWf), 'the watcher\'s group is not held while a refresh runs');
-  // The Steam group is the called check job's, keyed by the branch: a refresh of public queues behind a public check.
+test('refresh workflow: it runs in the watcher\'s group so a poll and a refresh never sign in together, and nothing is cancelled', () => {
+  const group = (text) => text.match(/\nconcurrency:\n {2}group: (\S+)\n {2}cancel-in-progress: (\S+)\n/).slice(1);
+  assert.deepEqual(group(refreshWf), ['sr-watch', 'false']);
+  assert.deepEqual(group(watch), group(refreshWf), 'the same group and the same cancel setting as the watcher');
+  // The check job keeps its per-branch group too: a refresh of public queues behind a hand-started public check.
   const c = job('check');
   assert.match(c, /\n {4}concurrency:\n {6}group: sr-client-check-\$\{\{ inputs\.branch \}\}\n {6}cancel-in-progress: false\n/);
   assert.ok(!/cancel-in-progress: true/.test(wf + refreshWf + watch));
 });
 
-test('refresh workflow: it skips when sr-watch, the client check or the rig has a run going or waiting, and otherwise goes on', { skip: !bash }, () => {
+test('refresh workflow: it skips when a client check, the rig or the data extract has a run going or waiting, and otherwise goes on', { skip: !bash }, () => {
   const j = refreshJob('idle');
   assert.match(j, /\n {4}permissions:\n {6}actions: read\n {4}[a-z]/, 'it only reads the runs');
   const script = runOf(j, 'Look for a run that uses Steam');
   const pattern = new RegExp(script.match(/test\("([^"]+)"\)/)[1]);
-  for (const p of ['.github/workflows/sr-watch.yml', '.github/workflows/sr-client-check.yml@refs/heads/main', '.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml']) assert.ok(pattern.test(p), p);
-  for (const p of ['.github/workflows/sr-layout-refresh.yml', '.github/workflows/sr-build-all.yml', '.github/workflows/sr-node-tests.yml', '.github/workflows/vmap-watchdog.yml']) assert.ok(!pattern.test(p), p);
+  for (const p of ['.github/workflows/sr-client-check.yml@refs/heads/main', '.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml']) assert.ok(pattern.test(p), p);
+  for (const p of ['.github/workflows/sr-watch.yml', '.github/workflows/sr-layout-refresh.yml', '.github/workflows/sr-build-all.yml', '.github/workflows/sr-node-tests.yml', '.github/workflows/vmap-watchdog.yml']) assert.ok(!pattern.test(p), p);
   const run = (busy) => {
     const dir = mkdtempSync(join(tmpdir(), 'idle-'));
     mkdirSync(join(dir, 'bin'));
@@ -3371,7 +3372,7 @@ test('refresh workflow: it skips when sr-watch, the client check or the rig has 
   assert.equal(none.out, 'idle=true');
   for (const s of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) assert.ok(none.calls.includes(`status=${s}&`), `looks at ${s} runs`);
   for (const s of ['queued', 'in_progress', 'waiting']) {
-    const busy = run({ [s]: 'SR Steam watch https://github.com/x/y/actions/runs/1\n' });
+    const busy = run({ [s]: 'SR client check https://github.com/x/y/actions/runs/1\n' });
     assert.equal(busy.r.status, 0, 'a skipped refresh is not a failure');
     assert.equal(busy.out, 'idle=false', `a ${s} run holds it back`);
     assert.match(busy.r.stdout, /::notice title=Layout refresh skipped::/);

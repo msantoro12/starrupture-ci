@@ -12,14 +12,15 @@ name: SR layout refresh
 # changes nothing under state/. A failed refresh, or one that left a key source out, shows red in this
 # workflow's own run and nowhere else.
 #
-# It never competes with the update path: the check job of sr-client-check.yml has one group per Steam
-# branch (sr-client-check-public), the one every public check uses, so the refresh queues behind a public
-# check that is running and never cancels a running one. A pending run is replaced by a newer one in a
-# group, so the first job looks first and skips the refresh when sr-watch, the client check, the client
-# rig or the data extract has a run going or waiting. That look is made once, before the refresh builds
-# the scanner and the plugins and signs in: a run of the other Steam branch that starts in that time is not
-# held back by the refresh. This workflow does not use the sr-watch group, so the watcher polls on schedule
-# while a refresh runs.
+# It never signs in to Steam at the same time as the update path. This workflow runs in the watcher's
+# concurrency group (sr-watch), with cancel-in-progress off: a refresh waits for a poll's run that is going,
+# a poll that starts during a refresh waits for it, and neither cancels the other. A group keeps one running
+# and one pending run and a newer pending run replaces an older one, so a poll that waits behind a refresh
+# is replaced by the next poll, which then runs: the watcher keeps its schedule, and a poll can be late by
+# up to the length of one refresh, once a day. The first job is a cheap look, made once the group is
+# acquired: it skips the refresh when a client check, the client rig or the data extract started by hand
+# has a run going or waiting (the watcher's own runs are covered by the group, and one waiting behind this
+# run would only make it skip).
 #
 # Schedule: 04:47 UTC, away from the watcher (minutes 7 and 37), the planner (23 and 53), the weekly
 # login-age check (Monday 06:17) and the nightly compile check (03:23). It runs from main only: a
@@ -33,7 +34,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: sr-layout-refresh
+  group: sr-watch
   cancel-in-progress: false
 
 jobs:
@@ -57,7 +58,7 @@ jobs:
           nl=$'\n'
           for status in queued in_progress waiting pending requested; do
             found="$(gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" \
-              --jq '.workflow_runs[] | select(.path | test("sr-(watch|client-check|client-rig|data-extract)[.]yml")) | "\(.name) \(.html_url)"')"
+              --jq '.workflow_runs[] | select(.path | test("sr-(client-check|client-rig|data-extract)[.]yml")) | "\(.name) \(.html_url)"')"
             busy+="${found:+$found$nl}"
           done
           if [ -n "$busy" ]; then
