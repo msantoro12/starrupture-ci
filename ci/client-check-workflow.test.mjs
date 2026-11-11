@@ -2951,7 +2951,7 @@ test('layout-store: the writer job runs only for a successful public map-mode ch
   assert.equal(ifOf({}, { ref: 'refs/pull/5/merge' }), false, 'a pull request ref');
   assert.equal(ifOf({}, undefined, { check: { result: 'failure' } }), false, 'a failed check');
   assert.equal(ifOf({}, undefined, { check: { result: 'skipped' } }), false);
-  assert.match(j, /\n {4}needs: \[check\]\n/);
+  assert.match(j, /\n {4}needs: \[check, key-sources-plan\]\n/);
   assert.match(j, /\n {4}permissions:\n {6}contents: write\n {4}[a-z]/, 'contents: write and no other permission');
   assert.ok(!/\n {4}environment:/.test(j), 'no environment');
   assert.ok(!/secrets\./.test(j), 'no secret');
@@ -3257,8 +3257,11 @@ test('layout refresh: the store job still runs for it on main, and the alert, re
   assert.equal(store(), true);
   assert.equal(store({}, { ref: 'refs/heads/fix/x' }), false, 'not from another ref');
   assert.equal(store({}, MAIN, { check: { result: 'failure' } }), false, 'not after a failed check');
-  assert.ok(!/refresh_layout/.test(job('layout-store')), 'the store job does not know about the refresh: it stores whatever a public map-mode check scanned');
-  assert.match(job('layout-store'), /\n {4}needs: \[check\]\n/);
+  // The store itself does not know about the refresh: it stores whatever a public map-mode check scanned. Only the step after it does.
+  const storeCode = job('layout-store').replace(/^ *#.*\n/gm, '');
+  assert.ok(!/refresh_layout/.test(storeCode.replace(/- name: Fail a refresh that left key sources out\n {8}if: .*\n/, '')), 'refresh_layout is read only by the last step\'s condition');
+  assert.ok(storeCode.indexOf('- name: Fail a refresh that left key sources out') > storeCode.indexOf('- name: Store the layout'), 'after the store');
+  assert.match(job('layout-store'), /\n {4}needs: \[check, key-sources-plan\]\n/);
   const needs = { build: { result: 'success' }, 'plugin-plan': { result: 'success' }, check: { result: 'success', outputs: { autofix: '[{"name":"x"}]' } }, 'auto-apply': { result: 'skipped' } };
   const all = new Proxy(needs, { get: (t, k) => t[k] ?? { result: 'skipped', outputs: {} } });
   for (const n of ['alert', 'report', 'auto-apply']) {
@@ -3269,14 +3272,14 @@ test('layout refresh: the store job still runs for it on main, and the alert, re
 });
 
 test('layout refresh: nothing on the publish path depends on it', () => {
-  for (const n of ['publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'rig-feed-other', 'feed-loader-cleanup', 'feed-gate', 'check', 'layout-store']) {
+  for (const n of ['publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'rig-feed-other', 'feed-loader-cleanup', 'feed-gate', 'check']) {
     assert.ok(!/refresh_layout/.test(job(n).replace(/^ *#.*\n/gm, '').replace(/\n {4}if: .*\n/, '\n')), `${n} reads no refresh input`);
   }
   assert.ok(!/refresh_layout/.test(jobIf('publish')));
-  assert.ok(!/refresh_layout/.test(jobIf('layout-store')));
+  assert.ok(!/refresh_layout/.test(jobIf('layout-store')), 'whether the store runs does not depend on it');
   // The only jobs that name it: the map job and the three that report on or push what it makes (and the plan's refusal).
   const naming = [...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /refresh_layout/.test(job(n).replace(/^ *#.*\n/gm, '')));
-  assert.deepEqual(naming, ['plugin-plan', 'check', 'map-mode', 'alert', 'auto-apply', 'report']);
+  assert.deepEqual(naming, ['plugin-plan', 'check', 'layout-store', 'map-mode', 'alert', 'auto-apply', 'report']);
 });
 
 test('layout refresh: the plan refuses it anywhere but a public map-mode check with every other switch off, before the Steam login', { skip: !bash }, () => {
@@ -3347,7 +3350,7 @@ test('refresh workflow: it skips when sr-watch, the client check or the rig has 
   assert.match(j, /\n {4}permissions:\n {6}actions: read\n {4}[a-z]/, 'it only reads the runs');
   const script = runOf(j, 'Look for a run that uses Steam');
   const pattern = new RegExp(script.match(/test\("([^"]+)"\)/)[1]);
-  for (const p of ['.github/workflows/sr-watch.yml', '.github/workflows/sr-client-check.yml@refs/heads/main', '.github/workflows/sr-client-rig.yml']) assert.ok(pattern.test(p), p);
+  for (const p of ['.github/workflows/sr-watch.yml', '.github/workflows/sr-client-check.yml@refs/heads/main', '.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml']) assert.ok(pattern.test(p), p);
   for (const p of ['.github/workflows/sr-layout-refresh.yml', '.github/workflows/sr-build-all.yml', '.github/workflows/sr-node-tests.yml', '.github/workflows/vmap-watchdog.yml']) assert.ok(!pattern.test(p), p);
   const run = (busy) => {
     const dir = mkdtempSync(join(tmpdir(), 'idle-'));
@@ -3373,4 +3376,29 @@ test('refresh workflow: it skips when sr-watch, the client check or the rig has 
     assert.equal(busy.out, 'idle=false', `a ${s} run holds it back`);
     assert.match(busy.r.stdout, /::notice title=Layout refresh skipped::/);
   }
+});
+
+test('layout refresh: the run goes red when a planned key source left no keys, after the store has saved what it has', { skip: !bash }, () => {
+  const store = job('layout-store');
+  const script = runOf(store, 'Fail a refresh that left key sources out');
+  assert.match(store, /- name: Fail a refresh that left key sources out\n {8}if: \$\{\{ inputs\.refresh_layout == true \}\}\n {8}env:\n {10}PLAN: \$\{\{ needs\.key-sources-plan\.outputs\.matrix \}\}\n/);
+  const plan = JSON.stringify([{ name: 'BetterCheats', tag: 'BetterCheats@gss/plugin-work' }, { name: 'MiniMap', tag: 'MiniMap@feat/full-version-map' }]);
+  const run = (sources, planText = plan) => {
+    const dir = mkdtempSync(join(tmpdir(), 'keysrc-'));
+    mkdirSync(join(dir, 'res'));
+    if (sources) writeFileSync(join(dir, 'res', 'keysrc.json'), JSON.stringify({ sources }));
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, PLAN: planText } });
+    rmSync(dir, { recursive: true, force: true });
+    return r;
+  };
+  const ok = (name) => ({ name, status: 'ok', layout: 'ok', keys: 3 });
+  assert.equal(run([ok('BetterCheats'), ok('MiniMap')]).status, 0, 'every planned source scanned and read');
+  assert.equal(run(null, '').status, 0, 'no key sources planned, nothing to miss');
+  assert.equal(run(null, '[]').status, 0);
+  const noResult = run([ok('BetterCheats')]);
+  assert.equal(noResult.status, 1, 'a planned source with no result (it did not build) fails the run');
+  assert.match(noResult.stdout, /::error title=Layout refresh::key source MiniMap@feat\/full-version-map left its keys out/);
+  assert.equal(run([ok('BetterCheats'), { name: 'MiniMap', status: 'failed', layout: '', keys: 0 }]).status, 1, 'a source that did not scan');
+  assert.equal(run([ok('BetterCheats'), { name: 'MiniMap', status: 'ok', layout: 'no keys', keys: 0 }]).status, 1, 'a source whose keys were not read');
+  assert.equal(run(null).status, 1, 'no keysrc.json at all while sources were planned');
 });

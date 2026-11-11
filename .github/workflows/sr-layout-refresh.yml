@@ -8,15 +8,18 @@ name: SR layout refresh
 # plugin adds later is missing until the build is checked again, which is too late once Steam stops
 # serving it. This workflow runs the public check in map mode with refresh_layout on (sr-client-check.yml):
 # the same keys are collected as in a normal run, the layout store job merges them into the saved file,
-# and every job after that is off. It opens no alert, pushes no map rows, publishes nothing and
-# changes nothing under state/. A failed refresh shows red in this workflow's own run and nowhere else.
+# and every job after that is off. It opens no alert, pushes no version map rows, publishes nothing and
+# changes nothing under state/. A failed refresh, or one that left a key source out, shows red in this
+# workflow's own run and nowhere else.
 #
 # It never competes with the update path: the check job of sr-client-check.yml has one group per Steam
 # branch (sr-client-check-public), the one every public check uses, so the refresh queues behind a public
-# check that is running and never cancels it. A pending run is replaced by a newer one in a group, so the
-# first job looks first and skips the refresh when sr-watch, the client check or the client rig has a run
-# going or waiting. This workflow does not use the sr-watch group, so the watcher polls on schedule while a
-# refresh runs.
+# check that is running and never cancels a running one. A pending run is replaced by a newer one in a
+# group, so the first job looks first and skips the refresh when sr-watch, the client check, the client
+# rig or the data extract has a run going or waiting. That look is made once, before the refresh builds
+# the scanner and the plugins and signs in: a run of the other Steam branch that starts in that time is not
+# held back by the refresh. This workflow does not use the sr-watch group, so the watcher polls on schedule
+# while a refresh runs.
 #
 # Schedule: 04:47 UTC, away from the watcher (minutes 7 and 37), the planner (23 and 53), the weekly
 # login-age check (Monday 06:17) and the nightly compile check (03:23). It runs from main only: a
@@ -51,10 +54,11 @@ jobs:
         run: |
           set -euo pipefail
           busy=""
+          nl=$'\n'
           for status in queued in_progress waiting pending requested; do
             found="$(gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" \
-              --jq '.workflow_runs[] | select(.path | test("sr-(watch|client-check|client-rig)[.]yml")) | "\(.name) \(.html_url)"')"
-            busy+="$found"
+              --jq '.workflow_runs[] | select(.path | test("sr-(watch|client-check|client-rig|data-extract)[.]yml")) | "\(.name) \(.html_url)"')"
+            busy+="${found:+$found$nl}"
           done
           if [ -n "$busy" ]; then
             echo "::notice title=Layout refresh skipped::a run that uses Steam is going or waiting, so the refresh waits for tomorrow:"

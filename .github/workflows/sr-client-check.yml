@@ -2489,10 +2489,11 @@ jobs:
   # again, and an upload is read back. The build cannot be fetched again once public moves, so this job is red
   # (not a warning) when the check left nothing to store. The saved file lists the keys the plugins asked for when it
   # was saved, so sr-layout-refresh.yml runs a public check once a day with refresh_layout on, which ends here: every
-  # job after the check and this one is off for it.
+  # job after the check and this one is off for it. It has no map-mode job or alert to name a key source that failed,
+  # so the last step turns the refresh's own run red for one.
   layout-store:
     name: store the public layout
-    needs: [check]
+    needs: [check, key-sources-plan]
     if: ${{ !cancelled() && inputs.map_mode == true && inputs.branch == 'public' && needs.check.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -2547,6 +2548,23 @@ jobs:
           gh release upload vmap-layouts "$name" --clobber
           gh release download vmap-layouts --pattern "$name" --dir verify --clobber
           cmp "$name" "verify/$name" || { echo "::error title=Layout store::$name on the release is not the file that was uploaded"; exit 1; }
+
+      # A key source that did not build or scan leaves its keys out of the layout, and a refresh has no map-mode job or
+      # alert to say so. The store above has saved what was scanned; this makes the refresh's own run red for the rest.
+      - name: Fail a refresh that left key sources out
+        if: ${{ inputs.refresh_layout == true }}
+        env:
+          PLAN: ${{ needs.key-sources-plan.outputs.matrix }}
+        run: |
+          node -e '
+            const plan = JSON.parse(process.env.PLAN || "[]");
+            const fs = require("fs");
+            const got = new Map();
+            if (fs.existsSync("res/keysrc.json")) for (const s of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) got.set(s.name, s);
+            const bad = plan.filter((p) => { const s = got.get(p.name); return !s || s.status !== "ok" || s.layout !== "ok"; });
+            for (const p of bad) console.log("::error title=Layout refresh::key source " + p.tag + " left its keys out of the layout (it did not build, scan or have its keys read), so the saved layout may lack them");
+            process.exit(bad.length ? 1 : 0);
+          '
 
   # ---- Map mode: the update as rows in the loader's version map -----------
   # The unattended path M chain, on the scans the check job uploaded and the
