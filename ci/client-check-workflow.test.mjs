@@ -3105,7 +3105,7 @@ test('field rows: where the reference layout comes from, run against a stand-in 
   const record = JSON.stringify(buildRecord({
     result: { download: { betaKey: 'public', installed: true, buildid: '25646882' }, checks: { exe: { cl: '127004', sha256: sha } } },
     scanner: { exe: { cl: 127004, imageStamp: 1760600498, imageSize: 171909120 } },
-    layoutText: JSON.stringify({ keys: [{ key: 'AFoo::Bar', result: 'OK', offset: 16, size: 8, boolMask: 0 }, { key: 'UWorld::GameState', result: 'OK', offset: 0x120, size: 8, boolMask: 0 }] }),
+    layoutText: JSON.stringify({ keys: [{ key: 'ACrCrafter::CraftComponent', result: 'OK', offset: 1752, size: 8, boolMask: 0 }, { key: 'AFoo::Bar', result: 'OK', offset: 16, size: 8, boolMask: 0 }, { key: 'UWorld::GameState', result: 'OK', offset: 0x120, size: 8, boolMask: 0 }] }),
     run: 1, workflowSha: 'f'.repeat(40), at: '2026-11-11T00:00:00Z',
   }), null, 2) + '\n';
   const release = (uploader = bot, size = Buffer.byteLength(record)) => JSON.stringify({ assets: [{ name: 'layout-CL-127004.json', size, uploader }] });
@@ -3139,7 +3139,7 @@ exit 1
   assert.equal(ok.status, 0, ok.stderr);
   assert.deepEqual(ok.base, ['--base', 'res/layout-stored.json']);
   assert.deepEqual(ok.missing, []);
-  assert.equal(JSON.parse(readFileSync(join(ok.dir, 'res', 'layout-stored.json'), 'utf8')).keys.length, 2);
+  assert.equal(JSON.parse(readFileSync(join(ok.dir, 'res', 'layout-stored.json'), 'utf8')).keys.length, 3);
   // Every miss is a named reason and no base.
   const miss = (over, re) => {
     const r = run(over);

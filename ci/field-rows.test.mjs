@@ -646,3 +646,27 @@ test('ci/native-keys.txt lists the loader\'s two optional heap members', () => {
     assert.ok(keys.optionalFields.has(key), key);
   }
 });
+
+test('a reflected key that only the new build resolves gets a row from the new values and a note; it holds nothing', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field UCrNew::Thing\nfield UCrNeither::Thing\n')]);
+  const extra = (a, b) => [[...base(), a], [...next(), b]];
+  const [bs, nx] = extra(gone('UCrNew::Thing'), ent('UCrNew::Thing', 0x48, 4));
+  bs.push(gone('UCrNeither::Thing'));
+  nx.push(gone('UCrNeither::Thing'));
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: nx, base: bs });
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(row(out.text, 'UCrNew::Thing'), { key: 'UCrNew::Thing', cl: 130000, offset: 0x48, size: 4, mask: 0, member: null });
+  assert.ok(out.notes.some((n) => n.startsWith('UCrNew::Thing: new on this build')));
+  assert.equal(row(out.text, 'UCrNeither::Thing'), undefined, 'not OK on both builds: no row');
+  assert.ok(out.notes.some((n) => n.startsWith('UCrNeither::Thing: resolves on neither build')));
+  assert.equal(out.notes.filter((n) => n.startsWith('UCrNeither::Thing')).length, 1);
+  assert.equal(out.added, 5);
+});
+
+test('a class key that only the new build resolves gets a note and no field row', () => {
+  const k = unionKeys([parseKeys(KEYS + 'field UCrNewClass\n')]);
+  const out = fieldRows(header(), { cl: 130000, keys: k, next: [...next(), ent('UCrNewClass', 0, 0x30)], base: [...base(), gone('UCrNewClass')] });
+  assert.deepEqual(out.problems, []);
+  assert.equal(row(out.text, 'UCrNewClass'), undefined);
+  assert.ok(out.notes.some((n) => n.startsWith('UCrNewClass: new on this build')));
+});

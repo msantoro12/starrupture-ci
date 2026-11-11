@@ -31,7 +31,8 @@
 // header's build row for that CL; when the new build has the same CL, the exe
 // sha256 is the same; the release asset was uploaded by the Actions bot (an
 // Actions job of this repository, with its token: a hand upload does not count);
-// and it has an entry for every reflected key now listed. The uploader is what
+// it has an entry for every reflected key now listed; and its offsets, sizes and masks agree with the
+// header's own field rows for that CL (crossCheck). The uploader is what
 // the release API reports, so any job of this repository that holds
 // contents: write could upload as the bot: only people who can push a workflow to
 // this repository can do that, and they can change main as well.
@@ -39,7 +40,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { ParseError } from './layout-diff.mjs';
-import { keysFromCheck } from './field-rows.mjs';
+import { REFLECTED_SIZE_KEYS, keysFromCheck } from './field-rows.mjs';
 import { parseLayoutReport } from './layout-table.mjs';
 import { numberOf } from './map-mode.mjs';
 import { EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, MapError, buildMismatch, parse } from './version-map.mjs';
@@ -143,6 +144,40 @@ export function readRecord(text, what = 'the stored layout') {
   return out;
 }
 
+const hex = (n) => (Number.isInteger(n) ? `0x${n.toString(16)}` : String(n));
+
+// The header's field rows for the CL it was built for are an independent source for the record's values.
+// Every key that has both must agree on offset, size and mask. A class key is a struct size (offset 0,
+// mask 0); a key in REFLECTED_SIZE_KEYS holds the built size in the header and the PDB's register size in
+// the record, so its size is not compared. A header key the record lacks, and a renamed member (the record
+// looks keys up by name, so it cannot hold the renamed one), is skipped, but a pass that compared under half
+// of the header's rows proves nothing and is refused too.
+function crossCheck(map, built, record) {
+  const rows = map.fields.filter((r) => r.cl === built && r.member === null);
+  const by = new Map(record.keys.map((k) => [k.key, k]));
+  const bad = [];
+  let compared = 0;
+  for (const r of rows) {
+    const k = by.get(r.key);
+    if (!k) continue;
+    compared++;
+    const cls = !r.key.includes('::');
+    const sz = REFLECTED_SIZE_KEYS.has(r.key);
+    const rec = { offset: cls ? 0 : k.offset, size: k.size, mask: cls ? 0 : (k.boolMask ?? 0) };
+    const diff = k.result !== 'OK' || rec.offset !== r.offset || rec.mask !== r.mask || (!sz && rec.size !== r.size);
+    if (diff) {
+      const show = (v) => `${hex(v.offset)}/${hex(v.size)}/${hex(v.mask)}`;
+      bad.push(`${r.key}: header ${show(r)}, record ${k.result === 'OK' ? show(rec) : k.result}`);
+    }
+  }
+  if (bad.length) {
+    throw new MapError(`the stored layout of CL-${built} disagrees with the header's field rows for CL-${built} on ${bad.length} of ${compared} keys (offset/size/mask; first: ${bad.slice(0, 3).join('; ')}${bad.length > 3 ? `; +${bad.length - 3} more` : ''})`);
+  }
+  if (compared * 2 < rows.length) {
+    throw new MapError(`the stored layout of CL-${built} has an entry for only ${compared} of the header's ${rows.length} field rows for CL-${built}, too few to check it against the header`);
+  }
+}
+
 // The layout report to give field-rows as its base, or a MapError naming what is
 // wrong. `release` is the GitHub release object (assets with uploader and size),
 // `recordText` the downloaded record (null when it could not be downloaded), `fields` the reflected keys now listed.
@@ -165,6 +200,7 @@ export function referenceFor({ headerText, recordText, release, targetCl, target
   if (Number(targetCl) === record.cl && String(targetSha256 ?? '').toLowerCase() !== record.exeSha256) {
     throw new MapError(`CL-${built} is stored for the exe ${record.exeSha256.slice(0, 12)}, the build scanned now has ${String(targetSha256 ?? '').slice(0, 12) || 'no sha256'}`);
   }
+  crossCheck(map, built, record);
   const have = new Set(record.keys.map((k) => k.key));
   const missing = [...fields].filter((k) => !have.has(k)).sort(cmp);
   if (missing.length) {

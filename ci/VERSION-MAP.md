@@ -6,7 +6,7 @@
   tracked component's keys (the loader's own and each tracked plugin's) on every
   game build in its build table: a pattern and an RVA for each function key, and
   an offset, size and bool mask for each native field key and for each
-  reflected field that moved or was renamed. `export-feed` writes it out as the
+  reflected field that moved, was renamed or is new on the build. `export-feed` writes it out as the
   feed that players' loaders fetch between loader releases.
 - **A plugin's map** holds the plugin's own rows for its built CL (`kBuiltCL`)
   only. Every other build is the loader map's.
@@ -147,7 +147,7 @@ It reports:
   in the code);
 - a `native` key with built values whose row on `kBuiltCL` disagrees with them.
 
-A `field` key needs rows only where it moved or was renamed (a class-key row, a struct's size, is also written on every build for each size a component requests): reflection gives its
+A `field` key needs rows only where it moved, was renamed or is new on the build (a class-key row, a struct's size, is also written on every build for each size a component requests): reflection gives its
 offset live on any build.
 
 ## Format

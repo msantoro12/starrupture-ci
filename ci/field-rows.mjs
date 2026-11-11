@@ -14,8 +14,8 @@
 //   - a row for every `native` key (a member the game does not reflect): its
 //     offset, size and bool mask on the new build, found by the key's own text;
 //   - a row for every `field` key (reflected) whose offset, size or mask differs
-//     between the reference and the new build. Reflection gives the live offset on
-//     any build, so a row only records the move;
+//     between the reference and the new build, or that only the new build resolves.
+//     Reflection gives the live offset on any build, so a row only records the move;
 //   - and, moved or not, a row for each of the loader's own field keys
 //     (LOADER_FIELD_KEYS): the loader reads an unmoved reflected key by
 //     reflection, but its signed-feed check (version_feed.cpp DropUncovered)
@@ -272,6 +272,14 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
           if (!Number.isInteger(m.next.offset)) { problems.push(`${m.key}: the new report gives no offset`); continue; }
           rows.push(rowOf(m.key, cl, m.next));
           covered.add(classOf(m.key));
+        }
+        // A key only the new build resolves is new on this build: its row comes from the new values, like a moved key.
+        for (const m of diff.added) {
+          if (isClassKey(m.key) || REFLECTED_SIZE_KEYS.has(m.key)) { notes.push(`${m.key}: new on this build; the reference does not resolve it`); continue; }
+          if (!Number.isInteger(m.next.offset)) { problems.push(`${m.key}: the new report gives no offset`); continue; }
+          rows.push(rowOf(m.key, cl, m.next));
+          covered.add(classOf(m.key));
+          notes.push(`${m.key}: new on this build; the reference does not resolve it, so the row is the new build's`);
         }
         for (const m of diff.missing) {
           if (!isClassKey(m.key)) { gone(m.key, 'field', 'resolves on the reference build only (removed or renamed)'); continue; }
