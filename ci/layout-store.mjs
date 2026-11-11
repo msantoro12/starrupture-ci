@@ -36,7 +36,7 @@
 // header's build row for that CL; when the new build has the same CL, the exe
 // sha256 is the same; the release asset was uploaded by the Actions bot (an
 // Actions job of this repository, with its token: a hand upload does not count);
-// it has an entry for every reflected key now listed; and its offsets, sizes and masks agree with the
+// it has an entry for the reflected keys now listed, up to the limit given at MISSING_FLOOR; and its offsets, sizes and masks agree with the
 // header's own field rows for that CL (crossCheck), and with the published version map's when it is usable. The uploader is what
 // the release API reports, so any job of this repository that holds
 // contents: write could upload as the bot: only people who can push a workflow to
@@ -299,8 +299,7 @@ export function main(argv) {
         targetCl: Number(o.cl), targetSha256: o.sha256, fields, published,
       });
       if (report.skipped) process.stdout.write(`layout-store: the wider cross-check against the published version map was skipped: ${report.skipped}\n`);
-      if (report.missing.length) process.stdout.write(`layout-store: the stored layout has no entry for ${namesOf(report.missing)} now listed; their rows come from the new build
-`);
+      if (report.missing.length) process.stdout.write(`layout-store: the stored layout has no entry for ${namesOf(report.missing)} now listed; their rows come from the new build\n`);
       writeFileSync(o.out, JSON.stringify({ keys: report.keys }, null, 2) + '\n');
       process.stdout.write(`layout-store: reference layout = stored CL-${report.cl}\n`);
       return EXIT_OK;

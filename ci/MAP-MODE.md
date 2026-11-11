@@ -448,7 +448,7 @@ built for as well as the new one.
   `ci/layout-store.mjs reference` accepts it only if all of these hold: it is for that CL;
   its Steam build id, image stamp and image size are the header's build row for that CL;
   the release says the Actions bot uploaded it (a hand upload does not count); it has
-  an entry for nearly every reflected key now listed (see below); and, for a re-run of the same CL, the exe
+  an entry for the reflected keys now listed, apart from a few (see below); and, for a re-run of the same CL, the exe
   hash is the same. "Uploaded by the Actions bot" means an Actions job of this repository:
   anyone who can push a workflow here could upload as the bot, and could change `main`
   as well. The recorded run is not looked up, because runs age out and the file must not.
@@ -468,8 +468,8 @@ built for as well as the new one.
   is missing ("no reference layout to find what moved: no stored layout for CL-N ...").
   A plugin can add a reflected key after the file was saved, and the file cannot be
   extended once Steam has stopped serving that build. So a file that lacks some of the
-  reflected keys now listed is still used, as long as it lacks no more than 10 of them
-  and no more than 1 in 20 (5%) of the listed ones. The run prints one line with the
+  reflected keys now listed is still used, as long as it lacks no more than 10 of them,
+  or no more than 1 in 20 (5%) of the listed ones when that is more. The run prints one line with the
   count and the first names. Those keys have nothing to compare against: if the new
   build resolves one, it gets a row from the new build's values and a note, and if it
   does not, the run holds, because that cannot be told apart from a key that is gone.
