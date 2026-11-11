@@ -14,6 +14,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { addBuild, addFunction, emit, emptyMap, parse, parseFeed } from './version-map.mjs';
 import { firstLogError } from './pipeline-alert.mjs';
+import { buildRecord } from './layout-store.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -120,10 +121,10 @@ test('publish lock: a test run never reaches the release key, whatever state/aut
 
 test('field-rows: a missing reference layout is never named, and only a refusal (exit 3) is survivable', () => {
   const mm = job('map-mode');
-  assert.ok(mm.includes('if [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json)\n'));
+  assert.ok(mm.includes('elif [ -f res/layout-reference.json ]; then base=(--base res/layout-reference.json)\n'));
   assert.ok(mm.includes('elif [ "$PROOF" = true ] || { [ "$FIRST_PUBLISH" = true ] && [ "$MAPPED" = true ]; }; then base=(--base res/layout-target.json); echo '), 'only a proof run, or a first publish of a CL the header maps, takes the build as its own reference');
   assert.ok(mm.includes('\n          else echo "field-rows: no reference layout'));
-  assert.ok(mm.includes('--next res/layout-target.json "${base[@]}"'));
+  assert.ok(mm.includes('--next res/layout-target.json "${base[@]}" "${missing[@]}"'));
   assert.ok(!/--base res\/layout-reference\.json \\\n/.test(mm), '--base is never passed unconditionally');
   assert.ok(mm.includes('if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr)'));
   assert.ok(mm.includes('exit "$fr"; fi'));
@@ -651,7 +652,9 @@ test('rig gate: the promote step only writes a plan, so the publish job is the o
   assert.ok(job('map-mode').includes('promote.mjs plan'));
   assert.ok(!/promote\.mjs (apply|publish|run)/.test(wf));
   const writers = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /gh release upload|vmap-sign\.mjs sign [^\n]*--key-id k2/.test(job(n)));
-  assert.deepEqual(writers, ['publish']);
+  // layout-store uploads reference layouts to its own release and signs nothing (its tests are at the end of this file).
+  assert.deepEqual(writers, ['layout-store', 'publish']);
+  assert.ok(!/vmap-sign\.mjs/.test(job('layout-store')));
 });
 
 test('rig gate: a rig failure fails the chain visibly (the gate job is red unless both pass), and the autopilot stays untouched', () => {
@@ -2932,4 +2935,241 @@ test('the keys step appends ModLoader\'s native keys to keys-ModLoader.txt, as i
   assert.ok(loaderKeys > 0 && add > loaderKeys, 'ModLoader keys are appended right after the loader key list is written');
   assert.ok(add < wf.indexOf("$components.Add('ModLoader')"));
   assert.ok(wf.includes('if ($native.ContainsKey($m.name)) { Add-Content "$work\\keys-$($m.name).txt" $native[$m.name] }'));
+});
+
+// ------------------------------------------------------------ the stored reference layout (public has no older build to scan)
+
+test('layout-store: the writer job runs only for a successful public map-mode check on main, with the job token and no environment or secret', () => {
+  const whole = job('layout-store');
+  const j = whole.slice(0, whole.indexOf('\n\n  #') < 0 ? undefined : whole.indexOf('\n\n  #') + 1); // without the comment block of the next job
+  const ifOf =(over = {}, github = { ref: 'refs/heads/main' }, needs = { check: { result: 'success' } }) =>
+    evalExpr(jobIf('layout-store'), { needs, inputs: { map_mode: true, branch: 'public', ...over }, github });
+  assert.equal(ifOf(), true);
+  assert.equal(ifOf({ map_mode: false }), false, 'a check without map mode');
+  assert.equal(ifOf({ branch: 'public_test_branch' }), false, 'only the public build is stored');
+  assert.equal(ifOf({}, { ref: 'refs/heads/fix/x' }), false, 'a run of another branch');
+  assert.equal(ifOf({}, { ref: 'refs/pull/5/merge' }), false, 'a pull request ref');
+  assert.equal(ifOf({}, undefined, { check: { result: 'failure' } }), false, 'a failed check');
+  assert.equal(ifOf({}, undefined, { check: { result: 'skipped' } }), false);
+  assert.match(j, /\n {4}needs: \[check\]\n/);
+  assert.match(j, /\n {4}permissions:\n {6}contents: write\n {4}[a-z]/, 'contents: write and no other permission');
+  assert.ok(!/\n {4}environment:/.test(j), 'no environment');
+  assert.ok(!/secrets\./.test(j), 'no secret');
+  assert.match(j, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  // The only code it runs is this repository's ci/ at main; the only thing it writes is a layout asset of the vmap-layouts release.
+  const checkouts = [...j.matchAll(/uses: actions\/checkout@[^\n]*\n {8}with:\n((?: {10}[^\n]*\n)+)/g)].map((m) => m[1]);
+  assert.equal(checkouts.length, 1);
+  assert.ok(!/repository:|ref:/.test(checkouts[0]), 'the default checkout: this repository at the run\'s ref (main)');
+  assert.deepEqual([...j.matchAll(/gh release (?:upload|create|edit|delete) (\S+)( \S+)?/g)].map((m) => m[0]).filter((x) => !x.startsWith('gh release create')),
+    ['gh release upload vmap-layouts "$name"']);
+  assert.ok(j.includes('gh release upload vmap-layouts "$name" --clobber'), 'a new asset or an extended one');
+  assert.deepEqual([...j.matchAll(/gh api (\S+)/g)].map((m) => m[1]), ['"repos/$GH_REPO/releases/tags/vmap-layouts"'], 'the only API call is a read of the release');
+  assert.ok(!/gh api[^\n]*(-X|--method|-f |-F |--input)/.test(j));
+  assert.ok(j.includes('gh release create vmap-layouts --latest=false'), 'the new release never becomes the repository\'s Latest');
+  assert.ok(!/environment: vmap-sign|VMAP_SIGN_KEY/.test(j));
+  assert.ok(!/layout-store/.test(job('alert')), 'a store problem is not an alert of the update chain');
+  // No pull request trigger: a fork cannot start any run of this workflow.
+  const triggers = wf.slice(0, wf.indexOf('\njobs:\n'));
+  assert.ok(!/^ {2}pull_request(_target)?:/m.test(triggers));
+});
+
+test('layout-store: the writer extends a stored CL only with the same exe and an Actions upload, and never overwrites another', { skip: !bash }, () => {
+  const script = runOf(job('layout-store'), 'Store the layout');
+  assert.match(script, /--existing "stored\/\$name" --release stored\/release\.json/);
+  assert.ok(!/download[^\n]*\|\| true/.test(script), 'a stored asset that cannot be downloaded fails the job');
+  const BOT = { login: 'github-actions[bot]', type: 'Bot' };
+  const fixtures = (sha) => ({
+    'res/result.json': { download: { betaKey: 'public', installed: true, buildid: '25646882' }, checks: { exe: { cl: '127004', sha256: sha, productVersion: '1.0-CL-127004' } } },
+    'res/scanner.json': { exe: { cl: 127004, imageStamp: 1760600498, imageSize: 171909120 } },
+    'res/layout-target.json': { keys: [{ key: 'AFoo::Bar', result: 'OK', offset: 16, size: 8, boolMask: 0 }] },
+  });
+  const run = (sha, stored, o = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'lstore-'));
+    const files = fixtures(sha);
+    cpSync(here, join(dir, 'tool', 'ci'), { recursive: true });
+    if (stored) files['stored-asset.json'] = stored;
+    const listed = o.listed ?? Boolean(stored);
+    files['release-api.json'] = { assets: listed ? [{ name: 'layout-CL-127004.json', size: Buffer.byteLength(stored ?? ''), uploader: o.uploader === undefined ? BOT : o.uploader }] : [] };
+    // The fake release: `api` lists the stored asset, a download of `stored` gives it (or fails), a download into `verify` gives back what was uploaded (or something else).
+    const gh = `#!/bin/bash
+echo "$*" >> "$FAKE_DIR/calls.log"
+if [ "$1" = api ]; then cat "$FAKE_DIR/release-api.json"; exit 0; fi
+if [ "$1 $2" = "release view" ]; then exit 0; fi
+if [ "$1 $2" = "release download" ]; then
+  if [ "$7" = verify ]; then if [ -n "\${TAMPER:-}" ]; then echo '{}' > "$7/$5"; else cp "$FAKE_DIR/uploaded.json" "$7/$5"; fi; exit 0; fi
+  if [ -n "\${FAIL_DOWNLOAD:-}" ] || [ ! -f "$FAKE_DIR/stored-asset.json" ]; then echo "gh: download failed" >&2; exit 1; fi
+  cp "$FAKE_DIR/stored-asset.json" "$7/$5"; exit 0
+fi
+if [ "$1 $2" = "release upload" ]; then cp "$4" "$FAKE_DIR/uploaded.json" ; exit 0; fi
+exit 1
+`;
+    for (const [name, content] of Object.entries(files)) { mkdirSync(dirname(join(dir, name)), { recursive: true }); writeFileSync(join(dir, name), typeof content === 'string' ? content : JSON.stringify(content)); }
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    writeFileSync(join(dir, 'bin', 'gh'), gh);
+    chmodSync(join(dir, 'bin', 'gh'), 0o755);
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', RUN_ID: '42', WORKFLOW_SHA: 'f'.repeat(40), PATH: join(dir, 'bin') + delimiter + process.env.PATH, ...(o.env ?? {}) } });
+    return { r, dir, uploaded: existsSync(join(dir, 'uploaded.json')) ? JSON.parse(readFileSync(join(dir, 'uploaded.json'), 'utf8')) : null };
+  };
+  const first = run('a'.repeat(64));
+  assert.equal(first.r.status, 0, first.r.stderr);
+  assert.equal(first.uploaded.cl, 127004);
+  assert.equal(first.uploaded.exeSha256, 'a'.repeat(64));
+  assert.equal(first.uploaded.run, 42);
+  assert.equal(first.uploaded.keys.length, 1);
+  const again = run('a'.repeat(64), JSON.stringify({ ...first.uploaded, keys: [{ key: 'AFoo::Old', result: 'OK', offset: 8, size: 8, boolMask: 0 }] }));
+  assert.equal(again.r.status, 0, again.r.stderr);
+  assert.deepEqual(again.uploaded.keys.map((k) => k.key), ['AFoo::Bar', 'AFoo::Old'], 'the same exe: the older keys stay');
+  const other = run('b'.repeat(64), JSON.stringify(first.uploaded));
+  assert.notEqual(other.r.status, 0, 'another exe for a stored CL fails the job');
+  assert.equal(other.uploaded, null, 'and nothing is uploaded');
+  assert.match(other.r.stderr, /already stored for another exe/);
+  assert.ok(calls(first.dir).some((l) => l.startsWith('release upload vmap-layouts layout-CL-127004.json --clobber')));
+  // A stored asset that is not from an Actions job is not carried into a trusted one.
+  const hand = run('a'.repeat(64), JSON.stringify(first.uploaded), { uploader: { login: 'someone', type: 'User' } });
+  assert.notEqual(hand.r.status, 0);
+  assert.equal(hand.uploaded, null);
+  assert.match(hand.r.stderr, /not trusted/);
+  // A listed asset that cannot be downloaded fails the job; it is not replaced by a record of this run alone.
+  const broken = run('a'.repeat(64), JSON.stringify(first.uploaded), { env: { FAIL_DOWNLOAD: '1' } });
+  assert.notEqual(broken.r.status, 0);
+  assert.equal(broken.uploaded, null);
+  // The same keys again: the stored asset stays as it is.
+  const same = run('a'.repeat(64), JSON.stringify(first.uploaded));
+  assert.equal(same.r.status, 0, same.r.stderr);
+  assert.equal(same.uploaded, null);
+  assert.match(same.r.stdout, /nothing to upload/);
+  // An upload that does not read back the same fails the job.
+  const tampered = run('a'.repeat(64), undefined, { env: { TAMPER: '1' } });
+  assert.notEqual(tampered.r.status, 0);
+  assert.match(tampered.r.stdout, /::error title=Layout store::.*is not the file that was uploaded/);
+});
+
+test('layout-store: a build the artifact does not describe fails the job, because Steam will not serve it again', { skip: !bash }, () => {
+  const script = runOf(job('layout-store'), 'Store the layout');
+  const dir = mkdtempSync(join(tmpdir(), 'lstore-'));
+  const r = sh(script, dir, {});
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /::error title=Layout store::.*nothing is stored/);
+});
+
+test('stored_reference: a dispatch input only, and every condition is in the switch that reads the store', () => {
+  assert.match(dispatch, /\n {6}stored_reference:\n {8}description: [^\n]*\n {8}type: boolean\n {8}default: false\n/);
+  assert.ok(!call.includes('stored_reference'), 'a call cannot pass it');
+  assert.ok(!watch.includes('stored_reference'), 'the unattended chain never sets it');
+  const expr = job('map-mode').match(/\n {6}STORED_REFERENCE: (\$\{\{ [^\n]*\}\})\n/)[1];
+  const dispatched = { workflow_ref: 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main' };
+  const on = (inputs, github = dispatched) => evalExpr(expr, { needs: {}, inputs: { stored_reference: true, branch: 'public_test_branch', map_mode: true, publish: false, proof_run: false, test_autopilot: true, ...inputs }, github });
+  assert.equal(on({}), true);
+  for (const off of [{ stored_reference: false }, { stored_reference: null }, { branch: 'public' }, { branch: 'expiry-only' }, { map_mode: false }, { publish: true }, { test_autopilot: false }, { proof_run: true }]) {
+    assert.equal(on(off), false, JSON.stringify(off));
+  }
+  assert.equal(on({}, { workflow_ref: SR_WATCH_REF }), false, 'a run called from sr-watch');
+  // The chain step reads the store for no other reason than the switch, or a public run with no other reference.
+  const chain = runOf(job('map-mode'), 'Decide, export, sign, stage and plan the promotion');
+  assert.ok(chain.includes('if [ "$STORED_REFERENCE" = true ]; then from_store\n'));
+  assert.ok(chain.includes('elif [ "$BRANCH" = public ]; then from_store\n'));
+  assert.equal(chain.match(/from_store$/gm)?.length, 2);
+});
+
+test('stored_reference: the plan guard and the map-mode lock refuse every run that is not a test run of another branch than public', { skip: !bash }, () => {
+  const plan = job('plugin-plan');
+  assert.match(step(plan, 'Check the stored reference'), /\n {8}if: \$\{\{ inputs\.stored_reference == true \}\}\n/);
+  const guard = runOf(plan, 'Check the stored reference');
+  const good = { DISPATCHED: 'true', BRANCH: 'public_test_branch', MAP_MODE: 'true', PUBLISH: 'false', PROOF: 'false', TEST_RUN: 'true' };
+  assert.equal(sh(guard, tmpdir(), good).status, 0);
+  for (const bad of [{ BRANCH: 'public' }, { PUBLISH: 'true' }, { TEST_RUN: 'false' }, { MAP_MODE: 'false' }, { PROOF: 'true' }, { DISPATCHED: 'false' }]) {
+    const r = sh(guard, tmpdir(), { ...good, ...bad });
+    assert.equal(r.status, 2, JSON.stringify(bad));
+    assert.match(r.stdout, /::error::stored_reference needs/);
+  }
+  const mm = job('map-mode');
+  assert.match(step(mm, 'Refuse a stored reference that is not a test run'), /\n {8}if: \$\{\{ inputs\.stored_reference == true \}\}\n/);
+  const lock = runOf(mm, 'Refuse a stored reference that is not a test run');
+  assert.equal(sh(lock, tmpdir(), { STORED_REFERENCE: 'true' }).status, 0);
+  assert.equal(sh(lock, tmpdir(), { STORED_REFERENCE: 'false' }).status, 2, 'the switch did not come out true');
+  assert.ok(mm.indexOf('- name: Refuse a stored reference that is not a test run') < mm.indexOf('- name: Download the scans'), 'before any artifact is read');
+  // A refused run never reaches the Steam login.
+  const co = (inputs, planResult) => evalExpr(jobIf('check'), { needs: { build: { result: 'success' }, 'plugin-plan': { result: planResult } }, inputs: { branch: 'public_test_branch', ...inputs } });
+  assert.equal(co({ stored_reference: true }, 'success'), true);
+  assert.equal(co({ stored_reference: true }, 'failure'), false);
+  assert.equal(co({ stored_reference: false }, 'failure'), true, 'an ordinary run does not wait on it');
+});
+
+test('field rows: where the reference layout comes from, run against a stand-in for the release', { skip: !bash }, () => {
+  const chain = runOf(job('map-mode'), 'Decide, export, sign, stage and plan the promotion');
+  const block = chain.slice(chain.indexOf('base=()\n'), chain.indexOf('fr=0\n'));
+  assert.ok(block.length > 200 && block.includes('from_store()'));
+  const bot = { login: 'github-actions[bot]', type: 'Bot' };
+  const sha = 'a'.repeat(64);
+  const headerText = readFileSync(join(here, 'fixtures', 'version-map', 'loader.h'), 'utf8');
+  const record = JSON.stringify(buildRecord({
+    result: { download: { betaKey: 'public', installed: true, buildid: '25646882' }, checks: { exe: { cl: '127004', sha256: sha } } },
+    scanner: { exe: { cl: 127004, imageStamp: 1760600498, imageSize: 171909120 } },
+    layoutText: JSON.stringify({ keys: [{ key: 'AFoo::Bar', result: 'OK', offset: 16, size: 8, boolMask: 0 }, { key: 'UWorld::GameState', result: 'OK', offset: 0x120, size: 8, boolMask: 0 }] }),
+    run: 1, workflowSha: 'f'.repeat(40), at: '2026-11-11T00:00:00Z',
+  }), null, 2) + '\n';
+  const release = (uploader = bot, size = Buffer.byteLength(record)) => JSON.stringify({ assets: [{ name: 'layout-CL-127004.json', size, uploader }] });
+  const run = ({ env = {}, release: rel = release(), asset = record, reference = false } = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'refsel-'));
+    cpSync(here, join(dir, 'tool', 'ci'), { recursive: true });
+    mkdirSync(join(dir, 'res'), { recursive: true });
+    writeFileSync(join(dir, 'version_map.generated.h'), headerText);
+    writeFileSync(join(dir, 'res', 'result.json'), JSON.stringify({ checks: { exe: { sha256: 'c'.repeat(64) } } }));
+    writeFileSync(join(dir, 'res', 'layout-keys.txt'), 'AFoo::Bar\nUWorld::GameState\n');
+    if (reference) writeFileSync(join(dir, 'res', 'layout-reference.json'), '{"keys":[]}');
+    if (rel !== null) writeFileSync(join(dir, 'release.json'), rel);
+    if (asset !== null) writeFileSync(join(dir, 'asset.json'), asset);
+    mkdirSync(join(dir, 'bin'), { recursive: true });
+    writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash
+if [ "$1" = api ]; then [ -f "$FAKE_DIR/release.json" ] && { cat "$FAKE_DIR/release.json"; exit 0; }; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+if [ "$1 $2" = "release download" ]; then [ -f "$FAKE_DIR/asset.json" ] && cp "$FAKE_DIR/asset.json" "$7/$5"; exit 0; fi
+exit 1
+`);
+    chmodSync(join(dir, 'bin', 'gh'), 0o755);
+    const script = `set -euo pipefail\nheader=version_map.generated.h\ncl=128786\n${block}\nprintf 'base:%s\\n' "\${base[@]}"\nprintf 'missing:%s\\n' "\${missing[@]}"\n`;
+    const r = spawnSync(bash, ['-c', script], {
+      cwd: dir, encoding: 'utf8', windowsHide: true,
+      env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', PREVIOUS_CL: '127004', BRANCH: 'public', PROOF: 'false', FIRST_PUBLISH: 'false', MAPPED: 'false', STORED_REFERENCE: 'false', ...env, PATH: join(dir, 'bin') + delimiter + process.env.PATH },
+    });
+    const lines = r.stdout.split('\n');
+    return { status: r.status, stderr: r.stderr, out: r.stdout, base: lines.filter((l) => l.startsWith('base:')).map((l) => l.slice(5)).filter(Boolean), missing: lines.filter((l) => l.startsWith('missing:')).map((l) => l.slice(8)).filter(Boolean), dir };
+  };
+  // Public, new build, nothing in the artifact to compare with: the stored layout of the built CL is the base.
+  const ok = run();
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(ok.base, ['--base', 'res/layout-stored.json']);
+  assert.deepEqual(ok.missing, []);
+  assert.equal(JSON.parse(readFileSync(join(ok.dir, 'res', 'layout-stored.json'), 'utf8')).keys.length, 2);
+  // Every miss is a named reason and no base.
+  const miss = (over, re) => {
+    const r = run(over);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.base, []);
+    assert.deepEqual(r.missing.length, 2, r.out);
+    assert.equal(r.missing[0], '--base-missing');
+    assert.match(r.missing[1], re);
+  };
+  miss({ release: null }, /release vmap-layouts could not be read: gh: Not Found \(HTTP 404\)/);
+  miss({ asset: null }, /layout-CL-127004.json is listed on release vmap-layouts but could not be downloaded/);
+  miss({ asset: null, release: JSON.stringify({ assets: [] }) }, /no stored layout for CL-127004/);
+  miss({ release: release({ login: 'someone', type: 'User' }) }, /uploaded by someone \(User\).*not trusted/);
+  miss({ release: release(bot, 3) }, /not the asset the release lists/);
+  miss({ asset: record.replace('"cl": 127004', '"cl": 126000') }, /stored layout is for CL-126000, the header was built for CL-127004/);
+  // A non-public check keeps its own comparison, and a proof run or a mapped first publish its self-reference.
+  const other = { BRANCH: 'public_test_branch' };
+  assert.deepEqual(run({ env: other, reference: true }).base, ['--base', 'res/layout-reference.json']);
+  assert.deepEqual(run({ env: other }).base, []);
+  assert.deepEqual(run({ env: other }).missing, [], 'no store read, no reason: field-rows keeps its old refusal');
+  assert.deepEqual(run({ env: { PROOF: 'true' } }).base, ['--base', 'res/layout-target.json']);
+  assert.deepEqual(run({ env: { FIRST_PUBLISH: 'true', MAPPED: 'true' } }).base, ['--base', 'res/layout-target.json']);
+  // Public moves to a build the header already maps from the other Steam branch (R2): mapped alone, or a first publish of an unmapped CL, is not a self-reference.
+  assert.deepEqual(run({ env: { MAPPED: 'true' } }).base, ['--base', 'res/layout-stored.json']);
+  assert.deepEqual(run({ env: { FIRST_PUBLISH: 'true', MAPPED: 'false' } }).base, ['--base', 'res/layout-stored.json']);
+  // The proof of the stored reference: the store, whatever the live public scan gave.
+  const proof = run({ env: { ...other, STORED_REFERENCE: 'true' }, reference: true });
+  assert.deepEqual(proof.base, ['--base', 'res/layout-stored.json']);
+  assert.match(proof.out, /reference layout = stored CL-127004/);
+  const proofMiss = run({ env: { ...other, STORED_REFERENCE: 'true' }, reference: true, asset: null });
+  assert.deepEqual(proofMiss.base, [], 'a stored-reference run never falls back to the live scan');
+  assert.equal(proofMiss.missing[0], '--base-missing');
 });

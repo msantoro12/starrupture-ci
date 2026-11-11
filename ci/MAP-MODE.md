@@ -430,6 +430,42 @@ Classes and objects found by name at run time (Blueprint classes, assets) are no
 PDB, so their existence is not checked here.
 It runs after `write` (the build must be in the table).
 
+### Where the reference layout comes from
+
+Field rows record what moved, so they need the layout of the build the plugins were
+built for as well as the new one.
+
+- A check of any branch but `public` downloads the live `public` build and scans it:
+  that is `layout-reference.json`.
+- `public` has no older build to download: Steam stops serving it once `public`
+  moves. So every `public` map-mode check keeps the layout it scanned, one file per CL
+  (`layout-CL-<CL>.json`), on this repository's `vmap-layouts` release. The `layout-store`
+  job writes it, with the job's own token, only from `main`. A file already stored for a CL
+  is extended with new keys only for the same exe, and only if an Actions job uploaded it;
+  an unchanged one is not uploaded again. The job is red when the check left nothing to
+  store, because that build cannot be fetched again once `public` moves.
+- When `public` moves, field rows read the file for the CL the header was built for.
+  `ci/layout-store.mjs reference` accepts it only if all of these hold: it is for that CL;
+  its Steam build id, image stamp and image size are the header's build row for that CL;
+  the release says the Actions bot uploaded it (a hand upload does not count); it has
+  an entry for every reflected key now listed; and, for a re-run of the same CL, the exe
+  hash is the same. "Uploaded by the Actions bot" means an Actions job of this repository:
+  anyone who can push a workflow here could upload as the bot, and could change `main`
+  as well. The recorded run is not looked up, because runs age out and the file must not.
+- If any of that is missing, nothing is guessed. The run holds, and the hold names what
+  is missing ("no reference layout to find what moved: no stored layout for CL-N ...").
+  A stored file that lacks a key added later cannot be filled in once Steam has stopped
+  serving that build: the update holds until the header is built for a newer CL.
+- The one-time seed, so the build `public` runs today is stored before it moves:
+  `gh workflow run sr-client-check.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f map_mode=true -f test_autopilot=true`.
+  Dispatch it a second time to see the stored layout read back.
+- To compare a stored base with the live-scan base on a build that really moved, dispatch a
+  test run of the other Steam branch (`-f branch=<the other branch>`) with
+  `-f stored_reference=true -f map_mode=true -f test_autopilot=true`. It takes the stored
+  layout as its base instead of the live scan, so its `field-rows.json` (in the map-mode
+  artifact) can be compared with the one of a normal run on the same build. It is refused
+  on `public`, with publish on, without `test_autopilot`, and from sr-watch.
+
 ## Step 29: `tail-check.mjs`
 
 ```
@@ -799,9 +835,11 @@ no plugin code, no game file.
    `layout-reference.json`, `layout-keys.txt`, `ci/native-keys.txt`). A refusal (exit 3) does
    not fail the job; it writes the report and decide holds. Any other failure (exit 2, a
    missing or malformed input) fails the job. The check writes `layout-reference.json` only
-   when it has an older build to compare with (not on the `public` branch, which is itself
-   the reference); without it the step runs with no `--base` and field-rows refuses while a
-   reflected key is listed, so decide holds with that reason.
+   when it has an older build to compare with (not on the `public` branch, which has no older
+   build to download). On `public` the step reads the stored layout instead (see "Where the
+   reference layout comes from" under Step 28). With no reference at all the step runs with no
+   `--base` and field-rows refuses while a reflected key is listed, so decide holds with that
+   reason.
 3. `decide.mjs` with the gates built from the check: G1 the builds, G2 the check, G3
    the CL against the one the header was built for, G4 the client registry scan (the
    client check alone decides; no dedicated-server scan is read), G5 the classes

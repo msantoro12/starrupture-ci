@@ -272,6 +272,39 @@ test('reflected keys without a reference report, and a CL not in the table, are 
   assert.throws(() => fieldRows(header(), { cl: 140000, keys: keys(), next: next(), base: base() }), /not in the build table/);
 });
 
+test('with no reference layout and a reason, the refusal names the reason', () => {
+  const reason = 'no stored layout for CL-127004 (release vmap-layouts has no layout-CL-127004.json)';
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: null, baseMissing: reason });
+  assert.equal(out.text, null);
+  assert.deepEqual(out.problems, [`no reference layout to find what moved: ${reason}`]);
+  // A reference that exists wins over the reason, and keys that need no reference are not refused for lack of one.
+  assert.deepEqual(fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: base(), baseMissing: reason }).problems, []);
+  const nativeOnly = unionKeys([parseKeys('native UCrGameInstance::ServerSessionName 0x290 0x10 0x00\n')]);
+  assert.deepEqual(fieldRows(header(), { cl: 130000, keys: nativeOnly, next: next(), base: null, baseMissing: reason }).problems, []);
+});
+
+test('a run with a stored reference adds rows for the new CL only and leaves every older row as it was', () => {
+  const before = parse(header());
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: base(), baseMissing: null });
+  assert.deepEqual(out.problems, []);
+  const after = parse(out.text);
+  const older = (m) => ({ fields: m.fields.filter((r) => r.cl !== 130000), functions: m.functions, builds: m.builds });
+  assert.deepEqual(older(after), older(before));
+  assert.equal(after.fields.filter((r) => r.cl === 130000).length, out.added);
+  assert.ok(out.added > 0);
+});
+
+test('the command line takes --base-missing and refuses with the reason', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fieldrows-'));
+  const w = (name, doc) => { writeFileSync(join(dir, name), typeof doc === 'string' ? doc : JSON.stringify(doc)); return join(dir, name); };
+  const h = w('v.h', header());
+  const run = spawnSync(process.execPath, [TOOL, 'write', h, '--cl', '130000', '--next', w('n.json', { keys: next() }), '--base-missing', 'nothing stored',
+    '--keys', w('k.txt', KEYS), '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 3);
+  assert.match(run.stderr, /refused: no reference layout to find what moved: nothing stored/);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')).written, false);
+});
+
 test('the command line writes the header and the report, and logs no member names', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fieldrows-'));
   const w = (name, doc) => { writeFileSync(join(dir, name), typeof doc === 'string' ? doc : JSON.stringify(doc)); return join(dir, name); };

@@ -108,6 +108,7 @@ Copied from the loader's `release.yml` and the plugins' `release.yml` build step
 | `sr-watch` / `client-check` (caller) | `contents: write`, `pull-requests: write`, `issues: write`, `actions: write`, `checks: read` (a ceiling) | covers the called workflow (`actions: write` is the feed-loader-cleanup job's); passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` (by name), `VMAP_SIGN_KEY_TEST`, `VMAP_SIGN_KEY` (the release key, read only by the publish job) and the deploy keys of the loader fork and the nine plugin forks, and `publish: true` |
 | `sr-client-check` / `build-scanner` | `contents: read` | check out the loader, build the scanner |
 | `sr-client-check` / `check` | `contents: read`, environment `steam-client` | the only job that can read the Steam login; checks out no repository |
+| `sr-client-check` / `layout-store` | `contents: write`, no environment, no secret; runs from `main` only | keeps the layout of each public build on the `vmap-layouts` release, for the next update's field rows |
 | `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR; no environment, no secrets |
 | `sr-client-check` / `alert` | `contents: read`, `issues: write`, `pull-requests: write`, `actions: read`, `checks: read` | the alert issue, the `chain-passed-<branch>` label and ready note on the PR, the failed steps, annotations and logs of the run |
 | `sr-client-check` / `login-expiry` | none | reads the repo variable `STEAM_CI_LOGIN_AT` |
