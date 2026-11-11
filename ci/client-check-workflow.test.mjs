@@ -2140,13 +2140,12 @@ test('publish gates (unattended): the public run of sr-watch publishes on its ow
   const at = ['run is for public', 'the publish input is on', 'decide chose M', 'publishable', 'both client rigs'].map((t) => head.indexOf(t));
   assert.ok(at.every((i) => i > 0) && at.every((v, i) => i === 0 || v > at[i - 1]), `gate order in the comment: ${at}`);
   assert.ok(!/publish not wired/.test(wf));
-  // The switch is state/autopilot.json, and it stays off in this change.
-  assert.equal(JSON.parse(readFileSync(apPath, 'utf8')).enabled, false);
+  // The switch is state/autopilot.json, and it is on for path M only.
+  const apOn = JSON.parse(readFileSync(apPath, 'utf8'));
+  assert.deepEqual([apOn.enabled, apOn.paths], [true, ['M']]);
 });
 
 test('publish gates: the autopilot off means a HOLD and a skipped publish, the chain still stages (decide --candidate)', () => {
-  const ap = JSON.parse(readFileSync(apPath, 'utf8'));
-  assert.equal(ap.enabled, false);
   // decide reads the file the job reads, and a disabled autopilot is a HOLD whose only reason is the autopilot.
   const mm = job('map-mode');
   assert.ok(mm.includes('--autopilot tool/state/autopilot.json'));

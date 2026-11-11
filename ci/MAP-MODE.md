@@ -517,8 +517,8 @@ the field is absent and the other rig expects no refusal; `--other-unmapped` (a 
 A used class that moved is settled when `--fields` (the `field-rows.mjs` report for the
 same CL) covers it with a row or an absent row; an uncovered one holds on path C. A field-rows report that was given and not written cleanly (refused,
 or for another CL) holds whatever moved, on every path: the native members get their
-rows from the same run. `state/autopilot.json` ships with `enabled: false`: until it
-is `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
+rows from the same run. `state/autopilot.json` has `enabled: true` (path M only) since 2026-11-10; while it
+is not `true`, decide returns `HOLD` ("autopilot is disabled") on a clean update.
 
 The autopilot gates publishing only, not the candidate. `--candidate` (the
 unattended chain: `map_mode` on, not a `test_autopilot` run, which
