@@ -3567,3 +3567,26 @@ test('published base (publish job): the feed to sign is compared with the live f
   const first = ran({ FIRST_PUBLISH: 'true' }, 3);
   assert.ok(!callsOf(first.fx.dir).some((c) => c.startsWith('published-base')), 'first publish');
 });
+
+test('a re-measure puts the published rows back after field-rows, and only a test run does it', () => {
+  const mm = job('map-mode');
+  const fr = mm.indexOf('node tool/ci/field-rows.mjs write');
+  const restore = mm.indexOf('node tool/ci/version-map.mjs restore-published "$header"');
+  assert.ok(fr > 0 && restore > fr, 'the published rows come back after the fresh rows are written');
+  assert.ok(mm.indexOf('if [ "$TEST_AUTOPILOT" = true ] && [ -f published-base/version-map-client.v1.txt ]; then') < restore, 'a test run with a published file');
+  assert.ok(mm.includes('--published published-base/version-map-client.v1.txt --cl "$cl" \\\n              --retired tool/ci/retired-rows.txt --changed tool/ci/changed-rows.txt --report kept-published.json'));
+  assert.ok(restore < mm.indexOf('decide.mjs --repo'), 'before the guard and the decision');
+  assert.ok(mm.includes('            kept-published.json\n'), 'the chain keeps the list of kept rows');
+});
+
+test('carried field keys: only the target build is asked for them, and a failure costs the carry, not the layout', () => {
+  const c = job('check');
+  assert.ok(c.includes("if ($cl -and (Test-Path $publishedFile)) {"), 'only where the published base was taken');
+  assert.ok(c.includes("node 'ci-base\\ci\\version-map.mjs' carry-keys \"$work\\keys-all.txt\" --published $publishedFile --cl $cl --retired 'ci-base\\ci\\retired-rows.txt' --out out\\layout-carry-keys.txt"));
+  assert.ok(c.includes('$keyFile = if ($b.key -eq \'target\') { $scanKeys } else { "$work\\keys-all.txt" }'), 'the reference build is scanned for the plain key list');
+  assert.ok(c.includes('::warning title=Carried field keys::'));
+  assert.ok(c.includes('            out/layout-carry-keys.txt\n'));
+  const mm = job('map-mode');
+  assert.ok(mm.includes('carry=(--carry-keys res/layout-carry-keys.txt)'));
+  assert.ok(mm.includes('"${missing[@]}" "${carry[@]}" \\'));
+});

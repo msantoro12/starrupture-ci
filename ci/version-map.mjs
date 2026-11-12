@@ -52,6 +52,11 @@
 // check-preserve reads a would-be feed (unsigned, as export-feed wrote it) and exits 3, naming the
 // rows (the first 20 and the count), when a published line is missing from it or has other content,
 // unless the retired or changed list names it. The signature is checked first here too.
+// restore-published puts back the published rows of --cl that a re-measure (a test run on a published build) dropped
+// and did not measure again, or measured as absent where the published row has an address; a row it measured
+// with other content stays, and check-preserve holds on it. carry-keys <keys file> writes (--out) the field keys of
+// the newest published build that the key list does not name, for a build the file does not hold yet. The retired
+// list is honoured by both, the changed list by restore-published. Both read the file only after its signature verifies.
 // Both lists: tab-separated `<function|field|build> <key> <CL> <reason>`, a reason on every entry;
 // see ci/retired-rows.txt.
 //
@@ -652,9 +657,10 @@ export function readPublished(bytes, { keys, allowTestKey = false, where = 'the 
 const ROW_LIST_KINDS = ['function', 'field', 'build'];
 
 // The retired-rows and changed-rows files: tab-separated `<kind> <key> <build CL> <reason>`,
-// '#' lines and blank lines skipped. Every entry needs a reason. Returns { has(kind, key, cl), size }.
+// '#' lines and blank lines skipped. Every entry needs a reason. Returns { has(kind, key, cl), hasKey(kind, key), size }.
 export function parseRowList(text, where = 'list') {
   const entries = new Set();
+  const keys = new Set();
   text.replace(/\r\n/g, '\n').split('\n').forEach((raw, i) => {
     if (!raw.trim() || raw.trimStart().startsWith('#')) return;
     const at = `${where}:${i + 1}`;
@@ -663,8 +669,9 @@ export function parseRowList(text, where = 'list') {
     need(kind === 'build' ? key === '-' : isText(key), `${at}: the key of a ${kind} entry is ${kind === 'build' ? '"-"' : 'printable ASCII without quotes or backslashes'}`);
     need(reason.join('\t').trim() !== '', `${at}: the entry for ${kind} ${key} on CL-${build} has no reason`);
     entries.add(`${kind}\n${key}\n${Number(build)}`);
+    keys.add(`${kind}\n${key}`);
   });
-  return { has: (kind, key, cl) => entries.has(`${kind}\n${key}\n${cl}`), size: entries.size };
+  return { has: (kind, key, cl) => entries.has(`${kind}\n${key}\n${cl}`), hasKey: (kind, key) => keys.has(`${kind}\n${key}`), size: entries.size };
 }
 
 const NO_ROWS = parseRowList('');
@@ -757,6 +764,55 @@ export function preserveCheck(next, published, { retired = NO_ROWS, changed = NO
   const fields = new Map(next.fields.map((r) => [fieldId(r), r]));
   for (const p of published.fields) judge('field', p, fields.get(fieldId(p)), rowName(p));
   return { violations, checked };
+}
+
+// A re-measure of a published build drops every row of that build and writes the ones it measured.
+// This puts back each published row of `cl` that the run did not measure, or measured as absent where
+// the published row has an address, changing `map` in place. A row the run measured with other content
+// stays as measured (check-preserve holds on it unless the changed list names it), and a retired or
+// changed row is left alone. Returns { kept: [{ name, why }], differs: [name] }.
+export function restorePublished(map, published, cl, { retired = NO_ROWS, changed = NO_ROWS } = {}) {
+  need(map.flavour === 'loader', "the published feed is the loader map's");
+  const kept = [];
+  const differs = [];
+  const skip = (kind, key) => isRetired(retired, kind, key, cl) || changed.has(kind, key, cl);
+  const kinds = new Map(map.functions.map((r) => [r.key, r.kind]));
+  for (const p of published.functions.filter((r) => r.cl === cl && !skip('function', r.key))) {
+    const have = map.functions.find((r) => fnId(r) === fnId(p));
+    if (have && canon(have) === canon(p)) continue;
+    const name = `function ${rowName(p)}`;
+    if ((have && !(have.absent && !p.absent)) || (kinds.has(p.key) && kinds.get(p.key) !== p.kind)) { differs.push(name); continue; }
+    map.functions = map.functions.filter((r) => fnId(r) !== fnId(p));
+    map.functions.push(structuredClone(p));
+    kept.push({ name, why: have ? 'the run found no address for it' : 'the run did not measure it' });
+  }
+  for (const p of published.fields.filter((r) => r.cl === cl && !skip('field', r.key))) {
+    const have = map.fields.find((r) => fieldId(r) === fieldId(p));
+    if (have) {
+      if (canon(have) !== canon(p)) differs.push(`field ${rowName(p)}`);
+      continue;
+    }
+    const gone = (map.absentFields ?? []).some((r) => fieldId(r) === fieldId(p));
+    map.absentFields = (map.absentFields ?? []).filter((r) => fieldId(r) !== fieldId(p));
+    map.fields.push({ ...p });
+    kept.push({ name: `field ${rowName(p)}`, why: gone ? 'the run found no member for it' : 'the run did not measure it' });
+  }
+  validate(map);
+  return { kept, differs };
+}
+
+// The field keys a build new to the published file carries over: every key with a field row on the
+// newest build of the file (the highest CL), that `have` (the run's key list) does not name and no
+// retired entry names on any build. A build the file already holds has none: restorePublished keeps
+// its rows. Returns { from: the newest CL, or null when there are none to carry, keys: sorted }.
+export function carriedFieldKeys(published, cl, have, { retired = NO_ROWS } = {}) {
+  const none = { from: null, keys: [] };
+  if (!published.builds.length || published.builds.some((b) => b.cl === cl)) return none;
+  const from = Math.max(...published.builds.map((b) => b.cl));
+  const keys = [...new Set(published.fields.filter((r) => r.cl === from).map((r) => r.key))]
+    .filter((key) => !have.has(key) && !retired.hasKey('field', key) && !retired.has('build', '-', from))
+    .sort(cmp);
+  return keys.length ? { from, keys } : none;
 }
 
 // ---- The keys the components use, and the coverage check ----------------------
@@ -909,7 +965,7 @@ function only(opt, allowed, cmd) {
   for (const k of Object.keys(opt)) need(allowed.includes(k), `${cmd} takes no --${k}`);
 }
 
-const USAGE = 'usage: version-map.mjs init|add-build|add-function|add-absent|add-field|replace-build|remove-key|prune|check|export-feed|import-published|check-preserve <header> [options]; see the comment at the top of ci/version-map.mjs';
+const USAGE = 'usage: version-map.mjs init|add-build|add-function|add-absent|add-field|replace-build|remove-key|prune|check|export-feed|import-published|check-preserve|restore-published|carry-keys <header> [options]; see the comment at the top of ci/version-map.mjs';
 
 // The first 20 lines of a list, and how many more.
 const capped = (lines) => [...lines.slice(0, 20), ...(lines.length > 20 ? [`... and ${lines.length - 20} more`] : [])].map((l) => `  ${l}\n`).join('');
@@ -993,8 +1049,8 @@ export function main(argv) {
     const text = exportFeed(load());
     writeFileSync(opt.out, text);
     process.stderr.write(`version-map: ${opt.out}: feed format ${FEED_FORMAT}, ${text.split('\n').length - 1} lines, ${Buffer.byteLength(text)} bytes\n`);
-  } else if (cmd === 'import-published' || cmd === 'check-preserve') {
-    only(opt, ['published', 'retired', 'changed', 'allow-test-key'], cmd);
+  } else if (['import-published', 'check-preserve', 'restore-published', 'carry-keys'].includes(cmd)) {
+    only(opt, ['published', 'retired', 'changed', 'allow-test-key', ...(cmd === 'restore-published' ? ['cl', 'report'] : cmd === 'carry-keys' ? ['cl', 'out'] : [])], cmd);
     need(typeof opt.published === 'string', '--published is required');
     let published;
     try {
@@ -1006,7 +1062,21 @@ export function main(argv) {
     }
     const lists = {};
     for (const name of ['retired', 'changed']) if (opt[name]) lists[name] = parseRowList(readFile(opt[name], `the ${name} list`).toString('utf8'), opt[name]);
-    if (cmd === 'import-published') {
+    if (cmd === 'restore-published') {
+      const cl = num(opt, 'cl', { required: true });
+      const map = load();
+      const out = restorePublished(map, published, cl, lists);
+      if (out.kept.length) save(map, `kept ${out.kept.length} published rows of CL-${cl} that this run did not measure`);
+      for (const k of out.kept) process.stdout.write(`kept published ${k.name}: ${k.why}\n`);
+      for (const d of out.differs) process.stdout.write(`measured other content than the published ${d}; if that is meant, ci/changed-rows.txt takes it with a reason\n`);
+      if (opt.report) writeFileSync(opt.report, JSON.stringify({ cl, kept: out.kept, differs: out.differs }, null, 2) + '\n');
+    } else if (cmd === 'carry-keys') {
+      need(typeof opt.out === 'string', '--out is required');
+      const have = new Set(readFile(file, 'the key list').toString('utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')));
+      const out = carriedFieldKeys(published, num(opt, 'cl', { required: true }), have, { retired: lists.retired });
+      writeFileSync(opt.out, out.keys.map((k) => `${k}\n`).join(''));
+      process.stdout.write(out.from === null ? 'carry-keys: no field keys to carry\n' : `carry-keys: ${out.keys.length} field keys of CL-${out.from} are not in the key list\n`);
+    } else if (cmd === 'import-published') {
       const out = importPublished(load(), published, lists);
       if (!out.map) {
         process.stderr.write(`version-map: hold: ${out.conflicts.length} rows differ between ${file} and the published feed; ${file} is not changed. A change meant on purpose goes in the changed list with its reason.\n${capped(out.conflicts)}`);
@@ -1016,7 +1086,7 @@ export function main(argv) {
     } else {
       const out = preserveCheck(parseFeed(readFile(file, 'the feed').toString('utf8'), file), published, lists);
       if (out.violations.length) {
-        process.stderr.write(`version-map: hold: ${out.violations.length} published lines are missing from ${file} or changed in it; a loss or change meant on purpose goes in the retired or changed list with its reason.\n${capped(out.violations)}`);
+        process.stderr.write(`version-map: hold: ${out.violations.length} published lines are missing from ${file} or changed in it; a loss meant on purpose goes in ci/retired-rows.txt and a change in ci/changed-rows.txt, each with its reason.\n${capped(out.violations)}`);
         return EXIT_VIOLATION;
       }
       process.stdout.write(`check-preserve: all ${out.checked} published lines are in ${file} unchanged\n`);

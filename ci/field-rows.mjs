@@ -3,7 +3,7 @@
 //
 //   node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json> | --base-missing <reason>]
 //        (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt>])
-//        [--report <file>]
+//        [--carry-keys <file>] [--report <file>]
 //
 // <next> and <base> are `sr-aobscan --layout --json` reports of the new build and
 // of the reference build (the one players run today), over the same key list; the
@@ -67,6 +67,11 @@
 // build's layout report gives, mask 0. It does so on every build, changed or not,
 // so each CL has its own row; the classification above (note, degraded, refused)
 // is unchanged.
+//
+// Carried keys (`--carry-keys`, one key per line): field keys that the newest published build has a
+// row for and no key list names any more (version-map.mjs carry-keys). The scan of the new build was asked
+// for them too. One that resolves gets a row, with a note; one that does not gets a note and nothing else:
+// no absent row, no degraded plugin, no refusal.
 //
 // The report's `covered` lists every class with a key that has a row or an
 // absent row, a register-sized key, or a change only notes cover: decide.mjs
@@ -150,7 +155,7 @@ const NO_ENTRY = 'NO_ENTRY';
 
 // Plans the rows. next/base: arrays of { key, result, offset?, size?, boolMask? };
 // uses: parseUses() or null. Returns { problems, rows, absent, covered, notes, degraded }.
-export function planFieldRows(keys, next, base, cl, uses = null, sources = new Map(), baseMissing = null) {
+export function planFieldRows(keys, next, base, cl, uses = null, sources = new Map(), baseMissing = null, carried = []) {
   const problems = [];
   const notes = [];
   const alerts = [];
@@ -327,6 +332,16 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
       rows.push(sizeRow(key, cl, n.size));
     }
   }
+  const listed = new Set([...rows.map((r) => r.key), ...keys.native.keys(), ...keys.fields]);
+  for (const key of [...new Set(carried)].sort(cmp).filter((k) => !listed.has(k))) {
+    const n = nextBy.get(key);
+    const cls = isClassKey(key);
+    if (REFLECTED_SIZE_KEYS.has(key)) notes.push(`${key}: carried from the published build; its PDB size is the register's, no row`);
+    else if (n?.result === 'OK' && Number.isInteger(cls ? n.size : n.offset)) {
+      rows.push(cls ? sizeRow(key, cl, n.size) : rowOf(key, cl, n));
+      notes.push(`${key}: carried from the published build; resolved on CL-${cl}, row written`);
+    } else notes.push(`${key}: carried from the published build; ${n ? n.result : "not in the new build's report"} on CL-${cl}, no row`);
+  }
   rows.sort((a, b) => cmp(a.key, b.key));
   absent.sort((a, b) => cmp(a.key, b.key));
   const byOwner = Object.fromEntries([...degraded].sort((a, b) => cmp(a[0], b[0])).map(([o, list]) => [o, list.sort((a, b) => cmp(a.key, b.key))]));
@@ -334,11 +349,11 @@ export function planFieldRows(keys, next, base, cl, uses = null, sources = new M
 }
 
 // The header text with the rows added, or the reasons it was refused.
-export function fieldRows(headerText, { cl, keys, next, base, uses = null, sources = new Map(), baseMissing = null }) {
+export function fieldRows(headerText, { cl, keys, next, base, uses = null, sources = new Map(), baseMissing = null, carried = [] }) {
   const map = parse(headerText, 'the header');
   if (map.flavour !== 'loader') throw new MapError('field rows go into the loader map; this header is a plugin map');
   if (!map.builds.some((b) => b.cl === cl)) throw new MapError(`CL-${cl} is not in the build table; add the build first (map-mode.mjs write, or version-map.mjs add-build)`);
-  const plan = planFieldRows(keys, next, base, cl, uses, sources, baseMissing);
+  const plan = planFieldRows(keys, next, base, cl, uses, sources, baseMissing, carried);
   const problems = [...plan.problems];
   const out = parse(emit(map), 'the header');
   let added = 0;
@@ -411,7 +426,7 @@ export function main(argv) {
   const fromCheck = o['native-keys'] !== undefined || o['layout-keys'] !== undefined;
   const keysOk = fromCheck ? !!(o['native-keys'] && o['layout-keys']) && !o.keys.length : o.keys.length > 0 && o.uses === undefined;
   if (cmd !== 'write' || !header || !o.cl || !o.next || !keysOk || !/^\d+$/.test(o.cl)) {
-    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json> | --base-missing <reason>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt> [--sources <commits.json>]]) [--report <file>]\n');
+    process.stderr.write('usage: field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json> | --base-missing <reason>] (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list> [--uses <uses.txt> [--sources <commits.json>]]) [--carry-keys <file>] [--report <file>]\n');
     return EXIT_ERROR;
   }
   try {
@@ -421,7 +436,7 @@ export function main(argv) {
     const uses = o.uses ? parseUses(readFileSync(o.uses, 'utf8'), o.uses) : null;
     const next = parseLayoutReport(readFileSync(o.next, 'utf8'), o.next);
     const base = o.base ? parseLayoutReport(readFileSync(o.base, 'utf8'), o.base) : null;
-    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses, sources: o.sources ? keySourcesOf(readFileSync(o.sources, 'utf8')) : new Map(), baseMissing: o['base-missing'] ?? null });
+    const out = fieldRows(readFileSync(header, 'utf8'), { cl: Number(o.cl), keys, next, base, uses, sources: o.sources ? keySourcesOf(readFileSync(o.sources, 'utf8')) : new Map(), baseMissing: o['base-missing'] ?? null, carried: o['carry-keys'] ? readFileSync(o['carry-keys'], 'utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')) : [] });
     const report = { written: !!out.text, cl: Number(o.cl), added: out.added, rows: out.rows, absent: out.absent, degraded: out.degraded, covered: out.covered, notes: out.notes, alerts: out.alerts, problems: out.problems };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.text) {
