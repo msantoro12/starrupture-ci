@@ -732,3 +732,59 @@ test('a class key that only the new build resolves gets a note and no field row'
   assert.equal(row(out.text, 'UCrNewClass'), undefined);
   assert.ok(out.notes.some((n) => n.startsWith('UCrNewClass: new on this build')));
 });
+
+// ---- Carried keys: field keys of the newest published build that no key list names -----------------
+
+test('a carried key the new build resolves gets a row and a note; a class key gets its size', () => {
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: [...next(), ent('UCrCarried::Member', 0x48, 8), ent('UCrCarriedClass', 0, 0x30)], base: base(), carried: ['UCrCarried::Member', 'UCrCarriedClass'] });
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(row(out.text, 'UCrCarried::Member'), { key: 'UCrCarried::Member', cl: 130000, offset: 0x48, size: 8, mask: 0, member: null });
+  assert.deepEqual(row(out.text, 'UCrCarriedClass'), { key: 'UCrCarriedClass', cl: 130000, offset: 0, size: 0x30, mask: 0, member: null });
+  assert.ok(out.notes.includes('UCrCarried::Member: carried from the published build; resolved on CL-130000, row written'));
+  assert.ok(out.notes.includes('UCrCarriedClass: carried from the published build; resolved on CL-130000, row written'));
+  assert.equal(out.added, 6);
+});
+
+test('a carried key the new build does not resolve is a note: no row, no absent row, no degraded plugin, no refusal', () => {
+  const plain = fieldRows(header(), { cl: 130000, keys: keys(), next: next(), base: base() });
+  const out = fieldRows(header(), {
+    cl: 130000, keys: keys(), base: base(), carried: ['UCrGone::Member', 'UCrGoneClass', 'UCrNotAsked::Member', 'UCrBitfield::Member'],
+    next: [...next(), gone('UCrGone::Member'), { key: 'UCrGoneClass', result: 'NOTYPE' }, { key: 'UCrBitfield::Member', result: 'BITFIELD' }],
+  });
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(out.notes.filter((n) => n.includes('carried')), [
+    'UCrBitfield::Member: carried from the published build; BITFIELD on CL-130000, no row',
+    'UCrGone::Member: carried from the published build; MISSING on CL-130000, no row',
+    'UCrGoneClass: carried from the published build; NOTYPE on CL-130000, no row',
+    "UCrNotAsked::Member: carried from the published build; not in the new build's report on CL-130000, no row",
+  ]);
+  for (const key of ['UCrGone::Member', 'UCrGoneClass', 'UCrNotAsked::Member', 'UCrBitfield::Member']) assert.equal(row(out.text, key), undefined, key);
+  assert.deepEqual(out.absent, plain.absent);
+  assert.deepEqual(out.degraded, plain.degraded);
+  assert.equal(out.text, plain.text, 'the header is what it would be without the carried keys');
+});
+
+test('a carried key the run already lists, or a register-sized one, is not written twice or at the wrong size', () => {
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: [...next(), ent('FTransform::Scale3D', 0x30, 0x20)], base: base(), carried: ['ACrCrafter::CraftComponent', 'UCrSomething::bFlag', 'FTransform::Scale3D'] });
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.notes.filter((n) => n.startsWith('ACrCrafter::CraftComponent') || n.startsWith('UCrSomething::bFlag')).length, 0);
+  assert.ok(out.notes.includes("FTransform::Scale3D: carried from the published build; its PDB size is the register's, no row"));
+  assert.equal(row(out.text, 'FTransform::Scale3D'), undefined);
+  assert.equal(row(out.text, 'ACrCrafter::CraftComponent').offset, 0x6e0, 'the listed key keeps its own row');
+});
+
+test('the command line takes --carry-keys: one key per line, comments and blank lines skipped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fieldrows-'));
+  const w = (name, doc) => { writeFileSync(join(dir, name), typeof doc === 'string' ? doc : JSON.stringify(doc)); return join(dir, name); };
+  const h = w('v.h', header());
+  const run = spawnSync(process.execPath, [TOOL, 'write', h, '--cl', '130000', '--next', w('n.json', { keys: [...next(), ent('UCrCarried::Member', 0x48, 8)] }), '--base', w('b.json', { keys: base() }),
+    '--keys', w('k.txt', KEYS), '--carry-keys', w('c.txt', '# carried\r\nUCrCarried::Member\r\n\r\nUCrNotAsked::Member\r\n'), '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(row(readFileSync(h, 'utf8'), 'UCrCarried::Member').offset, 0x48);
+  const report = JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8'));
+  assert.equal(report.added, 5);
+  assert.deepEqual(report.notes.filter((n) => n.includes('carried')), [
+    'UCrCarried::Member: carried from the published build; resolved on CL-130000, row written',
+    "UCrNotAsked::Member: carried from the published build; not in the new build's report on CL-130000, no row",
+  ]);
+});

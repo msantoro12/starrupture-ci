@@ -2170,6 +2170,22 @@ jobs:
           $all = $files | ForEach-Object { Get-Content $_ } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
           Copy-Item "$work\keys-all.txt" out\layout-keys.txt
+          # A build the published file does not hold yet is also read for the field keys that the newest published
+          # build has rows for and no key list names any more (ci/MAP-MODE.md, "Carried field keys"). Only this build
+          # is asked for them; out\layout-carry-keys.txt lists them and field-rows decides what each one becomes.
+          # A failure here costs the carry, never the layout.
+          $scanKeys = "$work\keys-all.txt"
+          $publishedFile = 'published-base\version-map-client.v1.txt'
+          if ($cl -and (Test-Path $publishedFile)) {
+            node 'ci-base\ci\version-map.mjs' carry-keys "$work\keys-all.txt" --published $publishedFile --cl $cl --retired 'ci-base\ci\retired-rows.txt' --out out\layout-carry-keys.txt
+            if ($LASTEXITCODE -ne 0) {
+              Remove-Item out\layout-carry-keys.txt -ErrorAction SilentlyContinue
+              Write-Host "::warning title=Carried field keys::version-map.mjs carry-keys exited $LASTEXITCODE; no field keys are carried on this build"
+            } elseif ((Get-Item out\layout-carry-keys.txt).Length -gt 0) {
+              Set-Content "$work\keys-target.txt" (@($all) + @(Get-Content out\layout-carry-keys.txt)) -Encoding ascii
+              $scanKeys = "$work\keys-target.txt"
+            }
+          }
           # Per component: its keys, requests, lazy lookups and size uses
           # (field-rows.mjs --uses), so the gate is per plugin.
           $uses = foreach ($c in $components) {
@@ -2186,7 +2202,8 @@ jobs:
           foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
             $out = "out\layout-$($b.key).json"
             $ErrorActionPreference = 'Continue'
-            & $scanner $b.exe.FullName --layout "$work\keys-all.txt" --json > $out
+            $keyFile = if ($b.key -eq 'target') { $scanKeys } else { "$work\keys-all.txt" }
+            & $scanner $b.exe.FullName --layout $keyFile --json > $out
             $code = $LASTEXITCODE
             $ErrorActionPreference = 'Stop'
             if ($code -gt 1) { throw "sr-aobscan --layout on the $($b.key) build failed (exit $code)" }
@@ -2508,6 +2525,7 @@ jobs:
             out/autofix-*
             out/layout*.json
             out/layout-keys.txt
+            out/layout-carry-keys.txt
             out/layout-uses.txt
             out/offsets-*.json
             out/rig-plugins.json
@@ -2978,11 +2996,27 @@ jobs:
           elif [ "$PROOF" = true ] || { [ "$FIRST_PUBLISH" = true ] && [ "$MAPPED" = true ]; }; then base=(--base res/layout-target.json); echo "field-rows: CL-$cl is already mapped by the header: the build is its own reference"
           elif [ "$BRANCH" = public ]; then from_store
           else echo "field-rows: no reference layout in the check's artifact (branch $BRANCH); running without --base"; fi
+          # Field keys of the newest published build that no key list names (the check job asked this build's scan for them).
+          carry=()
+          if [ -f res/layout-carry-keys.txt ]; then carry=(--carry-keys res/layout-carry-keys.txt); fi
           fr=0
-          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" "${missing[@]}" \
+          node tool/ci/field-rows.mjs write "$header" --cl "$cl" --next res/layout-target.json "${base[@]}" "${missing[@]}" "${carry[@]}" \
             --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --uses res/layout-uses.txt --sources commits.json --report field-rows.json || fr=$?
           echo "field-rows: exit $fr"
           if [ "$fr" -ne 0 ] && [ "$fr" -ne 3 ]; then echo "::error::field-rows failed (exit $fr): no member rows were written and no report exists; failing the job"; exit "$fr"; fi
+          # A test run measured a build the published file already holds, and dropped its rows first. A published row the run
+          # did not measure, or measured as absent where the published row has an address, goes back as published and is named
+          # here; a row measured with other content stays, and the preserve check holds on it (ci/MAP-MODE.md, "A re-measure keeps published rows").
+          if [ "$TEST_AUTOPILOT" = true ] && [ -f published-base/version-map-client.v1.txt ]; then
+            node tool/ci/version-map.mjs restore-published "$header" --published published-base/version-map-client.v1.txt --cl "$cl" \
+              --retired tool/ci/retired-rows.txt --changed tool/ci/changed-rows.txt --report kept-published.json
+            node -e '
+              const fs = require("fs");
+              const r = JSON.parse(fs.readFileSync("kept-published.json", "utf8"));
+              const lines = r.kept.map((k) => "- kept " + k.name + ": " + k.why).concat(r.differs.map((d) => "- measured other content than the published " + d + " (ci/changed-rows.txt takes it, with a reason)"));
+              if (lines.length) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, "\n### Published rows of CL-" + r.cl + " in a re-measure\n\n" + lines.join("\n") + "\n");
+            '
+          fi
           # The gate inputs, from what this run checked.
           node -e '
             const fs = require("fs");
@@ -3252,6 +3286,7 @@ jobs:
             carry.json
             observations.json
             field-rows.json
+            kept-published.json
             g?.json
             history.json
             decision.json

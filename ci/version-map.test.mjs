@@ -16,8 +16,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
-  parseFeed, parseKeys, parseRowList, preserveCheck, prune, readPublished, removeKey, replaceBuild, unionKeys,
+  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addBuild, addField, addFunction, carriedFieldKeys, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
+  parseFeed, parseKeys, parseRowList, preserveCheck, prune, readPublished, removeKey, replaceBuild, restorePublished, unionKeys,
 } from './version-map.mjs';
 import { signFeed } from './vmap-sign.mjs';
 
@@ -851,5 +851,162 @@ test('check-preserve: names the published lines a feed lost, capped, and passes 
     assert.equal(r.code, 0, r.err);
     assert.match(r.out, /all 4 published lines are in .* unchanged/);
     assert.equal(run('check-preserve', s.path('feed.txt'), '--published', s.path('k1.txt')).code, 4, 'no TEST key without the flag');
+  } finally { s.done(); }
+});
+
+// ---- A re-measure keeps the published rows of its build ------------------------------------------
+
+// The published file's header as a test run starts: every published row in it. The re-measure then drops the
+// rows of CL-128786 and writes back only what it measured (function rows, field rows, absent fields).
+function remeasured({ functions = [], fields = [], absentFields = [] } = {}) {
+  const p = published();
+  const map = importPublished(lacking(), p.read()).map;
+  map.functions = [...map.functions.filter((r) => r.cl !== 128786), ...functions];
+  map.fields = [...map.fields.filter((r) => r.cl !== 128786), ...fields];
+  map.absentFields = [...(map.absentFields ?? []).filter((r) => r.cl !== 128786), ...absentFields];
+  return { p, map, read: p.read() };
+}
+
+test('restorePublished: a published row the run did not measure comes back as published, and is named', () => {
+  const { p, map, read } = remeasured();
+  assert.equal(map.functions.some((r) => r.cl === 128786), false, 'the re-measure left no row of the build');
+  const out = restorePublished(map, read, 128786);
+  assert.deepEqual(out.differs, []);
+  assert.ok(out.kept.length >= 3);
+  assert.ok(out.kept.every((k) => k.why === 'the run did not measure it'));
+  assert.ok(out.kept.some((k) => k.name === 'function GWorld @ CL-128786'));
+  assert.ok(out.kept.some((k) => k.name === 'field UCrSomething::bFlag @ CL-128786'));
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(map)), p.map), { violations: [], checked: feedLines(p.map).length });
+});
+
+test('restorePublished: a real published function row is never replaced by an absent row, nor a field row by an absent field', () => {
+  const real = published().map.functions.find((r) => r.cl === 128786 && r.key === 'GWorld');
+  const field = published().map.fields.find((r) => r.cl === 128786 && r.key === 'UCrSomething::bFlag');
+  const { p, map, read } = remeasured({ functions: [goneRow({ ...real })], absentFields: [{ key: field.key, cl: 128786 }] });
+  assert.ok(map.functions.find((r) => r.key === 'GWorld' && r.cl === 128786).absent);
+  const out = restorePublished(map, read, 128786);
+  assert.deepEqual(out.differs, []);
+  assert.deepEqual(out.kept.filter((k) => /GWorld|bFlag/.test(k.name)).map((k) => [k.name, k.why]), [
+    ['function GWorld @ CL-128786', 'the run found no address for it'],
+    ['field UCrSomething::bFlag @ CL-128786', 'the run found no member for it'],
+  ]);
+  assert.equal(map.functions.find((r) => r.key === 'GWorld' && r.cl === 128786).absent, false);
+  assert.equal(map.absentFields.some((r) => r.key === field.key && r.cl === 128786), false);
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(map)), p.map).violations, []);
+});
+
+test('restorePublished: a value the run measured differently stays as measured and is named, so the preserve check holds on it', () => {
+  const real = published().map.functions.find((r) => r.cl === 128786 && r.key === 'GWorld');
+  const field = published().map.fields.find((r) => r.cl === 128786 && r.key === 'UCrSomething::bFlag');
+  const { p, map, read } = remeasured({ functions: [{ ...real, rva: real.rva + 4 }], fields: [{ ...field, offset: field.offset + 8 }] });
+  const out = restorePublished(map, read, 128786);
+  assert.deepEqual(out.differs, ['function GWorld @ CL-128786', 'field UCrSomething::bFlag @ CL-128786']);
+  assert.equal(map.functions.find((r) => r.key === 'GWorld' && r.cl === 128786).rva, real.rva + 4);
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(map)), p.map).violations, [
+    'function GWorld @ CL-128786: differs in rva',
+    'field UCrSomething::bFlag @ CL-128786: differs in offset',
+  ]);
+  // The changed list excuses exactly those rows.
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(map)), p.map, { changed: list(['function', 'GWorld', '128786', 'x'], ['field', 'UCrSomething::bFlag', '128786', 'x']) }).violations, []);
+});
+
+test('restorePublished: an absent published row that the run gave an address is a difference, not a restore', () => {
+  const p = published();
+  const map = importPublished(lacking(), p.read()).map;
+  map.functions = map.functions.map((r) => (r.key === 'UCrPublished::NoAddress' ? rowOf('UCrPublished::NoAddress', 130001) : r));
+  assert.deepEqual(restorePublished(map, p.read(), 130001), { kept: [], differs: ['function UCrPublished::NoAddress @ CL-130001'] });
+});
+
+test('restorePublished: a retired row stays out; a changed-list row is put back only when the run left it out', () => {
+  const { map, read } = remeasured();
+  const out = restorePublished(map, read, 128786, { retired: list(['function', 'GWorld', '128786', 'x']), changed: list(['field', 'UCrSomething::bFlag', '128786', 'x']) });
+  assert.ok(!out.kept.some((k) => /GWorld/.test(k.name)));
+  assert.equal(map.functions.some((r) => r.key === 'GWorld' && r.cl === 128786), false, 'retired: not put back');
+  assert.ok(out.kept.some((k) => k.name === 'field UCrSomething::bFlag @ CL-128786'), 'the changed list excuses a change, never a loss');
+  // Measured with another value, the changed-list row stays as measured and is not a difference.
+  const field = published().map.fields.find((r) => r.cl === 128786 && r.key === 'UCrSomething::bFlag');
+  const m = remeasured({ fields: [{ ...field, offset: field.offset + 8 }] });
+  assert.deepEqual(restorePublished(m.map, m.read, 128786, { changed: list(['field', 'UCrSomething::bFlag', '128786', 'x']) }).differs, []);
+  assert.equal(m.map.fields.find((r) => r.key === field.key && r.cl === 128786).offset, field.offset + 8);
+  const again = remeasured();
+  const before = emit(again.map);
+  assert.deepEqual(restorePublished(again.map, again.read, 999999), { kept: [], differs: [] });
+  assert.equal(emit(again.map), before);
+});
+
+test('restorePublished: an absent row measured with fewer owners is put back; with an owner more it is a difference', () => {
+  const p = published();
+  const owned = (owners) => {
+    const read = p.read();
+    read.functions = read.functions.map((r) => (r.key === 'UCrPublished::NoAddress' ? { ...r, owners: ['BetterDrone', 'WAILA'] } : r));
+    const map = importPublished(lacking(), p.read()).map;
+    map.functions = map.functions.map((r) => (r.key === 'UCrPublished::NoAddress' ? { ...r, owners } : r));
+    return { map, read };
+  };
+  const fewer = owned(['WAILA']);
+  assert.deepEqual(restorePublished(fewer.map, fewer.read, 130001), { kept: [{ name: 'function UCrPublished::NoAddress @ CL-130001', why: 'the run measured fewer owners for it' }], differs: [] });
+  assert.deepEqual(fewer.map.functions.find((r) => r.key === 'UCrPublished::NoAddress').owners, ['BetterDrone', 'WAILA']);
+  const more = owned(['WAILA', 'Zed']);
+  assert.deepEqual(restorePublished(more.map, more.read, 130001), { kept: [], differs: ['function UCrPublished::NoAddress @ CL-130001'] });
+});
+
+test('restorePublished: another exe at the same CL keeps nothing, and the build line is the difference', () => {
+  const { p, map, read } = remeasured();
+  map.builds = map.builds.map((b) => (b.cl === 128786 ? { ...b, stamp: b.stamp + 1 } : b));
+  const before = emit(map);
+  assert.deepEqual(restorePublished(map, read, 128786), { kept: [], differs: ['build CL-128786'] });
+  assert.equal(emit(map), before, 'no row of the old exe is put next to the new build row');
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(map)), p.map).violations.filter((v) => v.startsWith('build')), ['build CL-128786: differs in stamp']);
+  assert.deepEqual(restorePublished(map, read, 128786, { changed: list(['build', '-', '128786', 'x']) }), { kept: [], differs: [] }, 'a listed build change is not named again');
+});
+
+test('restorePublished: twice is the same as once', () => {
+  const { map, read } = remeasured();
+  restorePublished(map, read, 128786);
+  const once = emit(map);
+  assert.deepEqual(restorePublished(map, read, 128786), { kept: [], differs: [] });
+  assert.equal(emit(map), once);
+});
+
+test('carriedFieldKeys: the field keys of the newest published build that the key list lacks; none for a build the file holds', () => {
+  const p = published().read();
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set()), { from: 130001, keys: ['ATest::Native'] });
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(['ATest::Native'])), { from: null, keys: [] }, 'the run already lists it');
+  assert.deepEqual(carriedFieldKeys(p, 130001, new Set()), { from: null, keys: [] }, 'a build the file holds is kept by restorePublished');
+  assert.deepEqual(carriedFieldKeys(parseFeed('format\t1\n'), 130002, new Set()), { from: null, keys: [] });
+});
+
+test('carriedFieldKeys: a key with a retired entry, on any build, is not carried', () => {
+  const p = published().read();
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(), { retired: list(['field', 'ATest::Native', '127004', 'x']) }).keys, []);
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(), { retired: list(['build', '-', '130001', 'x']) }).keys, []);
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(), { retired: list(['function', 'ATest::Native', '130001', 'x']) }).keys, ['ATest::Native'], 'a function entry is another kind');
+});
+
+test('restore-published and carry-keys on the command line', () => {
+  const s = scratch({ h: fixture('loader.h'), 'k1.txt': k1Fixture(), 'retired.txt': 'build\t-\t128786\tthe fixture build is not the loader fixture one\n', 'keys.txt': '# the run\nGWorld\n' });
+  try {
+    const k1 = ['--published', s.path('k1.txt'), '--allow-test-key'];
+    assert.equal(run('import-published', s.path('h'), ...k1, '--retired', s.path('retired.txt')).code, 0);
+    const whole = readFileSync(s.path('h'), 'utf8');
+    // The re-measure drops CL-130001's rows; the command puts them back.
+    const dropped = parse(whole);
+    dropped.functions = dropped.functions.filter((r) => r.cl !== 130001);
+    dropped.fields = dropped.fields.filter((r) => r.cl !== 130001);
+    writeFileSync(s.path('h'), emit(dropped));
+    const r = run('restore-published', s.path('h'), ...k1, '--cl', '130001', '--report', s.path('kept.json'));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /kept published function Test::MapOnly @ CL-130001: the run did not measure it\nkept published field ATest::Native @ CL-130001: the run did not measure it/);
+    assert.equal(readFileSync(s.path('h'), 'utf8'), whole);
+    assert.deepEqual(JSON.parse(readFileSync(s.path('kept.json'), 'utf8')), { cl: 130001, kept: [{ name: 'function Test::MapOnly @ CL-130001', why: 'the run did not measure it' }, { name: 'field ATest::Native @ CL-130001', why: 'the run did not measure it' }], differs: [] });
+    assert.equal(run('restore-published', s.path('h'), ...k1).code, 2, '--cl is required');
+    assert.equal(run('restore-published', s.path('h'), '--published', s.path('k1.txt'), '--cl', '130001').code, 4, 'no TEST key without the flag');
+    // carry-keys: CL-130002 is new to the file, so the newest build's field key is carried.
+    const c = run('carry-keys', s.path('keys.txt'), ...k1, '--cl', '130002', '--out', s.path('carry.txt'));
+    assert.equal(c.code, 0, c.err);
+    assert.equal(readFileSync(s.path('carry.txt'), 'utf8'), 'ATest::Native\n');
+    assert.match(c.out, /1 field keys of CL-130001/);
+    assert.equal(run('carry-keys', s.path('keys.txt'), ...k1, '--cl', '130001', '--out', s.path('none.txt')).code, 0);
+    assert.equal(readFileSync(s.path('none.txt'), 'utf8'), '');
   } finally { s.done(); }
 });

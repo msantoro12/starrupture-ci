@@ -63,6 +63,9 @@ node ci/version-map.mjs check <header> [--keys <keys.txt>]...
 node ci/version-map.mjs export-feed <header> --out <file>
 node ci/version-map.mjs import-published <header> --published <signed feed> [--retired <file>] [--changed <file>]
 node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retired <file>] [--changed <file>]
+node ci/version-map.mjs restore-published <header> --published <signed feed> --cl <CL> [--retired <file>]
+     [--changed <file>] [--report <file>]
+node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>]
 ```
 
 - `init` writes an empty map and refuses to overwrite a file. `--built-cl` is
@@ -111,10 +114,16 @@ node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retir
   feed only after the signature verifies. See "The published feed is part of the base".
 - `check-preserve` reads a new feed and exits 3, naming the rows, when a line of the
   signed feed is missing from it or has other content.
+- `restore-published` is for a test run that measured a published build again. It puts back
+  the published rows of `--cl` that the run did not measure, and the real rows the run measured
+  as absent. A row the run measured with other content stays. See `MAP-MODE.md`, "A re-measure keeps
+  published rows".
+- `carry-keys` writes to `--out` the field keys of the newest published build that the key list
+  does not name, for a build the published file does not hold yet. See `MAP-MODE.md`, "Carried field keys".
 
 Exit codes: 0 ok; 3 `check` found a coverage problem, or `import-published` or
 `check-preserve` holds (rows differ, rows lost); 4 the signed feed's signature does not
-verify (`import-published`, `check-preserve`); 2 usage error, a header off the format,
+verify (`import-published`, `check-preserve`, `restore-published`, `carry-keys`); 2 usage error, a header off the format,
 or a conflicting row. A command that fails leaves the header alone.
 
 ## The coverage rule
@@ -322,7 +331,8 @@ function	UCrSomething::OldFunction	127004	No release of any plugin asks for it a
 ```
 
 Both files start with no entries. An entry is never needed to keep a row; it is only the way out for
-one that is meant to go. What a run does with the base, and what to do when it holds, is in
+one that is meant to go. A test run that measures a build again keeps the published rows it did not
+measure or measured as absent; only a different measured value needs a `changed-rows.txt` entry. What a run does with the base, and what to do when it holds, is in
 `MAP-MODE.md` ("The published feed as the base").
 
 ## What never goes in
