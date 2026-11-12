@@ -246,12 +246,14 @@ build it describes (its `kBuiltCL` is the build being checked), so the SDK's own
   setting to `enforcing`; then a disagreement refuses the stored file and the update holds, with the key and
   both values in the message. Enforcing is fully implemented and tested; only the default is report-only.
 - **A key source never holds a publish.** The folder holds two kinds of table: `table-<name>.h` for a released
-  plugin and `table-ks-<name>.h` for a key source (a branch that only supplies keys). The loader's own keys are not
-  in the folder, so they take no part. A key that only key-source tables ask for is a *key-source key*: a difference
-  on it (the SDK row against the stored value, or a stored `NOTYPE`) is a warning, never a hold, whatever the mode.
-  If any released-plugin table also names the key, it is judged as before. The warning is in the log, the step
-  summary and a warning annotation (`SDK-table check (key source)`), one line per key with the table's
-  offset/size/mask and the stored value or status, followed by a count line:
+  plugin and `table-ks-<name>.h` for a key source (a branch that only supplies keys). A key that only key-source tables ask for is a
+  *key-source key*: a difference on it (the SDK row against the stored value, or a stored `NOTYPE`) is a warning,
+  never a hold, whatever the mode. If any released-plugin table also names the key, it is judged as before. Only
+  the tables in the folder count: the loader's own table is not copied there, so a key that only the loader (or a
+  plugin that is not built here) reads and a key-source table names is a key-source key too. When the update
+  goes on, the warning is in the log, the step summary and a warning annotation (`SDK-table check (key source)`),
+  one line per key with the table's offset/size/mask and the stored value or status, followed by a count line
+  (when the update holds for another reason, the lines follow the hold message in the log):
   `key source only: FIntPoint::X: SDK table 0x0/0x4/0x0, record NOTYPE (asked for only by table-ks-MiniMap.h)`.
 - `ci/sdk-table-differences.txt` excuses known differences. Format (also at the top of the file): six
   tab-separated fields, `<build> <key> <offset|size|mask> <stored> <SDK> <reason>`. The build is a CL number,
