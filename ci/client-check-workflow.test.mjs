@@ -3163,10 +3163,11 @@ exit 1
     const script = `set -euo pipefail\nheader=version_map.generated.h\ncl=128786\n${block}\nprintf 'base:%s\\n' "\${base[@]}"\nprintf 'missing:%s\\n' "\${missing[@]}"\n`;
     const r = spawnSync(bash, ['-c', script], {
       cwd: dir, encoding: 'utf8', windowsHide: true,
-      env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', PREVIOUS_CL: '127004', BRANCH: 'public', PROOF: 'false', FIRST_PUBLISH: 'false', MAPPED: 'false', STORED_REFERENCE: 'false', ...env, PATH: join(dir, 'bin') + delimiter + process.env.PATH },
+      env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', PREVIOUS_CL: '127004', BRANCH: 'public', PROOF: 'false', FIRST_PUBLISH: 'false', MAPPED: 'false', STORED_REFERENCE: 'false', GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), ...env, PATH: join(dir, 'bin') + delimiter + process.env.PATH },
     });
     const lines = r.stdout.split('\n');
-    return { status: r.status, stderr: r.stderr, out: r.stdout, base: lines.filter((l) => l.startsWith('base:')).map((l) => l.slice(5)).filter(Boolean), missing: lines.filter((l) => l.startsWith('missing:')).map((l) => l.slice(8)).filter(Boolean), dir };
+    const summary = existsSync(join(dir, 'summary.md')) ? readFileSync(join(dir, 'summary.md'), 'utf8') : '';
+    return { status: r.status, stderr: r.stderr, out: r.stdout, summary, base: lines.filter((l) => l.startsWith('base:')).map((l) => l.slice(5)).filter(Boolean), missing: lines.filter((l) => l.startsWith('missing:')).map((l) => l.slice(8)).filter(Boolean), dir };
   };
   // Public, new build, nothing in the artifact to compare with: the stored layout of the built CL is the base.
   const ok = run();
@@ -3209,6 +3210,15 @@ exit 1
   const excused = run({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\tfor the test\n' });
   assert.deepEqual(excused.base, ['--base', 'res/layout-stored.json']);
   assert.match(excused.out, /1 known difference excused\nlayout-store: AFoo::Bar: the offset is 0x10 in the stored layout and 0x18 in the SDK table, a known difference \(for the test\)\n/, 'the note reaches the log line the other notes use');
+  // The step summary carries an excused difference (key, field, both values, reason) and a skipped SDK check, one line each.
+  assert.equal(excused.summary, '\n### SDK-table cross-check of the stored layout\n\n- AFoo::Bar: the offset is 0x10 in the stored layout and 0x18 in the SDK table, a known difference (for the test)\n');
+  assert.equal(run().summary, '\n### SDK-table cross-check of the stored layout\n\n- the cross-check against the SDK tables was skipped: no table-*.h file was given\n');
+  assert.match(run({ tables: sdkTables(16, 129402) }).summary, /\n- the cross-check against the SDK tables was skipped: the SDK tables describe CL-129402/, 'tables of another build: the skip is in the summary');
+  assert.equal(sdkOk.summary, '', 'a plain agreement adds nothing');
+  // A summary file that cannot be written does not fail the step.
+  const noSummary = run({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\tfor the test\n', env: { GITHUB_STEP_SUMMARY: '/nonexistent-dir/summary.md' } });
+  assert.equal(noSummary.status, 0, noSummary.stderr);
+  assert.deepEqual(noSummary.base, ['--base', 'res/layout-stored.json']);
   miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x1c\tfor the test\n' }, /disagrees with the SDK table's field rows.*AFoo::Bar/);
   miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\t\n' }, /sdk-table-differences\.txt:1: the entry for AFoo::Bar on CL-127004 has no reason/);
   // A non-public check keeps its own comparison, and a proof run or a mapped first publish its self-reference.

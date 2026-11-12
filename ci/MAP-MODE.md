@@ -407,7 +407,7 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
   The loader's optional lines are the two heap members and the six image-library members
   (`UTexture::PrivateResource`, `FTexture::TextureRHI`, `FD3D12Texture::ResourceLocation`,
@@ -473,6 +473,26 @@ built for as well as the new one.
   download it from the `vmap-feed` release and the release lists it as uploaded by an Actions job.
   If the version map is missing, unreadable, uploaded by anyone else or has no rows for that CL, the run prints one line saying the wider check was
   skipped and goes on with the header's rows; a disagreement still refuses the file.
+- A third check compares the file with the layout tables generated from the game SDK (`ci/LAYOUT-TABLE.md`,
+  "Checking the stored layout against the SDK tables"). It is the widest of the three: the tables hold every
+  field the plugins read, not only the few the header and the published version map carry. It compares offset,
+  size and bool mask like the others, and refuses on one disagreement or when fewer than half of the table's
+  keys are in the file. It runs only when the SDK describes the same build as the stored file. Tables that are
+  missing, unreadable, without sizes, or for another build skip it with one line in the log and in the run's
+  step summary; a skip is a note, not a hold. A refusal holds the update with the message
+  `the stored layout of CL-N disagrees with the SDK table's field rows for CL-N on X of Y keys (offset/size/mask;
+  first: <key>: SDK table ..., record ...)`. When you see it, find out which value is right (the SDK's
+  `Assertions.inl` has the compiled sizes); correct the code, or, if the stored file is the wrong one and cannot
+  be replaced, add a known difference (next point).
+- `ci/sdk-table-differences.txt` lists the known differences for that third check: one line per difference, six
+  tab-separated fields (build, key, offset|size|mask, stored value, SDK value, reason). An entry excuses only the
+  exact difference it names; another value on the same key, another field, another key or another build still
+  holds. The reason is required. A line without one, or a list that cannot be read, holds the update with
+  `ci/sdk-table-differences.txt:<line>: ...` (a broken list is a defect in the repository, not missing evidence).
+  An excused difference is printed as a note in the log and in the step summary. Remove an entry when its cause is
+  fixed and the stored layout is corrected. The one entry today is `127004 FEnhancedActionKeyMapping::Key size
+  0x50 0x18`: the layout scan reported the size of the enclosing struct (0x50) for that member, the SDK says 0x18
+  (an `FKey`), and no row is published for the member, so the wrong stored value reaches nothing.
 - If any of that is missing, nothing is guessed. The run holds, and the hold names what
   is missing ("no reference layout to find what moved: no stored layout for CL-N ...").
   A plugin can add a reflected key after the file was saved, and the file cannot be

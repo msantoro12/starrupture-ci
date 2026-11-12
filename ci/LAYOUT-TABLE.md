@@ -215,6 +215,38 @@ that moved). It is a report: it does not change the check's verdict. If the
 step fails (no plugin built, or the loader's table could not be fetched),
 there is no report for any component.
 
+## Checking the stored layout against the SDK tables
+
+A public update takes its reference layout from the stored file of the build the plugins were built for
+(ci/MAP-MODE.md). `ci/layout-store.mjs reference` checks that file against the header and the published
+version object map and, when given `--sdk-tables <dir>`, against the tables this tool generates from the
+game SDK. That third check is wider than the other two: the header carries about 170 of the keys and the
+published version map fewer, while the tables hold every member the plugins read (854 keys on build 127004).
+For each key in both it compares the offset, the size and the bool mask (a class key compares its size where
+the table has one). Keys the table lacks, or the file lacks, are ignored, but the check refuses when fewer than
+half of the table's keys are in the file.
+
+    node ci/layout-store.mjs reference <header> --record <layout.json> ... --sdk-tables res/sdk-tables --sdk-differences ci/sdk-table-differences.txt
+
+The check job copies its tables and the first lines of the SDK's `SDK.hpp` into `out/sdk-tables` and uploads
+them with the other results; the map-mode job downloads them as `res/sdk-tables`. A table does not say which
+build it describes (its `kBuiltCL` is the build being checked), so the SDK's own header line
+(`// 5.6.1-127004+++...`) is read for the build.
+
+- It runs only when that build is the stored file's. When the SDK has moved to a newer build, there are no
+  tables, the header line is missing or has another shape, a table cannot be read, or the tables carry no sizes,
+  the check is skipped with one line (`the cross-check against the SDK tables was skipped: <why>`) in the log and
+  in the step summary. A skip is a note, not a hold.
+- A disagreement refuses the stored file and the update holds, with the key and both values in the message.
+- `ci/sdk-table-differences.txt` excuses known differences. Format (also at the top of the file): six
+  tab-separated fields, `<build> <key> <offset|size|mask> <stored> <SDK> <reason>`. An entry excuses only the
+  exact difference it names (that build, key, field and those two values); everything else on the key still
+  holds. The reason is required. A malformed line, a missing reason or an unreadable file holds the update.
+  Remove an entry when the cause is fixed and the stored file corrected.
+- The one entry today: `FEnhancedActionKeyMapping::Key` on 127004, size 0x50 stored and 0x18 in the SDK. The
+  layout scan returned the size of the enclosing struct for that member. The SDK is right, no row is published
+  for the member, and a stored file cannot be replaced, so the difference is listed instead of held.
+
 ## Tests
 
 `node --test ci/layout-table.test.mjs` uses the trimmed fixtures in
