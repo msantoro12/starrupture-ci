@@ -1740,7 +1740,7 @@ test('carry: map mode uploads carry.json with its other files, and the gate runs
 // ---- Key sources: fork builds scanned for map keys only ----------------------------------------------------
 
 const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls'];
-const KEY_PIN = '52fa40a0793bc91edce7044303327c6bc588d7c0';
+const KEY_PIN = '5bc7e08ce523194665f7173a16f57b9a15ab82b2';
 const HEX40 = 'a'.repeat(40);
 // The Plugin SDK the key sources build against: the one pin, in the workflow env (the Loader agent moves it with sr-update's).
 const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: '52b48fcc1632f0b713695919c7ba7978111dc428' };

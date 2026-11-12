@@ -182,6 +182,46 @@ function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField, [switch]$SkipC
         if ($off) { "FOUND: $off" } elseif ($haveLog) { 'no "switched off" line' } else { '' })
 }
 
+# The members native-keys.txt lists as optional, as a set of "<plugin>|<Class::Member>" in lower case.
+# A line is "<plugin> <key> [built values] [optional] [anchor]"; the word counts only before the anchor.
+function Get-OptionalKeys {
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    $path = Join-Path $PSScriptRoot 'native-keys.txt'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return , $set }
+    foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+        $t = @($line.Trim() -split '\s+')
+        if ($t.Count -lt 3 -or $t[0].StartsWith('#')) { continue }
+        foreach ($w in $t[2..($t.Count - 1)]) {
+            if ($w.Contains(':')) { break }
+            if ($w -ceq 'optional') { [void]$set.Add("$($t[0])|$($t[1])".ToLowerInvariant()); break }
+        }
+    }
+    return , $set
+}
+
+# The entries ci/expected-off.txt lists: a set of "<plugin>|<version>|<Class::Member>" in lower
+# case, and the malformed lines. A line is "<Plugin> <Version> <Class::Member>"; the version
+# is required. A missing or empty file adds no exceptions.
+function Get-ExpectedOff {
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    $errors = New-Object System.Collections.Generic.List[string]
+    $path = Join-Path $PSScriptRoot 'expected-off.txt'
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $n = 0
+        foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+            $n++
+            $t = @($line.Trim() -split '\s+' | Where-Object { $_ })
+            if ($t.Count -eq 0 -or $t[0].StartsWith('#')) { continue }
+            if ($t.Count -ne 3 -or $t[1] -cnotmatch '^\d+(\.\d+)*$' -or $t[2] -cnotmatch '^\w+::\w+$') {
+                $errors.Add("expected-off.txt line ${n} is malformed (want: <Plugin> <Version> <Class::Member>): $($line.Trim())")
+                continue
+            }
+            [void]$set.Add("$($t[0])|$($t[1])|$($t[2])".ToLowerInvariant())
+        }
+    }
+    return [pscustomobject]@{ Set = $set; Errors = @($errors) }
+}
+
 # Client mode: judges the compat-report-<CL>.json files boot.json lists by what they say.
 # The loader writes one when the game's layout changed under it (compat_report.cpp, format
 # 3; format 4 adds outcome "unchanged" and sizes): outcome "safe-off" (every plugin refused),
@@ -193,7 +233,7 @@ function Add-HandoffChecks($Ml, $Boot, [switch]$RequireBootField, [switch]$SkipC
 # size the running game reflects. Returns Bad (what fails), Notes (what passes but is worth a
 # look), Sizes (one line per sizes[] entry, passing or not), SizeCounts (entries per result),
 # Parsed (reports read) and Changes (changes[] entries seen).
-function Get-CompatJudgement($Ml, $Boot) {
+function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
     $arrow = [string][char]0x2192
     $bad = New-Object System.Collections.Generic.List[string]
     $notes = New-Object System.Collections.Generic.List[string]
@@ -285,10 +325,31 @@ function Get-CompatJudgement($Ml, $Boot) {
             }
         }
     }
-    # With a report on record, a plugin that lost a feature is not a clean handoff.
+    # With a report on record, a plugin that lost a feature is not a clean handoff, unless
+    # every key the loader names for it is listed optional for that plugin in native-keys.txt or
+# listed for it in expected-off.txt at the version of it the log shows loaded.
+    $expected = Get-ExpectedOff
+    foreach ($e in $expected.Errors) { $bad.Add($e) }
     if ($listed.Count -gt 0 -and $Ml) {
+        $optional = Get-OptionalKeys
         foreach ($l in $Ml) {
-            if ($l -cmatch '\[Map\] (\S+): feature "(.+?)" is off') { $bad.Add("$($Matches[1]) feature ""$($Matches[2])"" is off") }
+            if ($l -cnotmatch '\[Map\] (\S+): feature "(.+?)" is off') { continue }
+            $plugin = $Matches[1]; $title = $Matches[2]
+            $keys = @()
+            if ($l -cmatch ('\[Map\] ' + [regex]::Escape($plugin) + ': feature "' + [regex]::Escape($title) + '" is off: (.*?) \([^()]*\)\s*$')) {
+                $keys = @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            }
+            $repos = @($plugin) + @(@(Get-Prop $Set 'plugins' @()) | Where-Object { [string](Get-Prop $_ 'logName' '') -ceq $plugin } | ForEach-Object { [string](Get-Prop $_ 'repo' '') })
+            # The version of this plugin the loader reports having loaded, without a leading v.
+            $ver = ''
+            foreach ($i in $Ml) { if ($i -cmatch ('Plugin info - Name: ' + [regex]::Escape($plugin) + ', Version: v?(.+?), Author')) { $ver = $Matches[1]; break } }
+            $notOptional = @($keys | Where-Object { $k = $_; -not @($repos | Where-Object { $optional.Contains("$_|$k".ToLowerInvariant()) -or ($ver -ne '' -and $expected.Set.Contains("$_|$ver|$k".ToLowerInvariant())) }) })
+            if ($keys.Count -gt 0 -and $notOptional.Count -eq 0) {
+                $from = @($keys | ForEach-Object { $k = $_; $src = if (@($repos | Where-Object { $optional.Contains("$_|$k".ToLowerInvariant()) })) { 'optional in native-keys.txt' } else { "listed in expected-off.txt for $ver" }; "$k ($src)" })
+                $notes.Add("$plugin$(if ($ver -ne '') { " $ver" }) feature ""$title"" is off, accepted: " + ($from -join ', '))
+            } else {
+                $bad.Add("$plugin feature ""$title"" is off" + $(if ($keys.Count -eq 0) { ': names no keys' } else { ': not optional or expected off: ' + ($notOptional -join ', ') }))
+            }
         }
     }
     return [pscustomobject]@{ Listed = $listed; Written = $written; Bad = @($bad); Notes = @($notes); Sizes = @($sizeLines); SizeCounts = $sizeCounts; Parsed = $parsed; Changes = $changeCount }
@@ -475,7 +536,7 @@ function Invoke-ClientVerdict {
     $proxy = Read-Lines (Join-Path $OutDir 'proxy.log')
     $au = Read-Lines (Join-Path $OutDir 'autoupdate.log')
     $haveLog = ($null -ne $ml) -and $ml.Count -gt 0
-    $compat = Get-CompatJudgement $ml $boot
+    $compat = Get-CompatJudgement $ml $boot $set
 
     # ---- the set under test ----
     $specs = @()
