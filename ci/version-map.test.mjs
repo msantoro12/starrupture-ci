@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addBuild, addField, addFunction, carriedFieldKeys, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
+  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addAbsentField, addBuild, addField, addFunction, carriedFieldKeys, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
   parseFeed, parseKeys, parseRowList, preserveCheck, prune, readPublished, removeKey, replaceBuild, restorePublished, unionKeys,
 } from './version-map.mjs';
 import { signFeed } from './vmap-sign.mjs';
@@ -506,6 +506,48 @@ test('the commands build the loader fixture, check it over two key lists, and ex
   const zero = run('check', h);
   assert.equal(zero.code, 2);
   assert.match(zero.err, /a scoped row needs the fp/);
+});
+
+test('add-absent-field writes the entry the pipeline writes, and changes nothing else', () => {
+  const { dir, ok } = commands();
+  const h = join(dir, 'version_map.generated.h');
+  const original = fixture('loader.h');
+  writeFileSync(h, original);
+  const hotbars = 'UCrHotbarLocalPlayerSubsystem::Hotbars';
+  const index = 'UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex';
+  assert.match(ok('add-absent-field', h, '--key', hotbars, '--cl', '127004').err, /added absent field/);
+  ok('add-absent-field', h, '--key', index, '--cl', '128786');
+  // The text the model writes: sorted by key, the array sized to the entries.
+  const text = readFileSync(h, 'utf8');
+  assert.ok(text.includes(`std::array<AbsentField, 2> kAbsentFields = {{
+	{ "${index}", 128786 },
+	{ "${hotbars}", 127004 },
+}};`));
+  const direct = parse(original);
+  addAbsentField(direct, { key: hotbars, cl: 127004 });
+  addAbsentField(direct, { key: index, cl: 128786 });
+  assert.equal(text, emit(direct));
+  // An entry already there: success, file untouched.
+  assert.match(ok('add-absent-field', h, '--key', hotbars, '--cl', '127004').err, /already there/);
+  assert.equal(readFileSync(h, 'utf8'), text);
+  // Taking the entries out again gives the original file byte for byte.
+  ok('remove-key', h, '--key', hotbars);
+  ok('remove-key', h, '--key', index);
+  assert.equal(readFileSync(h, 'utf8'), original);
+  writeFileSync(h, text);
+  // Refusals leave the file as it was.
+  const refuse = (...args) => {
+    const r = run('add-absent-field', h, ...args);
+    assert.equal(r.code, 2, `${args.join(' ')}: ${r.out}`);
+    assert.equal(readFileSync(h, 'utf8'), text);
+    return r.err;
+  };
+  assert.match(refuse('--key', 'ACrCrafter::CraftComponent', '--cl', '127004'), /verified field row/);
+  assert.match(refuse('--key', hotbars, '--cl', '99999'), /CL-99999 is not in the build table/);
+  assert.match(refuse('--key', 'Hotbars', '--cl', '127004'), /<Class::Member>/);
+  assert.match(refuse('--cl', '127004'), /<Class::Member>/);
+  assert.match(refuse('--key', hotbars), /--cl is required/);
+  assert.match(refuse('--key', hotbars, '--cl', 'x'), /--cl x is not a number/);
 });
 
 // The fixtures as C++: the plugin map against the row types plugin_interface.h
