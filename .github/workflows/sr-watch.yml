@@ -14,6 +14,9 @@ name: SR Steam watch
 # vmap-feed release (the publish job of sr-client-check.yml), plus the alert issue the client check (or the alert job, for the rest of the
 # chain) opens when a run fails or holds, and the
 # same issue for a game-update PR that stays open six hours without passing the chain.
+# After the chain (and on every poll) it also starts the planner data extract (sr-data-extract.yml) for a
+# build that has none (ci/planner-extract.mjs). When a build change starts the chain it first cancels any
+# extract that is queued or going, so the extract never holds the chain.
 # No tags, no releases.
 
 on:
@@ -36,11 +39,12 @@ jobs:
   poll:
     name: poll
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 17
     permissions:
       contents: write        # baseline commit to main, game-update/* branches
       pull-requests: write   # open and update the update PR, create its label
       issues: write          # the stale-PR alert issue and its label
+      actions: write         # cancel the planner data extract runs (the last step)
     outputs:
       changed: ${{ steps.poll.outputs.changed }}
       client_matrix: ${{ steps.poll.outputs.client_matrix }}
@@ -191,6 +195,23 @@ jobs:
             fi
           done
 
+      # A planner data extract that is queued or going holds the Steam session and the sr-client-rig
+      # group, which the client check below needs: its test-machine jobs would wait behind the extract
+      # and its check job could log in while the extract holds the one session. So when this poll starts
+      # the client chain (the same condition as the client-check job below), every extract run that is
+      # queued or going is cancelled, and the chain starts once they have ended or after four minutes.
+      # Nothing here can stop the chain: the step ignores its own failure and the script only warns.
+      # A cancelled extract is not a failure; the next reconcile starts that build again.
+      # Known and accepted: a client check started by hand (a direct dispatch of sr-client-check.yml)
+      # does not pass through this poll, so it cancels nothing and waits behind a running extract.
+      # (actions: write sits on this whole job because a separate cancel job would need `needs` on the
+      # chain jobs; "Re-run failed jobs" does not re-run the poll, so use a forced run to start a chain.)
+      - name: Cancel planner data extract runs
+        if: steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && startsWith(steps.poll.outputs.client_matrix, '[{')
+        continue-on-error: true
+        timeout-minutes: 6
+        run: node ci/planner-extract.mjs cancel --repo "$GH_REPO" --wait-seconds 240
+
   build:
     name: build-all
     needs: poll
@@ -305,3 +326,39 @@ jobs:
           for b in $branches; do
             node ci/pipeline-alert.mjs raise --title "SR map mode: $b needs attention" --body-file alert.md --owner "$OWNER"
           done
+
+  # ---- Planner data extract: start it for a build that has none ----
+  # One job for both the start after the chain and the reconcile on every poll (the same call,
+  # ci/planner-extract.mjs). It needs the client check, so it starts only after every client-check job,
+  # the publish included, has ended and the Steam session is free. No job needs it, so it can never hold
+  # or fail the chain, and continue-on-error keeps its own failure from reddening this run.
+  # It dispatches sr-data-extract.yml (a run of its own) and holds no secret: that run reads the
+  # Steam login. The extractor commit is pinned in ci/data/extractor-ref.txt.
+  planner-extract:
+    name: planner data extract
+    needs: [poll, client-check]
+    if: ${{ !cancelled() && needs.poll.result == 'success' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read     # the checkout
+      actions: write     # read the runs list, dispatch sr-data-extract.yml
+      issues: write      # the alert issue and its label
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      OWNER: msantoro12
+      BRANCHES: public,public_test_branch
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: main
+          sparse-checkout: |
+            ci
+            .github/sr-pipeline
+          persist-credentials: false
+
+      - name: Start the extract for a build that has none
+        run: node ci/planner-extract.mjs --repo "$GH_REPO" --branches "$BRANCHES" --owner "$OWNER"
