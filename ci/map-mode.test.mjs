@@ -517,6 +517,30 @@ test('a verified row with another pattern is still refused when the address, kin
   assert.match(mapMode(first.text, exe).problems.join(' | '), /already in the build table with another exe/);
 });
 
+// A run on a build whose rows are already in the header (the published feed's, imported): a key
+// the scan finds no locator for keeps its verified row instead of becoming an absent one.
+test('a key the scan cannot place keeps its verified row of the same build, and is refused when the exe is not known to be the same', () => {
+  const first = mapMode(header(), base());
+  const lost = base();
+  lost.components[1].releases[0].rows[1] = failed(SF, 'function');
+  const out = mapMode(first.text, lost);
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.text, first.text, 'the header is byte-identical');
+  assert.ok(out.notes.some((n) => n.startsWith(`${SF}: kept the verified CL-130000 row; the scan found no locator`)));
+  const scoped = base();
+  scoped.components[1].releases[0].rows[0] = failed(PE, 'infunction', { fp: FP_A });
+  scoped.components[1].releases[1].rows[0] = failed(PE, 'infunction', { fp: FP_A });
+  assert.equal(mapMode(first.text, scoped).text, first.text, 'a scoped key as well');
+  const noBuild = base();
+  delete noBuild.build;
+  noBuild.components[1].releases[0].rows[1] = failed(SF, 'function');
+  assert.match(mapMode(first.text, noBuild).problems.join(' | '), /the map has a verified row there; an absent row never replaces one/);
+  // An absent row of the build stays what it was: a later run can still place the key.
+  const gone = mapMode(header(), (() => { const i = base(); i.components[1].releases[0].rows[1] = failed(SF, 'function'); return i; })());
+  assert.equal(find(gone.text, SF, 0).absent, true);
+  assert.equal(find(mapMode(gone.text, base()).text, SF, 0).absent, false);
+});
+
 test('a known CL is the same build when only the label differs', () => {
   const known = base();
   known.cl = 128786;

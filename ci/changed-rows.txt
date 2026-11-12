@@ -1,0 +1,23 @@
+# Rows whose content may differ from the published version object map.
+#
+# The published file is part of the base of every new one, so a row it has must be in the next
+# file with the same content. A row that is meant to change (a better pattern, a new offset, an
+# absent row that now has an address) is listed here, with the reason. Without an entry, a
+# difference is a hold (version-map.mjs import-published and check-preserve).
+#
+# One entry per line, four fields separated by TABS (not spaces):
+#
+#   <kind>   <key>   <build>   <reason>
+#
+#   kind    function (an absent row is a function row), field, or build
+#   key     the row's key as the file writes it; "-" for a build entry
+#   build   the game build's CL number, digits only
+#   reason  required, plain words: why the row changes
+#
+# A function or field entry names every row of that key on that build (all of its fps).
+# For a listed row the new content stands; the published row is not brought back.
+# Lines starting with # and empty lines are skipped.
+#
+# Example (a key that had no address on build 129402 and now has one):
+#
+#   function	UCrSomething::NewFunction	129402	The first publish had no address for it; this run found one.

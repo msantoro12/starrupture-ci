@@ -1,0 +1,23 @@
+# Rows the published version object map may lose.
+#
+# The published file is part of the base of every new one, so a row it has must be in the next
+# file too. A row that is meant to go is listed here, with the reason. Without an entry, a file
+# that has lost a published row is held (version-map.mjs check-preserve), and an entry is
+# never needed to keep one.
+#
+# One entry per line, four fields separated by TABS (not spaces):
+#
+#   <kind>   <key>   <build>   <reason>
+#
+#   kind    function (an absent row is a function row), field, or build
+#   key     the row's key as the file writes it; "-" for a build entry
+#   build   the game build's CL number, digits only
+#   reason  required, plain words: why the row goes
+#
+# A function or field entry names every row of that key on that build (all of its fps).
+# A build entry retires the build line and every row on that build.
+# Lines starting with # and empty lines are skipped.
+#
+# Example (a function key that no plugin asks for on build 127004 any more):
+#
+#   function	UCrSomething::OldFunction	127004	No release of any plugin asks for it any more.

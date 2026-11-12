@@ -36,7 +36,8 @@
 //   - a required key (the loader's) has no locator under the newest release's fp;
 //   - the map already holds a different verified row for a key, fp and CL
 //     (a row of the same kind at the same address, on the build row's own exe,
-//     is kept unchanged instead, with a note: the observed pattern is not written);
+//     is kept unchanged instead, with a note: the observed pattern is not written; and a verified row
+//     on the build row's own exe stays when the scan finds no locator, with a note, not an absent row);
 //   - a key list is given and the written map breaks its coverage rule.
 // The same input on the written result changes nothing, and the result is
 // byte-identical for any order of the input.
@@ -294,8 +295,14 @@ export function writeRows(map, input) {
       // and the observation is not written, only when it is the same kind and
       // the same address on the same exe. Anything else goes to addFunction,
       // which refuses a different row.
-      const old = op.type === 'function' && next.functions.find((r) => r.key === op.key && r.fp === op.fp && r.cl === cl);
-      if (old && !old.absent && sameExe && old.kind === op.kind && old.rva === op.rva) {
+      const old = next.functions.find((r) => r.key === op.key && r.fp === op.fp && r.cl === cl);
+      if (old && !old.absent && sameExe && old.kind === op.kind && op.type === 'absent') {
+        // A scan that finds no locator does not take back a verified row of this build: the published
+        // feed's rows are in the header, and a run on a published build must leave them as they are.
+        plan.notes.push(`${op.key}${op.fp ? ` (fp ${hex8(op.fp)})` : ''}: kept the verified CL-${cl} row; the scan found no locator for it on this run`);
+        continue;
+      }
+      if (old && !old.absent && sameExe && old.kind === op.kind && op.type === 'function' && old.rva === op.rva) {
         if (old.pattern !== op.pattern) plan.notes.push(`${op.key}${op.fp ? ` (fp ${hex8(op.fp)})` : ''}: kept the verified CL-${cl} row; the scan observed another pattern at the same address (${hex(op.rva)})`);
         continue;
       }
