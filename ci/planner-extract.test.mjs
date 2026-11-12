@@ -464,7 +464,7 @@ test('groupBusyIn: a Steam run in any of the five states makes the group busy; t
   for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
     assert.equal(groupBusyIn([steamRun({ status })]), true, status);
   }
-  for (const path of ['.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml', '.github/workflows/sr-client-check.yml@refs/heads/main']) assert.equal(groupBusyIn([steamRun({ path })]), true, path);
+  for (const path of ['.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml', '.github/workflows/sr-symbol-lookup.yml', '.github/workflows/sr-client-check.yml@refs/heads/main']) assert.equal(groupBusyIn([steamRun({ path })]), true, path);
   assert.equal(groupBusyIn([]), false);
   assert.equal(groupBusyIn([steamRun({ status: 'completed' })]), false, 'a finished run');
   assert.equal(groupBusyIn([steamRun({ event: 'pull_request' })]), false, 'a pull-request run');

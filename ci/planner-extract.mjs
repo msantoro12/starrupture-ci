@@ -44,7 +44,7 @@ export const BACKOFF_HOURS = 6;
 export const MAX_FAILURES = 2;
 const IN_FLIGHT = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const FAILED = new Set(['failure', 'timed_out', 'startup_failure', 'stale']);
-const STEAM_WORKFLOW = /sr-(client-check|client-rig|data-extract)[.]yml/;
+const STEAM_WORKFLOW = /sr-(client-check|client-rig|data-extract|symbol-lookup)[.]yml/;
 const RUN_TITLE = /^SR data extract (\S+) (\d+)$/;
 
 // True when any listed run that uses the Steam session (a pull request run does not) is queued or going.

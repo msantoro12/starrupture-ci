@@ -3359,12 +3359,12 @@ test('refresh workflow: it runs in the watcher\'s group so a poll and a refresh 
   assert.ok(!/cancel-in-progress: true/.test(wf + refreshWf + watch));
 });
 
-test('refresh workflow: it skips when a client check, the rig or the data extract has a run going or waiting, and otherwise goes on', { skip: !bash }, () => {
+test('refresh workflow: it skips when a client check, the rig, the data extract or a symbol lookup has a run going or waiting, and otherwise goes on', { skip: !bash }, () => {
   const j = refreshJob('idle');
   assert.match(j, /\n {4}permissions:\n {6}actions: read\n {4}[a-z]/, 'it only reads the runs');
   const script = runOf(j, 'Look for a run that uses Steam');
   const pattern = new RegExp(script.match(/test\("([^"]+)"\)/)[1]);
-  for (const p of ['.github/workflows/sr-client-check.yml@refs/heads/main', '.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml']) assert.ok(pattern.test(p), p);
+  for (const p of ['.github/workflows/sr-client-check.yml@refs/heads/main', '.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml', '.github/workflows/sr-symbol-lookup.yml']) assert.ok(pattern.test(p), p);
   for (const p of ['.github/workflows/sr-watch.yml', '.github/workflows/sr-layout-refresh.yml', '.github/workflows/sr-build-all.yml', '.github/workflows/sr-node-tests.yml', '.github/workflows/vmap-watchdog.yml']) assert.ok(!pattern.test(p), p);
   const run = (busy) => {
     const dir = mkdtempSync(join(tmpdir(), 'idle-'));
