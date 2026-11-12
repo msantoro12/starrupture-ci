@@ -38,6 +38,8 @@
 //         with unreadable ones, one line says the check was skipped; it never refuses for missing evidence.
 //         A difference refuses the record only while SDK_TABLE_CHECK is 'enforcing'; report-only (as merged), it is
 //         a `report only: this would hold once the check is enforcing: ...` line and the record is accepted.
+//         Either way, a difference on a key that only key-source tables (table-ks-*.h) ask for is a
+//         `key source only: ...` warning line and never refuses.
 //         --sdk-differences names a list of known differences (ci/sdk-table-differences.txt, see parseDifferences):
 //         a difference it names exactly (build or *, key, field, both values) does not refuse the record and is
 //         printed as a note. Without the option nothing is excused.
