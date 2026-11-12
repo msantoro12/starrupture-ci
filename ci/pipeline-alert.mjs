@@ -6,8 +6,8 @@
 //   node ci/pipeline-alert.mjs outside --causes <file.jsonl> --owner <login> --run-url <url> --out <file.md>
 //   node ci/pipeline-alert.mjs raise --title <title> --body-file <file.md> --owner <login>
 //
-// causes: one JSON line per failed job of the run, { id, name, step, error }. `step` is the first
-// failed step (jobs API) and `error` its first error line other than "Process completed with exit
+// causes: one JSON line per failed job of the run that can fail it (not the planner data extract),
+// { id, name, step, error }. `step` is the first failed step (jobs API) and `error` its first error line other than "Process completed with exit
 // code N". It comes from the job's failure annotations, which exist as soon as the step emits
 // them, then from the `##[error]` lines of the job log. A job log can still be missing seconds
 // after the job ended, so an unread log is fetched again, up to --tries times (default 6), 10 s
@@ -59,6 +59,9 @@ export function causeText(job) {
   return step && err ? `${step}: ${err}` : step || err;
 }
 
+// The watcher's planner data extract job. It cannot fail the run (continue-on-error in sr-watch.yml), so it is no cause of an alert.
+export const EXTRACT_JOB_NAME = 'planner data extract';
+
 // The jobs of a client check are listed as "client-check (<branch>) / <job>"; they have their own alert.
 export const inClientCheck = (name) => /^client-check \(/.test(String(name ?? ''));
 
@@ -82,7 +85,8 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function collectCauses({ repo, run, tries = 6, wait = 10000, call = tryGh }) {
   const listed = call(['api', `repos/${repo}/actions/runs/${run}/jobs?per_page=100`, '--paginate',
     '--jq', '.jobs[] | select(.conclusion == "failure") | {id, name, step: ([.steps[] | select(.conclusion == "failure")][0].name // "")}'], 'jobs list');
-  const jobs = String(listed ?? '').split('\n').filter((l) => l.trim()).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+  const jobs = String(listed ?? '').split('\n').filter((l) => l.trim()).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
+    .filter((j) => j.name !== EXTRACT_JOB_NAME);
   for (const j of jobs) {
     const ann = call(['api', `repos/${repo}/check-runs/${j.id}/annotations`], `annotations of job ${j.id}`);
     let rows = [];

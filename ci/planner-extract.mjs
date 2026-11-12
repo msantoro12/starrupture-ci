@@ -44,7 +44,11 @@ export const BACKOFF_HOURS = 6;
 export const MAX_FAILURES = 2;
 const IN_FLIGHT = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const FAILED = new Set(['failure', 'timed_out', 'startup_failure', 'stale']);
+const STEAM_WORKFLOW = /sr-(client-check|client-rig|data-extract)[.]yml/;
 const RUN_TITLE = /^SR data extract (\S+) (\d+)$/;
+
+// True when any listed run that uses the Steam session (a pull request run does not) is queued or going.
+export const groupBusyIn = (runs) => runs.some((r) => IN_FLIGHT.has(r.status) && r.event !== 'pull_request' && STEAM_WORKFLOW.test(String(r.path ?? '')));
 
 export const alertTitle = (branch, buildid) => `SR data extract: ${branch} ${buildid} needs attention`;
 
@@ -179,18 +183,18 @@ export async function cancelExtracts({ io, dryRun = false, waitSeconds = 240, in
 const exec = (cmd, args, env) => execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
 const jsonLines = (text) => String(text ?? '').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
 
-export function realIo({ repo, owner, pollScript, plannerRepo = PLANNER_REPO }) {
-  const gh = (args, env) => exec('gh', args, env);
+export function realIo({ repo, owner, pollScript, plannerRepo = PLANNER_REPO, run = exec }) {
+  const gh = (args, env) => run('gh', args, env);
   return {
     tags: () => exec('git', ['ls-remote', '--tags', plannerRepo, 'refs/tags/srdata-*'])
       .split('\n').map((l) => l.split('\t')[1]).filter(Boolean).map((r) => r.replace(/^refs\/tags\//, '').replace(/\^\{\}$/, '')),
     runs: () => jsonLines(gh(['api', `repos/${repo}/actions/workflows/sr-data-extract.yml/runs?per_page=100`, '--jq',
       '.workflow_runs[] | {id, title: .display_title, status, conclusion, event, updatedAt: .updated_at, url: .html_url}'])),
     cancel: (id) => gh(['run', 'cancel', String(id), '-R', repo]),
-    // The same look the layout refresh makes before it takes the session (sr-layout-refresh.yml, job idle).
-    groupBusy: () => ['queued', 'in_progress', 'waiting', 'pending', 'requested'].some((status) =>
-      gh(['api', `repos/${repo}/actions/runs?status=${status}&per_page=100`, '--jq',
-        '.workflow_runs[] | select(.event != "pull_request") | select(.path | test("sr-(client-check|client-rig|data-extract)[.]yml")) | .html_url']).trim() !== ''),
+    // One read of the newest runs, filtered by status here: a run that moves from queued to going between
+    // reads cannot slip past, as it could when each status was asked for on its own. A read error throws.
+    groupBusy: () => groupBusyIn(jsonLines(gh(['api', `repos/${repo}/actions/runs?per_page=100`, '--jq',
+      '.workflow_runs[] | {status, event, path}']))),
     liveBuildid: (branch) => { try { return exec('node', [pollScript, '--live-buildid', branch]).trim(); } catch (e) { console.log(`${branch}: ${String(e.stderr || e.message).trim().split('\n')[0]}`); return ''; } },
     artifacts: (name) => jsonLines(gh(['api', `repos/${repo}/actions/artifacts?name=${name}&per_page=100`, '--jq',
       '.artifacts[] | {name, expired, run: .workflow_run.id}'])).map((a) => ({
