@@ -2,10 +2,9 @@
 #
 # A public update checks the stored layout of the build the plugins were built for against the layout
 # tables generated from the game SDK (layout-store.mjs reference). A key on which they disagree holds
-# the update once the check is enforcing (SDK_TABLE_CHECK in layout-store.mjs; while it is report-only
-# the difference is only reported). A difference that is known, and whose right value is settled, is
-# listed here, with the reason; the check then goes on and prints a note naming it. Without an entry,
-# a difference is a hold (or, report-only, a report that it would hold).
+# the update (SDK_TABLE_CHECK in layout-store.mjs is 'enforcing'). A difference that is known, and whose
+# right value is settled, is listed here, with the reason; the check then goes on and prints a note naming
+# it. Without an entry, a difference is a hold.
 #
 # One entry per line, six fields separated by TABS (not spaces):
 #

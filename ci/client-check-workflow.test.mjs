@@ -2574,7 +2574,7 @@ test('feed-loader-cleanup: runs after the rig on every outcome once the loader w
   assert.ok(up.includes('ARTIFACT: loader-feed-${{ inputs.branch }}') && j.includes('ARTIFACT: loader-feed-${{ inputs.branch }}'));
   assert.ok(!j.includes('secrets.') && !j.includes('uses:'), 'no secret, no third-party action');
   const script = runOf(j, 'Delete the artifact and check it is gone');
-  const run = (ids, left) => {
+  const run = (ids, left, stale = 0) => {
     const dir = mkdtempSync(join(tmpdir(), 'cleanup-'));
     mkdirSync(join(dir, 'bin'));
     writeFileSync(join(dir, 'bin', 'gh'), [
@@ -2582,14 +2582,14 @@ test('feed-loader-cleanup: runs after the rig on every outcome once the loader w
       'printf "%s\\n" "$*" >> "$FAKE_DIR/calls.log"',
       'case "$*" in',
       '  *DELETE*) ;;',
-      '  *"artifacts | length"*) echo "$FAKE_LEFT" ;;',
+      '  *"artifacts | length"*) n=$(cat "$FAKE_DIR/reads" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_DIR/reads"; if [ "$n" -lt "$FAKE_STALE" ]; then echo 1; else echo "$FAKE_LEFT"; fi ;;',
       '  *paginate*) for i in $FAKE_IDS; do echo "$i"; done ;;',
       'esac',
       'exit 0',
       '',
     ].join('\n'));
     chmodSync(join(dir, 'bin', 'gh'), 0o755);
-    const r = sh(script, dir, { FAKE_DIR: dir, FAKE_IDS: ids, FAKE_LEFT: left, GH_REPO: 'o/r', RUN_ID: '9', ARTIFACT: 'loader-feed-public', PATH: join(dir, 'bin') + delimiter + process.env.PATH });
+    const r = sh('sleep() { echo "sleep $*" >> "$FAKE_DIR/calls.log"; }' + '\n' + script, dir, { FAKE_DIR: dir, FAKE_IDS: ids, FAKE_LEFT: left, FAKE_STALE: String(stale), GH_REPO: 'o/r', RUN_ID: '9', ARTIFACT: 'loader-feed-public', PATH: join(dir, 'bin') + delimiter + process.env.PATH });
     const calls = existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : [];
     rmSync(dir, { recursive: true, force: true });
     return { status: r.status, calls, out: r.stdout + r.stderr };
@@ -2601,6 +2601,14 @@ test('feed-loader-cleanup: runs after the rig on every outcome once the loader w
   const stuck = run('11', '1');
   assert.equal(stuck.status, 1, 'an artifact that is still there fails the job');
   assert.match(stuck.out, /still there/);
+  assert.match(stuck.out, /trusts the TEST key/);
+  assert.equal(stuck.calls.filter((l) => l.includes('artifacts | length')).length, 5, 'a leftover is read 5 times before it fails');
+  assert.equal(stuck.calls.filter((l) => l === 'sleep 3').length, 4, 'with 3 seconds between the reads');
+  const lagging = run('11', '0', 2);
+  assert.equal(lagging.status, 0, 'a list that lags behind the delete is read again: ' + lagging.out);
+  assert.equal(lagging.calls.filter((l) => l.includes('artifacts | length')).length, 3, 'it stops reading once the artifact is gone');
+  assert.equal(run('11', '0', 4).status, 0, 'gone on the last read still passes');
+  assert.equal(run('11', '0', 5).status, 1, 'still listed after the last read fails');
 });
 
 // ------------------------------------------------------------ publish: the autopilot is read again from main right before signing

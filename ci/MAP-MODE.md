@@ -964,7 +964,7 @@ reason, only when the feed adds no row and changes no row for that CL: then the 
 the compiled rows with or without the feed. A row the tag lacks, or holds with other values,
 is a row the feed delivers, so the rig runs and has to pass. Publish needs the gate to PASS
 or skip, and any failed leg fails it. The build is a rig input, never a release asset. It trusts the TEST key, so the
-`feed-loader-cleanup` job deletes its artifact as soon as the rig has ended, on every outcome.
+`feed-loader-cleanup` job deletes its artifact as soon as the rig has ended, on every outcome. It then reads the artifact list up to 5 times, 3 seconds apart (the list can lag behind the delete), and fails only if the artifact is still listed after the last read.
 It is not built inside the rig job because that job holds the live Steam login and no build code
 runs there.
 
