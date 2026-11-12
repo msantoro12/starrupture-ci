@@ -16,9 +16,11 @@ run-name: SR symbol lookup ${{ inputs.branch }}
 #
 #   inputs
 #     branch   the Steam branch to look in (a choice)
-#     symbol   a function name: letters, digits and underscore, optionally qualified with ::
-#              (Class::Function). It matches a free function, a member function of any class,
-#              or a function template of that name.
+#     symbol   a C++ function name: letters, digits and underscore, at most 100 characters,
+#              optionally qualified with :: (Class::Function). It matches a free function, a
+#              member function of any class, or a function template of that name. A scope
+#              must be a plain class or namespace: a class template's scope is not matched
+#              when written out (use the bare name).
 #     bytes    how many leading bytes of each match to print (default 64, at most 256)
 #
 #   result
@@ -34,17 +36,23 @@ run-name: SR symbol lookup ${{ inputs.branch }}
 #   the matches (ci/symbol-undecorate.ps1); ci/symbol-lookup.mjs does the rest.
 #
 # THE STEAM SESSION
-#   It shares the concurrency group sr-client-rig with the client rig and the data extract: one
-#   Steam client session per account at a time, and a lookup never cancels or is cancelled by
-#   them. GitHub keeps one waiting run per group, and a newer waiting run replaces an older one,
-#   so start a lookup only when nothing else is using Steam. The update chain does not call this
-#   workflow and does not depend on it; its two "is Steam busy" checks (ci/planner-extract.mjs
+#   It shares the concurrency group sr-client-rig with the client rig and the data extract: they
+#   never run at the same time as a lookup, and a lookup never cancels or is cancelled by them.
+#   GitHub keeps one waiting run per group, and a newer waiting run replaces an older one, so a
+#   waiting lookup can be replaced by a rig or extract run and the other way round (a replaced
+#   chain run is cancelled until the next poll starts it again). The client check's own download
+#   is NOT in this group (it is in sr-client-check-<branch>), and the watcher can start one
+#   while a lookup is installing. So start a lookup only when no client check, rig, data
+#   extract or lookup is going or waiting. The update chain does not call this workflow and does
+#   not depend on it; the planner extract and the daily layout refresh (ci/planner-extract.mjs
 #   and sr-layout-refresh.yml) count a lookup that is going or waiting as busy.
 #
 # SECRETS (by name; the values are never printed)
 #   STEAM_CI_USERNAME, STEAM_CI_LOGIN_CACHE, from environment steam-client. Only the install
-#   step and the leak gate are given them. The lookup step, the summary and the artifact are
-#   made from game files and the PDB only, and the leak gate checks the artifact before upload.
+#   step and the leak gate are given them. The lookup step (which also writes the run summary)
+#   has no secret, and the login is already removed when it runs. The summary and the artifact
+#   are made from the exe, the PDB and the checked inputs only; the leak gate checks the
+#   artifact before upload.
 #
 # Nothing here writes to any repository or release, and the token is read-only.
 
@@ -59,7 +67,7 @@ on:
           - public_test_branch
         default: public
       symbol:
-        description: 'Function name, optionally qualified (Class::Function)'
+        description: 'C++ function name, optionally qualified (Class::Function; a class template scope is not matched)'
         type: string
         required: true
       bytes:
@@ -84,8 +92,6 @@ jobs:
       cancel-in-progress: false
     env:
       BRANCH: ${{ inputs.branch }}
-      SYMBOL: ${{ inputs.symbol }}
-      BYTES: ${{ inputs.bytes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,6 +106,9 @@ jobs:
       - name: Check the inputs
         id: inputs
         shell: pwsh
+        env:
+          SYMBOL: ${{ inputs.symbol }}
+          BYTES: ${{ inputs.bytes }}
         run: node ci/symbol-lookup.mjs check
 
       # Without the login there is nothing to do: fail with that reason.
@@ -153,6 +162,7 @@ jobs:
         shell: pwsh
         env:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          SYMBOL: ${{ inputs.symbol }}
           BYTES: ${{ steps.inputs.outputs.bytes }}
           OUT_DIR: out
         run: node ci/symbol-lookup.mjs run

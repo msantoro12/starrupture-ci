@@ -16,7 +16,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import {
-  DEFAULT_BYTES, MAX_BYTES, MAX_LISTED, artifactName, buildResult, clOf, createPublicsParser, findPdbutil, hex8, hexBytes,
+  DEFAULT_BYTES, MAX_BYTES, MAX_LISTED, MAX_SYMBOL, artifactName, buildResult, clOf, createPublicsParser, findPdbutil, hex8, hexBytes,
   locate, lookup, matchKind, parseBranch, parseBytes, parseManifest, parseSymbol, readPublics, readSections, renderSummary,
   renderText, templateMatches, undecorate,
 } from './symbol-lookup.mjs';
@@ -30,11 +30,11 @@ test('parseSymbol: a name, or a qualified name, and nothing else', () => {
   assert.deepEqual(parseSymbol('LoadPackageAsync'), { text: 'LoadPackageAsync', parts: ['LoadPackageAsync'] });
   assert.deepEqual(parseSymbol('  FStreamableManager::RequestAsyncLoad '), { text: 'FStreamableManager::RequestAsyncLoad', parts: ['FStreamableManager', 'RequestAsyncLoad'] });
   assert.deepEqual(parseSymbol('_x1').parts, ['_x1']);
-  for (const bad of ['', '   ', '1abc', 'a b', 'a;b', 'a|b', 'a&b', 'a$(x)', 'a`b`', 'a"b', "a'b", 'a\nb', 'a\r\nb', 'a::', '::a', 'a:::b', 'a:b', 'a-b', 'a.b', 'a<b>', 'a%0Ab', '${{ secrets.X }}', '../x', 'a\\b', 'é', 'x'.repeat(201)]) {
+  for (const bad of ['', '   ', '1abc', 'a b', 'a;b', 'a|b', 'a&b', 'a$(x)', 'a`b`', 'a"b', "a'b", 'a\nb', 'a\r\nb', 'a::', '::a', 'a:::b', 'a:b', 'a-b', 'a.b', 'a<b>', 'a%0Ab', '${{ secrets.X }}', '../x', 'a\\b', 'é', 'x'.repeat(MAX_SYMBOL + 1)]) {
     assert.throws(() => parseSymbol(bad), /symbol must be/, JSON.stringify(bad));
   }
   assert.throws(() => parseSymbol(undefined), /symbol must be/);
-  assert.equal(parseSymbol('x'.repeat(200)).text.length, 200);
+  assert.equal(parseSymbol('x'.repeat(MAX_SYMBOL)).text.length, MAX_SYMBOL);
 });
 
 test('parseSymbol: a rejected value is shown as one quoted, shortened line', () => {
@@ -128,7 +128,6 @@ const DUMP = [
   '          flags = code | function, addr = 0001:0000100',
   '  21724 | S_PUB32 [size = 40] `?LoadPackageAsyncMore@@YAXXZ`',
   '          flags = code | function, addr = 0001:0000200',
-  '  21764 | S_PUB32 [size = 40] `?LoadPackageAsync@@YAXXZ`',
   'a line the dump has that is not a record',
   '  21804 | S_PUB32 [size = 40] `?LoadPackageAsync@@YAXH@Z`',
   '          flags = code | function, addr = 0001:0000300',
@@ -138,7 +137,7 @@ test('createPublicsParser: keeps the matching code symbols and counts every reco
   const p = createPublicsParser(P('LoadPackageAsync'));
   for (const line of DUMP.split('\n')) p.feed(line);
   const { seen, matches } = p.result();
-  assert.equal(seen, 8);
+  assert.equal(seen, 7);
   assert.deepEqual(matches, [
     { decorated: '?LoadPackageAsync@@YAHPEAUFName@@@Z', kind: 'function', segment: 1, offset: 12345 },
     { decorated: '?LoadPackageAsync@UE@@SAHXZ', kind: 'function', segment: 2, offset: 16 },
@@ -154,12 +153,27 @@ test('createPublicsParser: the offset is read as decimal, as the dump prints it'
   assert.equal(p.result().matches[0].offset, 10);
 });
 
-test('createPublicsParser: a record whose flags line is missing does not hang on to the next one', () => {
+test('createPublicsParser: a small offset as LLVM prints it (four digits, decimal) reads as it is', () => {
+  const p = createPublicsParser(P('F'));
+  p.feed('      1 | S_PUB32 [size = 40] `?F@@YAXXZ`');
+  p.feed('          flags = code | function, addr = 0001:0042');
+  assert.equal(p.result().matches[0].offset, 42);
+});
+
+test('createPublicsParser: a matching record with no flags line is counted, not dropped quietly', () => {
   const p = createPublicsParser(P('F'));
   p.feed('      1 | S_PUB32 [size = 40] `?F@@YAXXZ`');
   p.feed('      2 | S_PUB32 [size = 40] `?F@@YAXHZ`');
   p.feed('          flags = code, addr = 0001:0000020');
-  assert.deepEqual(p.result().matches.map((m) => m.decorated), ['?F@@YAXHZ']);
+  const r = p.result();
+  assert.deepEqual(r.matches.map((m) => m.decorated), ['?F@@YAXHZ']);
+  assert.equal(r.unparsed, 1);
+  const last = createPublicsParser(P('F'));
+  last.feed('      1 | S_PUB32 [size = 40] `?F@@YAXXZ`');
+  assert.equal(last.result().unparsed, 1, 'a dump that ends after the header');
+  const fine = createPublicsParser(P('LoadPackageAsync'));
+  for (const line of DUMP.split('\n')) fine.feed(line);
+  assert.equal(fine.result().unparsed, 0, 'the sample dump is whole');
 });
 
 function fakeChild(stdoutText, { code = 0, stderrText = '' } = {}) {
@@ -175,7 +189,7 @@ test('readPublics: feeds the dump through the parser and runs llvm-pdbutil on th
   let seenArgs;
   const spawnFn = (cmd, args, opts) => { seenArgs = { cmd, args, opts }; return fakeChild(DUMP); };
   const r = await readPublics('C:\\llvm\\llvm-pdbutil.exe', 'C:\\x\\game.pdb', P('LoadPackageAsync'), { spawnFn });
-  assert.equal(r.seen, 8);
+  assert.equal(r.seen, 7);
   assert.equal(r.matches.length, 4);
   assert.deepEqual(seenArgs.args, ['dump', '-publics', 'C:\\x\\game.pdb']);
   assert.ok(!seenArgs.opts.shell, 'no shell');
@@ -187,6 +201,13 @@ test('readPublics: a failed tool run, or a dump with no records, is an error and
   await assert.rejects(readPublics('x', 'p', P('F'), { spawnFn: () => fakeChild('nothing here\n') }), /no public symbols/);
   const failing = () => { const c = new EventEmitter(); c.stdout = Readable.from([]); c.stderr = Readable.from([]); c.kill = () => {}; setImmediate(() => c.emit('error', new Error('spawn ENOENT'))); return c; };
   await assert.rejects(readPublics('x', 'p', P('F'), { spawnFn: failing }), /ENOENT/);
+});
+
+test('readPublics: a dump whose matching records lost their flags line is an error, not "no match"', async () => {
+  const changed = DUMP.split('\n').filter((l) => !/^\s*flags = /.test(l)).join('\n');
+  await assert.rejects(readPublics('x', 'p', P('LoadPackageAsync'), { spawnFn: () => fakeChild(changed) }), /had no flags and address line/);
+  const r = await readPublics('x', 'p', P('NotInTheDump'), { spawnFn: () => fakeChild(changed) });
+  assert.equal(r.matches.length, 0, 'a name that matches nothing is still a clean no-match');
 });
 
 // ---- the exe: sections, addresses, bytes ---------------------------------------------------------
@@ -331,6 +352,9 @@ test('renderText: a name with no match is a result, said as one', () => {
   const text = renderText(r);
   assert.match(text, /No match: none of the 1000 public symbols is a function or member function named Nope\. This is a result, not a failure\./);
   assert.ok(!/Matches:/.test(text));
+  assert.ok(!/class template/.test(text), 'no scope hint for a bare name');
+  const q = renderText(buildResult({ symbol: 'A::Nope', branch: 'public', bytes: 64, build: BUILD, exe: EXE, pdb: PDB, seen: 1000, matches: [], listed: [] }));
+  assert.match(q, /A scope that is a class template is not matched when written out; try the bare function name\./);
 });
 
 test('renderText: says when the list is cut, and when a match has no bytes in the file', () => {
@@ -475,6 +499,14 @@ test('lookup: a template is kept only when its undecorated name carries the scop
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('lookup: a template that dbghelp could not undecorate fails the lookup, it is not dropped', async () => {
+  const dir = makeInstall();
+  try {
+    const io = stubs([{ decorated: '??$F@H@C@@QEAAXH@Z', kind: 'template', segment: 1, offset: 16 }], {});
+    await assert.rejects(lookup({ installDir: dir, branch: 'public', symbol: parseSymbol('C::F'), bytes: 2 }, io), /could not undecorate the template match \?\?\$F@H@C@@QEAAXH@Z/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('lookup: no match is a result with a zero count', async () => {
   const dir = makeInstall();
   try {
@@ -612,6 +644,10 @@ test('workflow: an input is data: it only ever reaches a step through env, never
     if (!/\$\{\{\s*(?:inputs|github\.event\.inputs)\./.test(line)) continue;
     assert.match(line, /^(?:run-name: .*|\s+[A-Z_]+: \$\{\{ inputs\.\w+ \}\})$/, `an input outside env: ${line.trim()}`);
   }
+  const jobEnv = wf.slice(wf.indexOf('\n    env:\n'), wf.indexOf('\n    steps:\n'));
+  assert.ok(!/SYMBOL|BYTES/.test(jobEnv), 'the free-text inputs are not in the environment of the steps that hold the login');
+  assert.match(step('Check the inputs'), /SYMBOL: \$\{\{ inputs\.symbol \}\}\n {10}BYTES: \$\{\{ inputs\.bytes \}\}/);
+  assert.match(step('Look up the symbol'), /SYMBOL: \$\{\{ inputs\.symbol \}\}/);
   assert.equal(/^run-name: (.*)$/m.exec(wf)[1], 'SR symbol lookup ${{ inputs.branch }}', 'only the branch (a choice) is in the run title');
   for (const s of steps) {
     const run = s.text.includes('\n        run: ') ? s.text.slice(s.text.indexOf('\n        run: ')) : '';

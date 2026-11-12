@@ -15,7 +15,7 @@
 //   - no extract run for that branch and build is queued or going.
 // Then, in this order:
 //   - two or more failed runs for the build: raise the alert issue once and stop trying;
-//   - something that uses the Steam session (the client check, the client rig, an extract) is queued or
+//   - something that uses the Steam session (the client check, the client rig, an extract, a symbol lookup) is queued or
 //     going: wait for a later run, so nothing already waiting for the session is ever replaced;
 //   - the last failed run for the build ended less than 6 hours ago: wait.
 //

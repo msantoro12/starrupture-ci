@@ -48,7 +48,7 @@ A build counts as covered when any one of these is true:
 - this repository holds an unexpired artifact `sr-data-<branch>-<buildid>` from a run that succeeded;
 - an extract for that build is queued or going.
 
-For a build that is not covered it starts one extract, from `main`, with the extractor commit from `ci/data/extractor-ref.txt`. It starts at most one per watcher run, and only when no client check, client rig or extract is queued or going, so it never takes the place of a run that is already waiting for the Steam session. If a second build is missing, the next watcher run takes it. The watcher's schedule is every 30 minutes on paper, but GitHub fires it only a few times a day, so a catch-up can take hours.
+For a build that is not covered it starts one extract, from `main`, with the extractor commit from `ci/data/extractor-ref.txt`. It starts at most one per watcher run, and only when no client check, client rig, extract or symbol lookup is queued or going, so it never takes the place of a run that is already waiting for the Steam session. If a second build is missing, the next watcher run takes it. The watcher's schedule is every 30 minutes on paper, but GitHub fires it only a few times a day, so a catch-up can take hours.
 
 If an extract fails (or times out), the script waits 6 hours after that run ended before it starts it again. After two failed runs for a build it stops and opens the issue "SR data extract: <branch> <buildid> needs attention" (label `pipeline-alert`, assigned to the owner), once. Each try downloads about 46 GB and holds the Steam session, which is why it stops. A cancelled run is not a failure. When the issue appears: read the two failed runs it links, fix the cause, then start the extract by hand with the command in the issue.
 
@@ -76,13 +76,13 @@ The run is titled "SR data extract <branch> <buildid>", which is how the script 
 gh workflow run sr-symbol-lookup.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f symbol=LoadPackageAsync
 ```
 
-Inputs: `branch` (choice), `symbol` (a function name, optionally qualified as `Class::Function`; letters, digits and underscore only, anything else is refused before the download) and `bytes` (leading bytes to print per match, default 64, at most 256).
+Inputs: `branch` (choice), `symbol` (a C++ function name, optionally qualified as `Class::Function`; letters, digits and underscore only, up to 100 characters, anything else is refused before the download; a scope that is a class template is not matched when written out, use the bare name) and `bytes` (leading bytes to print per match, default 64, at most 256).
 
 The job installs the build the way the rig does, removes the Steam login right away, then lists the PDB's public symbols with `llvm-pdbutil`, keeps the functions of that name (a free function, a member function of any class, or a function template) and undecorates them with Windows' `dbghelp`. For each overload it prints the decorated name, the signature with its arguments, the RVA, the file offset, the section and the first bytes from the exe as hex. It also reports the match count, the build id, the CL, and the exe's size and SHA-256. A name with no match is a result (`no-match`), not a failure.
 
 The result is the run's summary and the artifact `symbol-lookup-<branch>-<symbol>` (`result.json` and `result.txt`, kept 14 days; a `::` in the symbol becomes `.`).
 
-It shares the `sr-client-rig` concurrency group with the rig and the data extract, so it never runs at the same time as either. GitHub keeps one waiting run per group and a newer waiting run replaces an older one: a lookup that is waiting can be replaced by a chain run, and the other way round. Nothing in the update chain calls it, and its two Steam-busy checks (`ci/planner-extract.mjs` and `sr-layout-refresh.yml`) count it as busy. The watcher's poll does not cancel a lookup that is going, so a chain it starts waits behind it.
+It shares the `sr-client-rig` concurrency group with the rig and the data extract, so it never runs at the same time as either. GitHub keeps one waiting run per group and a newer waiting run replaces an older one: a lookup that is waiting can be replaced by a rig or extract run, and the other way round (a replaced chain run stays cancelled until the next poll starts it again). The client check's own download is not in that group (it is in `sr-client-check-<branch>`), and the watcher's poll can start one while a lookup is installing, so start a lookup only when no client check, rig, data extract or lookup is going or waiting. Nothing in the update chain calls it, and the planner extract and the daily layout refresh (`ci/planner-extract.mjs`, `sr-layout-refresh.yml`) count a lookup as busy. The watcher's poll does not cancel a lookup that is going.
 
 ### Update path per component
 

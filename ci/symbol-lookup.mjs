@@ -30,15 +30,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_BYTES = 64;
 export const MAX_BYTES = 256;
 export const MAX_LISTED = 500;
+export const MAX_SYMBOL = 100;
 const SYMBOL_RX = /^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$/;
 const BRANCH_RX = /^[A-Za-z0-9_]{1,64}$/;
 
 // ---- inputs ---------------------------------------------------------------------------------
 
-// A function name of letters, digits and underscore, optionally qualified with ::.
+// A C++ function name of letters, digits and underscore, optionally qualified with ::.
 export function parseSymbol(text) {
   const s = String(text ?? '').trim();
-  if (!s || s.length > 200 || !SYMBOL_RX.test(s)) {
+  if (!s || s.length > MAX_SYMBOL || !SYMBOL_RX.test(s)) {
     throw new Error(`symbol must be letters, digits and underscore, optionally qualified with :: (got ${JSON.stringify(s.slice(0, 60))})`);
   }
   return { text: s, parts: s.split('::') };
@@ -84,9 +85,12 @@ const FLAGS_RX = /^\s*flags = (.*), addr = (\d+):(\d+)\s*$/;
 // Reads the text of `llvm-pdbutil dump -publics` one line at a time. Each record is two lines:
 //    12345 | S_PUB32 [size = 56] `?Name@@YAXXZ`
 //            flags = code | function, addr = 0001:0012345        (section 1-based, offset decimal)
-// Only a record whose name matches and that is code is kept; `seen` counts every record.
+// Only a record whose name matches and that is code is kept; `seen` counts every record, and
+// `unparsed` counts the records with a matching name whose second line was not the flags line
+// (a changed dump format must never read as "no match").
 export function createPublicsParser(parts) {
   let seen = 0;
+  let unparsed = 0;
   let pending = null;
   const matches = [];
   return {
@@ -99,6 +103,7 @@ export function createPublicsParser(parts) {
           if (/\b(?:function|code)\b/.test(f[1])) matches.push({ decorated: record.decorated, kind: record.kind, segment: Number(f[2]), offset: Number(f[3]) });
           return;
         }
+        unparsed++;
       }
       const h = HEADER_RX.exec(line);
       if (!h) return;
@@ -106,7 +111,7 @@ export function createPublicsParser(parts) {
       const kind = matchKind(h[1], parts);
       if (kind) pending = { decorated: h[1], kind };
     },
-    result: () => ({ seen, matches }),
+    result: () => ({ seen, matches, unparsed: unparsed + (pending ? 1 : 0) }),
   };
 }
 
@@ -128,6 +133,7 @@ export async function readPublics(pdbutil, pdb, parts, { spawnFn = spawn, timeou
   }
   const r = parser.result();
   if (r.seen === 0) throw new Error('llvm-pdbutil listed no public symbols; the PDB could not be read');
+  if (r.unparsed > 0) throw new Error(`${r.unparsed} symbol(s) with a matching name had no flags and address line in the llvm-pdbutil listing; its format may have changed`);
   return r;
 }
 
@@ -182,7 +188,7 @@ export function parseManifest(text) {
   return { buildid: /"buildid"\s+"(\d+)"/.exec(text)?.[1] ?? '', betaKey: /"BetaKey"\s+"([^"]*)"/.exec(mounted)?.[1] ?? '' };
 }
 
-export const clOf = (productVersion) => /CL-(\d+)/.exec(String(productVersion ?? ''))?.[1] ?? '';
+export const clOf = (productVersion) => /CL-(\d+)\s*$/.exec(String(productVersion ?? ''))?.[1] ?? '';
 
 // ---- the result -------------------------------------------------------------------------------
 
@@ -213,6 +219,7 @@ export function renderText(r) {
   ];
   if (!r.matchCount) {
     out.push(`No match: none of the ${r.publicSymbolsRead} public symbols is a function or member function named ${r.symbol}. This is a result, not a failure.`);
+    if (r.symbol.includes('::')) out.push('A scope that is a class template is not matched when written out; try the bare function name.');
     return out.join('\n') + '\n';
   }
   out.push(`Matches: ${r.matchCount}${r.listedCount < r.matchCount ? ` (the first ${r.listedCount} are listed)` : ''}`, '');
@@ -302,9 +309,13 @@ export async function lookup({ installDir, branch, symbol, bytes, appId = '16312
   const names = found.matches.map((m) => m.decorated);
   const declared = (io.undecorate ?? undecorate)(names);
   const all = found.matches
-    .map((m, i) => ({ ...m, undecorated: declared[i] }))
+    .map((m, i) => ({ ...m, undecorated: declared[i] }));
+  // A template is judged on its undecorated text: with none, it can be neither kept nor dropped.
+  const blank = all.find((m) => m.kind === 'template' && m.undecorated === '');
+  if (blank) throw new Error(`dbghelp could not undecorate the template match ${blank.decorated.slice(0, 120)}`);
+  const kept = all
     .filter((m) => m.kind === 'function' || templateMatches(m.undecorated, parts));
-  const located = all.map((m) => ({ ...m, ...locate(sections, m.segment, m.offset, bytes) })).sort((a, b) => a.rva - b.rva || (a.decorated < b.decorated ? -1 : 1));
+  const located = kept.map((m) => ({ ...m, ...locate(sections, m.segment, m.offset, bytes) })).sort((a, b) => a.rva - b.rva || (a.decorated < b.decorated ? -1 : 1));
   const listed = located.slice(0, MAX_LISTED).map((m) => {
     const got = m.fileOffset === null ? Buffer.alloc(0) : readAt(exe, m.fileOffset, m.available);
     return {
