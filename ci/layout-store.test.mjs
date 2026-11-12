@@ -151,11 +151,35 @@ test('reference: for the same CL the exe sha256 must be the stored one', () => {
   assert.equal(ref({ args: { targetCl: 128786, targetSha256: 'c'.repeat(64) } }).cl, 127004);
 });
 
-test('reference: refuses a record that lacks a reflected key now listed, naming the first ones', () => {
-  const fields = new Set([...FIELDS, 'Z::a', 'Z::b']);
-  refuses({ args: { fields } }, /no entry for 2 reflected keys now listed \(Z::a, Z::b\)/);
-  const many = new Set([...FIELDS, ...Array.from({ length: 8 }, (_, i) => `Y::k${i}`)]);
-  refuses({ args: { fields: many } }, /8 reflected keys.*\+3 more/);
+// A record of KEYS and the first `stored` of `listed` keys Q::k0, Q::k1, ...; the reader gets all `listed` as the keys now listed.
+const lacking = (listed, stored) => {
+  const names = Array.from({ length: listed }, (_, i) => `Q::k${i}`);
+  const text = JSON.stringify(make({ layoutText: layoutText([...KEYS, ...names.slice(0, stored).map((k) => entry(k, 8))]) }), null, 2) + '\n';
+  return { recordText: text, release: releaseFor(text), args: { fields: new Set(names) } };
+};
+
+test('reference: a record that lacks a few reflected keys now listed is still the base, and lists them', () => {
+  const one = ref({ args: { fields: new Set([...FIELDS, 'Z::a']) } });
+  assert.deepEqual(one.missing, ['Z::a']);
+  assert.equal(one.keys.length, 4);
+  const ten = Array.from({ length: 10 }, (_, i) => `Y::k${i}`);
+  const out = ref({ args: { fields: new Set([...FIELDS, ...ten]) } });
+  assert.deepEqual(out.missing, [...ten].sort());
+  assert.deepEqual(ref().missing, []);
+});
+
+test('reference: more than 10 missing keys, and more than 1 in 20 of those listed, refuses and names the first ones', () => {
+  const eleven = Array.from({ length: 11 }, (_, i) => `Y::k${i}`);
+  refuses({ args: { fields: new Set([...FIELDS, ...eleven]) } }, /no entry for 11 reflected keys \(Y::k0, Y::k1, Y::k10, Y::k2, Y::k3, \+6 more\) now listed, more than the 10 always allowed and more than 1 in 20 of the 15 listed/);
+});
+
+test('reference: the cap is 5% of the listed keys, never below 10', () => {
+  assert.equal(ref(lacking(300, 285)).missing.length, 15, '15 of 300 is exactly 5%');
+  refuses(lacking(300, 284), /no entry for 16 reflected keys .* of the 300 listed/);
+  assert.equal(ref(lacking(100, 90)).missing.length, 10, '10 of 100 is over 5% and still allowed');
+  refuses(lacking(100, 89), /no entry for 11 reflected keys/);
+  assert.equal(ref(lacking(2000, 1900)).missing.length, 100, '100 of 2000 is exactly 5%');
+  refuses(lacking(2000, 1899), /no entry for 101 reflected keys/);
 });
 
 // ---- cross-check against the header's field rows ------------------------------
@@ -333,6 +357,18 @@ test('command line: --published names a directory; its file is cross-checked, an
   writeFileSync(join(sub, 'release.json'), JSON.stringify(pub.release));
   writeFileSync(join(sub, PUBLISHED.asset), pub.text.replace('AFoo::Bar\t127004\t0x10', 'AFoo::Bar\t127004\t0x18'));
   assert.equal(run([...args, '--published', sub]).code, 3, 'a changed offset in the file refuses');
+});
+
+test('command line: keys the stored layout lacks are written without a reference and named in one line', () => {
+  const text = JSON.stringify(make(), null, 2) + '\n';
+  const listed = [...FIELDS, 'Z::a', 'Z::b'];
+  const p = inDir({ 'header.h': HEADER, 'rec.json': text, 'release.json': JSON.stringify(releaseFor(text)), 'native-keys.txt': '', 'layout-keys.txt': listed.join('\n') + '\n' });
+  const args = ['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json')];
+  const out = run(args);
+  assert.equal(out.code, 0, out.err);
+  assert.equal(out.out.split('\n').filter((l) => /no entry for/.test(l)).length, 1);
+  assert.match(out.out, /the stored layout has no entry for 2 reflected keys \(Z::a, Z::b\) now listed; their rows come from the new build/);
+  assert.equal(JSON.parse(readFileSync(p('base.json'), 'utf8')).keys.length, 4);
 });
 
 test('command line: record against a stored asset writes nothing when it adds nothing, and refuses a hand upload', () => {
