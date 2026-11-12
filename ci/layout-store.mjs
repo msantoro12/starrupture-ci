@@ -41,8 +41,9 @@
 //         Either way, a difference on a key that only key-source tables (table-ks-*.h) ask for is a
 //         `key source only: ...` warning line and never refuses. A key that a released plugin's table (table-<name>.h) or
 //         the loader also asks for stays strict. The loader's keys come from loader-keys.txt in the same directory (names
-//         only, never compared); a plugin that is not built here has no table, so its keys count only through that list
-//         or a released table. Without loader-keys.txt every key is strict, and a difference says so.
+//         only, never compared). A released plugin's native members (ci/native-keys.txt) are in no table, and a plugin that
+//         is not built here has no table at all, so their keys count as strict only through that list or a released table.
+//         Without loader-keys.txt every key is strict, and a difference says so.
 //         --sdk-differences names a list of known differences (ci/sdk-table-differences.txt, see parseDifferences):
 //         a difference it names exactly (build or *, key, field, both values) does not refuse the record and is
 //         printed as a note. Without the option nothing is excused.
@@ -288,7 +289,7 @@ function sdkTableRows(sdk, built) {
   if (Number(sdkCl) !== built) return { why: `the SDK tables describe CL-${sdkCl}, the stored layout is CL-${built}` };
   const rows = new Map();
   // The names the loader reads: none when its list is absent or empty. Each counts as asked for by a released plugin.
-  const names = (sdk.loaderKeys ?? '').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  const names = (sdk.loaderKeys ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
   const released = new Set(names);
   const add = (row, from) => {
     const id = `${row.key}\t${row.offset}\t${row.size}\t${row.mask}`;
@@ -350,7 +351,7 @@ const namesOf = (keys) => `${keys.length} reflected key${keys.length === 1 ? '' 
 // `recordText` the downloaded record (null when it could not be downloaded), `fields` the reflected keys now listed.
 // `published` is { text, release } for the published version map (text null when it could not be downloaded);
 // without it, or when it cannot be used, only the header's rows check the record and `skipped` says why.
-// `sdkTables` is { header, tables } (see sdkTableRows); `sdkSkipped` says why that check did not run and
+// `sdkTables` is { header, tables, loaderKeys } (see sdkTableRows); `sdkSkipped` says why that check did not run and
 // `sdkCompared` is the number of keys it compared. `sdkDifferences` is a parseDifferences list (none: nothing is
 // excused); `sdkNotes` has one line per difference it excused. `sdkCheck` is SDK_TABLE_CHECK: when it is not 'enforcing',
 // whatever would refuse in the SDK-table check is returned in `sdkWould` (the messages) instead of thrown.

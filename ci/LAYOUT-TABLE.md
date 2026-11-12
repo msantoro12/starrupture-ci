@@ -252,8 +252,9 @@ build it describes (its `kBuiltCL` is the build being checked), so the SDK's own
   table and its native keys). A key that only key-source tables ask for is a *key-source key*: a difference on
   it (the SDK row against the stored value, or a stored `NOTYPE`) is a warning, never a hold, in either mode.
   A key that a released plugin's table names, or that is in `loader-keys.txt`, is judged as before. The loader
-  list only says which keys the loader reads; its rows are not compared. A released plugin that is not built
-  here has no table of its own, so its keys count as strict only through the loader list or a released table.
+  list only says which keys the loader reads; its rows are not compared. A released plugin's native members
+  (`ci/native-keys.txt`) are in no table, and a plugin that is not built here has no table at all, so such
+  keys count as strict only through the loader list or a released table.
   When in doubt a key is strict: without `loader-keys.txt` (or with an empty one) every key is strict, and the
   difference says `the loader's key list was missing, so it counts as strict`.
   When the update goes on, a warning is in the log, the step summary and a warning annotation

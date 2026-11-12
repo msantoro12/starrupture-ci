@@ -772,13 +772,14 @@ test('loader keys: a key the loader reads and only a key source names is strict;
   const listed = viaSdk(sdkOf(TCLASSES, { loaderKeys: 'FTransform::Translation\nULoader::Elsewhere\n' }), wild);
   assert.equal(listed.sdkCompared, plain.sdkCompared);
   assert.deepEqual(listed.sdkWarnings, []);
-  // Blank lines and # lines name nothing.
-  assert.deepEqual(viaMode('enforcing', NOTYPE_XY, { sdkTables: { ...withKs(), loaderKeys: '\n# FIntPoint::X\n   \nULoader::Elsewhere\n' } }).sdkWarnings, [KS_X, KS_Y]);
+  // The real list mixes LF and CRLF lines and may carry spaces: names are trimmed, so both keys are strict here.
+  const mixed = { ...withKs(), loaderKeys: 'ULoader::Elsewhere\r\n FIntPoint::X \r\n\r\nFIntPoint::Y\n' };
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: mixed }), /on 2 of 6 keys.*FIntPoint::X: .*FIntPoint::Y: SDK table 0x4\/0x4\/0x0, record NOTYPE\)$/);
 });
 
 test('loader keys: without the list every key is strict and the difference says so', () => {
   const say = "(asked for only by table-ks-M.h; the loader's key list was missing, so it counts as strict)";
-  for (const loaderKeys of [null, undefined, '', '# nothing\n\n']) {
+  for (const loaderKeys of [null, undefined, '', '\r\n \n']) {
     const sdk = { ...withKs(), loaderKeys };
     assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: sdk }), (e) => {
       assert.ok(e.message.includes(`FIntPoint::X: SDK table 0x0/0x4/0x0, record NOTYPE ${say}`), e.message);
