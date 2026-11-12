@@ -1,0 +1,8 @@
+# Features the loader may report off on a test machine without failing the verdict.
+# One entry per line: <Plugin> <Version> <Class::Member>. Every key the loader names for an
+# off feature must be optional in native-keys.txt, or listed here for that plugin at the
+# version the test machines loaded. A newer version is not accepted by an older entry.
+#
+# The feature this key serves never worked in Better Drone 0.24.0 and is replaced in the
+# next release. Remove this line when that release is the one the test machines install.
+BetterDrone 0.24.0 ACrCharacterPlayerBase::NativeOnCycleWeapon

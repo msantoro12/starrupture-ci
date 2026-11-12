@@ -199,6 +199,29 @@ function Get-OptionalKeys {
     return , $set
 }
 
+# The entries ci/expected-off.txt lists: a set of "<plugin>|<version>|<Class::Member>" in lower
+# case, and the malformed lines. A line is "<Plugin> <Version> <Class::Member>"; the version
+# is required. A missing or empty file adds no exceptions.
+function Get-ExpectedOff {
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    $errors = New-Object System.Collections.Generic.List[string]
+    $path = Join-Path $PSScriptRoot 'expected-off.txt'
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $n = 0
+        foreach ($line in [System.IO.File]::ReadAllLines($path)) {
+            $n++
+            $t = @($line.Trim() -split '\s+' | Where-Object { $_ })
+            if ($t.Count -eq 0 -or $t[0].StartsWith('#')) { continue }
+            if ($t.Count -ne 3 -or $t[1] -cnotmatch '^\d+(\.\d+)*$' -or $t[2] -cnotmatch '^\w+::\w+$') {
+                $errors.Add("expected-off.txt line ${n} is malformed (want: <Plugin> <Version> <Class::Member>): $($line.Trim())")
+                continue
+            }
+            [void]$set.Add("$($t[0])|$($t[1])|$($t[2])".ToLowerInvariant())
+        }
+    }
+    return [pscustomobject]@{ Set = $set; Errors = @($errors) }
+}
+
 # Client mode: judges the compat-report-<CL>.json files boot.json lists by what they say.
 # The loader writes one when the game's layout changed under it (compat_report.cpp, format
 # 3; format 4 adds outcome "unchanged" and sizes): outcome "safe-off" (every plugin refused),
@@ -303,7 +326,10 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
         }
     }
     # With a report on record, a plugin that lost a feature is not a clean handoff, unless
-    # every key the loader names for it is listed optional for that plugin in native-keys.txt.
+    # every key the loader names for it is listed optional for that plugin in native-keys.txt or
+# listed for it in expected-off.txt at the version of it the log shows loaded.
+    $expected = Get-ExpectedOff
+    foreach ($e in $expected.Errors) { $bad.Add($e) }
     if ($listed.Count -gt 0 -and $Ml) {
         $optional = Get-OptionalKeys
         foreach ($l in $Ml) {
@@ -314,11 +340,15 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
                 $keys = @($Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             }
             $repos = @($plugin) + @(@(Get-Prop $Set 'plugins' @()) | Where-Object { [string](Get-Prop $_ 'logName' '') -ceq $plugin } | ForEach-Object { [string](Get-Prop $_ 'repo' '') })
-            $notOptional = @($keys | Where-Object { $k = $_; -not @($repos | Where-Object { $optional.Contains("$_|$k".ToLowerInvariant()) }) })
+            # The version of this plugin the loader reports having loaded, without a leading v.
+            $ver = ''
+            foreach ($i in $Ml) { if ($i -cmatch ('Plugin info - Name: ' + [regex]::Escape($plugin) + ', Version: v?(.+?), Author')) { $ver = $Matches[1]; break } }
+            $notOptional = @($keys | Where-Object { $k = $_; -not @($repos | Where-Object { $optional.Contains("$_|$k".ToLowerInvariant()) -or ($ver -ne '' -and $expected.Set.Contains("$_|$ver|$k".ToLowerInvariant())) }) })
             if ($keys.Count -gt 0 -and $notOptional.Count -eq 0) {
-                $notes.Add("$plugin feature ""$title"" is off, accepted: " + ($keys -join ', ') + ' optional in native-keys.txt')
+                $from = @($keys | ForEach-Object { $k = $_; $src = if (@($repos | Where-Object { $optional.Contains("$_|$k".ToLowerInvariant()) })) { 'optional in native-keys.txt' } else { "listed in expected-off.txt for $ver" }; "$k ($src)" })
+                $notes.Add("$plugin$(if ($ver -ne '') { " $ver" }) feature ""$title"" is off, accepted: " + ($from -join ', '))
             } else {
-                $bad.Add("$plugin feature ""$title"" is off" + $(if ($keys.Count -eq 0) { ': names no keys' } else { ': not optional: ' + ($notOptional -join ', ') }))
+                $bad.Add("$plugin feature ""$title"" is off" + $(if ($keys.Count -eq 0) { ': names no keys' } else { ': not optional or expected off: ' + ($notOptional -join ', ') }))
             }
         }
     }

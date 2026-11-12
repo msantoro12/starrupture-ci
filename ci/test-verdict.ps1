@@ -3,6 +3,7 @@
 # first (engine-test), then client mode (the client test rig).
 $ErrorActionPreference = 'Stop'
 $verdict = Join-Path $PSScriptRoot 'verdict.ps1'
+$verdictReal = $verdict
 $root = Join-Path ([IO.Path]::GetTempPath()) 'verdict-cases'
 if (Test-Path $root) { Remove-Item $root -Recurse -Force }
 New-Item -ItemType Directory $root | Out-Null
@@ -339,6 +340,19 @@ function New-RigCase([string]$Name, [string]$Run, [scriptblock]$Mutate) {
     $out = & $shell -NoProfile -File $verdict -OutDir $d -Client 2>&1
     [pscustomobject]@{ Case = $Name; Exit = $LASTEXITCODE; Out = ($out -join "`n"); Dir = $d }
 }
+# A copy of verdict.ps1 and native-keys.txt with the given expected-off.txt text (none when $null).
+function Use-Bare($ExpectedOff) {
+    $bare = Join-Path ([System.IO.Path]::GetTempPath()) ('verdict-bare-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $bare | Out-Null
+    Copy-Item -LiteralPath $verdictReal, (Join-Path $PSScriptRoot 'native-keys.txt') -Destination $bare
+    if ($null -ne $ExpectedOff) { [System.IO.File]::WriteAllText((Join-Path $bare 'expected-off.txt'), $ExpectedOff) }
+    $script:verdict = Join-Path $bare 'verdict.ps1'
+}
+# Better Drone at another version: the log's plugin-info line and the set's expectation.
+function Set-DroneVersion($c, [string]$Tag) {
+    $c.ml = @($c.ml | ForEach-Object { if ($_ -match 'BetterDrone[ ,]') { $_ -replace 'v0\.23\.0', $Tag } else { $_ } })
+    ($c.set.plugins | Where-Object { $_.repo -eq 'BetterDrone' }) | ForEach-Object { $_.expect = $Tag; $_.tag = $Tag }
+}
 function Edit-Report($c, [string]$Old, [string]$New) {
     if (-not $c.compat.Contains($Old)) { throw "the compat report fixture lacks: $Old" }
     $c.compat = $c.compat.Replace($Old, $New)
@@ -361,6 +375,10 @@ $tb = 'test-branch'
 $hotbarTitle = 'Ctrl + mouse wheel changes the hotbar in the drone'
 $hotbarKeys = 'UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex, UCrHotbarLocalPlayerSubsystem::Hotbars'
 $offWhy = 'this game build changed something it needs'
+$cycleTitle = 'Ctrl + mouse wheel changes the hotbar in the drone'
+$cycleKey = 'ACrCharacterPlayerBase::NativeOnCycleWeapon'
+$cycleEntry = "BetterDrone 0.24.0 $cycleKey`r`n"
+function Add-CycleOff($c, [string]$Keys = $cycleKey, [string]$Plugin = 'BetterDrone') { $c.ml += "$($sig)[Map] ${Plugin}: feature ""$cycleTitle"" is off: $Keys ($offWhy)" }
 $rigCases = [ordered]@{
  # The two real runs: both must pass
  'cl-129402 real'           = @{ Run = $tb;      Mut = { param($c) } }
@@ -388,6 +406,15 @@ $rigCases = [ordered]@{
  'feature off, log name differs' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: UMassEntitySubsystem::EntityManager ($offWhy)" } }
  'feature off, key not optional' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off: UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex, ACrPlayerControllerBase::PlayerControlState ($offWhy)" }; Fail = 'compat_report_ok' }
  'feature off, other plugin key' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterCheats: feature ""$hotbarTitle"" is off: $hotbarKeys ($offWhy)" }; Fail = 'compat_report_ok' }
+ 'feature off, expected off' = @{ Run = $tb; Mut = { param($c) Use-Bare $cycleEntry; Set-DroneVersion $c 'v0.24.0'; Add-CycleOff $c } }
+ 'feature off, expected off + optional' = @{ Run = $tb; Mut = { param($c) Use-Bare $cycleEntry; Set-DroneVersion $c 'v0.24.0'; Add-CycleOff $c "$cycleKey, UCrHotbarLocalPlayerSubsystem::Hotbars" } }
+ 'feature off, other version' = @{ Run = $tb; Mut = { param($c) Use-Bare $cycleEntry; Add-CycleOff $c }; Fail = 'compat_report_ok' }
+ 'feature off, newer version' = @{ Run = $tb; Mut = { param($c) Use-Bare $cycleEntry; Set-DroneVersion $c 'v0.25.0'; Add-CycleOff $c }; Fail = 'compat_report_ok' }
+ 'feature off, version unreadable' = @{ Run = $tb; Mut = { param($c) Use-Bare $cycleEntry; $c.ml = @($c.ml | Where-Object { $_ -notmatch 'Plugin info - Name: BetterDrone,' }); Add-CycleOff $c }; Fail = 'compat_report_ok' }
+ 'feature off, entry removed' = @{ Run = $tb; Mut = { param($c) Use-Bare ''; Set-DroneVersion $c 'v0.24.0'; Add-CycleOff $c }; Fail = 'compat_report_ok' }
+ 'feature off, entry malformed' = @{ Run = $tb; Mut = { param($c) Use-Bare "BetterDrone $cycleKey`r`n"; Set-DroneVersion $c 'v0.24.0'; Add-CycleOff $c }; Fail = 'compat_report_ok' }
+ 'feature off, expected off, other plugin' = @{ Run = $tb; Mut = { param($c) Use-Bare $cycleEntry; Add-CycleOff $c $cycleKey 'BetterCheats' }; Fail = 'compat_report_ok' }
+ 'feature off, expected off + unlisted' = @{ Run = $tb; Mut = { param($c) Use-Bare $cycleEntry; Set-DroneVersion $c 'v0.24.0'; Add-CycleOff $c "$cycleKey, ACrPlayerControllerBase::PlayerControlState" }; Fail = 'compat_report_ok' }
  'feature off, no keys'       = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off:  ($offWhy)" }; Fail = 'compat_report_ok' }
  'feature off, no reason'     = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off" }; Fail = 'compat_report_ok' }
  'feature off, one good one bad' = @{ Run = $tb; Mut = { param($c)
@@ -432,6 +459,7 @@ $rigCases = [ordered]@{
  'uioff other ERROR line'     = @{ Run = 'public'; Mut = { param($c) $c.ml += "$($err)[ImGuiBackend] D3D12CreateDevice failed" };                               Fail = 'no_loader_errors' }
 }
 foreach ($k in $rigCases.Keys) {
+    $script:verdict = $verdictReal
     $r = New-RigCase $k $rigCases[$k].Run $rigCases[$k].Mut
     $mustFail = $rigCases[$k].Fail
     $want = if ($mustFail) { 1 } else { 0 }
@@ -451,16 +479,26 @@ foreach ($k in $rigCases.Keys) {
             if ($mm.state -ne 'refused (as declared)') { $problems += "MiniMap state $($mm.state)" }
         }
         if ($k -in 'feature off, keys optional', 'feature off, log name differs') {
-            $want = if ($k -eq 'feature off, keys optional') { "BetterDrone feature ""$hotbarTitle"" is off, accepted: $hotbarKeys optional in native-keys.txt" } else { 'Waila feature "Hover details" is off, accepted: UMassEntitySubsystem::EntityManager optional in native-keys.txt' }
+            $want = if ($k -eq 'feature off, keys optional') { "BetterDrone 0.23.0 feature ""$hotbarTitle"" is off, accepted: UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex (optional in native-keys.txt), UCrHotbarLocalPlayerSubsystem::Hotbars (optional in native-keys.txt)" } else { 'Waila 0.20.0 feature "Hover details" is off, accepted: UMassEntitySubsystem::EntityManager (optional in native-keys.txt)' }
             if (@($j.notes) -notcontains $want) { $problems += "accepted-off note missing: $want" }
             if ($md -notmatch [regex]::Escape("Note: $want")) { $problems += 'summary.md lacks the accepted-off note' }
             if ($r.Out -notmatch 'layout_ok\s+PASS') { $problems += 'layout_ok not PASS' }
         }
         $vt = if (Test-Path (Join-Path $r.Dir 'verdict.txt')) { Get-Content -LiteralPath (Join-Path $r.Dir 'verdict.txt') -Raw -Encoding UTF8 } else { '' }
-        if ($k -eq 'feature off, key not optional' -and ($vt -notmatch 'is off: not optional: ACrPlayerControllerBase::PlayerControlState(;|\s|$)' -or $vt -match 'not optional: .*CurrentHotbarIndex')) { $problems += 'the failure does not name only the bad key' }
+        if ($k -eq 'feature off, key not optional' -and ($vt -notmatch 'is off: not optional or expected off: ACrPlayerControllerBase::PlayerControlState(;|\s|$)' -or $vt -match 'expected off: .*CurrentHotbarIndex')) { $problems += 'the failure does not name only the bad key' }
+        if ($k -in 'feature off, expected off', 'feature off, expected off + optional') {
+            $want = "BetterDrone 0.24.0 feature ""$cycleTitle"" is off, accepted: $cycleKey (listed in expected-off.txt for 0.24.0)" + $(if ($k -like '*+ optional') { ', UCrHotbarLocalPlayerSubsystem::Hotbars (optional in native-keys.txt)' } else { '' })
+            if (@($j.notes) -notcontains $want) { $problems += "expected-off note missing: $want" }
+            if ($md -notmatch [regex]::Escape("Note: $want")) { $problems += 'summary.md lacks the expected-off note' }
+            if ($r.Out -notmatch 'layout_ok\s+PASS') { $problems += 'layout_ok not PASS' }
+        }
+        if ($k -in 'feature off, other version', 'feature off, newer version', 'feature off, version unreadable', 'feature off, entry removed' -and $vt -notmatch 'BetterDrone feature .* is off: not optional or expected off: ACrCharacterPlayerBase::NativeOnCycleWeapon') { $problems += 'the lapsed entry is not refused by name' }
+        if ($k -eq 'feature off, entry malformed' -and $vt -notmatch 'expected-off.txt line 1 is malformed') { $problems += 'malformed line not reported' }
+        if ($k -eq 'feature off, expected off, other plugin' -and $vt -notmatch 'BetterCheats feature .* is off: not optional or expected off: ACrCharacterPlayerBase::NativeOnCycleWeapon') { $problems += 'other plugin not refused by name' }
+        if ($k -eq 'feature off, expected off + unlisted' -and ($vt -notmatch 'not optional or expected off: ACrPlayerControllerBase::PlayerControlState(;|\s|$)' -or $vt -match 'expected off: .*NativeOnCycleWeapon')) { $problems += 'unlisted key not named alone' }
         if ($k -eq 'feature off, no keys' -and $vt -notmatch 'is off: names no keys') { $problems += 'no-keys failure missing' }
         if ($k -eq 'feature off, one good one bad') {
-            if ($vt -notmatch 'Waila feature "Hover details" is off: not optional: UCrFoo::Bar') { $problems += 'the bad one is not named' }
+            if ($vt -notmatch 'Waila feature "Hover details" is off: not optional or expected off: UCrFoo::Bar') { $problems += 'the bad one is not named' }
             if ($vt -match 'FOUND:.*BetterDrone') { $problems += 'the accepted one is in the failure' }
         }
         if ($k -eq 'compat optional miss' -and @($j.notes) -notcontains 'optional pattern missed: Fname_AppendString') { $problems += 'optional miss not noted' }
@@ -485,6 +523,8 @@ foreach ($k in $rigCases.Keys) {
     'rig {0,-34} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
 }
 
+$script:verdict = $verdictReal
+Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Directory -Filter 'verdict-bare-*' | Remove-Item -Recurse -Force
 # ---- client mode, a clean decline: run 42447973574's CL-129402 rig ----------------
 # fixtures\rig-run-42447973574\decline holds what that rig uploaded, untouched, except that
 # set.json gains "expectDecline": true (the rig's set step writes it from the expect_decline
