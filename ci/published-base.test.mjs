@@ -201,9 +201,9 @@ test('takeBase: the hold of an earlier job stands, without a fetch; a missing or
     assert.deepEqual([r.ok, r.reasons], [false, ['published base: first reason', 'row two']]);
     r = await takeBase({ header, dir: s.p('d'), repo: 'o/r', run: never, checkReport: s.p('missing.json'), ...noSleep });
     assert.equal(r.ok, false);
-    assert.match(r.reasons[0], /recorded no result/);
+    assert.match(r.reasons[0], /left no readable result/);
     r = await takeBase({ header, dir: s.p('d'), repo: 'o/r', run: never, checkReport: s.write('junk.json', '{'), ...noSleep });
-    assert.match(r.reasons[0], /recorded no result/);
+    assert.match(r.reasons[0], /left no readable result/);
     r = await takeBase({ header, dir: s.p('d'), repo: 'o/r', run: never, checkReport: s.write('empty.json', JSON.stringify({ ok: false })), ...noSleep });
     assert.match(r.reasons[0], /held and gave no reason/);
     // An earlier job that took the base fine does not stop this one from taking it too.

@@ -3561,6 +3561,7 @@ test('published_base (publish job): the feed to sign is compared with the live f
   const lost = ran({}, 3);
   assert.equal(lost.r.status, 2);
   assert.match(lost.r.stdout, /::error::published base: 2 published lines are missing from the new feed\n::error::function GWorld @ CL-127004: missing\n::error::the feed to sign would lose or change a published row; nothing was signed or uploaded/);
+  assert.ok(lost.r.stdout.startsWith('::error::published base: 2 published lines are missing from the new feed; function GWorld @ CL-127004: missing\n'), 'the alert reads only the first annotation, so it carries the first rows joined');
   assert.ok(!callsOf(lost.fx.dir).some((c) => /^vmap-sign sign|release upload/.test(c)), 'nothing signed, nothing uploaded');
   // Off, or a first publish: no comparison.
   for (const env of [{ PUBLISHED_BASE: 'false' }, { FIRST_PUBLISH: 'true' }]) {

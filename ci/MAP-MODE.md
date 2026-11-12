@@ -406,7 +406,7 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
 - A class whose size changed is a note when nothing depends on its whole size or the
   only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
@@ -713,7 +713,7 @@ differs, with a reason; without it the run holds.
 ```
 
 If the `publish` job finds the loss instead, the job fails and the alert shows
-`job publish the feed failed` with the same lines as its cause.
+`job publish the feed failed` with the first lost rows as its cause (the job log lists all of them).
 
 | The reason says | What it means | To clear it |
 |---|---|---|
@@ -722,6 +722,11 @@ If the `publish` job finds the loss instead, the job fails and the alert shows
 | `N rows differ` | A row in the header and in the published feed has other content | If the new content is right, add the row to `ci/changed-rows.txt` with a reason; otherwise fix the header. |
 | `published lines are missing` | The new feed lost a published row | If it should go, add it to `ci/retired-rows.txt` with a reason; otherwise find why it was dropped. |
 | `the release does not exist` / `has no ...` on a run that is not a first publish | No published file to take | Check the `vmap-feed` release. |
+
+One refusal is not a hold. With the published file in the base, a run for a build (CL) the feed already holds
+can end `map-mode.mjs write` with `CL-<n> is already in the build table with another exe or source`, or with a
+published key found at another address. The `map mode` job then fails and the alert shows `job map mode failed`
+with that line. Nothing is signed or published. Check the Steam build id of the run against the one in the feed.
 
 After the fix is on `main`, run again (`gh workflow run sr-watch.yml --ref main -f force=true`).
 

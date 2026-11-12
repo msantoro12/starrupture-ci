@@ -3414,7 +3414,7 @@ jobs:
             kept=0
             node tool/ci/published-base.mjs preserve chain/feed.txt --published live/version-map-client.v1.txt --report preserve.json || kept=$?
             if [ "$kept" -ne 0 ]; then
-              node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("preserve.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+              node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("preserve.json", "utf8")); } catch {} const rs = r.reasons ?? []; if (rs.length) console.log("::error::" + rs.slice(0, 4).join("; ").slice(0, 280)); for (const x of rs) console.log("::error::" + x);'
               echo "::error::the feed to sign would lose or change a published row; nothing was signed or uploaded"; exit 2
             fi
           fi

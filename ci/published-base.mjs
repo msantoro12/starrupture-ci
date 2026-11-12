@@ -101,7 +101,7 @@ export async function takeBase({ header, dir, firstPublish = false, checkReport,
   if (checkReport !== undefined) {
     let earlier = null;
     try { earlier = JSON.parse(readFileSync(checkReport, 'utf8')); } catch { /* handled below */ }
-    if (!earlier || typeof earlier.ok !== 'boolean') return hold('import', 'published base: the check job recorded no result for the published file, so the base was not taken');
+    if (!earlier || typeof earlier.ok !== 'boolean') return hold('import', 'published base: the check job left no readable result for the published file (its step did not run or wrote nothing), so the base was not taken');
     if (!earlier.ok) return hold('import', ...(Array.isArray(earlier.reasons) && earlier.reasons.length ? earlier.reasons : ['published base: the check job held and gave no reason']));
   }
   const got = await fetchPublished({ dir, ...deps });
