@@ -152,7 +152,8 @@ rule"), once per component; the written map must satisfy the rule over their
 union. `--report` writes `{ written, added, pruned, problems, notes, patches }`.
 `--remeasure true` (the client check passes it on a `test_autopilot` run only) replaces the build row of a
 CL already in the table and drops that CL's rows before writing, so a known CL can be measured again;
-without it a known CL with another exe or source is refused.
+without it a known CL with another exe or source is refused. The client check then puts back every
+published row that the run did not measure (see "A re-measure keeps published rows").
 `--published` takes the signed feed (it must verify, exit 4 otherwise) and keeps its function rows
 out of the prune below; `--retired` (needs `--published`) is the retired list, whose rows are not kept.
 Exit 0 written, 3 refused (the header is untouched, every reason is on stderr),
@@ -357,7 +358,7 @@ In `sr-client-check.yml`:
 
 ```
 node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>]
-    (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list>) [--report <file>]
+    (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list>) [--carry-keys <file>] [--report <file>]
 ```
 
 The client check has no per-component key lists; it gives `ci/native-keys.txt` and the
@@ -696,9 +697,47 @@ A first publish has no published file, so step 1 skips a missing one for that ru
 
 **The two lists.** `ci/retired-rows.txt` and `ci/changed-rows.txt` are the only way a published row
 may leave or change. Format and an example entry are in `VERSION-MAP.md` ("The published feed is
-part of the base"). `--remeasure` (test runs) replaces the rows of the build it measures, so
-measuring a published build again needs an entry in `ci/changed-rows.txt` for each row that
-differs, with a reason; without it the run holds.
+part of the base"). A test run that measures a published build again keeps the rows it did not
+measure (below); a row it measures with other content needs an entry in `ci/changed-rows.txt`, with
+a reason, or the run holds.
+
+**A re-measure keeps published rows.** A test run (`test_autopilot`) can measure a build the published
+file already holds. `--remeasure` drops that build's rows first, so a row whose key is no longer in
+the key list, or that the scan no longer resolves, would be missing. After the member rows are written,
+the chain step runs `version-map.mjs restore-published` for the run's build:
+
+- A published row the run did not measure is put back as published.
+- A published function row that the run measured as absent (no address) is put back as the real row.
+  The same holds for a member row the run found no member for, and for an absent row the run measured
+  with fewer owners. A real published row is never replaced by an absent one.
+- A row the run measured with other content (offset, size, mask, address or pattern) stays as measured.
+  The preserve check then holds on it, and the message says so: add the row to `ci/changed-rows.txt`
+  with a reason if the new content is right.
+- A row in `ci/retired-rows.txt` is not put back. A row in `ci/changed-rows.txt` that the run measured is left
+  as measured; one the run left out is put back, because that list excuses a change, never a loss.
+- If the run's build row is not the published one (another exe at the same CL), nothing is put back:
+  the preserve check holds on the build line.
+
+Each kept row is printed in the job log and listed in the step summary ("Published rows of CL-<n> in a
+re-measure"), with the reason: `the run did not measure it`, `the run found no address for it` or
+`the run found no member for it`. The list is also in the `kept-published.json` chain artifact.
+A run that is not a test run does not do this: a build it measures is new to the file.
+
+**Carried field keys.** A new build's key list can lose a member key that the published rows of an
+older build still have (a key list is rebuilt from what the components read now). So the player's older
+plugin would find no row for the new build. A map-mode run for a build that the published file does not
+hold yet therefore also asks the scan of that build for the field keys of the *newest* published build,
+meaning the highest CL in the published file, that its key list does not name
+(`version-map.mjs carry-keys`, written to `layout-carry-keys.txt`). `field-rows.mjs` then handles each
+one:
+
+- It resolves: a row is written for the new build, and the report notes it.
+- It does not resolve (missing, a bit field, no type, or not in the report): a note only. It is never a
+  hold, never an absent row and never a degraded plugin.
+- A key with an entry in `ci/retired-rows.txt` (a field entry on any build, or the whole newest build) is not carried.
+
+A build the file already holds carries nothing; its rows are kept as above. The carry only adds rows to
+what the run measures. The scanner and the loader are not involved.
 
 **What a hold looks like.** The run never goes on with the loader header alone. Map mode ends in a
 `HOLD` decision (nothing is signed, staged or published), and the alert issue shows
@@ -716,7 +755,7 @@ If the `publish` job finds the loss instead, the job fails and the alert shows
 |---|---|---|
 | `could not be fetched after 3 tries` | GitHub did not answer | Run again. |
 | `signature was refused` | The file does not verify with the release key | Do not run again. Look at the `vmap-feed` release; this is not a transient error. |
-| `N rows differ` | A row in the header and in the published feed has other content | If the new content is right, add the row to `ci/changed-rows.txt` with a reason; otherwise fix the header. |
+| `N rows differ` | A row in the header and in the published feed has other content (a test run that measured a different value lands here too) | If the new content is right, add the row to `ci/changed-rows.txt` with a reason; otherwise fix the header. |
 | `published lines are missing` | The new feed lost a published row | If it should go, add it to `ci/retired-rows.txt` with a reason; otherwise find why it was dropped. |
 | `the release does not exist` / `has no ...` on a run that is not a first publish | No published file to take | Check the `vmap-feed` release. |
 
@@ -915,12 +954,13 @@ no plugin code, no game file.
 2. `field-rows.mjs write` from the PDB layouts of the check (`layout-target.json`,
    `layout-reference.json`, `layout-keys.txt`, `ci/native-keys.txt`). A refusal (exit 3) does
    not fail the job; it writes the report and decide holds. Any other failure (exit 2, a
-   missing or malformed input) fails the job. The check writes `layout-reference.json` only
+   missing or malformed input) fails the job. `--carry-keys` takes the keys of "Carried field keys" (below). The check writes `layout-reference.json` only
    when it has an older build to compare with (not on the `public` branch, which has no older
    build to download). On `public` the step reads the stored layout instead (see "Where the
    reference layout comes from" under Step 28). With no reference at all the step runs with no
    `--base` and field-rows refuses while a reflected key is listed, so decide holds with that
-   reason.
+   reason. On a test run with a published file, `version-map.mjs restore-published` then puts the
+   published rows of the build back that the run did not measure ("A re-measure keeps published rows").
 3. `decide.mjs` with the gates built from the check: G1 the builds, G2 the check, G3
    the CL against the one the header was built for, G4 the client registry scan (the
    client check alone decides; no dedicated-server scan is read), G5 the classes
