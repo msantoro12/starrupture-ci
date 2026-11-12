@@ -137,3 +137,13 @@ MiniMap AActor::ActorHasBegunPlay 0x5d 0x1 0x18 optional
 # that lookup and the key gets an absent row, the update is not held.
 ModLoader FD3D12Resource::Heap optional
 ModLoader FD3D12Heap::Heap optional
+
+# The loader's image library reads a texture's GPU resource through this chain.
+# All six are optional: a build without one gets an absent row and the library
+# stays off on that build, the update is not held.
+ModLoader UTexture::PrivateResource optional
+ModLoader FTexture::TextureRHI optional
+ModLoader FD3D12Texture::ResourceLocation optional
+ModLoader FD3D12ResourceLocation::UnderlyingResource optional
+ModLoader FD3D12Resource::DefaultResourceState optional
+ModLoader FD3D12Resource::Resource optional
