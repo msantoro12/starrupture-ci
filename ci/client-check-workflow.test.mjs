@@ -3176,7 +3176,7 @@ exit 1
     });
     const lines = r.stdout.split('\n');
     const summary = existsSync(join(dir, 'summary.md')) ? readFileSync(join(dir, 'summary.md'), 'utf8') : '';
-    return { status: r.status, stderr: r.stderr, out: r.stdout, summary, base: lines.filter((l) => l.startsWith('base:')).map((l) => l.slice(5)).filter(Boolean), missing: lines.filter((l) => l.startsWith('missing:')).map((l) => l.slice(8)).filter(Boolean), dir };
+    return { status: r.status, stderr: r.stderr, out: r.stdout, summary, base: lines.filter((l) => l.startsWith('base:')).map((l) => l.slice(5)).filter(Boolean), missing: lines.filter((l) => l.startsWith('missing:')).map((l) => l.slice(8)).filter(Boolean), afterMissing: lines.slice(lines.map((l) => l.startsWith('missing:')).lastIndexOf(true) + 1).filter(Boolean), dir };
   };
   // Public, new build, nothing in the artifact to compare with: the stored layout of the built CL is the base.
   const ok = run();
@@ -3255,7 +3255,7 @@ exit 1
   // own, in both modes; it holds nothing. UWorld::GameState is at 0x120 in the record and 0x128 in the key source's table.
   const KS_LINE = 'key source only: UWorld::GameState: SDK table 0x128/0x8/0x0, record 0x120/0x8/0x0 (asked for only by table-ks-M.h)';
   const KS_COUNT = '1 difference on keys only a key source asks for: a warning, never a hold';
-  const ksTables = (barOffset = 16) => ({ ...sdkTables(barOffset), 'table-ks-M.h': renderHeader({ cl: 128786, detail: 1, granularity: 2, classes: [{ name: 'UWorld', sizeOf: 0, alignOf: 0, kind: 1, path: '', rows: [{ member: 'GameState', offset: 0x128, size: 8, mask: 0 }] }] }) });
+  const ksTables = (barOffset = 16, loaderKeys = 'ULoader::Elsewhere\n') => ({ ...sdkTables(barOffset), ...(loaderKeys === null ? {} : { 'loader-keys.txt': loaderKeys }), 'table-ks-M.h': renderHeader({ cl: 128786, detail: 1, granularity: 2, classes: [{ name: 'UWorld', sizeOf: 0, alignOf: 0, kind: 1, path: '', rows: [{ member: 'GameState', offset: 0x128, size: 8, mask: 0 }] }] }) });
   for (const mode of ['report-only', 'enforcing']) {
     const ks = run({ tables: ksTables(), mode });
     assert.equal(ks.status, 0, ks.stderr);
@@ -3271,6 +3271,21 @@ exit 1
   const both = run({ tables: ksTables(24), mode: 'enforcing' });
   assert.deepEqual(both.base, []);
   assert.match(both.out, /field-rows: no stored reference layout: the stored layout of CL-127004 disagrees with the SDK table's field rows.*AFoo::Bar: SDK table 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0\)\nlayout-store: key source only: UWorld::GameState: SDK table 0x128\/0x8\/0x0, record 0x120\/0x8\/0x0/);
+  // The reason handed on is the hold message alone (no key-source line follows it into --base-missing).
+  assert.equal(both.missing.length, 2);
+  assert.doesNotMatch(both.missing[1], /key source/);
+  assert.deepEqual(both.afterMissing, [], 'a one-line reason');
+  // The loader's key list in the folder makes a key it names strict; without it every key is.
+  const loaderNamed = run({ tables: ksTables(16, 'UWorld::GameState\n'), mode: 'enforcing' });
+  assert.deepEqual(loaderNamed.base, []);
+  assert.match(loaderNamed.missing[1], /UWorld::GameState: SDK table 0x128\/0x8\/0x0, record 0x120\/0x8\/0x0\)$/);
+  assert.deepEqual(loaderNamed.afterMissing, []);
+  const noList = run({ tables: ksTables(16, null), mode: 'enforcing' });
+  assert.deepEqual(noList.base, []);
+  assert.match(noList.missing[1], /UWorld::GameState: SDK table 0x128\/0x8\/0x0, record 0x120\/0x8\/0x0 \(asked for only by table-ks-M\.h; the loader's key list was missing, so it counts as strict\)\)$/);
+  const noListReport = run({ tables: ksTables(16, null), mode: 'report-only' });
+  assert.deepEqual(noListReport.base, ['--base', 'res/layout-stored.json']);
+  assert.ok(noListReport.out.includes('::warning title=SDK-table check (report only)::report only: this would hold'));
   const WOULD2 = WOULD.replace('1 of 1 keys', '1 of 2 keys');
   const bothReport = run({ tables: ksTables(24), mode: 'report-only' });
   assert.deepEqual(bothReport.base, ['--base', 'res/layout-stored.json']);
@@ -3689,6 +3704,10 @@ test('SDK tables: the check job uploads them where the map-mode job reads them, 
   assert.ok(tryAt > 0 && tryAt > layout.lastIndexOf('--out "$work\\table-$stem.h"'), 'after the last table is made');
   const body = layout.slice(tryAt, layout.indexOf('\n          }\n', tryAt) + 5);
   assert.ok(body.includes('Copy-Item "$work\\table-*.h" out\\sdk-tables -ErrorAction Stop'));
+  // The loader's key list (names only, written by `layout-table.mjs keys`) goes in under a name that is no table's.
+  assert.ok(body.includes('Copy-Item "$work\\keys-ModLoader.txt" out\\sdk-tables\\loader-keys.txt -ErrorAction Stop'));
+  const listAt = layout.indexOf('--out "$work\\keys-ModLoader.txt"');
+  assert.ok(listAt > 0 && listAt < tryAt, 'the list is written before it is copied');
   assert.ok(body.includes('Get-Content "$sdk\\Client\\SDK.hpp" -TotalCount 12 -ErrorAction Stop | Set-Content out\\sdk-tables\\sdk-header.txt -Encoding ascii'));
   // A failure is a warning and removes the half-copied folder; it neither throws nor sets an exit code.
   const caught = body.slice(body.indexOf('} catch {'));

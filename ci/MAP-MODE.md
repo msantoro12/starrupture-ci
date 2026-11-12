@@ -491,11 +491,14 @@ built for as well as the new one.
   right (the SDK's `Assertions.inl` has the compiled sizes); correct the code, or, if the stored file is the
   wrong one and cannot be replaced, add a known difference (next point).
   **A key source never holds a publish.** A table named `table-ks-<name>.h` comes from a key source, one named
-  `table-<name>.h` from a released plugin. When only key-source tables ask for a key, a difference on it (or a
-  stored `NOTYPE`) is a warning in the log, in the step summary and as an annotation, in report-only and in
-  enforcing mode alike, and the count of such warnings is a line of its own. A key that a released plugin also
-  asks for is judged as before. Only the tables in the folder count, so a key that only the loader or a plugin
-  that is not built here reads, and a key-source table names, is a key-source key too.
+  `table-<name>.h` from a released plugin; `loader-keys.txt` in the same folder lists the keys the loader reads
+  (names only, never compared). When only key-source tables ask for a key, a difference on it (or a stored
+  `NOTYPE`) is a warning, never a hold, in report-only and in enforcing mode. If the update goes on, the warning
+  is in the log, in the step summary and as an annotation, and the count is a line of its own; if it holds for
+  another reason, the warnings are in the log only. A key that a released plugin's table or the loader's list
+  also names is judged as before. A released plugin that is not built here has no table, so its keys count as
+  strict only through the loader's list or a released table. Without `loader-keys.txt` every key is strict, and
+  the difference says the loader's key list was missing.
 - `ci/sdk-table-differences.txt` lists the known differences for that third check: one line per difference, six
   tab-separated fields (build, key, offset|size|mask, stored value, SDK value, reason). The build is a CL
   number, or `*` for any build. An entry excuses only the exact difference it names, on key, field and both

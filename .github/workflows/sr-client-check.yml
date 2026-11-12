@@ -2172,10 +2172,12 @@ jobs:
           Copy-Item "$work\keys-all.txt" out\layout-keys.txt
           # The layout tables and the head of the SDK's SDK.hpp (which names the build the SDK was dumped for) go to
           # the map-mode job, which checks the stored layout of the public build against them (ci/layout-store.mjs
-          # --sdk-tables). If they cannot be copied that check is skipped there, with a note; nothing fails here.
+          # --sdk-tables), with the loader's key list (loader-keys.txt: names only, it says which keys the loader reads).
+          # If they cannot be copied that check is skipped there, with a note; nothing fails here.
           try {
             New-Item -ItemType Directory -Force out\sdk-tables | Out-Null
             Copy-Item "$work\table-*.h" out\sdk-tables -ErrorAction Stop
+            Copy-Item "$work\keys-ModLoader.txt" out\sdk-tables\loader-keys.txt -ErrorAction Stop
             Get-Content "$sdk\Client\SDK.hpp" -TotalCount 12 -ErrorAction Stop | Set-Content out\sdk-tables\sdk-header.txt -Encoding ascii
           } catch {
             Remove-Item out\sdk-tables -Recurse -Force -ErrorAction SilentlyContinue
@@ -3012,7 +3014,8 @@ jobs:
                 printf '\n### SDK-table cross-check of the stored layout\n\n%s\n' "$sdk_notes" >> "$GITHUB_STEP_SUMMARY" || true
               fi
             else
-              missing=(--base-missing "$why")
+              # The key-source warnings that follow a hold are in the log; the reason handed on is the hold message alone.
+              missing=(--base-missing "$(printf '%s\n' "$why" | grep -v -E '^layout-store: (key source only: |[0-9]+ differences? on keys only a key source asks for)' || true)")
               echo "field-rows: no stored reference layout: $why"
             fi
           }
