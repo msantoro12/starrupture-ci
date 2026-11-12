@@ -221,7 +221,8 @@ A public update takes its reference layout from the stored file of the build the
 (ci/MAP-MODE.md). `ci/layout-store.mjs reference` checks that file against the header and the published
 version object map and, when given `--sdk-tables <dir>`, against the tables this tool generates from the
 game SDK. That third check is wider than the other two: the header carries about 170 of the keys and the
-published version map fewer, while the tables hold every member the plugins read (854 keys on build 127004).
+published version map fewer, while the tables hold every member the plugins read (854 keys in a replay
+on build 127004).
 For each key in both it compares the offset, the size and the bool mask (a class key compares its size where
 the table has one). Keys the table lacks, or the file lacks, are ignored, but the check refuses when fewer than
 half of the table's keys are in the file.
@@ -242,7 +243,10 @@ build it describes (its `kBuiltCL` is the build being checked), so the SDK's own
   tab-separated fields, `<build> <key> <offset|size|mask> <stored> <SDK> <reason>`. An entry excuses only the
   exact difference it names (that build, key, field and those two values); everything else on the key still
   holds. The reason is required. A malformed line, a missing reason or an unreadable file holds the update.
-  Remove an entry when the cause is fixed and the stored file corrected.
+  A stored file is never replaced, so an entry stays while its build can still be the reference; remove it when
+  that build no longer is, or if the stored file is ever corrected. The same scan fault gives the same size in the
+  next build's stored file, so the update after that build holds until a line for it is added, once the SDK
+  value is confirmed.
 - The one entry today: `FEnhancedActionKeyMapping::Key` on 127004, size 0x50 stored and 0x18 in the SDK. The
   layout scan returned the size of the enclosing struct for that member. The SDK is right, no row is published
   for the member, and a stored file cannot be replaced, so the difference is listed instead of held.

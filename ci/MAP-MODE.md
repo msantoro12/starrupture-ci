@@ -488,9 +488,12 @@ built for as well as the new one.
   tab-separated fields (build, key, offset|size|mask, stored value, SDK value, reason). An entry excuses only the
   exact difference it names; another value on the same key, another field, another key or another build still
   holds. The reason is required. A line without one, or a list that cannot be read, holds the update with
-  `ci/sdk-table-differences.txt:<line>: ...` (a broken list is a defect in the repository, not missing evidence).
-  An excused difference is printed as a note in the log and in the step summary. Remove an entry when its cause is
-  fixed and the stored layout is corrected. The one entry today is `127004 FEnhancedActionKeyMapping::Key size
+  `sdk-table-differences.txt:<line>: ...` (a broken list is a defect in the repository, not missing evidence).
+  An excused difference is printed as a note in the log and in the step summary. A stored layout is never
+  replaced, so an entry stays while its build can still be the reference; remove it when that build no longer
+  is, or if the stored layout is ever corrected. The same scan fault gives the same size in the next build's
+  stored layout, so the update after that build holds until a line for it is added once the SDK value is
+  confirmed. The one entry today is `127004 FEnhancedActionKeyMapping::Key size
   0x50 0x18`: the layout scan reported the size of the enclosing struct (0x50) for that member, the SDK says 0x18
   (an `FKey`), and no row is published for the member, so the wrong stored value reaches nothing.
 - If any of that is missing, nothing is guessed. The run holds, and the hold names what
