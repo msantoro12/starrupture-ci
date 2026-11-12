@@ -21,6 +21,7 @@
 //        (--fp <hex> | --owners <owner>[,<owner>...])
 //   node ci/version-map.mjs add-field <header> --key <key> --cl <CL> --offset <hex> --size <hex>
 //        [--mask <hex>] [--member <name>]
+//   node ci/version-map.mjs add-absent-field <header> --key <Class::Member> --cl <CL>
 //   node ci/version-map.mjs replace-build <header> --cl <CL> --stamp <hex> --size <hex> --source <text>
 //   node ci/version-map.mjs remove-key <header> --key <key>
 //   node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
@@ -33,7 +34,7 @@
 //   node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>]
 //
 // init writes an empty map; it refuses to overwrite a file.
-// add-build, add-function, add-absent and add-field add one row. A row that is
+// add-build, add-function, add-absent, add-field and add-absent-field add one row. A row that is
 // already there with the same values changes nothing; one with other values is
 // an error, so a run never rewrites what an earlier run verified. The one
 // exception is an absent row (loader map only: CI could not place the key on
@@ -980,7 +981,7 @@ function only(opt, allowed, cmd) {
   for (const k of Object.keys(opt)) need(allowed.includes(k), `${cmd} takes no --${k}`);
 }
 
-const USAGE = 'usage: version-map.mjs init|add-build|add-function|add-absent|add-field|replace-build|remove-key|prune|check|export-feed|import-published|check-preserve|restore-published|carry-keys <header> [options]; see the comment at the top of ci/version-map.mjs';
+const USAGE = 'usage: version-map.mjs init|add-build|add-function|add-absent|add-field|add-absent-field|replace-build|remove-key|prune|check|export-feed|import-published|check-preserve|restore-published|carry-keys <header> [options]; see the comment at the top of ci/version-map.mjs';
 
 // The first 20 lines of a list, and how many more.
 const capped = (lines) => [...lines.slice(0, 20), ...(lines.length > 20 ? [`... and ${lines.length - 20} more`] : [])].map((l) => `  ${l}\n`).join('');
@@ -1033,6 +1034,12 @@ export function main(argv) {
     const map = load();
     const r = { key: opt.key, cl: num(opt, 'cl', { required: true }), offset: num(opt, 'offset', { required: true, hexOnly: true }), size: num(opt, 'size', { required: true, hexOnly: true }), mask: num(opt, 'mask', { fallback: 0, hexOnly: true }), member: opt.member ?? null };
     save(map, addField(map, r) ? `added field row ${rowName(r)}` : `field row ${rowName(r)} already there`);
+  } else if (cmd === 'add-absent-field') {
+    only(opt, ['key', 'cl'], cmd);
+    need(typeof opt.key === 'string' && /^[A-Za-z_]\w*::[A-Za-z_]\w*$/.test(opt.key), '--key must be <Class::Member>');
+    const map = load();
+    const r = { key: opt.key, cl: num(opt, 'cl', { required: true }) };
+    save(map, addAbsentField(map, r) ? `added absent field ${rowName(r)}` : `absent field ${rowName(r)} already there`);
   } else if (cmd === 'replace-build') {
     only(opt, ['cl', 'stamp', 'size', 'source'], cmd);
     const map = load();

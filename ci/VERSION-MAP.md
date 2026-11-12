@@ -56,6 +56,7 @@ node ci/version-map.mjs add-absent <header> --key <key> --cl <CL> --kind <1-6>
      (--fp <hex> | --owners <owner>[,<owner>...])
 node ci/version-map.mjs add-field <header> --key <key> --cl <CL> --offset <hex> --size <hex>
      [--mask <hex>] [--member <name>]
+node ci/version-map.mjs add-absent-field <header> --key <Class::Member> --cl <CL>
 node ci/version-map.mjs replace-build <header> --cl <CL> --stamp <hex> --size <hex> --source <text>
 node ci/version-map.mjs remove-key <header> --key <key>
 node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
@@ -90,6 +91,10 @@ node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <C
 - `add-field` adds the row for one field key on one build. `--member` is the
   member's new name when it was renamed. Offsets, sizes and masks are hex; a
   mask needs size 1.
+- `add-absent-field` (loader map only) records that a field key does not exist
+  on a build. It is refused when the key has a field row for that build or the
+  build is not in the header. These entries stay in the header; the published
+  file does not carry them.
 - The same row added again changes nothing (exit 0). A row with other values
   for a key, `fp` and build already in the map is an error: a run never
   rewrites what an earlier run verified. The one exception is an absent row: a
