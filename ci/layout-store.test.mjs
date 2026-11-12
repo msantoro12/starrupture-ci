@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { emit, exportFeed, parse } from './version-map.mjs';
-import { PUBLISHED, SCHEMA, assetName, buildRecord, main, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
+import { renderHeader } from './layout-table.mjs';
+import { PUBLISHED, SCHEMA, SDK_TABLES, assetName, buildRecord, main, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
 
 const HEADER = readFileSync(new URL('./fixtures/version-map/loader.h', import.meta.url), 'utf8');
 // The fixture header: built for CL-127004, whose build row is public build 25646882.
@@ -284,6 +285,73 @@ test('published cross-check: a file that is absent, unreadable, without rows for
   assert.throws(() => ref({ ...rec(swap('AFoo::Bar', { offset: 24 })), args: { headerText: headerWith(HROWS), fields: new Set(), published: { text: null, release: null } } }), /disagrees with the header's field rows/);
 });
 
+// ---- cross-check against the SDK tables -------------------------------------------
+
+// A table as `layout-table.mjs gen` writes it for a run on another build: kBuiltCL is that build's, not the SDK's.
+const trow = (member, offset, size, mask = 0) => ({ member, offset, size, mask });
+const tclass = (name, rows = [], sizeOf = 0, kind = 1) => ({ name, sizeOf, alignOf: sizeOf ? 8 : 0, kind, path: '', rows });
+const tableText = (classes, over = {}) => renderHeader({ cl: 129402, detail: 1, granularity: 2, classes, ...over });
+const SDK_HEADER = (cl = 127004) => `#pragma once\n\n// StarRupture\n// 5.6.1-${cl}+++Earth20+Neon\n\n#include "SDK/Basic.hpp"\n`;
+const TCLASSES = [
+  tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 24, 8)]), tclass('UCrBig', [], 0x40, 2),
+  tclass('UCrFlag', [trow('bOn', 0x565, 1, 0x10)]),
+];
+const sdkOf = (classes = TCLASSES, over = {}) => ({ header: SDK_HEADER(), tables: [{ name: 'table-A.h', text: tableText(classes) }], ...over });
+const viaSdk = (sdk, recs = RECS2) => ref({ ...rec(recs), args: { headerText: headerWith([]), fields: new Set(), sdkTables: sdk } });
+const skipsSdk = (sdk, re, recs) => { const r = viaSdk(sdk, recs); assert.match(r.sdkSkipped, re); assert.equal(r.sdkCompared, 0); assert.equal(r.cl, 127004); };
+
+test('SDK cross-check: equal data passes and counts what it compared; a record key the table lacks (native, loader) is ignored', () => {
+  const r = viaSdk(sdkOf());
+  assert.equal(r.sdkSkipped, null);
+  assert.equal(r.sdkCompared, 4, 'AFoo::Bar, AFoo::Baz, UCrBig and UCrFlag::bOn; FTransform::Translation is in the record only');
+  assert.equal(viaSdk(sdkOf([...TCLASSES, tclass('AGone', [trow('NotInRecord', 8, 8)])])).sdkCompared, 4, 'a table key the record lacks is not compared');
+});
+
+test('SDK cross-check: a wrong offset, size, mask or class size in the record refuses and names the key with both values', () => {
+  const sdk = sdkOf();
+  assert.throws(() => viaSdk(sdk, patched('AFoo::Baz', { offset: 32 })), /disagrees with the SDK table's field rows.*1 of 4 keys.*AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x20\/0x8\/0x0/);
+  assert.throws(() => viaSdk(sdk, patched('AFoo::Baz', { size: 4 })), /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x18\/0x4\/0x0/);
+  assert.throws(() => viaSdk(sdk, patched('UCrFlag::bOn', { boolMask: 0x20 })), /UCrFlag::bOn: SDK table 0x565\/0x1\/0x10, record 0x565\/0x1\/0x20/);
+  assert.throws(() => viaSdk(sdk, patched('UCrBig', { size: 0x48 })), /UCrBig: SDK table 0x0\/0x40\/0x0, record 0x0\/0x48\/0x0/);
+  assert.throws(() => viaSdk(sdk, patched('AFoo::Baz', { result: 'NOMEMBER' })), /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record NOMEMBER/);
+});
+
+test('SDK cross-check: a class size of 0 and a member size of 0 mean unknown; a nested class name is a class', () => {
+  const classes = [...TCLASSES, tclass('ASized', [trow('Unsized', 40, 0)]), tclass('FOuter::FInner', [], 0x10, 2)];
+  const recs = [...RECS2, entry('ASized::Unsized', 40), { key: 'FOuter::FInner', result: 'OK', size: 0x10 }];
+  assert.equal(viaSdk(sdkOf(classes), recs).sdkCompared, 6);
+  assert.throws(() => viaSdk(sdkOf(classes), recs.map((k) => (k.key === 'ASized::Unsized' ? { ...k, offset: 48 } : k))), /ASized::Unsized: SDK table 0x28\/null\/0x0, record 0x30\/0x8\/0x0/);
+  assert.throws(() => viaSdk(sdkOf(classes), recs.map((k) => (k.key === 'FOuter::FInner' ? { ...k, size: 0x18 } : k))), /FOuter::FInner: SDK table 0x0\/0x10\/0x0, record 0x0\/0x18\/0x0/);
+});
+
+test('SDK cross-check: fewer than half of the table rows in the record refuses', () => {
+  const more = (n) => tclass('AMore', Array.from({ length: n }, (_, i) => trow(`k${i}`, 8 * i, 8)));
+  assert.throws(() => viaSdk(sdkOf([...TCLASSES, more(5)])), /entry for only 4 of the SDK table's 9 field rows.*too few/);
+  assert.equal(viaSdk(sdkOf([...TCLASSES, more(4)])).sdkCompared, 4, 'exactly half is enough');
+});
+
+test('SDK cross-check: without tables, with tables of another build or with unusable ones, it is skipped with a reason and never refuses', () => {
+  const wrong = patched('AFoo::Baz', { offset: 32 });
+  skipsSdk(null, /no SDK tables were given/, wrong);
+  skipsSdk({ header: SDK_HEADER(), tables: [] }, /no table-\*\.h file was given/, wrong);
+  skipsSdk(sdkOf(TCLASSES, { header: SDK_HEADER(129402) }), /describe CL-129402, the stored layout is CL-127004/, wrong);
+  skipsSdk(sdkOf(TCLASSES, { header: null }), /sdk-header.txt is missing or names no SDK build/, wrong);
+  skipsSdk(sdkOf(TCLASSES, { header: '// 5.6.1\n' }), /names no SDK build/, wrong);
+  skipsSdk({ header: SDK_HEADER(), tables: [{ name: 'table-B.h', text: 'not a table' }] }, /table-B.h: kFormatVersion not found/, wrong);
+  skipsSdk({ header: SDK_HEADER(), tables: [{ name: 'table-C.h', text: tableText(TCLASSES, { detail: 0 }) }] }, /table-C.h carries no sizes or masks/, wrong);
+  // Skipping is for missing evidence only: the same wrong record is refused when the tables are there.
+  assert.throws(() => viaSdk(sdkOf(), wrong), /disagrees with the SDK table's/);
+});
+
+test('SDK cross-check: tables of several plugins are merged; a blueprint class is left out; the header rows still check first', () => {
+  const second = { name: 'table-B.h', text: tableText([tclass('AFoo', [trow('Bar', 16, 8)]), tclass('UBp_C', [trow('X', 1, 1)], 0, 4)]) };
+  const sdk = sdkOf();
+  assert.equal(viaSdk({ ...sdk, tables: [...sdk.tables, second] }).sdkCompared, 4, 'AFoo::Bar in both tables counts once, UBp_C is not a key');
+  const conflicting = { name: 'table-B.h', text: tableText([tclass('AFoo', [trow('Bar', 20, 8)])]) };
+  assert.throws(() => viaSdk({ ...sdk, tables: [...sdk.tables, conflicting] }), /AFoo::Bar: SDK table 0x14\/0x8\/0x0, record 0x10\/0x8\/0x0/);
+  assert.throws(() => ref({ ...rec(swap('AFoo::Bar', { offset: 24 })), args: { headerText: headerWith(HROWS), fields: new Set(), sdkTables: sdk } }), /disagrees with the header's field rows/);
+});
+
 test('reference: refuses malformed records', () => {
   for (const bad of ['not json', '{}', JSON.stringify({ ...make(), schema: 2 }), JSON.stringify({ ...make(), exeSha256: 'zz' }),
     JSON.stringify({ ...make(), keys: 'x' }), JSON.stringify({ ...make(), keys: [{ key: 'A::b', result: 'OK' }] }), JSON.stringify({ ...make(), buildid: 'abc' })]) {
@@ -357,6 +425,31 @@ test('command line: --published names a directory; its file is cross-checked, an
   writeFileSync(join(sub, 'release.json'), JSON.stringify(pub.release));
   writeFileSync(join(sub, PUBLISHED.asset), pub.text.replace('AFoo::Bar\t127004\t0x10', 'AFoo::Bar\t127004\t0x18'));
   assert.equal(run([...args, '--published', sub]).code, 3, 'a changed offset in the file refuses');
+});
+
+test('command line: --sdk-tables names a directory; its tables are cross-checked, and anything missing there is skipped with one line', () => {
+  const text = JSON.stringify(make(), null, 2) + '\n';
+  const p = inDir({ 'header.h': HEADER, 'rec.json': text, 'release.json': JSON.stringify(releaseFor(text)), 'native-keys.txt': '', 'layout-keys.txt': [...FIELDS].join('\n') + '\n' });
+  const sub = mkdtempSync(join(tmpdir(), 'layout-store-sdk-'));
+  const put = (name, body) => writeFileSync(join(sub, name), body);
+  put(SDK_TABLES.header, SDK_HEADER());
+  put('table-A.h', tableText([tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 24, 8)]), tclass('UWorld', [trow('GameState', 0x120, 8)])]));
+  put('notes.txt', 'ignored');
+  const args = ['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json')];
+  const ok = run([...args, '--sdk-tables', sub]);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /the SDK tables agree with the stored layout on 3 keys/);
+  assert.doesNotMatch(run(args).out, /SDK/, 'without the option nothing about it is printed');
+  const none = run([...args, '--sdk-tables', join(sub, 'nowhere')]);
+  assert.equal(none.code, 0, none.err);
+  assert.match(none.out, /cross-check against the SDK tables was skipped: no table-\*\.h file was given/);
+  put(SDK_TABLES.header, SDK_HEADER(129402));
+  assert.match(run([...args, '--sdk-tables', sub]).out, /skipped: the SDK tables describe CL-129402/);
+  put(SDK_TABLES.header, SDK_HEADER());
+  put('table-A.h', tableText([tclass('AFoo', [trow('Bar', 20, 8), trow('Baz', 24, 8)])]));
+  const bad = run([...args, '--sdk-tables', sub]);
+  assert.equal(bad.code, 3, 'a changed offset in a table refuses');
+  assert.match(bad.err, /AFoo::Bar: SDK table 0x14\/0x8\/0x0, record 0x10\/0x8\/0x0/);
 });
 
 test('command line: keys the stored layout lacks are written without a reference and named in one line', () => {
