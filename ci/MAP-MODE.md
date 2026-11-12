@@ -408,6 +408,10 @@ a plugin uses or requests, as a UClass already did.
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
 - A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
+  The loader's optional lines are the two heap members and the six image-library members
+  (`UTexture::PrivateResource`, `FTexture::TextureRHI`, `FD3D12Texture::ResourceLocation`,
+  `FD3D12ResourceLocation::UnderlyingResource`, `FD3D12Resource::DefaultResourceState`,
+  `FD3D12Resource::Resource`): a build without one gets an absent row, the exit stays 0.
 - A class whose size changed is a note when nothing depends on its whole size or the
   only users read it live from the running game (`SR_SIZE`, `size <Class> live`: the
   game answers with its own size on every build), and

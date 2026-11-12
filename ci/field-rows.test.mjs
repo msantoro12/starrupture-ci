@@ -672,6 +672,43 @@ test('ci/native-keys.txt lists the loader\'s two optional heap members', () => {
   }
 });
 
+const IMAGE_KEYS = [
+  'UTexture::PrivateResource',
+  'FTexture::TextureRHI',
+  'FD3D12Texture::ResourceLocation',
+  'FD3D12ResourceLocation::UnderlyingResource',
+  'FD3D12Resource::DefaultResourceState',
+  'FD3D12Resource::Resource',
+];
+
+test('ci/native-keys.txt lists the loader\'s six optional image-library members', () => {
+  const keys = keysFromCheck(readFileSync(join(here, 'native-keys.txt'), 'utf8'), '');
+  for (const key of IMAGE_KEYS) {
+    assert.deepEqual(keys.owners.get(key), ['ModLoader'], key);
+    assert.ok(keys.optionalBy.get(key).has('ModLoader'), key);
+    assert.ok(keys.optionalFields.has(key), key);
+  }
+});
+
+test('with the real native-keys.txt, a missing image-library row is an absent row and exit stays clean; a loader field key still refuses', () => {
+  const keys = keysFromCheck(readFileSync(join(here, 'native-keys.txt'), 'utf8'), '');
+  for (const key of IMAGE_KEYS) {
+    for (const result of ['NOMEMBER', 'NOTYPE', 'BITFIELD']) {
+      const out = fieldRows(header(), { cl: 130000, keys, next: [{ key, result }], base: null });
+      assert.ok(!out.problems.some((p) => p.includes(key)), `${key} ${result}`);
+    }
+    const gone = fieldRows(header(), { cl: 130000, keys, next: [{ key, result: 'NOMEMBER' }], base: null });
+    assert.ok(gone.absent.some((a) => a.key === key && a.severity === 'low'), key);
+    const unscanned = fieldRows(header(), { cl: 130000, keys, next: [], base: null });
+    assert.ok(!unscanned.problems.some((p) => p.includes(key)), key);
+  }
+  // The same file with one more loader line that is not optional: that one still refuses.
+  const strict = keysFromCheck(readFileSync(join(here, 'native-keys.txt'), 'utf8') + '\nModLoader FCoverage::Member\n', '');
+  const refused = fieldRows(header(), { cl: 130000, keys: strict, next: [{ key: 'FCoverage::Member', result: 'NOMEMBER' }], base: null });
+  assert.equal(refused.text, null);
+  assert.ok(refused.problems.some((p) => p.includes('FCoverage::Member')));
+});
+
 test('a reflected key that only the new build resolves gets a row from the new values and a note; it holds nothing', () => {
   const k = unionKeys([parseKeys(KEYS + 'field UCrNew::Thing\nfield UCrNeither::Thing\n')]);
   const extra = (a, b) => [[...base(), a], [...next(), b]];
