@@ -917,16 +917,47 @@ test('restorePublished: an absent published row that the run gave an address is 
   assert.deepEqual(restorePublished(map, p.read(), 130001), { kept: [], differs: ['function UCrPublished::NoAddress @ CL-130001'] });
 });
 
-test('restorePublished: the retired and changed lists keep their rows out; other builds are not touched', () => {
+test('restorePublished: a retired row stays out; a changed-list row is put back only when the run left it out', () => {
   const { map, read } = remeasured();
   const out = restorePublished(map, read, 128786, { retired: list(['function', 'GWorld', '128786', 'x']), changed: list(['field', 'UCrSomething::bFlag', '128786', 'x']) });
-  assert.ok(!out.kept.some((k) => /GWorld|bFlag/.test(k.name)));
-  assert.equal(map.functions.some((r) => r.key === 'GWorld' && r.cl === 128786), false);
-  assert.equal(map.fields.some((r) => r.key === 'UCrSomething::bFlag' && r.cl === 128786), false);
+  assert.ok(!out.kept.some((k) => /GWorld/.test(k.name)));
+  assert.equal(map.functions.some((r) => r.key === 'GWorld' && r.cl === 128786), false, 'retired: not put back');
+  assert.ok(out.kept.some((k) => k.name === 'field UCrSomething::bFlag @ CL-128786'), 'the changed list excuses a change, never a loss');
+  // Measured with another value, the changed-list row stays as measured and is not a difference.
+  const field = published().map.fields.find((r) => r.cl === 128786 && r.key === 'UCrSomething::bFlag');
+  const m = remeasured({ fields: [{ ...field, offset: field.offset + 8 }] });
+  assert.deepEqual(restorePublished(m.map, m.read, 128786, { changed: list(['field', 'UCrSomething::bFlag', '128786', 'x']) }).differs, []);
+  assert.equal(m.map.fields.find((r) => r.key === field.key && r.cl === 128786).offset, field.offset + 8);
   const again = remeasured();
   const before = emit(again.map);
   assert.deepEqual(restorePublished(again.map, again.read, 999999), { kept: [], differs: [] });
   assert.equal(emit(again.map), before);
+});
+
+test('restorePublished: an absent row measured with fewer owners is put back; with an owner more it is a difference', () => {
+  const p = published();
+  const owned = (owners) => {
+    const read = p.read();
+    read.functions = read.functions.map((r) => (r.key === 'UCrPublished::NoAddress' ? { ...r, owners: ['BetterDrone', 'WAILA'] } : r));
+    const map = importPublished(lacking(), p.read()).map;
+    map.functions = map.functions.map((r) => (r.key === 'UCrPublished::NoAddress' ? { ...r, owners } : r));
+    return { map, read };
+  };
+  const fewer = owned(['WAILA']);
+  assert.deepEqual(restorePublished(fewer.map, fewer.read, 130001), { kept: [{ name: 'function UCrPublished::NoAddress @ CL-130001', why: 'the run measured fewer owners for it' }], differs: [] });
+  assert.deepEqual(fewer.map.functions.find((r) => r.key === 'UCrPublished::NoAddress').owners, ['BetterDrone', 'WAILA']);
+  const more = owned(['WAILA', 'Zed']);
+  assert.deepEqual(restorePublished(more.map, more.read, 130001), { kept: [], differs: ['function UCrPublished::NoAddress @ CL-130001'] });
+});
+
+test('restorePublished: another exe at the same CL keeps nothing, and the build line is the difference', () => {
+  const { p, map, read } = remeasured();
+  map.builds = map.builds.map((b) => (b.cl === 128786 ? { ...b, stamp: b.stamp + 1 } : b));
+  const before = emit(map);
+  assert.deepEqual(restorePublished(map, read, 128786), { kept: [], differs: ['build CL-128786'] });
+  assert.equal(emit(map), before, 'no row of the old exe is put next to the new build row');
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(map)), p.map).violations.filter((v) => v.startsWith('build')), ['build CL-128786: differs in stamp']);
+  assert.deepEqual(restorePublished(map, read, 128786, { changed: list(['build', '-', '128786', 'x']) }), { kept: [], differs: [] }, 'a listed build change is not named again');
 });
 
 test('restorePublished: twice is the same as once', () => {

@@ -358,7 +358,7 @@ In `sr-client-check.yml`:
 
 ```
 node ci/field-rows.mjs write <header> --cl <CL> --next <layout.json> [--base <layout.json>]
-    (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list>) [--report <file>]
+    (--keys <keys.txt>... | --native-keys <native-keys.txt> --layout-keys <list>) [--carry-keys <file>] [--report <file>]
 ```
 
 The client check has no per-component key lists; it gives `ci/native-keys.txt` and the
@@ -708,12 +708,15 @@ the chain step runs `version-map.mjs restore-published` for the run's build:
 
 - A published row the run did not measure is put back as published.
 - A published function row that the run measured as absent (no address) is put back as the real row.
-  The same holds for a member row the run found no member for. A real published row is never
-  replaced by an absent one.
+  The same holds for a member row the run found no member for, and for an absent row the run measured
+  with fewer owners. A real published row is never replaced by an absent one.
 - A row the run measured with other content (offset, size, mask, address or pattern) stays as measured.
   The preserve check then holds on it, and the message says so: add the row to `ci/changed-rows.txt`
   with a reason if the new content is right.
-- A row in `ci/retired-rows.txt` or `ci/changed-rows.txt` is not put back.
+- A row in `ci/retired-rows.txt` is not put back. A row in `ci/changed-rows.txt` that the run measured is left
+  as measured; one the run left out is put back, because that list excuses a change, never a loss.
+- If the run's build row is not the published one (another exe at the same CL), nothing is put back:
+  the preserve check holds on the build line.
 
 Each kept row is printed in the job log and listed in the step summary ("Published rows of CL-<n> in a
 re-measure"), with the reason: `the run did not measure it`, `the run found no address for it` or
@@ -951,12 +954,13 @@ no plugin code, no game file.
 2. `field-rows.mjs write` from the PDB layouts of the check (`layout-target.json`,
    `layout-reference.json`, `layout-keys.txt`, `ci/native-keys.txt`). A refusal (exit 3) does
    not fail the job; it writes the report and decide holds. Any other failure (exit 2, a
-   missing or malformed input) fails the job. The check writes `layout-reference.json` only
+   missing or malformed input) fails the job. `--carry-keys` takes the keys of "Carried field keys" (below). The check writes `layout-reference.json` only
    when it has an older build to compare with (not on the `public` branch, which has no older
    build to download). On `public` the step reads the stored layout instead (see "Where the
    reference layout comes from" under Step 28). With no reference at all the step runs with no
    `--base` and field-rows refuses while a reflected key is listed, so decide holds with that
-   reason.
+   reason. On a test run with a published file, `version-map.mjs restore-published` then puts the
+   published rows of the build back that the run did not measure ("A re-measure keeps published rows").
 3. `decide.mjs` with the gates built from the check: G1 the builds, G2 the check, G3
    the CL against the one the header was built for, G4 the client registry scan (the
    client check alone decides; no dedicated-server scan is read), G5 the classes

@@ -772,3 +772,19 @@ test('a carried key the run already lists, or a register-sized one, is not writt
   assert.equal(row(out.text, 'FTransform::Scale3D'), undefined);
   assert.equal(row(out.text, 'ACrCrafter::CraftComponent').offset, 0x6e0, 'the listed key keeps its own row');
 });
+
+test('the command line takes --carry-keys: one key per line, comments and blank lines skipped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fieldrows-'));
+  const w = (name, doc) => { writeFileSync(join(dir, name), typeof doc === 'string' ? doc : JSON.stringify(doc)); return join(dir, name); };
+  const h = w('v.h', header());
+  const run = spawnSync(process.execPath, [TOOL, 'write', h, '--cl', '130000', '--next', w('n.json', { keys: [...next(), ent('UCrCarried::Member', 0x48, 8)] }), '--base', w('b.json', { keys: base() }),
+    '--keys', w('k.txt', KEYS), '--carry-keys', w('c.txt', '# carried\r\nUCrCarried::Member\r\n\r\nUCrNotAsked::Member\r\n'), '--report', join(dir, 'r.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(row(readFileSync(h, 'utf8'), 'UCrCarried::Member').offset, 0x48);
+  const report = JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8'));
+  assert.equal(report.added, 5);
+  assert.deepEqual(report.notes.filter((n) => n.includes('carried')), [
+    'UCrCarried::Member: carried from the published build; resolved on CL-130000, row written',
+    "UCrNotAsked::Member: carried from the published build; not in the new build's report on CL-130000, no row",
+  ]);
+});

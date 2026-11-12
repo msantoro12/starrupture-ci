@@ -28,6 +28,9 @@
 //   node ci/version-map.mjs export-feed <header> --out <file>
 //   node ci/version-map.mjs import-published <header> --published <signed feed> [--retired <file>] [--changed <file>]
 //   node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retired <file>] [--changed <file>]
+//   node ci/version-map.mjs restore-published <header> --published <signed feed> --cl <CL> [--retired <file>]
+//        [--changed <file>] [--report <file>]
+//   node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>]
 //
 // init writes an empty map; it refuses to overwrite a file.
 // add-build, add-function, add-absent and add-field add one row. A row that is
@@ -53,8 +56,9 @@
 // rows (the first 20 and the count), when a published line is missing from it or has other content,
 // unless the retired or changed list names it. The signature is checked first here too.
 // restore-published puts back the published rows of --cl that a re-measure (a test run on a published build) dropped
-// and did not measure again, or measured as absent where the published row has an address; a row it measured
-// with other content stays, and check-preserve holds on it. carry-keys <keys file> writes (--out) the field keys of
+// and did not measure again, or measured as absent where the published row has an address (or with fewer owners);
+// a row it measured with other content stays, and check-preserve holds on it. It puts back nothing when the
+// run's build row for --cl is not the published one. carry-keys <keys file> writes (--out) the field keys of
 // the newest published build that the key list does not name, for a build the file does not hold yet. The retired
 // list is honoured by both, the changed list by restore-published. Both read the file only after its signature verifies.
 // Both lists: tab-separated `<function|field|build> <key> <CL> <reason>`, a reason on every entry;
@@ -768,28 +772,39 @@ export function preserveCheck(next, published, { retired = NO_ROWS, changed = NO
 
 // A re-measure of a published build drops every row of that build and writes the ones it measured.
 // This puts back each published row of `cl` that the run did not measure, or measured as absent where
-// the published row has an address, changing `map` in place. A row the run measured with other content
-// stays as measured (check-preserve holds on it unless the changed list names it), and a retired or
-// changed row is left alone. Returns { kept: [{ name, why }], differs: [name] }.
+// the published row has an address (or, for an absent row, with fewer owners), changing `map` in place.
+// A row the run measured with other content stays as measured (check-preserve holds on it unless the
+// changed list names it). A retired row is left alone, and so is a changed-list row the run measured; one
+// the run left out is put back, since the list excuses a change and never a loss. A run whose build row is
+// not the published one (another exe at the same CL) keeps nothing: its rows are not the published rows.
+// Returns { kept: [{ name, why }], differs: [name] }.
 export function restorePublished(map, published, cl, { retired = NO_ROWS, changed = NO_ROWS } = {}) {
   need(map.flavour === 'loader', "the published feed is the loader map's");
   const kept = [];
   const differs = [];
-  const skip = (kind, key) => isRetired(retired, kind, key, cl) || changed.has(kind, key, cl);
+  const build = published.builds.find((b) => b.cl === cl);
+  const mine = map.builds.find((b) => b.cl === cl);
+  if (build && mine && canon(build) !== canon(mine)) {
+    if (!isRetired(retired, 'build', '-', cl) && !changed.has('build', '-', cl)) differs.push(`build CL-${cl}`);
+    return { kept, differs };
+  }
   const kinds = new Map(map.functions.map((r) => [r.key, r.kind]));
-  for (const p of published.functions.filter((r) => r.cl === cl && !skip('function', r.key))) {
+  const subset = (a, b) => a === null || (b !== null && a.every((o) => b.includes(o)));
+  for (const p of published.functions.filter((r) => r.cl === cl && !isRetired(retired, 'function', r.key, cl))) {
     const have = map.functions.find((r) => fnId(r) === fnId(p));
-    if (have && canon(have) === canon(p)) continue;
+    if (have && (canon(have) === canon(p) || changed.has('function', p.key, cl))) continue;
     const name = `function ${rowName(p)}`;
-    if ((have && !(have.absent && !p.absent)) || (kinds.has(p.key) && kinds.get(p.key) !== p.kind)) { differs.push(name); continue; }
+    const sameKind = !kinds.has(p.key) || kinds.get(p.key) === p.kind;
+    const omitted = have && have.absent && (!p.absent || (p.absent && subset(have.owners, p.owners)));
+    if (!sameKind || (have && !omitted)) { differs.push(name); continue; }
     map.functions = map.functions.filter((r) => fnId(r) !== fnId(p));
     map.functions.push(structuredClone(p));
-    kept.push({ name, why: have ? 'the run found no address for it' : 'the run did not measure it' });
+    kept.push({ name, why: !have ? 'the run did not measure it' : p.absent ? 'the run measured fewer owners for it' : 'the run found no address for it' });
   }
-  for (const p of published.fields.filter((r) => r.cl === cl && !skip('field', r.key))) {
+  for (const p of published.fields.filter((r) => r.cl === cl && !isRetired(retired, 'field', r.key, cl))) {
     const have = map.fields.find((r) => fieldId(r) === fieldId(p));
     if (have) {
-      if (canon(have) !== canon(p)) differs.push(`field ${rowName(p)}`);
+      if (canon(have) !== canon(p) && !changed.has('field', p.key, cl)) differs.push(`field ${rowName(p)}`);
       continue;
     }
     const gone = (map.absentFields ?? []).some((r) => fieldId(r) === fieldId(p));
@@ -1050,7 +1065,7 @@ export function main(argv) {
     writeFileSync(opt.out, text);
     process.stderr.write(`version-map: ${opt.out}: feed format ${FEED_FORMAT}, ${text.split('\n').length - 1} lines, ${Buffer.byteLength(text)} bytes\n`);
   } else if (['import-published', 'check-preserve', 'restore-published', 'carry-keys'].includes(cmd)) {
-    only(opt, ['published', 'retired', 'changed', 'allow-test-key', ...(cmd === 'restore-published' ? ['cl', 'report'] : cmd === 'carry-keys' ? ['cl', 'out'] : [])], cmd);
+    only(opt, ['published', 'retired', 'allow-test-key', ...(cmd === 'carry-keys' ? ['cl', 'out'] : ['changed', ...(cmd === 'restore-published' ? ['cl', 'report'] : [])])], cmd);
     need(typeof opt.published === 'string', '--published is required');
     let published;
     try {
