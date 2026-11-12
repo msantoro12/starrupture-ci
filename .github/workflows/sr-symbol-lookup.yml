@@ -1,6 +1,8 @@
 name: SR symbol lookup
 
-run-name: SR symbol lookup ${{ inputs.branch }} ${{ inputs.symbol }}
+# The branch is a choice GitHub checks; the symbol is free text until the first step has checked
+# it, so it is not put in the title (other workflows print run titles to their logs).
+run-name: SR symbol lookup ${{ inputs.branch }}
 
 # Looks a function name up in the PDB of one Steam build of StarRupture and lists every overload
 # of it: the decorated name, the undecorated signature with its argument list, the RVA, the file

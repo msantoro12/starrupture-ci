@@ -612,6 +612,7 @@ test('workflow: an input is data: it only ever reaches a step through env, never
     if (!/\$\{\{\s*(?:inputs|github\.event\.inputs)\./.test(line)) continue;
     assert.match(line, /^(?:run-name: .*|\s+[A-Z_]+: \$\{\{ inputs\.\w+ \}\})$/, `an input outside env: ${line.trim()}`);
   }
+  assert.equal(/^run-name: (.*)$/m.exec(wf)[1], 'SR symbol lookup ${{ inputs.branch }}', 'only the branch (a choice) is in the run title');
   for (const s of steps) {
     const run = s.text.includes('\n        run: ') ? s.text.slice(s.text.indexOf('\n        run: ')) : '';
     assert.ok(!/\$\{\{/.test(run), `${s.name}: no expression inside a run block`);
