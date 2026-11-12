@@ -445,7 +445,7 @@ test('sr-data-extract.yml: the run name is what the script looks for', () => {
 test('sr-data-extract.yml: a cancelled run does not fail on top of the cancel', () => {
   const step = dataExtract.replace(/\r\n/g, '\n').split('      - name: Outputs and result')[1];
   assert.ok(step, 'the last step is there');
-  assert.match(step, /^ {10}CANCELLED: \$\{\{ cancelled\(\) \}\}$/m);
+  assert.match(step, /^ {10}CANCELLED: \$\{\{ job\.status == 'cancelled' \}\}$/m);
   assert.match(step, /if \(\$status -ne 'ok' -and \$env:CANCELLED -ne 'true'\) \{[^\n]*exit 1 \}/);
 });
 

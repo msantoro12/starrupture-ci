@@ -522,7 +522,7 @@ jobs:
           CLEANUP: ${{ steps.cleanup.outcome }}
           USMAP_OK: ${{ steps.usmap.outputs.ok }}
           UPLOAD: ${{ steps.upload.outcome }}
-          CANCELLED: ${{ cancelled() }}
+          CANCELLED: ${{ job.status == 'cancelled' }}
         run: |
           # One status, and the reason of the stage that set it:
           #   login-failed    the launch could not sign in (rig-login-failed.txt; reason: rig-reason.txt)
