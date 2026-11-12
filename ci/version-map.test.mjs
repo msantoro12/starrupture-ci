@@ -9,15 +9,17 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, parse, parseFeed, parseKeys, prune,
-  removeKey, replaceBuild, unionKeys,
+  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addBuild, addField, addFunction, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
+  parseFeed, parseKeys, parseRowList, preserveCheck, prune, readPublished, removeKey, replaceBuild, unionKeys,
 } from './version-map.mjs';
+import { signFeed } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIX = join(here, 'fixtures', 'version-map');
@@ -630,4 +632,224 @@ test('feedDelta: a row the header lacks is added, a row the header has with othe
   // A CL the header has no rows for at all: everything is added.
   const d = feedDelta(feed, { ...header, builds: [], functions: [], fields: [] }, 127004);
   assert.deepEqual([d.changed.length, d.added.length], [0, 1 + header.functions.filter((r) => r.cl === 127004).length + header.fields.filter((r) => r.cl === 127004).length]);
+});
+
+// ---- The published file is part of the base ------------------------------------------------------
+
+const UC = 'UCrSomething::Function';
+const keyPair = () => {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  return { pem: privateKey.export({ type: 'pkcs8', format: 'pem' }), keys: { k1: { hex: publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex'), test: false } } };
+};
+const thrown = (fn) => { try { fn(); } catch (e) { return e; } return null; };
+const rowOf = (key, cl, extra = {}) => ({ key, kind: 1, fp: 0, cl, absent: false, pattern: 'AA 55', resultOffset: 0, followRel32At: -1, followRipDispAt: -1, rva: 0x5500, owners: null, ...extra });
+const goneRow = (r, owners = ['WAILA']) => ({ ...r, absent: true, pattern: null, rva: 0, resultOffset: 0, followRel32At: -1, followRipDispAt: -1, owners });
+
+// The published file: the fixture's data plus a build and rows the fixture's header does not have, signed.
+function published() {
+  const k = keyPair();
+  const map = parseFeed(exportFeed(parse(fixture('loader.h'))));
+  map.builds.push({ cl: 130001, stamp: 0x55555555, size: 0x05000000, source: 'steam_build 130001' });
+  map.functions.push(rowOf('UCrPublished::OnlyThere', 130001), goneRow(rowOf('UCrPublished::NoAddress', 130001)));
+  map.fields.push({ key: 'ATest::Native', cl: 130001, offset: 0x50, size: 4, mask: 0, member: null });
+  const text = signFeed(exportFeed(map), k.pem, { keyId: 'k1' }).text;
+  return { map, text, read: () => readPublished(text, { keys: k.keys }), keys: k.keys };
+}
+
+// The fixture's header without some of the published rows: two function rows and a field row of CL-128786.
+function lacking() {
+  const h = parse(fixture('loader.h'));
+  h.functions = h.functions.filter((r) => !(r.cl === 128786 && (r.key === 'GWorld' || r.key === BC)));
+  h.fields = h.fields.filter((r) => !(r.cl === 128786 && r.key === 'UCrSomething::bFlag'));
+  return h;
+}
+const feedLines = (map) => exportFeed(map).split('\n').slice(1, -1);
+const list = (...entries) => parseRowList(entries.map((e) => e.join('\t')).join('\n'));
+
+test('readPublished: a feed that verifies is read; a changed byte, another key, a missing sig and a TEST key are refused', () => {
+  const p = published();
+  assert.deepEqual(p.read().builds.map((b) => b.cl), [127004, 128786, 130001]);
+  const flipped = p.text.replace('0x00005500', '0x00005501');
+  assert.notEqual(flipped, p.text);
+  assert.ok(thrown(() => readPublished(flipped, { keys: p.keys })) instanceof SignatureRefused);
+  assert.ok(thrown(() => readPublished(p.text, { keys: keyPair().keys })) instanceof SignatureRefused, 'another key');
+  assert.ok(thrown(() => readPublished(p.text.replace(/sig\t.*\n$/, ''), { keys: p.keys })) instanceof SignatureRefused, 'no sig line');
+  const test = { k1: { ...p.keys.k1, test: true } };
+  assert.match(thrown(() => readPublished(p.text, { keys: test })).message, /TEST key/);
+  assert.equal(readPublished(p.text, { keys: test, allowTestKey: true }).builds.length, 3);
+});
+
+test('importPublished: adds the rows and the whole build the header lacks; the export holds every published row byte for byte', () => {
+  const p = published();
+  const base = lacking();
+  const out = importPublished(base, p.read());
+  assert.deepEqual(out.conflicts, []);
+  assert.deepEqual(out.added, { builds: 1, functions: 4, fields: 2 });
+  assert.equal(base.builds.length, 2, 'the input map is not changed');
+  const lines = new Set(feedLines(parse(emit(out.map))));
+  for (const l of feedLines(p.map)) assert.ok(lines.has(l), l);
+  assert.deepEqual(parseFeed(exportFeed(out.map)).builds.map((b) => b.cl), [127004, 128786, 130001]);
+  assert.equal(out.map.builtCL, 127004, 'the header keeps its built CL');
+});
+
+test('importPublished: twice is the same as once; rows only the header has stay; a header that has it all is unchanged', () => {
+  const p = published();
+  const base = lacking();
+  base.fields.push({ key: 'ZExtra::Member', cl: 128786, offset: 0x10, size: 4, mask: 0, member: null });
+  const once = importPublished(base, p.read());
+  const twice = importPublished(once.map, p.read());
+  assert.equal(emit(twice.map), emit(once.map));
+  assert.deepEqual(twice.added, { builds: 0, functions: 0, fields: 0 });
+  assert.ok(once.map.fields.some((r) => r.key === 'ZExtra::Member'));
+  const whole = importPublished(parse(fixture('loader.h')), parseFeed(exportFeed(parse(fixture('loader.h')))));
+  assert.equal(emit(whole.map), fixture('loader.h'));
+});
+
+test('importPublished: a row both hold with other content is a hold that names the row and merges nothing', () => {
+  const read = published().read();
+  const differ = (edit) => { const b = lacking(); edit(b); return importPublished(b, read); };
+  const fn = (b, key, cl) => b.functions.findIndex((r) => r.key === key && r.cl === cl);
+  const out = differ((b) => { b.functions[fn(b, 'GWorld', 127004)].rva += 0x10; });
+  assert.equal(out.map, null);
+  assert.deepEqual(out.conflicts, ['function GWorld @ CL-127004: differs in rva']);
+  assert.deepEqual(differ((b) => { b.fields.find((r) => r.key === 'ACrCrafter::CraftComponent' && r.cl === 127004).offset += 8; }).conflicts, ['field ACrCrafter::CraftComponent @ CL-127004: differs in offset']);
+  assert.deepEqual(differ((b) => { b.builds[1].stamp += 1; }).conflicts, ['build CL-128786: differs in stamp']);
+  // A verified row against an absent one, either way round, is a difference like any other.
+  assert.match(differ((b) => { const i = fn(b, 'GWorld', 127004); b.functions[i] = goneRow(b.functions[i]); }).conflicts[0], /^function GWorld @ CL-127004: differs in absent, .*owners, pattern, rva$/);
+  assert.match(differ((b) => { const i = fn(b, UC, 128786); b.functions[i] = rowOf(UC, 128786); }).conflicts[0], /^function UCrSomething::Function @ CL-128786: differs in absent, owners, pattern, rva/);
+  // The header records a member as absent where the published file has a row for it.
+  assert.deepEqual(differ((b) => { b.absentFields.push({ key: 'UCrSomething::bFlag', cl: 128786 }); }).conflicts, ['field UCrSomething::bFlag @ CL-128786: the header records the member as absent on this build, the published feed has a row']);
+  // A key the header has as another kind.
+  assert.match(differ((b) => { b.functions.push(rowOf('UCrPublished::OnlyThere', 127004, { kind: 4 })); }).conflicts[0], /^function UCrPublished::OnlyThere @ CL-130001: the header has the key as kind 4, the published feed as kind 1$/);
+});
+
+test('importPublished: the changed list keeps the header row, the retired list keeps a published row out', () => {
+  const read = published().read();
+  const base = lacking();
+  base.functions[base.functions.findIndex((r) => r.key === 'GWorld' && r.cl === 127004)].rva += 0x10;
+  const mine = base.functions.find((r) => r.key === 'GWorld' && r.cl === 127004);
+  const kept = importPublished(base, read, { changed: list(['function', 'GWorld', '127004', 'a newer address']) });
+  assert.deepEqual(kept.conflicts, []);
+  assert.deepEqual(kept.kept, ['function GWorld @ CL-127004: differs in rva']);
+  assert.equal(kept.map.functions.find((r) => r.key === 'GWorld' && r.cl === 127004).rva, mine.rva, 'the header row stands');
+  const retired = importPublished(lacking(), read, { retired: list(['function', 'UCrPublished::OnlyThere', '130001', 'gone'], ['field', 'ACrCrafter::CraftComponent', '128786', 'gone']) });
+  assert.ok(!retired.map.functions.some((r) => r.key === 'UCrPublished::OnlyThere'));
+  assert.ok(retired.map.functions.some((r) => r.key === 'UCrPublished::NoAddress'));
+  const wholeBuild = importPublished(lacking(), read, { retired: list(['build', '-', '130001', 'the build is gone']) });
+  assert.ok(!wholeBuild.map.builds.some((b) => b.cl === 130001) && !wholeBuild.map.functions.some((r) => r.cl === 130001) && !wholeBuild.map.fields.some((r) => r.cl === 130001));
+});
+
+test('preserveCheck: a file with every published line passes; a lost or changed line is named', () => {
+  const p = published();
+  const imported = parseFeed(exportFeed(importPublished(lacking(), p.read()).map));
+  assert.deepEqual(preserveCheck(imported, p.map), { violations: [], checked: feedLines(p.map).length });
+  const copy = () => parseFeed(exportFeed(imported));
+  const lost = copy();
+  lost.functions = lost.functions.filter((r) => r.key !== 'GWorld');
+  lost.fields = lost.fields.filter((r) => !(r.key === 'ATest::Native'));
+  assert.deepEqual(preserveCheck(lost, p.map).violations, ['function GWorld @ CL-127004: missing', 'function GWorld @ CL-128786: missing', 'field ATest::Native @ CL-130001: missing']);
+  const changed = copy();
+  changed.functions.find((r) => r.key === 'GWorld' && r.cl === 128786).rva += 4;
+  changed.functions[changed.functions.findIndex((r) => r.key === 'UCrPublished::OnlyThere')] = goneRow(rowOf('UCrPublished::OnlyThere', 130001));
+  changed.builds.find((b) => b.cl === 128786).size += 0x1000;
+  assert.deepEqual(preserveCheck(changed, p.map).violations, [
+    'build CL-128786: differs in size',
+    'function GWorld @ CL-128786: differs in rva',
+    'function UCrPublished::OnlyThere @ CL-130001: differs in absent, owners, pattern, rva',
+  ]);
+  const noBuild = copy();
+  noBuild.builds = noBuild.builds.filter((b) => b.cl !== 130001);
+  noBuild.functions = noBuild.functions.filter((r) => r.cl !== 130001);
+  noBuild.fields = noBuild.fields.filter((r) => r.cl !== 130001);
+  assert.equal(preserveCheck(noBuild, p.map).violations.length, 4, 'the build line and its three rows');
+});
+
+test('preserveCheck: retired entries excuse a missing line, changed entries a different one, and neither excuses the other', () => {
+  const p = published();
+  const imported = parseFeed(exportFeed(importPublished(lacking(), p.read()).map));
+  const lost = parseFeed(exportFeed(imported));
+  lost.functions = lost.functions.filter((r) => r.key !== 'GWorld');
+  const gworld = [['function', 'GWorld', '127004', 'x'], ['function', 'GWorld', '128786', 'x']];
+  assert.deepEqual(preserveCheck(lost, p.map, { retired: list(...gworld) }).violations, []);
+  assert.equal(preserveCheck(lost, p.map, { changed: list(...gworld) }).violations.length, 2, 'a change entry is not a retirement');
+  const changed = parseFeed(exportFeed(imported));
+  changed.functions.find((r) => r.key === 'GWorld' && r.cl === 128786).rva += 4;
+  assert.deepEqual(preserveCheck(changed, p.map, { changed: list(gworld[1]) }).violations, []);
+  assert.equal(preserveCheck(changed, p.map, { retired: list(gworld[0]) }).violations.length, 1, 'another build, another entry');
+  const noBuild = parseFeed(exportFeed(imported));
+  for (const f of ['builds', 'functions', 'fields']) noBuild[f] = noBuild[f].filter((r) => r.cl !== 130001);
+  assert.deepEqual(preserveCheck(noBuild, p.map, { retired: list(['build', '-', '130001', 'the build is gone']) }).violations, []);
+});
+
+test('the row lists: the committed files are empty, and an entry needs a kind, a key, a CL and a reason', () => {
+  for (const name of ['retired-rows.txt', 'changed-rows.txt']) assert.equal(parseRowList(readFileSync(join(here, name), 'utf8'), name).size, 0, name);
+  assert.equal(list(['function', 'GWorld', '127004', 'a reason'], ['build', '-', '128786', 'another']).size, 2);
+  assert.equal(parseRowList('# a comment\n\n   \n').size, 0);
+  assert.match(thrown(() => list(['function', 'GWorld', '127004'])).message, /list:1: the entry for function GWorld on CL-127004 has no reason/);
+  assert.match(thrown(() => list(['function', 'GWorld', '127004', '  '])).message, /has no reason/);
+  assert.match(thrown(() => list(['row', 'GWorld', '127004', 'x'])).message, /expected/);
+  assert.match(thrown(() => list(['function', 'GWorld', 'abc', 'x'])).message, /expected/);
+  assert.match(thrown(() => list(['build', 'GWorld', '127004', 'x'])).message, /key of a build entry is "-"/);
+  assert.match(thrown(() => parseRowList('function GWorld 127004 spaces, not tabs')).message, /expected/);
+});
+
+// ---- import-published and check-preserve on the command line
+
+function scratch(files) {
+  const dir = mkdtempSync(join(tmpdir(), 'vmap-pub-'));
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+  return { dir, path: (name) => join(dir, name), done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+// The loader's TEST-key fixture, with LF ends whatever the checkout gave it: build CL-128786 (other values than
+// the fixture header's) and build CL-130001 with a function row and a field row.
+const k1Fixture = () => readFileSync(join(here, 'fixtures', 'vmap-sign', 'test-feed-k1.txt'), 'utf8').replace(/\r\n/g, '\n');
+
+test('import-published: a signature that does not verify exits 4 and leaves the header alone', () => {
+  const p = published();
+  const s = scratch({ 'h.h': fixture('loader.h'), 'signed-by-someone-else.txt': p.text, 'unsigned.txt': exportFeed(p.map), 'k1.txt': k1Fixture() });
+  try {
+    for (const name of ['signed-by-someone-else.txt', 'unsigned.txt', 'k1.txt']) {
+      const r = run('import-published', s.path('h.h'), '--published', s.path(name));
+      assert.equal(r.code, 4, `${name}: ${r.err}`);
+      assert.match(r.err, /refused/);
+    }
+    assert.equal(readFileSync(s.path('h.h'), 'utf8'), fixture('loader.h'));
+    assert.equal(run('import-published', s.path('h.h'), '--published', s.path('missing.txt')).code, 2);
+  } finally { s.done(); }
+});
+
+test('import-published: a conflict exits 3, names the rows and writes nothing; the retired list lets the rest through', () => {
+  const s = scratch({ 'h.h': fixture('loader.h'), 'k1.txt': k1Fixture(), 'retired.txt': '# none\nbuild\t-\t128786\tthe fixture build is not the loader fixture one\n', 'bad.txt': 'build\t-\t128786\t\n' });
+  try {
+    let r = run('import-published', s.path('h.h'), '--published', s.path('k1.txt'), '--allow-test-key');
+    assert.equal(r.code, 3, r.err);
+    assert.match(r.err, /hold: 1 rows differ/);
+    assert.match(r.err, /build CL-128786: differs in size, source, stamp/);
+    assert.equal(readFileSync(s.path('h.h'), 'utf8'), fixture('loader.h'));
+    r = run('import-published', s.path('h.h'), '--published', s.path('k1.txt'), '--allow-test-key', '--retired', s.path('bad.txt'));
+    assert.equal(r.code, 2, 'an entry without a reason fails the command');
+    assert.match(r.err, /has no reason/);
+    r = run('import-published', s.path('h.h'), '--published', s.path('k1.txt'), '--allow-test-key', '--retired', s.path('retired.txt'));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.err, /added 1 build lines, 1 function rows, 1 field rows/);
+    const after = parse(readFileSync(s.path('h.h'), 'utf8'));
+    assert.ok(after.builds.some((b) => b.cl === 130001) && after.functions.some((x) => x.key === 'Test::MapOnly') && after.fields.some((x) => x.key === 'ATest::Native'));
+  } finally { s.done(); }
+});
+
+test('check-preserve: names the published lines a feed lost, capped, and passes once they are retired or changed', () => {
+  const s = scratch({
+    'feed.txt': exportFeed(parse(fixture('loader.h'))), 'k1.txt': k1Fixture(),
+    'retired.txt': 'build\t-\t130001\tnot published after all\n', 'changed.txt': 'build\t-\t128786\tthe measured exe is the new one\n',
+  });
+  try {
+    let r = run('check-preserve', s.path('feed.txt'), '--published', s.path('k1.txt'), '--allow-test-key');
+    assert.equal(r.code, 3, r.err);
+    assert.match(r.err, /hold: 4 published lines are missing from .* or changed in it/);
+    assert.match(r.err, /build CL-128786: differs in size, source, stamp\n.*build CL-130001: missing\n.*function Test::MapOnly @ CL-130001: missing\n.*field ATest::Native @ CL-130001: missing/);
+    r = run('check-preserve', s.path('feed.txt'), '--published', s.path('k1.txt'), '--allow-test-key', '--retired', s.path('retired.txt'), '--changed', s.path('changed.txt'));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /all 4 published lines are in .* unchanged/);
+    assert.equal(run('check-preserve', s.path('feed.txt'), '--published', s.path('k1.txt')).code, 4, 'no TEST key without the flag');
+  } finally { s.done(); }
 });

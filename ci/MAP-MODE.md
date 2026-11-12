@@ -143,6 +143,7 @@ Policy (owner), in plain words:
 
 ```
 node ci/map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>]
+         [--published <signed feed> [--retired <file>]]
 ```
 
 `<header>` is the loader's `version_map.generated.h`; it is rewritten in place.
@@ -152,6 +153,8 @@ union. `--report` writes `{ written, added, pruned, problems, notes, patches }`.
 `--remeasure true` (the client check passes it on a `test_autopilot` run only) replaces the build row of a
 CL already in the table and drops that CL's rows before writing, so a known CL can be measured again;
 without it a known CL with another exe or source is refused.
+`--published` takes the signed feed (it must verify, exit 4 otherwise) and keeps its function rows
+out of the prune below; `--retired` (needs `--published`) is the retired list, whose rows are not kept.
 Exit 0 written, 3 refused (the header is untouched, every reason is on stderr),
 2 usage or malformed input.
 
@@ -227,7 +230,8 @@ that neither the current nor the previous release carries are pruned, and only f
 a key whose every owner had both releases in the input. Without the previous
 release's scan the `fp`s it still reads are not known, so every set is kept: a
 player on that release (AutoUpdate off, or the update declined) keeps the rows it
-resolves through on every CL.
+resolves through on every CL. With `--published`, a row the published feed has is never
+pruned, whatever the scan says; it leaves only by an entry in `ci/retired-rows.txt`.
 
 A function key (`Class::Function`) written without a `symbolRva` gets a note in the
 report: the symbol-start and one-key-per-symbol checks cannot run for it.
@@ -665,6 +669,67 @@ second issue while one is open. It reads only `seq` and does not verify
 `sr-keepalive.yml` re-enables it monthly with the other scheduled workflows, because GitHub
 switches off scheduled workflows in a public repository after 60 days of no activity.
 
+## The published feed as the base
+
+A new feed is cut from the loader header. If the header lacks a row the published feed has,
+that row would drop out of the next feed and players would lose it. With the switch on, the
+published feed is part of the base: every run adds it to the header first, and a published
+row is never removed or rewritten by a run.
+
+**The switch.** The input `published_base` of `sr-client-check.yml` (boolean, off by default).
+Off, the run behaves as it did before. `sr-watch` and the daily layout refresh do not pass it.
+It stays off by default because the real proof needs a run on `main` with the Steam login,
+which a pull request cannot do. To turn it on, dispatch the workflow on `main` with `published_base` on; with `publish` off the
+run changes nothing on the release. Once a proof run has passed on both builds, a follow-up change removes the switch and the base is
+always taken.
+
+**What a run does.**
+
+1. Right after a job checks out the loader header (the check job's carry scan, map mode),
+   it fetches `version-map-client.v1.txt` from the `vmap-feed` release (3 tries, 5 and 15
+   seconds apart), verifies the signature with the release key, and adds the builds and rows the
+   header lacks (`ci/published-base.mjs take`, which runs `version-map.mjs import-published`).
+2. Map mode writes its rows on top of that header. Rows the feed has are kept out of the prune.
+3. After the feed is cut, map mode checks that it still holds every published line unchanged
+   (`ci/published-base.mjs preserve`).
+4. The `publish` job checks the same against the live file it downloads, before the key is used.
+
+A first publish has no published file, so step 1 skips a missing one for that run only and step
+3 and 4 do not run.
+
+**The two lists.** `ci/retired-rows.txt` and `ci/changed-rows.txt` are the only way a published row
+may leave or change. Format and an example entry are in `VERSION-MAP.md` ("The published feed is
+part of the base"). `--remeasure` (test runs) replaces the rows of the build it measures, so
+measuring a published build again needs an entry in `ci/changed-rows.txt` for each row that
+differs, with a reason; without it the run holds.
+
+**What a hold looks like.** The run never goes on with the loader header alone. Map mode ends in a
+`HOLD` decision (nothing is signed, staged or published), and the alert issue shows
+
+```
+- decide: **HOLD** on CL-<n>
+  - published base: <what went wrong>
+  - <the rows, up to 20>
+```
+
+If the `publish` job finds the loss instead, the job fails and the alert shows
+`job publish the feed failed` with the first lost rows as its cause (the job log lists all of them).
+
+| The reason says | What it means | To clear it |
+|---|---|---|
+| `could not be fetched after 3 tries` | GitHub did not answer | Run again. |
+| `signature was refused` | The file does not verify with the release key | Do not run again. Look at the `vmap-feed` release; this is not a transient error. |
+| `N rows differ` | A row in the header and in the published feed has other content | If the new content is right, add the row to `ci/changed-rows.txt` with a reason; otherwise fix the header. |
+| `published lines are missing` | The new feed lost a published row | If it should go, add it to `ci/retired-rows.txt` with a reason; otherwise find why it was dropped. |
+| `the release does not exist` / `has no ...` on a run that is not a first publish | No published file to take | Check the `vmap-feed` release. |
+
+One refusal is not a hold. With the published file in the base, a run for a build (CL) the feed already holds
+can end `map-mode.mjs write` with `CL-<n> is already in the build table with another exe or source`, or with a
+published key found at another address. The `map mode` job then fails and the alert shows `job map mode failed`
+with that line. Nothing is signed or published. Check the Steam build id of the run against the one in the feed.
+
+After the fix is on `main`, run again (`gh workflow run sr-watch.yml --ref main -f force=true`).
+
 ## Staging and promotion (dry run)
 
 A build that passed the chain and is not on `public` yet is staged, and promoted when public flips to the
@@ -937,6 +1002,10 @@ key, no TEST key), the seq and the sha256. The secret is `VMAP_SIGN_KEY`, the en
   entry; the job checks the published feed with `verify --expect-seq`. If another publish
   landed meanwhile and the seq no longer rises above the live one, nothing is signed and the
   chain runs again.
+- **Published rows.** With `published_base` on, the job also checks the feed it is about to sign
+  against the live file it just downloaded and fails, before the key is used, if a published line
+  is missing or changed (a row in `ci/retired-rows.txt` or `ci/changed-rows.txt` excepted). See
+  "The published feed as the base".
 
 The header is always an artifact too. Until the loader fork's deploy key exists
 (step 26), the `push-loader` job fails with its cause, and the staging record in

@@ -7,6 +7,10 @@
 //       [--other-cl 129402 | --other-unmapped "public runs build 123"] [--rig-plugins rig-plugins.json]
 //       [--first-publish]
 //
+//   node ci/decide.mjs hold --report published-base.json [--decision decision.json] [--repo ModLoader] [--cl 129402] [--out decision.json]
+//       (the published file could not be the base, or a published row was lost: the decision is HOLD with those
+//       reasons first; given --decision, that decision's own reasons follow. Exit 0, 2 on a usage error.)
+//
 // Prints the decision as JSON on stdout. Exit codes: 0 = path M (map-only update: the
 // rows go into the loader's map and ship as a signed feed), 10 = path B (auto-fix of
 // a plugin's patterns), 1 = HOLD, 2 = usage error. Anything else, including a crash,
@@ -611,6 +615,35 @@ export function decide(inputs) {
   return out(path, path, g3.cl);
 }
 
+// A decision a published-base problem turns into a HOLD (ci/published-base.mjs). The reasons come first.
+// decision: the decision decide wrote, when there is one (the preserve check runs after it); without it
+// the hold stands alone (the published file could not be taken as the base, so decide did not run).
+export function holdFor(reasons, { decision = null, repo = null, cl = null } = {}) {
+  const base = decision ?? { path: null, cl, repo, reasons: [], notes: [], plugins: [], pluginsOk: false, expectRefused: [] };
+  return { ...base, decision: 'HOLD', ship: false, reasons: [...reasons, ...(base.reasons ?? [])] };
+}
+
+// decide.mjs hold --report f [--decision f] [--repo name] [--cl n] [--out f]: the report is the one
+// ci/published-base.mjs wrote ({ ok: false, reasons: [...] }).
+function holdMain(argv) {
+  try {
+    const a = parseArgs(argv);
+    const report = JSON.parse(readFileSync(a.report, 'utf8'));
+    const reasons = Array.isArray(report.reasons) ? report.reasons.filter((r) => typeof r === 'string' && r) : [];
+    if (report.ok !== false || reasons.length === 0) throw new Error(`${a.report} holds no reason to hold`);
+    const decision = a.decision === undefined ? null : JSON.parse(readFileSync(a.decision, 'utf8'));
+    if (a.cl !== undefined && !/^[1-9][0-9]{0,9}$/.test(a.cl)) throw new Error(`--cl is not a CL number: ${a.cl}`);
+    const cl = a.cl === undefined ? null : Number(a.cl);
+    const text = JSON.stringify(holdFor(reasons, { decision, repo: a.repo ?? null, cl }), null, 2) + '\n';
+    if (a.out) writeFileSync(a.out, text);
+    process.stdout.write(text);
+    process.exit(0);
+  } catch (e) {
+    console.error(`${e.message}\nusage: decide.mjs hold --report f [--decision f] [--repo name] [--cl n] [--out f]`);
+    process.exit(2);
+  }
+}
+
 function parseArgs(argv) {
   const a = {};
   for (let i = 0; i < argv.length; i += 2) {
@@ -633,6 +666,7 @@ function otherUnmappedOf(text) {
 }
 
 function main() {
+  if (process.argv[2] === 'hold') holdMain(process.argv.slice(3));
   let args;
   try {
     const argv = process.argv.slice(2);

@@ -26,6 +26,8 @@
 //   node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
 //   node ci/version-map.mjs check <header> [--keys <keys.txt>]...
 //   node ci/version-map.mjs export-feed <header> --out <file>
+//   node ci/version-map.mjs import-published <header> --published <signed feed> [--retired <file>] [--changed <file>]
+//   node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retired <file>] [--changed <file>]
 //
 // init writes an empty map; it refuses to overwrite a file.
 // add-build, add-function, add-absent and add-field add one row. A row that is
@@ -41,14 +43,27 @@
 // check reads the header (any header off the format fails) and, with --keys,
 // applies the coverage rule over the union of the key lists given.
 // export-feed writes the loader map as the feed: tab-separated, LF, unsigned.
+// import-published makes the published feed part of the header: it adds every build line and row the
+// signed feed has and the header lacks, so the next export carries them. The feed is read only after
+// its signature verifies (--allow-test-key accepts the TEST key, for test runs). A row both hold with
+// other content, an absent row against a verified one included, writes nothing and exits 3, naming
+// the rows, unless ci/changed-rows.txt lists it (the header's row then stands); a row in
+// ci/retired-rows.txt is not added. Running it twice changes nothing more than running it once.
+// check-preserve reads a would-be feed (unsigned, as export-feed wrote it) and exits 3, naming the
+// rows (the first 20 and the count), when a published line is missing from it or has other content,
+// unless the retired or changed list names it. The signature is checked first here too.
+// Both lists: tab-separated `<function|field|build> <key> <CL> <reason>`, a reason on every entry;
+// see ci/retired-rows.txt.
 //
-// Exit codes: 0 ok; 3 check found a violation; 2 usage, parse or conflict error.
+// Exit codes: 0 ok; 3 check found a violation, or a hold (conflict, lost rows); 4 the published feed's
+// signature does not verify; 2 usage, parse or conflict error.
 // The format, the feed and the keys file are documented in ci/VERSION-MAP.md.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isPattern } from './apply-proposals.mjs';
 import { isMain } from './layout-diff.mjs';
+import { verifyFeed } from './vmap-sign.mjs';
 
 export const FORMAT_VERSION = 2;
 export const FEED_FORMAT = 1;
@@ -532,6 +547,9 @@ export function prune(map, keep) {
 
 const FEED_COLUMNS = { build: 5, function: 12, absent: 8, field: 7 };
 
+// A row as one string: equal rows have equal strings, whatever order their fields are in.
+const canon = (row) => JSON.stringify(Object.keys(row).sort().map((k) => [k, row[k]]));
+
 export function exportFeed(map) {
   need(map.flavour === 'loader', "export-feed reads the loader's map; a plugin map has no feed");
   validate(map, { feed: map.builtCL === null });
@@ -585,7 +603,6 @@ export function parseFeed(text, where = 'feed') {
 // holds is not a difference. Returns { added, changed }, each a sorted list of row names:
 // `build`, `function <key> (fp ...)` or `field <key>`.
 export function feedDelta(feed, header, cl) {
-  const canon = (row) => JSON.stringify(Object.keys(row).sort().map((k) => [k, row[k]]));
   const rows = (map) => new Map([
     ...map.builds.filter((b) => b.cl === cl).map((b) => ['build', b]),
     ...map.functions.filter((r) => r.cl === cl).map((r) => [`function ${r.key} (fp ${hex8(r.fp)})`, r]),
@@ -598,6 +615,148 @@ export function feedDelta(feed, header, cl) {
     else if (canon(have.get(name)) !== canon(row)) changed.push(name);
   }
   return { added: added.sort(), changed: changed.sort() };
+}
+
+// ---- The published file is part of the base -------------------------------------
+//
+// The header the next feed is exported from is the loader's, and it can lack builds and
+// rows the published feed has: exporting it as it stands would drop them for every player.
+// importPublished adds to the header each build line and row the published feed has and the
+// header lacks, so the export carries them. preserveCheck compares a would-be feed with the
+// published one and names every published line it lost or changed. Both read the published
+// file through readPublished, which takes it only when its signature verifies.
+//
+// A row a run means to lose goes in ci/retired-rows.txt, one it means to change in
+// ci/changed-rows.txt (see the format at the top of those files). A row in neither is a hold.
+
+export const EXIT_BAD_SIGNATURE = 4;
+export class SignatureRefused extends MapError {}
+
+// The published feed's rows as a parsed feed (parseFeed's shape). bytes: the file as downloaded.
+// Throws SignatureRefused when the signature does not verify (or is a TEST key without
+// allowTestKey), MapError when a verified file is not a feed this tool reads. There is no
+// reading of an unverified file. keys: the trusted public keys (vmap-sign's PUBLIC_KEYS by default).
+export function readPublished(bytes, { keys, allowTestKey = false, where = 'the published feed' } = {}) {
+  let r;
+  try {
+    r = verifyFeed(bytes, { keys });
+  } catch (e) {
+    throw new SignatureRefused(`${where}: ${e.message}`);
+  }
+  if (r.test && !allowTestKey) throw new SignatureRefused(`${where}: signed with the TEST key ${r.keyId}`);
+  const lines = (Buffer.isBuffer(bytes) ? bytes.toString('utf8') : bytes).split('\n');
+  // [format, seq, ...rows, sig, '']: the rows alone are what export-feed wrote.
+  return parseFeed([lines[0], ...lines.slice(2, -2), ''].join('\n'), where);
+}
+
+const ROW_LIST_KINDS = ['function', 'field', 'build'];
+
+// The retired-rows and changed-rows files: tab-separated `<kind> <key> <build CL> <reason>`,
+// '#' lines and blank lines skipped. Every entry needs a reason. Returns { has(kind, key, cl), size }.
+export function parseRowList(text, where = 'list') {
+  const entries = new Set();
+  text.replace(/\r\n/g, '\n').split('\n').forEach((raw, i) => {
+    if (!raw.trim() || raw.trimStart().startsWith('#')) return;
+    const at = `${where}:${i + 1}`;
+    const [kind, key, build, ...reason] = raw.split('\t');
+    need(ROW_LIST_KINDS.includes(kind) && key !== undefined && /^\d+$/.test(build ?? ''), `${at}: expected "<function|field|build><TAB><key><TAB><build CL><TAB><reason>"`);
+    need(kind === 'build' ? key === '-' : isText(key), `${at}: the key of a ${kind} entry is ${kind === 'build' ? '"-"' : 'printable ASCII without quotes or backslashes'}`);
+    need(reason.join('\t').trim() !== '', `${at}: the entry for ${kind} ${key} on CL-${build} has no reason`);
+    entries.add(`${kind}\n${key}\n${Number(build)}`);
+  });
+  return { has: (kind, key, cl) => entries.has(`${kind}\n${key}\n${cl}`), size: entries.size };
+}
+
+const NO_ROWS = parseRowList('');
+// A retired build retires its line and every row on it.
+const isRetired = (retired, kind, key, cl) => retired.has(kind, key, cl) || retired.has('build', '-', cl);
+const differsIn = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k])).sort().join(', ');
+
+// Returns { map, added, conflicts, kept }: base (a loader map) with the published feed's builds and
+// rows it lacks added, on a copy. A row both hold with other content is a conflict (an absent row
+// against a verified one included), unless changed lists it: then the header's row stands and it is
+// in `kept`. Retired rows are not added. With any conflict `map` is null: nothing is merged.
+export function importPublished(base, published, { retired = NO_ROWS, changed = NO_ROWS } = {}) {
+  need(base.flavour === 'loader', "the published feed is the loader map's");
+  const map = parse(emit(base), 'the header');
+  const added = { builds: 0, functions: 0, fields: 0 };
+  const conflicts = [];
+  const kept = [];
+  const clash = (listed, text) => (listed ? kept : conflicts).push(text);
+
+  for (const b of published.builds) {
+    if (retired.has('build', '-', b.cl)) continue;
+    const have = map.builds.find((x) => x.cl === b.cl);
+    if (!have) {
+      map.builds.push({ ...b });
+      added.builds++;
+    } else if (canon(have) !== canon(b)) clash(changed.has('build', '-', b.cl), `build CL-${b.cl}: differs in ${differsIn(have, b)}`);
+  }
+
+  const fns = new Map(map.functions.map((r) => [fnId(r), r]));
+  const kinds = new Map(map.functions.map((r) => [r.key, r.kind]));
+  for (const p of published.functions) {
+    if (isRetired(retired, 'function', p.key, p.cl)) continue;
+    const listed = changed.has('function', p.key, p.cl);
+    const have = fns.get(fnId(p));
+    if (have) {
+      if (canon(have) !== canon(p)) clash(listed, `function ${rowName(p)}: differs in ${differsIn(have, p)}`);
+    } else if (kinds.has(p.key) && kinds.get(p.key) !== p.kind) {
+      clash(listed, `function ${rowName(p)}: the header has the key as kind ${kinds.get(p.key)}, the published feed as kind ${p.kind}`);
+    } else {
+      const row = structuredClone(p);
+      map.functions.push(row);
+      fns.set(fnId(row), row);
+      kinds.set(row.key, row.kind);
+      added.functions++;
+    }
+  }
+
+  const fields = new Map(map.fields.map((r) => [fieldId(r), r]));
+  const absentFields = new Set((map.absentFields ?? []).map(fieldId));
+  for (const p of published.fields) {
+    if (isRetired(retired, 'field', p.key, p.cl)) continue;
+    const listed = changed.has('field', p.key, p.cl);
+    const have = fields.get(fieldId(p));
+    if (have) {
+      if (canon(have) !== canon(p)) clash(listed, `field ${rowName(p)}: differs in ${differsIn(have, p)}`);
+    } else if (absentFields.has(fieldId(p))) {
+      clash(listed, `field ${rowName(p)}: the header records the member as absent on this build, the published feed has a row`);
+    } else {
+      map.fields.push({ ...p });
+      added.fields++;
+    }
+  }
+  if (conflicts.length) return { map: null, added, conflicts, kept };
+  validate(map);
+  return { map, added, conflicts, kept };
+}
+
+// The function rows of the published feed that a run must leave in the header: every one not
+// retired. Returns a test on a header row. map-mode's write uses it so that its pruning of row
+// sets nobody asks for any more never takes a published row; only the retired list lets one go.
+export function keepPublished(published, { retired = NO_ROWS } = {}) {
+  const ids = new Set(published.functions.filter((p) => !isRetired(retired, 'function', p.key, p.cl)).map(fnId));
+  return (row) => ids.has(fnId(row));
+}
+
+// Every published line the would-be feed (a parsed feed) lost or changed, one text each, unless
+// retired (may be missing) or changed (may differ). Returns { violations, checked }.
+export function preserveCheck(next, published, { retired = NO_ROWS, changed = NO_ROWS } = {}) {
+  const violations = [];
+  let checked = 0;
+  const judge = (kind, p, now, name) => {
+    checked++;
+    if (isRetired(retired, kind, kind === 'build' ? '-' : p.key, p.cl)) return;
+    if (!now) violations.push(`${kind} ${name}: missing`);
+    else if (canon(now) !== canon(p) && !changed.has(kind, kind === 'build' ? '-' : p.key, p.cl)) violations.push(`${kind} ${name}: differs in ${differsIn(p, now)}`);
+  };
+  for (const b of published.builds) judge('build', b, next.builds.find((x) => x.cl === b.cl), `CL-${b.cl}`);
+  const fns = new Map(next.functions.map((r) => [fnId(r), r]));
+  for (const p of published.functions) judge('function', p, fns.get(fnId(p)), rowName(p));
+  const fields = new Map(next.fields.map((r) => [fieldId(r), r]));
+  for (const p of published.fields) judge('field', p, fields.get(fieldId(p)), rowName(p));
+  return { violations, checked };
 }
 
 // ---- The keys the components use, and the coverage check ----------------------
@@ -712,7 +871,7 @@ export function checkMap(map, keys) {
 
 // ---- Command line -----------------------------------------------------------
 
-const FLAGS = new Set(['rva-only']);
+const FLAGS = new Set(['rva-only', 'allow-test-key']);
 const LISTS = new Set(['keys']);
 
 function parseArgs(argv) {
@@ -750,7 +909,18 @@ function only(opt, allowed, cmd) {
   for (const k of Object.keys(opt)) need(allowed.includes(k), `${cmd} takes no --${k}`);
 }
 
-const USAGE = 'usage: version-map.mjs init|add-build|add-function|add-absent|add-field|replace-build|remove-key|prune|check|export-feed <header> [options]; see the comment at the top of ci/version-map.mjs';
+const USAGE = 'usage: version-map.mjs init|add-build|add-function|add-absent|add-field|replace-build|remove-key|prune|check|export-feed|import-published|check-preserve <header> [options]; see the comment at the top of ci/version-map.mjs';
+
+// The first 20 lines of a list, and how many more.
+const capped = (lines) => [...lines.slice(0, 20), ...(lines.length > 20 ? [`... and ${lines.length - 20} more`] : [])].map((l) => `  ${l}\n`).join('');
+
+function readFile(path, what) {
+  try {
+    return readFileSync(path);
+  } catch (e) {
+    throw new MapError(`cannot read ${what} ${path}: ${e.message}`);
+  }
+}
 
 export function main(argv) {
   const [cmd, ...rest] = argv;
@@ -823,6 +993,34 @@ export function main(argv) {
     const text = exportFeed(load());
     writeFileSync(opt.out, text);
     process.stderr.write(`version-map: ${opt.out}: feed format ${FEED_FORMAT}, ${text.split('\n').length - 1} lines, ${Buffer.byteLength(text)} bytes\n`);
+  } else if (cmd === 'import-published' || cmd === 'check-preserve') {
+    only(opt, ['published', 'retired', 'changed', 'allow-test-key'], cmd);
+    need(typeof opt.published === 'string', '--published is required');
+    let published;
+    try {
+      published = readPublished(readFile(opt.published, 'the published feed'), { allowTestKey: opt['allow-test-key'] === true, where: opt.published });
+    } catch (e) {
+      if (!(e instanceof SignatureRefused)) throw e;
+      process.stderr.write(`version-map: refused: ${e.message}\n`);
+      return EXIT_BAD_SIGNATURE;
+    }
+    const lists = {};
+    for (const name of ['retired', 'changed']) if (opt[name]) lists[name] = parseRowList(readFile(opt[name], `the ${name} list`).toString('utf8'), opt[name]);
+    if (cmd === 'import-published') {
+      const out = importPublished(load(), published, lists);
+      if (!out.map) {
+        process.stderr.write(`version-map: hold: ${out.conflicts.length} rows differ between ${file} and the published feed; ${file} is not changed. A change meant on purpose goes in the changed list with its reason.\n${capped(out.conflicts)}`);
+        return EXIT_VIOLATION;
+      }
+      save(out.map, `added ${out.added.builds} build lines, ${out.added.functions} function rows, ${out.added.fields} field rows from the published feed${out.kept.length ? `; kept ${out.kept.length} changed rows` : ''}`);
+    } else {
+      const out = preserveCheck(parseFeed(readFile(file, 'the feed').toString('utf8'), file), published, lists);
+      if (out.violations.length) {
+        process.stderr.write(`version-map: hold: ${out.violations.length} published lines are missing from ${file} or changed in it; a loss or change meant on purpose goes in the retired or changed list with its reason.\n${capped(out.violations)}`);
+        return EXIT_VIOLATION;
+      }
+      process.stdout.write(`check-preserve: all ${out.checked} published lines are in ${file} unchanged\n`);
+    }
   } else {
     throw new MapError(USAGE);
   }
