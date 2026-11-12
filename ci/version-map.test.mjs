@@ -531,9 +531,10 @@ test('add-absent-field writes the entry the pipeline writes, and changes nothing
   assert.match(ok('add-absent-field', h, '--key', hotbars, '--cl', '127004').err, /already there/);
   assert.equal(readFileSync(h, 'utf8'), text);
   // Taking the entries out again gives the original file byte for byte.
-  const back = parse(text);
-  back.absentFields = [];
-  assert.equal(emit(back), original);
+  ok('remove-key', h, '--key', hotbars);
+  ok('remove-key', h, '--key', index);
+  assert.equal(readFileSync(h, 'utf8'), original);
+  writeFileSync(h, text);
   // Refusals leave the file as it was.
   const refuse = (...args) => {
     const r = run('add-absent-field', h, ...args);

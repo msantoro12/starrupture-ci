@@ -34,9 +34,10 @@
 //   node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>]
 //
 // init writes an empty map; it refuses to overwrite a file.
-// add-build, add-function, add-absent, add-field and add-absent-field add one row. A row that is
-// already there with the same values changes nothing; one with other values is
-// an error, so a run never rewrites what an earlier run verified. The one
+// add-build, add-function, add-absent, add-field and add-absent-field add one
+// row. A row that is already there with the same values changes nothing; one
+// with other values is an error, so a run never rewrites what an earlier run
+// verified. The one
 // exception is an absent row (loader map only: CI could not place the key on
 // that build): a verified add-function replaces it, add-absent never replaces a
 // verified row, and add-absent onto an absent row of a global key adds its owners.
