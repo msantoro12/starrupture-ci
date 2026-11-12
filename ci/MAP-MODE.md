@@ -672,21 +672,14 @@ switches off scheduled workflows in a public repository after 60 days of no acti
 ## The published feed as the base
 
 A new feed is cut from the loader header. If the header lacks a row the published feed has,
-that row would drop out of the next feed and players would lose it. With the switch on, the
-published feed is part of the base: every run adds it to the header first, and a published
+that row would drop out of the next feed and players would lose it. Every map-mode run takes
+the published feed as part of the base: it adds it to the header first, and a published
 row is never removed or rewritten by a run.
-
-**The switch.** The input `published_base` of `sr-client-check.yml` (boolean, off by default).
-Off, the run behaves as it did before. `sr-watch` and the daily layout refresh do not pass it.
-It stays off by default because the real proof needs a run on `main` with the Steam login,
-which a pull request cannot do. To turn it on, dispatch the workflow on `main` with `published_base` on; with `publish` off the
-run changes nothing on the release. Once a proof run has passed on both builds, a follow-up change removes the switch and the base is
-always taken.
 
 **What a run does.**
 
-1. Right after a job checks out the loader header (the check job's carry scan, map mode),
-   it fetches `version-map-client.v1.txt` from the `vmap-feed` release (3 tries, 5 and 15
+1. Right after a job checks out the loader header (the check job's carry scan, map mode;
+   not the daily layout refresh), it fetches `version-map-client.v1.txt` from the `vmap-feed` release (3 tries, 5 and 15
    seconds apart), verifies the signature with the release key, and adds the builds and rows the
    header lacks (`ci/published-base.mjs take`, which runs `version-map.mjs import-published`).
 2. Map mode writes its rows on top of that header. Rows the feed has are kept out of the prune.
@@ -1002,7 +995,7 @@ key, no TEST key), the seq and the sha256. The secret is `VMAP_SIGN_KEY`, the en
   entry; the job checks the published feed with `verify --expect-seq`. If another publish
   landed meanwhile and the seq no longer rises above the live one, nothing is signed and the
   chain runs again.
-- **Published rows.** With `published_base` on, the job also checks the feed it is about to sign
+- **Published rows.** The job also checks the feed it is about to sign
   against the live file it just downloaded and fails, before the key is used, if a published line
   is missing or changed (a row in `ci/retired-rows.txt` or `ci/changed-rows.txt` excepted). See
   "The published feed as the base".

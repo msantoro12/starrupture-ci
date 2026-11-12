@@ -1634,7 +1634,7 @@ test('carry: the check job scans the base header against the new exe after the l
   assert.ok(at(CARRY) < at('Download the plugins'));
   const gate = "steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true";
   assert.equal(c.split(`if: ${gate}\n`).length - 1, 1, 'the header checkout runs only in map mode, after a passing scan');
-  // The carry step has the same gate and, with the published base switched on, also waits for a base that was taken.
+  // The carry step has the same gate and also waits for a base that was taken.
   assert.ok(step(c, CARRY).includes(`if: ${gate} && steps.pbase.outputs.held != 'true'\n`));
   // The header is the one the candidate is cut from: the scanned loader commit, data only.
   assert.match(c, /repository: \$\{\{ inputs\.loader_repo \}\}\n\s+ref: \$\{\{ needs\.build\.outputs\.loader_sha \}\}\n\s+path: base-loader\n\s+sparse-checkout: StarRupture-ModLoader-Core\/hooks\/game\/version_map\.generated\.h\n\s+sparse-checkout-cone-mode: false\n\s+persist-credentials: false\n/);
@@ -2247,7 +2247,7 @@ exit 0
   chmodSync(join(dir, 'bin', 'gh'), 0o755);
   return { dir, chainSeq };
 };
-const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, FIRST_PUBLISH: 'false', PUBLISHED_BASE: 'false', VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
+const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, FIRST_PUBLISH: 'false', VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
 const callsOf = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
 
 test('publish job: the chain seq must still rise above the live seq, the plan must agree, and the feed must be the one the list allows now', { skip: !bash }, () => {
@@ -3281,9 +3281,13 @@ test('layout refresh: the store job still runs for it on main, and the alert, re
 });
 
 test('layout refresh: nothing on the publish path depends on it', () => {
-  for (const n of ['publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'rig-feed-other', 'feed-loader-cleanup', 'feed-gate', 'check']) {
+  for (const n of ['publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'rig-feed-other', 'feed-loader-cleanup', 'feed-gate']) {
     assert.ok(!/refresh_layout/.test(job(n).replace(/^ *#.*\n/gm, '').replace(/\n {4}if: .*\n/, '\n')), `${n} reads no refresh input`);
   }
+  // The check job reads it only to leave the two published-base steps out: a refresh takes no base.
+  const checkBody = job('check').replace(/^ *#.*\n/gm, '').replace(/\n {4}if: .*\n/, '\n');
+  for (const name of ['Check out the published-base tool', 'Take the published feed as the base']) assert.ok(/refresh_layout/.test(step(job('check'), name)), `${name} is off in a refresh`);
+  assert.equal(checkBody.split('refresh_layout').length - 1, 2, 'the check job reads it nowhere else');
   assert.ok(!/refresh_layout/.test(jobIf('publish')));
   assert.ok(!/refresh_layout/.test(jobIf('layout-store')), 'whether the store runs does not depend on it');
   // The only jobs that name it: the map job and the three that report on or push what it makes (and the plan's refusal).
@@ -3413,23 +3417,23 @@ test('layout refresh: the run goes red when a planned key source left no keys, a
   assert.equal(run(null).status, 1, 'no keysrc.json at all while sources were planned');
 });
 
-// ------------------------------------------------------------ the published feed as part of the base (input published_base)
+// ------------------------------------------------------------ the published feed as part of the base
 
 const WATCHERS = ['sr-watch.yml', 'sr-layout-refresh.yml', 'sr-keepalive.yml', 'vmap-watchdog.yml', 'sr-build-all.yml'];
 
-test('published_base: a boolean that is off by default on both triggers; nothing that calls the check passes it', () => {
-  for (const s of [call, dispatch]) assert.match(s, /\n {6}published_base:\n {8}description: [^\n]*\n {8}type: boolean\n {8}default: false\n/);
+test('published base: no input switches it; nothing that calls the check passes one', () => {
+  for (const s of [call, dispatch]) assert.ok(!s.includes('published_base'), 'no input');
   for (const name of WATCHERS) {
     const text = readFileSync(join(here, '..', '.github', 'workflows', name), 'utf8');
     assert.ok(!text.includes('published_base'), `${name} does not pass it`);
   }
 });
 
-test('published_base: every step it adds is off with the switch, and the helper runs from the repository\'s own ci folder', () => {
+test('published base: the steps it adds run with map mode and never in the layout refresh, and the helper runs from the repository\'s own ci folder', () => {
   const steps = ['Check out the published-base tool', 'Take the published feed as the base'];
   const check = job('check');
-  for (const name of steps) assert.match(step(check, name), /\n {8}if: [^\n]*inputs\.published_base == true\n/, name);
-  assert.match(step(job('map-mode'), 'Take the published feed as the base'), /\n {8}if: \$\{\{ inputs\.published_base == true \}\}\n/);
+  for (const name of steps) assert.match(step(check, name), /\n {8}if: [^\n]*inputs\.map_mode == true && inputs\.refresh_layout != true\n/, name);
+  assert.ok(!step(job('map-mode'), 'Take the published feed as the base').includes('\n        if:'), 'no condition of its own');
   assert.match(step(check, 'Check out the published-base tool'), /path: ci-base\n\s+sparse-checkout: ci\n\s+persist-credentials: false/);
   // The same helper everywhere: the check job, map mode, the chain and the publish job.
   assert.ok(runOf(check, 'Take the published feed as the base').includes('node ci-base\\ci\\published-base.mjs take $header --report out\\published-base.json'));
@@ -3441,7 +3445,7 @@ test('published_base: every step it adds is off with the switch, and the helper 
   assert.ok(step(job('check'), 'Take the published feed as the base').includes('timeout-minutes: 5'));
 });
 
-test('published_base (check job): a hold is recorded and the carry scan is left out; any other failure fails the step', () => {
+test('published base (check job): a hold is recorded and the carry scan is left out; any other failure fails the step', () => {
   const run = runOf(job('check'), 'Take the published feed as the base');
   assert.match(run, /\$code = \$LASTEXITCODE\nif \(\$code -eq 3\) \{\n\s+"held=true" >> \$env:GITHUB_OUTPUT\n[^\n]*::warning[^\n]*\n\s+exit 0\n\}\nif \(\$code -ne 0\) \{[^\n]*exit \$code \}\n"held=false" >> \$env:GITHUB_OUTPUT/);
   assert.match(step(job('check'), 'Take the published feed as the base'), /\n {8}shell: pwsh\n/);
@@ -3449,7 +3453,7 @@ test('published_base (check job): a hold is recorded and the carry scan is left 
   assert.ok(names.indexOf('Check out the base header') < names.indexOf('Take the published feed as the base') && names.indexOf('Take the published feed as the base') < names.indexOf("Carry the version map's keys onto this build"));
 });
 
-test('published_base (map mode): the base is taken before anything reads the header, a hold leaves the write out, the flags go with the switch', () => {
+test('published base (map mode): the base is taken before anything reads the header, a hold leaves the write out, the flags go with the file', () => {
   const mm = job('map-mode');
   const names = stepsOf(mm);
   const at = (n) => names.indexOf(n);
@@ -3461,9 +3465,8 @@ test('published_base (map mode): the base is taken before anything reads the hea
   assert.match(take, /if \[ "\$code" -eq 3 \]; then\n\s+echo "held=true" >> "\$GITHUB_OUTPUT"\n[^\n]*::warning[^\n]*\n\s+exit 0\nfi\n\[ "\$code" -eq 0 \] \|\| \{[^\n]*exit "\$code"; \}\necho "held=false" >> "\$GITHUB_OUTPUT"/);
   const write = runOf(mm, 'Write the update into the header');
   assert.ok(write.includes('published_flag=(--published published-base/version-map-client.v1.txt --retired tool/ci/retired-rows.txt)'));
-  assert.ok(write.includes('[ "$PUBLISHED_BASE" = true ] && [ -f published-base/version-map-client.v1.txt ]'), 'only with the switch on');
+  assert.ok(write.includes('if [ -f published-base/version-map-client.v1.txt ]; then published_flag='), 'only when a published file was taken');
   assert.ok(write.includes('"${published_flag[@]}"'));
-  assert.match(mm, /\n {6}PUBLISHED_BASE: \$\{\{ inputs\.published_base == true \}\}\n/);
 });
 
 // The chain step: the early hold block and the preserve block, run against the real decide.mjs.
@@ -3476,7 +3479,7 @@ const chainBlock = (from, to) => {
   return run.slice(a, b);
 };
 
-test('published_base (chain): a base that was not taken ends the chain in a HOLD that carries the reasons, before the feed is cut', { skip: !bash }, () => {
+test('published base (chain): a base that was not taken ends the chain in a HOLD that carries the reasons, before the feed is cut', { skip: !bash }, () => {
   const run = chainRun();
   assert.ok(run.indexOf('if [ "$BASE_HELD" = true ]; then') < run.indexOf('node tool/ci/decide.mjs --repo'), 'before decide');
   assert.match(job('map-mode'), /\n {10}BASE_HELD: \$\{\{ steps\.base\.outputs\.held \}\}\n/);
@@ -3499,10 +3502,10 @@ test('published_base (chain): a base that was not taken ends the chain in a HOLD
   for (const free of ['false', '']) assert.ok(exec(free).r.stdout.includes('reached-the-decide'), `held='${free}' goes on`);
 });
 
-test('published_base (chain): the new feed is compared with the published file; a loss ends in a HOLD, a pass goes on, and the switch off or a first publish skips it', { skip: !bash }, () => {
+test('published base (chain): the new feed is compared with the published file; a loss ends in a HOLD, a pass goes on, and a first publish skips it', { skip: !bash }, () => {
   const run = chainRun();
   assert.ok(run.indexOf('version-map.mjs export-feed "$header" --out feed.txt') < run.indexOf('published-base.mjs preserve') && run.indexOf('published-base.mjs preserve') < run.indexOf('vmap-sign.mjs sign feed.txt'), 'after the export, before any signing');
-  const block = chainBlock('if [ "$PUBLISHED_BASE" = true ] && [ "$FIRST_PUBLISH" != true ]; then', "node --input-type=module -e '\n  import { appendFileSync, readFileSync, statSync }");
+  const block = chainBlock('if [ "$FIRST_PUBLISH" != true ]; then', "node --input-type=module -e '\n  import { appendFileSync, readFileSync, statSync }");
   const exec = (env, exit) => {
     const dir = mkdtempSync(join(tmpdir(), 'chain-preserve-'));
     mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
@@ -3514,7 +3517,7 @@ if (code !== 2) writeFileSync('preserve.json', JSON.stringify(code === 0 ? { ok:
 process.exit(code);
 `);
     writeFileSync(join(dir, 'decision.json'), JSON.stringify({ decision: 'M', ship: true, path: 'M', cl: 129402, repo: 'ModLoader', reasons: [], notes: [], plugins: [], pluginsOk: true, expectRefused: [] }));
-    const r = sh(`set -euo pipefail\n${block}\necho reached-the-signing`, dir, { PUBLISHED_BASE: 'true', FIRST_PUBLISH: 'false', GITHUB_OUTPUT: join(dir, 'out.txt'), ...env });
+    const r = sh(`set -euo pipefail\n${block}\necho reached-the-signing`, dir, { FIRST_PUBLISH: 'false', GITHUB_OUTPUT: join(dir, 'out.txt'), ...env });
     return { r, dir, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '', calls: existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8') : '' };
   };
   const lost = exec({}, 3);
@@ -3535,16 +3538,13 @@ process.exit(code);
   assert.equal(crashed.r.status, 2);
   assert.match(crashed.r.stdout, /::error::published-base\.mjs exited 2/);
   assert.ok(!crashed.r.stdout.includes('reached-the-signing'));
-  for (const env of [{ PUBLISHED_BASE: 'false' }, { FIRST_PUBLISH: 'true' }]) {
-    const skipped = exec(env, 3);
-    assert.equal(skipped.calls, '', JSON.stringify(env));
-    assert.ok(skipped.r.stdout.includes('reached-the-signing'));
-  }
+  const first = exec({ FIRST_PUBLISH: 'true' }, 3);
+  assert.equal(first.calls, '', 'a first publish has no published file');
+  assert.ok(first.r.stdout.includes('reached-the-signing'));
 });
 
-test('published_base (publish job): the feed to sign is compared with the live file before the key is used; a loss fails the job and uploads nothing', { skip: !bash }, () => {
+test('published base (publish job): the feed to sign is compared with the live file before the key is used; a loss fails the job and uploads nothing', { skip: !bash }, () => {
   const pub = job('publish');
-  assert.match(pub, /\n {6}PUBLISHED_BASE: \$\{\{ inputs\.published_base == true \}\}\n/);
   const names = stepsOf(pub);
   const checkRun = runOf(pub, 'Check the seq and the feed before signing');
   assert.ok(checkRun.indexOf('cmp -s chain/feed.txt feed.again.txt') < checkRun.indexOf('published-base.mjs preserve'), 'after the feed is proved to be the chain\'s');
@@ -3553,7 +3553,7 @@ test('published_base (publish job): the feed to sign is compared with the live f
   const stepName = 'Check the seq and the feed before signing';
   const ran = (env, exit) => {
     const fx = publishFixture();
-    return { fx, r: runPublishStep(fx, stepName, { PUBLISHED_BASE: 'true', PRESERVE_EXIT: String(exit), ...env }) };
+    return { fx, r: runPublishStep(fx, stepName, { PRESERVE_EXIT: String(exit), ...env }) };
   };
   const ok = ran({}, 0);
   assert.equal(ok.r.status, 0, ok.r.stdout + ok.r.stderr);
@@ -3563,9 +3563,7 @@ test('published_base (publish job): the feed to sign is compared with the live f
   assert.match(lost.r.stdout, /::error::published base: 2 published lines are missing from the new feed\n::error::function GWorld @ CL-127004: missing\n::error::the feed to sign would lose or change a published row; nothing was signed or uploaded/);
   assert.ok(lost.r.stdout.startsWith('::error::published base: 2 published lines are missing from the new feed; function GWorld @ CL-127004: missing\n'), 'the alert reads only the first annotation, so it carries the first rows joined');
   assert.ok(!callsOf(lost.fx.dir).some((c) => /^vmap-sign sign|release upload/.test(c)), 'nothing signed, nothing uploaded');
-  // Off, or a first publish: no comparison.
-  for (const env of [{ PUBLISHED_BASE: 'false' }, { FIRST_PUBLISH: 'true' }]) {
-    const skipped = ran({ ...env }, 3);
-    assert.ok(!callsOf(skipped.fx.dir).some((c) => c.startsWith('published-base')), JSON.stringify(env));
-  }
+  // A first publish: no comparison.
+  const first = ran({ FIRST_PUBLISH: 'true' }, 3);
+  assert.ok(!callsOf(first.fx.dir).some((c) => c.startsWith('published-base')), 'first publish');
 });
