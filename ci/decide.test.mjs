@@ -385,8 +385,15 @@ test('rate limit: a proof run skips the once-per-CL reason and no other', () => 
   holds(decide(base({ g3: proof, history: published(29) })), /30 minutes/);
   const missB = ok(aob([aobRow('SpawnActor', 'MISSING')]));
   holds(decide(base({ g3: proof, g4: missB, history: ok({ releases: [], attempts: { 127004: 2 } }) })), /2 auto-fix attempts/);
-  // The skip is the one reason: the cap's reason still comes out beside it on a published build.
-  assert.doesNotMatch(decide(base({ g3: proof, history: ok({ releases: [rel(60), rel(120)], attempts: {} }) })).reasons.join(' | '), /already released/);
+  // The skip is the one reason: on a published build the cap's reason comes out alone.
+  const capped = decide(base({ g3: proof, history: ok({ releases: [rel(60), rel(120)], attempts: {} }) }));
+  assert.deepEqual(capped.reasons, ['rate limit: 2 ModLoader releases in the last 24 h (limit 2)']);
+  // The workflow decides a proof run with the candidate flag: wouldBe M, nothing different on a published build.
+  const cand = decide(base({ g3: proof, candidate: true, history: published() }));
+  assert.equal(cand.decision, 'M');
+  assert.equal(cand.wouldBe, 'M');
+  assert.equal(cand.candidate, true);
+  assert.deepEqual(cand.reasons, []);
 });
 
 test('rate limit: checkRateLimits skips the once-per-CL reason only with proofRun', () => {
