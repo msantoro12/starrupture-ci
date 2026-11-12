@@ -358,6 +358,9 @@ $szReflOnly = Size-Entry 'Compass' 'FCrPlayerPersonalMarkerData' $null $null 40 
 $missRow = '{ "name": "Fname_AppendString", "module": "StarRuptureGameSteam-Win64-Shipping.exe", "pattern": "48 89 5C 24 ?? 57", "required": REQ, "found": false }'
 $uiOffErr = "[19:00:31.326] [ERROR] [T:02032] [Plugin:MiniMap] $uiOffText"
 $tb = 'test-branch'
+$hotbarTitle = 'Ctrl + mouse wheel changes the hotbar in the drone'
+$hotbarKeys = 'UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex, UCrHotbarLocalPlayerSubsystem::Hotbars'
+$offWhy = 'this game build changed something it needs'
 $rigCases = [ordered]@{
  # The two real runs: both must pass
  'cl-129402 real'           = @{ Run = $tb;      Mut = { param($c) } }
@@ -379,7 +382,17 @@ $rigCases = [ordered]@{
  'compat no changes list'     = @{ Run = $tb; Mut = { param($c) $c.compat = [regex]::Replace($c.compat, '(?s),\s*"changes":.*\}\s*$', "`n}") };       Fail = 'compat_report_ok' }
  'compat unknown outcome'     = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "fine"' };                          Fail = 'compat_report_ok' }
  'compat listed not written'  = @{ Run = $tb; Mut = { param($c) $c.boot.compat_reports = @() };                                                       Fail = 'compat_report_ok' }
- 'compat feature off'         = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: no row for CL-129402 (reflected)" }; Fail = 'compat_report_ok' }
+ 'compat feature off'         = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: UCrFoo::Bar ($offWhy)" }; Fail = 'compat_report_ok' }
+ # A feature off is accepted only when every key the loader names is optional for that plugin
+ 'feature off, keys optional' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off: $hotbarKeys ($offWhy)" } }
+ 'feature off, log name differs' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: UMassEntitySubsystem::EntityManager ($offWhy)" } }
+ 'feature off, key not optional' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off: UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex, ACrPlayerControllerBase::PlayerControlState ($offWhy)" }; Fail = 'compat_report_ok' }
+ 'feature off, other plugin key' = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterCheats: feature ""$hotbarTitle"" is off: $hotbarKeys ($offWhy)" }; Fail = 'compat_report_ok' }
+ 'feature off, no keys'       = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off:  ($offWhy)" }; Fail = 'compat_report_ok' }
+ 'feature off, no reason'     = @{ Run = $tb; Mut = { param($c) $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off" }; Fail = 'compat_report_ok' }
+ 'feature off, one good one bad' = @{ Run = $tb; Mut = { param($c)
+        $c.ml += "$($sig)[Map] BetterDrone: feature ""$hotbarTitle"" is off: $hotbarKeys ($offWhy)"
+        $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: UCrFoo::Bar ($offWhy)" }; Fail = 'compat_report_ok' }
  # Class-key size rows: the map row's size against the size the game reflects
  'sizes match'               = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szReflOnly" } }
  'unchanged sizes match'     = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "unchanged"'; Add-Sizes $c $szMatch } }
@@ -436,6 +449,19 @@ foreach ($k in $rigCases.Keys) {
             if (@($j.notes) -notcontains $moved) { $problems += 'verdict.json lacks the layout-moved note' }
             if ($md -notmatch [regex]::Escape("Note: $moved")) { $problems += 'summary.md lacks the layout-moved note' }
             if ($mm.state -ne 'refused (as declared)') { $problems += "MiniMap state $($mm.state)" }
+        }
+        if ($k -in 'feature off, keys optional', 'feature off, log name differs') {
+            $want = if ($k -eq 'feature off, keys optional') { "BetterDrone feature ""$hotbarTitle"" is off, accepted: $hotbarKeys optional in native-keys.txt" } else { 'Waila feature "Hover details" is off, accepted: UMassEntitySubsystem::EntityManager optional in native-keys.txt' }
+            if (@($j.notes) -notcontains $want) { $problems += "accepted-off note missing: $want" }
+            if ($md -notmatch [regex]::Escape("Note: $want")) { $problems += 'summary.md lacks the accepted-off note' }
+            if ($r.Out -notmatch 'layout_ok\s+PASS') { $problems += 'layout_ok not PASS' }
+        }
+        $vt = if (Test-Path (Join-Path $r.Dir 'verdict.txt')) { Get-Content -LiteralPath (Join-Path $r.Dir 'verdict.txt') -Raw -Encoding UTF8 } else { '' }
+        if ($k -eq 'feature off, key not optional' -and ($vt -notmatch 'is off: not optional: ACrPlayerControllerBase::PlayerControlState(;|\s|$)' -or $vt -match 'not optional: .*CurrentHotbarIndex')) { $problems += 'the failure does not name only the bad key' }
+        if ($k -eq 'feature off, no keys' -and $vt -notmatch 'is off: names no keys') { $problems += 'no-keys failure missing' }
+        if ($k -eq 'feature off, one good one bad') {
+            if ($vt -notmatch 'Waila feature "Hover details" is off: not optional: UCrFoo::Bar') { $problems += 'the bad one is not named' }
+            if ($vt -match 'FOUND:.*BetterDrone') { $problems += 'the accepted one is in the failure' }
         }
         if ($k -eq 'compat optional miss' -and @($j.notes) -notcontains 'optional pattern missed: Fname_AppendString') { $problems += 'optional miss not noted' }
         if ($k -eq 'sizes match') {

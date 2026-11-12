@@ -20,6 +20,8 @@ BetterDrone ACrPlayerControllerBase::PlayerControlState
 BetterDrone USceneComponent::ComponentToWorld 0x1F0 0x60 0x00
 BetterDrone FTransform::Translation 0x20 0x18 0x00
 BetterDrone UCrUW_MapMenuMapArea::MapAreaMatrix optional
+BetterDrone UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex optional
+BetterDrone UCrHotbarLocalPlayerSubsystem::Hotbars optional
 WAILA ACrPackageTransportReplicator::SendingTime
 WAILA UMassEntitySubsystem::EntityManager optional
 ProductionViewer FCrGridEntityHandle::EntityHandle
@@ -49,6 +51,9 @@ ProductionViewer FCrGridEntityHandle::Data
 #                           whose field request does not resolve. A key listed
 #                           by several plugins is optional only if every line
 #                           says so.
+#                           The client rig's verdict also accepts a feature the
+#                           loader reports off when every key it names is optional
+#                           for that plugin (ci/verdict.ps1).
 #
 # RuptureTimer, WaveOptimiser, CameraControls and ProductionViewer's
 # ServerSessionName read their numbers through the loader's map, which holds the
