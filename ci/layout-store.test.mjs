@@ -777,6 +777,33 @@ test('loader keys: a key the loader reads and only a key source names is strict;
   assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: mixed }), /on 2 of 6 keys.*FIntPoint::X: .*FIntPoint::Y: SDK table 0x4\/0x4\/0x0, record NOTYPE\)$/);
 });
 
+test('native keys: a key named in ci/native-keys.txt and by a key-source table is strict; the names are never compared', () => {
+  const sdk = { ...withKs(), nativeKeys: ['Other::Member', 'FIntPoint::X'] };
+  const strict = /disagrees with the SDK table's field rows.*on 1 of 6 keys \(offset\/size\/mask; first: FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE\)$/;
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: sdk }), (e) => {
+    assert.match(e.message, strict);
+    assert.deepEqual(e.sdkWarnings, [KS_Y], 'the other key is still only a key source key');
+    return true;
+  });
+  const r = viaMode('report-only', NOTYPE_XY, { sdkTables: sdk });
+  assert.equal(r.sdkWould.length, 1);
+  assert.match(r.sdkWould[0], strict);
+  assert.deepEqual(r.sdkWarnings, [KS_Y]);
+  // A class name works as well, and the loader's list and the native keys add up.
+  const klass = { ...withKs(ksTable([tclass('FSized', [trow('A', 0, 4)], 0x10, 2)])), nativeKeys: ['FSized'] };
+  assert.throws(() => viaMode('enforcing', [...RECS2, entry('FSized', 0)], { sdkTables: klass }), /FSized: SDK table 0x0\/0x10\/0x0/);
+  const both = { ...withKs(), loaderKeys: 'FIntPoint::X\n', nativeKeys: ['FIntPoint::Y'] };
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: both }), /on 2 of 6 keys/);
+  // The names only say who asks: a native key no table has is not compared, whatever the record holds.
+  const wild = patched('FTransform::Translation', { offset: 0x99 });
+  const plain = viaSdk(sdkOf(), wild);
+  const named = viaSdk(sdkOf(TCLASSES, { nativeKeys: ['FTransform::Translation'] }), wild);
+  assert.equal(named.sdkCompared, plain.sdkCompared);
+  assert.deepEqual(named.sdkWarnings, []);
+  // No native keys given (a caller without the file): the key-source rows stay key-source rows.
+  assert.deepEqual(viaMode('enforcing', NOTYPE_XY, { sdkTables: { ...withKs(), nativeKeys: undefined } }).sdkWarnings, [KS_X, KS_Y]);
+});
+
 test('loader keys: without the list every key is strict and the difference says so', () => {
   const say = "(asked for only by table-ks-M.h; the loader's key list was missing, so it counts as strict)";
   for (const loaderKeys of [null, undefined, '', '\r\n \n']) {
@@ -875,6 +902,12 @@ test('key source, command line: the warnings are log lines with a count, both mo
   assert.equal(named.code, 3);
   assert.match(named.err, /FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE\)/);
   writeFileSync(join(sub, SDK_TABLES.loaderKeys), LOADER_KEYS);
+  // A key named in ci/native-keys.txt is strict whichever table names it.
+  writeFileSync(p('native-keys.txt'), 'P FIntPoint::X\n');
+  const nativeStrict = run(args, 'enforcing');
+  assert.equal(nativeStrict.code, 3);
+  assert.match(nativeStrict.err, /on 1 of \d+ keys .*FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE\)/);
+  writeFileSync(p('native-keys.txt'), '');
   // A hold on a released key: the hold message first, then the warnings.
   writeFileSync(join(sub, 'table-A.h'), tableText([tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 32, 8)]), tclass('UWorld', [trow('GameState', 0x120, 8)])]));
   const held = run(args, 'enforcing');

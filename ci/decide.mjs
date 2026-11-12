@@ -48,7 +48,7 @@
 //   everything clean                                     -> M, if autopilot.paths has M
 //   an SDK global moved (rva != sdkRva) on a path but M  -> HOLD (on M it is a note)
 //   chosen path not in autopilot.paths                   -> HOLD
-//   rate limit hit (section 8 of the design)             -> HOLD
+//   rate limit hit (section 8 of the design; a proof run skips the once-per-CL limit only) -> HOLD
 //
 // --candidate (the unattended map-mode chain, which never publishes): a disabled
 // autopilot holds PUBLISHING only. The decision is still HOLD with the reason
