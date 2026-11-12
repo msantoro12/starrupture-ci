@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { alertBody, alertTitle, cancelExtracts, cancelPlan, decide, failuresOf, plan, reconcile, runTarget } from './planner-extract.mjs';
+import { alertBody, alertTitle, cancelExtracts, cancelPlan, decide, failuresOf, groupBusyIn, plan, reconcile, realIo, runTarget } from './planner-extract.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const HOUR = 3600 * 1000;
@@ -454,4 +454,35 @@ test('the alert body names the runs, the owner and the hand start', () => {
   assert.match(body, /^@me /);
   assert.ok(body.includes('- failed run: https://x/1') && body.includes('- failed run: https://x/2'));
   assert.ok(body.includes('gh workflow run sr-data-extract.yml -R o/r --ref main -f branch=public -f buildid=1'));
+});
+
+// ---- the busy look is one read ------------------------------------------------------------------
+
+const steamRun = (over = {}) => ({ status: 'in_progress', event: 'workflow_dispatch', path: '.github/workflows/sr-client-check.yml', ...over });
+
+test('groupBusyIn: a Steam run in any of the five states makes the group busy; the rest does not', () => {
+  for (const status of ['queued', 'in_progress', 'waiting', 'pending', 'requested']) {
+    assert.equal(groupBusyIn([steamRun({ status })]), true, status);
+  }
+  for (const path of ['.github/workflows/sr-client-rig.yml', '.github/workflows/sr-data-extract.yml', '.github/workflows/sr-client-check.yml@refs/heads/main']) assert.equal(groupBusyIn([steamRun({ path })]), true, path);
+  assert.equal(groupBusyIn([]), false);
+  assert.equal(groupBusyIn([steamRun({ status: 'completed' })]), false, 'a finished run');
+  assert.equal(groupBusyIn([steamRun({ event: 'pull_request' })]), false, 'a pull-request run');
+  assert.equal(groupBusyIn([steamRun({ path: '.github/workflows/sr-watch.yml' })]), false, 'a run that does not use Steam');
+});
+
+test('realIo.groupBusy: one read of the runs whatever their status; a read error is thrown, so reconcile starts nothing', async () => {
+  const calls = [];
+  const rows = [steamRun({ status: 'requested' }), steamRun({ status: 'completed', path: '.github/workflows/sr-watch.yml' })].map((r) => JSON.stringify(r)).join('\n');
+  const io = realIo({ repo: 'o/r', owner: 'me', pollScript: 'x', run: (cmd, args) => { calls.push([cmd, ...args]); return rows; } });
+  assert.equal(io.groupBusy(), true);
+  assert.equal(calls.length, 1, 'a single gh call');
+  assert.ok(!calls[0].join(' ').includes('status='), 'not asked per status');
+  const idle = realIo({ repo: 'o/r', owner: 'me', pollScript: 'x', run: () => JSON.stringify(steamRun({ status: 'completed' })) });
+  assert.equal(idle.groupBusy(), false);
+
+  const f = fakeIo({ tags: [] });
+  f.io.groupBusy = realIo({ repo: 'o/r', owner: 'me', pollScript: 'x', run: () => { throw new Error('502'); } }).groupBusy;
+  await assert.rejects(go(f), /502/);
+  assert.deepEqual(f.calls, [], 'nothing started or raised');
 });

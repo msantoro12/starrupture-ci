@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise } from './pipeline-alert.mjs';
+import { EXTRACT_JOB_NAME, causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise } from './pipeline-alert.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(join(here, 'fixtures', 'live-run-1', n), 'utf8');
@@ -109,4 +109,19 @@ test('sr-watch: a failed poll or compile check reaches the alert issue of each c
   // The same title as the client check's alert, so it is the same issue.
   assert.ok(a.includes('node ci/pipeline-alert.mjs raise --title "SR map mode: $b needs attention" --body-file alert.md --owner "$OWNER"'));
   assert.ok(a.includes('MATRIX: ${{ needs.poll.outputs.client_matrix }}'));
+});
+
+test('causes: the planner data extract job, which cannot fail the run, is not a cause; the other failed jobs are', async () => {
+  const gh = fakeGh({ jobs: [LIVE_JOBS[0], { id: 7, name: EXTRACT_JOB_NAME, step: 'Start the extract' }, LIVE_JOBS[1]] });
+  const jobs = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: gh.call });
+  assert.deepEqual(jobs.map((j) => j.id), [LIVE_JOBS[0].id, LIVE_JOBS[1].id]);
+  assert.ok(!gh.calls.some((c) => c.includes('/7/') || c.includes('jobs/7/')), 'nothing is read for it');
+  const same = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: fakeGh({ jobs: LIVE_JOBS }).call });
+  assert.deepEqual(same.map((j) => j.id), LIVE_JOBS.map((j) => j.id), 'an alert with only real causes is unchanged');
+});
+
+test('sr-watch: the extract job is named EXTRACT_JOB_NAME and cannot fail the run', () => {
+  const j = watchWf.slice(watchWf.indexOf('\n  planner-extract:\n'));
+  assert.ok(j.startsWith(`\n  planner-extract:\n    name: ${EXTRACT_JOB_NAME}\n`), 'the job name is the constant');
+  assert.match(j.slice(0, j.indexOf('\n    steps:')), /\n    continue-on-error: true\n/);
 });
