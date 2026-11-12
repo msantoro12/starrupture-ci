@@ -12,7 +12,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addFunction, emit, exportFeed, parse, parseFeed, parseKeys } from './version-map.mjs';
+import { generateKeyPairSync } from 'node:crypto';
+import { addFunction, emit, exportFeed, keepPublished, parse, parseFeed, parseKeys, parseRowList } from './version-map.mjs';
+import { signFeed } from './vmap-sign.mjs';
 import { kindOf, mapMode, tupleOf } from './map-mode.mjs';
 import { selectRows } from './apply-proposals.mjs';
 
@@ -918,4 +920,60 @@ test('key source: a dropped key whose old pattern lands inside the symbol does n
   const plan = withWave({ released: false, fork: [] });
   plan.components[2].releases.push(release('current', 'current', [ok('UCrPlan::Inside', 'function', WAVE_ADD.rva + 0x20, { symbolRva: '0x' + WAVE_ADD.rva.toString(16) })]));
   assert.match(mapMode(header(), plan).problems[0], /UCrPlan::Inside: lands at 0x76B59D0, off the start of its symbol/);
+});
+
+// ---- Published rows are not pruned --------------------------------------------------------------
+
+// What the published feed holds of the fixture: the two fp sets of the pruned key, on both older CLs.
+const publishedPrunable = () => ({ functions: rowsOf(header()).filter((r) => r.key === PE && r.fp === FP_B) });
+const retiredList = (...entries) => parseRowList(entries.map((e) => e.join('\t')).join('\n'));
+
+test('published rows are not pruned: a run that would drop them leaves them as they are', () => {
+  const published = publishedPrunable();
+  assert.equal(published.functions.length, 2);
+  const out = mapMode(header(), base(), { keep: keepPublished(published) });
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.pruned, 0);
+  assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_B).length, 2);
+  assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_A).length, 3, 'the run still writes its own rows');
+});
+
+test('published rows: only the retired list lets one go, and only the rows it names', () => {
+  const published = publishedPrunable();
+  const retired = retiredList(['function', PE, '127004', 'the build is gone from the game']);
+  const out = mapMode(header(), base(), { keep: keepPublished(published, { retired }) });
+  assert.equal(out.pruned, 1);
+  assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_B && r.cl === 127004).length, 0);
+  assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_B && r.cl === 128786).length, 1);
+});
+
+test('a row the published feed does not have is still pruned', () => {
+  const published = { functions: publishedPrunable().functions.filter((r) => r.cl === 127004) };
+  const out = mapMode(header(), base(), { keep: keepPublished(published) });
+  assert.equal(out.pruned, 1);
+  assert.equal(rowsOf(out.text).filter((r) => r.key === PE && r.fp === FP_B).length, 1);
+});
+
+test('the command line: --published must verify (exit 4, header untouched) and --retired needs it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mapmode-pub-'));
+  const h = join(dir, 'version_map.generated.h');
+  const inp = join(dir, 'in.json');
+  writeFileSync(h, header());
+  writeFileSync(inp, JSON.stringify(base()));
+  const strangers = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' });
+  writeFileSync(join(dir, 'stranger.txt'), signFeed(exportFeed(parse(header())), strangers, { keyId: 'k1' }).text);
+  writeFileSync(join(dir, 'unsigned.txt'), exportFeed(parse(header())));
+  writeFileSync(join(dir, 'retired.txt'), 'function\tx\t127004\twhy\n');
+  const write = (...extra) => spawnSync(process.execPath, [TOOL, 'write', h, '--input', inp, ...extra], { encoding: 'utf8', windowsHide: true });
+  for (const name of ['stranger.txt', 'unsigned.txt']) {
+    const r = write('--published', join(dir, name));
+    assert.equal(r.status, 4, `${name}: ${r.stderr}`);
+    assert.match(r.stderr, /refused/);
+  }
+  assert.equal(readFileSync(h, 'utf8'), header(), 'a refused file writes nothing');
+  const r = write('--retired', join(dir, 'retired.txt'));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--retired needs --published/);
+  assert.equal(write('--published', join(dir, 'missing.txt')).status, 2);
+  assert.equal(readFileSync(h, 'utf8'), header());
 });

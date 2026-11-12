@@ -125,6 +125,10 @@ on:
         description: 'Sign the feed with the release key and publish it when promote says so (only sr-watch passes true; the autopilot must be on and every gate must pass)'
         type: boolean
         default: false
+      published_base:
+        description: 'Take the published feed (the file players read) as part of the base: its rows are added to the loader header first, and the run holds when it cannot, or when the new feed would lose or change a published row (ci/VERSION-MAP.md, Published base). Off: the base is the loader header alone'
+        type: boolean
+        default: false
       refresh_layout:
         description: 'Only refresh the saved public layout: the check and the store run, nothing after them (needs public and map_mode; only sr-layout-refresh passes true)'
         type: boolean
@@ -256,6 +260,10 @@ on:
         default: false
       publish:
         description: 'Sign the feed with the release key and publish it when promote says so (off: dry run; also refused with feed_loader_ref)'
+        type: boolean
+        default: false
+      published_base:
+        description: 'Take the published feed (the file players read) as part of the base: its rows are added to the loader header first, and the run holds when it cannot, or when the new feed would lose or change a published row (ci/VERSION-MAP.md, Published base). Off: the base is the loader header alone'
         type: boolean
         default: false
       refresh_layout:
@@ -1563,9 +1571,43 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # published_base: the header the carry scan reads holds the published feed's rows too, so a key the
+      # feed already has a row for is not carried again. The same helper map mode runs on its own checkout
+      # of the header. A hold is written to out/published-base.json, the carry scan is left out and map
+      # mode holds the run with the same reasons; nothing here fails the job for it.
+      - name: Check out the published-base tool
+        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && inputs.published_base == true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-base
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Take the published feed as the base
+        id: pbase
+        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && inputs.published_base == true
+        timeout-minutes: 5
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FIRST_PUBLISH: ${{ inputs.first_publish == true }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $header = 'base-loader\StarRupture-ModLoader-Core\hooks\game\version_map.generated.h'
+          node ci-base\ci\published-base.mjs take $header --report out\published-base.json --dir published-base --first-publish $env:FIRST_PUBLISH
+          $code = $LASTEXITCODE
+          if ($code -eq 3) {
+            "held=true" >> $env:GITHUB_OUTPUT
+            Write-Host "::warning title=Published base::the published feed could not be taken as the base; map mode holds this run (reasons above)"
+            exit 0
+          }
+          if ($code -ne 0) { Write-Host "::error title=Published base::published-base.mjs exited $code"; exit $code }
+          "held=false" >> $env:GITHUB_OUTPUT
+
       - name: Carry the version map's keys onto this build
         id: carry
-        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true
+        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && steps.pbase.outputs.held != 'true'
         timeout-minutes: 15
         shell: pwsh
         env:
@@ -2465,6 +2507,7 @@ jobs:
             out/scanner.txt
             out/scanner.json
             out/carry.json
+            out/published-base.json
             out/plugin-*.json
             out/plugin-*.txt
             out/keysrc.json
@@ -2652,6 +2695,8 @@ jobs:
       LOADER_REPO: ${{ inputs.loader_repo }}
       # The proof of the stored reference (dispatch only): every input it needs is part of the condition, so any other run takes its base as usual.
       STORED_REFERENCE: ${{ inputs.stored_reference == true && inputs.branch != 'public' && inputs.branch != 'expiry-only' && inputs.map_mode == true && inputs.publish != true && inputs.test_autopilot == true && inputs.proof_run != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+      # The published feed is part of the base (input published_base; off: nothing below changes).
+      PUBLISHED_BASE: ${{ inputs.published_base == true }}
     steps:
       # A first_publish dispatch that is not a first publish (a base outside the fork, a branch that is not an
       # auto/update-<CL>-<run>-<attempt> one, any other input) stops here: it is never run as an ordinary one.
@@ -2702,6 +2747,28 @@ jobs:
           name: client-check-${{ inputs.branch }}
           path: res
 
+      # published_base: the file players read is part of the base. Its signature is verified, then every
+      # build line and row the loader header lacks is added to the header, right here, before anything
+      # reads the header (ci/published-base.mjs). When that cannot be done (the file cannot be fetched,
+      # its signature is refused, or a row differs from the header's), or the check job already held for
+      # it, nothing is written: the write step is left out and the chain step ends in a HOLD that names
+      # the reason. The run never goes on with the loader header alone.
+      - name: Take the published feed as the base
+        id: base
+        if: ${{ inputs.published_base == true }}
+        run: |
+          set -uo pipefail
+          code=0
+          node tool/ci/published-base.mjs take loader/StarRupture-ModLoader-Core/hooks/game/version_map.generated.h \
+            --report published-base.json --dir published-base --first-publish "$FIRST_PUBLISH" --check-report res/published-base.json || code=$?
+          if [ "$code" -eq 3 ]; then
+            echo "held=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Published base::the published feed could not be taken as the base; this run ends in a HOLD (reasons above)"
+            exit 0
+          fi
+          [ "$code" -eq 0 ] || { echo "::error::published-base.mjs exited $code"; exit "$code"; }
+          echo "held=false" >> "$GITHUB_OUTPUT"
+
       # A key source that did not build, scan or have its keys read leaves the keys only it requests without
       # rows on this build. That does not fail map mode: the update goes on without them, and the cause is
       # named here: in the run summary, as a warning, and as an alert line (alerts.json, which the alert job
@@ -2745,6 +2812,7 @@ jobs:
 
       - name: Write the update into the header
         id: write
+        if: ${{ steps.base.outputs.held != 'true' }}
         env:
           SCANNED_LOADER_SHA: ${{ needs.build.outputs.loader_sha }}
         run: |
@@ -2836,8 +2904,11 @@ jobs:
           echo "mapped=$mapped" >> "$GITHUB_OUTPUT"
           if [ "$PROOF" = true ] && [ "$mapped" != true ]; then echo "::error::proof_run re-runs a CL the loader already maps, and the header has no build row for CL-$obs_cl"; exit 2; fi
           status=0
+          # With the published feed in the base, its function rows are never pruned (only ci/retired-rows.txt lets one go).
+          published_flag=()
+          if [ "$PUBLISHED_BASE" = true ] && [ -f published-base/version-map-client.v1.txt ]; then published_flag=(--published published-base/version-map-client.v1.txt --retired tool/ci/retired-rows.txt); fi
           # A test run measures a CL already in the table again; any other run refuses it.
-          node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json --remeasure "$TEST_AUTOPILOT" || status=$?
+          node tool/ci/map-mode.mjs write "$header" --input observations.json --report map-mode-report.json --remeasure "$TEST_AUTOPILOT" "${published_flag[@]}" || status=$?
           cp "$header" version_map.generated.h
           if [ "$status" -ne 0 ]; then echo "::error::map mode refused the update (exit $status); see the log and map-mode-report.json"; exit "$status"; fi
           # The gate: every function key with a row on an earlier CL has one on this CL, present
@@ -2858,10 +2929,20 @@ jobs:
           LOADER_TREE: ${{ steps.write.outputs.loader_tree }}
           MAPPED: ${{ steps.write.outputs.mapped }}
           VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+          BASE_HELD: ${{ steps.base.outputs.held }}
         run: |
           set -euo pipefail
           header=version_map.generated.h
           cl="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks.exe.cl")"
+          # The published feed could not be the base (the step above): no row was written, so there is nothing to
+          # judge, export or sign. The decision is a HOLD that names why; the alert job shows its reasons.
+          if [ "$BASE_HELD" = true ]; then
+            node tool/ci/decide.mjs hold --report published-base.json --repo ModLoader --cl "$cl" --out decision.json > /dev/null
+            echo "decision=HOLD" >> "$GITHUB_OUTPUT"
+            echo "publishable=false" >> "$GITHUB_OUTPUT"
+            echo "decide: HOLD (published base); the chain stops here, with no feed cut"
+            exit 0
+          fi
           # Field rows: the native members on the new CL, the reflected ones
           # that moved, absent rows for what is gone. A refusal (exit 3) is not
           # fatal here: it writes the report and decide holds. Anything else
@@ -3079,6 +3160,22 @@ jobs:
           # refuses a feed over the size cap itself (FEED_MAX_BYTES in ci/version-map.mjs, below the
           # 1 MiB every loader accepts) and names its size.
           node tool/ci/version-map.mjs export-feed "$header" --out feed.txt
+          # With the published feed in the base, the new feed must still hold every published line unchanged (a
+          # row in ci/retired-rows.txt or ci/changed-rows.txt excepted). The file is the one on the release now,
+          # read again above. A loss or change ends the chain here in a HOLD that names the rows: nothing is
+          # signed, staged or published. A first publish has no published file.
+          if [ "$PUBLISHED_BASE" = true ] && [ "$FIRST_PUBLISH" != true ]; then
+            kept=0
+            node tool/ci/published-base.mjs preserve feed.txt --published published/version-map-client.v1.txt --report preserve.json || kept=$?
+            if [ "$kept" -ne 0 ]; then
+              [ "$kept" -eq 3 ] || { echo "::error::published-base.mjs exited $kept"; exit "$kept"; }
+              node tool/ci/decide.mjs hold --report preserve.json --decision decision.json --out decision.json > /dev/null
+              echo "decision=HOLD" >> "$GITHUB_OUTPUT"
+              echo "publishable=false" >> "$GITHUB_OUTPUT"
+              echo "decide: HOLD (the new feed would lose or change a published row); nothing signed, staged or published"
+              exit 0
+            fi
+          fi
           node --input-type=module -e '
             import { appendFileSync, readFileSync, statSync } from "node:fs";
             import { parse } from "./tool/ci/version-map.mjs";
@@ -3227,6 +3324,7 @@ jobs:
       TEST_INPUT: ${{ inputs.test_autopilot == true || inputs.proof_run == true }}
       CHAIN_SEQ: ${{ needs.map-mode.outputs.seq }}
       FIRST_PUBLISH: ${{ needs.map-mode.outputs.first_publish }}
+      PUBLISHED_BASE: ${{ inputs.published_base == true }}
     steps:
       - name: Check out the sign tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3308,6 +3406,18 @@ jobs:
           # The feed is cut again from the chain's header. It must be the feed the chain staged, byte for byte.
           node tool/ci/version-map.mjs export-feed chain/version_map.generated.h --out feed.again.txt
           cmp -s chain/feed.txt feed.again.txt || { echo "::error::the feed the chain staged differs from the export of the chain's header; nothing was signed, the chain has to run again"; exit 2; }
+          # With the published feed in the base: the feed to sign must still hold every line of the file that is
+          # live now (read again above), a row in ci/retired-rows.txt or ci/changed-rows.txt excepted. The chain
+          # checked this against the file it saw; another publish may have landed since. A loss or change stops
+          # the job before the key is used and before anything is uploaded; the job fails and the alert names the rows.
+          if [ "$PUBLISHED_BASE" = true ] && [ "$FIRST_PUBLISH" != true ]; then
+            kept=0
+            node tool/ci/published-base.mjs preserve chain/feed.txt --published live/version-map-client.v1.txt --report preserve.json || kept=$?
+            if [ "$kept" -ne 0 ]; then
+              node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("preserve.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+              echo "::error::the feed to sign would lose or change a published row; nothing was signed or uploaded"; exit 2
+            fi
+          fi
 
       # The switch as it is on main now, read right before the key is used. The chain read it when it
       # started, hours ago: turning the autopilot off must stop a chain that is already running.

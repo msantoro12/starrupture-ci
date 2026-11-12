@@ -3,7 +3,7 @@
 // instead of into each plugin's source.
 //
 //   node ci/map-mode.mjs complete <header> --cl <CL> [--report <write report>]   (exit 3 when a key with an earlier row has none on CL)
-//   node ci/map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true]
+//   node ci/map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true] [--published <signed feed> [--retired <file>]]
 //
 // The header is the loader's version_map.generated.h. The input is what the
 // runner collected for one new build (see ci/MAP-MODE.md for the shape): for
@@ -23,7 +23,9 @@
 // It prunes the row sets of fps that neither the current nor the previous
 // release of the owner still carries, and only for an owner whose input holds
 // both: without the previous release's scan the fps that release still needs
-// are not known, so every set of that owner's keys is kept.
+// are not known, so every set of that owner's keys is kept. With --published, a
+// row of that signed feed is never pruned, whatever the scans say: it leaves
+// the file only through the retired list (ci/retired-rows.txt).
 //
 // It refuses, writing nothing and exiting 3, when
 //   - two keys name one symbol, or one key lands on two addresses, or a global
@@ -52,7 +54,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, addAbsent, addBuild, addFunction, buildMismatch, checkMap, emit, isGlobalKind, parse, parseKeys, replaceBuild, unionKeys,
+  EXIT_BAD_SIGNATURE, EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, SignatureRefused, addAbsent, addBuild, addFunction, buildMismatch, checkMap, emit, isGlobalKind, keepPublished, parse, parseKeys,
+  parseRowList, readPublished, replaceBuild, unionKeys,
 } from './version-map.mjs';
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -266,7 +269,8 @@ export function planRows(rows, { cl }) {
 // ---- Writing ------------------------------------------------------------------
 
 // Applies the plan to a clone of the map. Returns { map, added, pruned, problems }.
-export function writeRows(map, input) {
+// keep: a test on a function row; a row it accepts is never pruned (the published feed's rows).
+export function writeRows(map, input, { keep = () => false } = {}) {
   const { cl, rows, patches, ranks } = readObservations(input);
   const plan = planRows(rows, { cl });
   const problems = [...plan.problems];
@@ -320,7 +324,7 @@ export function writeRows(map, input) {
   const scannedBoth = (o) => ranks.get(o).has('current') && ranks.get(o).has('previous');
   const prunable = (key) => plan.live.has(key) && [...plan.liveOwners.get(key)].every(scannedBoth);
   const before = next.functions.length;
-  next.functions = next.functions.filter((r) => r.fp === 0 || !prunable(r.key) || plan.live.get(r.key).has(r.fp));
+  next.functions = next.functions.filter((r) => r.fp === 0 || !prunable(r.key) || plan.live.get(r.key).has(r.fp) || keep(r));
   const pruned = before - next.functions.length;
   if (problems.length) return { map: null, added: 0, pruned: 0, problems, patches, notes: plan.notes, alerts: plan.alerts };
   return { map: next, added, pruned, problems, patches, notes: plan.notes, alerts: plan.alerts, dropped: plan.dropped };
@@ -330,13 +334,13 @@ export function writeRows(map, input) {
 // remeasure (test runs only): a CL already in the build table is measured again.
 // Its build row is replaced by the input's and its rows are dropped, so the write
 // below measures them afresh instead of refusing on another exe or source.
-export function mapMode(headerText, input, { keys = [], remeasure = false } = {}) {
+export function mapMode(headerText, input, { keys = [], remeasure = false, keep } = {}) {
   const map = parse(headerText, 'the header');
   const cl = Number(input.cl);
   if (remeasure && input.build && map.builds.some((b) => b.cl === cl)) {
     replaceBuild(map, { cl, stamp: numberOf(input.build.stamp, 'build.stamp'), size: numberOf(input.build.size, 'build.size', { lo: 1 }), source: input.build.source });
   }
-  const out = writeRows(map, input);
+  const out = writeRows(map, input, { keep });
   if (out.map && keys.length) {
     const left = checkMap(out.map, unionKeys(keys));
     if (left.length) return { ...out, map: null, text: null, problems: left.map((l) => `coverage: ${l}`) };
@@ -529,7 +533,7 @@ export function main(argv) {
     }
   }
   if (cmd !== 'write' || !header || !o.input) {
-    process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true]\n'
+    process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true] [--published <signed feed> [--retired <file>]]\n'
       + '       map-mode.mjs assemble <scans.json> --out <observations.json> [--carry <carry.json> --base <header>]\n'
       + '       map-mode.mjs complete <header> --cl <CL> [--report <write report>]\n');
     return EXIT_ERROR;
@@ -537,7 +541,19 @@ export function main(argv) {
   try {
     const input = JSON.parse(readFileSync(o.input, 'utf8').replace(/^﻿/, ''));
     const keys = o.keys.map((p) => parseKeys(readFileSync(p, 'utf8'), p));
-    const out = mapMode(readFileSync(header, 'utf8'), input, { keys, remeasure: o.remeasure === 'true' });
+    // --published: the signed feed the header already carries (import-published); its rows are not pruned.
+    let keep;
+    if (o.published) {
+      try {
+        keep = keepPublished(readPublished(readFileSync(o.published), { where: o.published }),
+          { retired: o.retired ? parseRowList(readFileSync(o.retired, 'utf8'), o.retired) : undefined });
+      } catch (e) {
+        if (!(e instanceof SignatureRefused)) throw e;
+        process.stderr.write(`map-mode: refused: ${e.message}\n`);
+        return EXIT_BAD_SIGNATURE;
+      }
+    } else if (o.retired) throw new MapError('--retired needs --published');
+    const out = mapMode(readFileSync(header, 'utf8'), input, { keys, remeasure: o.remeasure === 'true', keep });
     const report = { written: !!out.map, added: out.added ?? 0, pruned: out.pruned ?? 0, problems: out.problems, notes: out.notes ?? [], alerts: out.alerts ?? [], absences: out.absences ?? [], patches: out.patches ?? [] };
     if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
     if (!out.map) {

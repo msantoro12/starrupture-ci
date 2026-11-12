@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, expectedRefusals, loaderRefusal, LIMITS, SDK_GLOBALS } from './decide.mjs';
+import { decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS } from './decide.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const NOW = Date.parse('2026-10-29T12:00:00Z');
@@ -1138,4 +1138,51 @@ test('released line: with a loader that accepts [70, 75] the nine v75 plugins ar
   const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), otherCl: 127004, rigPlugins: ok(releasedLineRig) }));
   assert.deepEqual(r.expectRefused, ['MiniMap']);
   assert.deepEqual(r.expectRefusedOther, []);
+});
+
+// ---- A published-base problem is a HOLD ----------------------------------------------------------
+
+test('holdFor: the published-base reasons come first; a decision of M becomes HOLD and ships nothing', () => {
+  const m = decide(base());
+  assert.equal(m.decision, 'M');
+  const h = holdFor(['published base: 2 published lines are missing from the new feed', 'function GWorld @ CL-127004: missing'], { decision: m });
+  assert.equal(h.decision, 'HOLD');
+  assert.equal(h.ship, false);
+  assert.deepEqual(h.reasons.slice(0, 2), ['published base: 2 published lines are missing from the new feed', 'function GWorld @ CL-127004: missing']);
+  assert.equal(h.cl, m.cl);
+  assert.equal(m.decision, 'M', 'the decision it was given is not changed');
+});
+
+test('holdFor: a decision that already held keeps its own reasons after the new ones; without a decision it stands alone', () => {
+  const held = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '129402' }) }));
+  assert.equal(held.decision, 'HOLD');
+  const h = holdFor(['published base: the published file could not be fetched'], { decision: held });
+  assert.deepEqual(h.reasons, ['published base: the published file could not be fetched', ...held.reasons]);
+  const alone = holdFor(['published base: the published file could not be fetched'], { repo: 'ModLoader', cl: 129402 });
+  assert.deepEqual([alone.decision, alone.ship, alone.repo, alone.cl, alone.reasons.length], ['HOLD', false, 'ModLoader', 129402, 1]);
+});
+
+test('decide.mjs hold: writes the HOLD decision from a published-base report, exit 0; a report without a reason is a usage error', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'decide-hold-'));
+  const cli = join(here, 'decide.mjs');
+  const report = join(dir, 'pb.json');
+  const out = join(dir, 'decision.json');
+  writeFileSync(report, JSON.stringify({ ok: false, step: 'import', reasons: ['published base: the file could not be fetched after 3 tries (x); the header was not changed'] }));
+  let r = spawnSync(process.execPath, [cli, 'hold', '--report', report, '--repo', 'ModLoader', '--cl', '129402', '--out', out], { encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, r.stderr);
+  const d = JSON.parse(readFileSync(out, 'utf8'));
+  assert.deepEqual([d.decision, d.ship, d.repo, d.cl], ['HOLD', false, 'ModLoader', 129402]);
+  assert.match(d.reasons[0], /^published base: the file could not be fetched/);
+  // Held again on top of a decision: the decision's own fields stay.
+  writeFileSync(out, JSON.stringify({ decision: 'M', ship: true, path: 'M', cl: 129402, repo: 'ModLoader', reasons: [], notes: ['n'], plugins: [], pluginsOk: true, expectRefused: [] }));
+  r = spawnSync(process.execPath, [cli, 'hold', '--report', report, '--decision', out, '--out', out], { encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, r.stderr);
+  const again = JSON.parse(readFileSync(out, 'utf8'));
+  assert.deepEqual([again.decision, again.ship, again.path, again.notes], ['HOLD', false, 'M', ['n']]);
+  writeFileSync(report, JSON.stringify({ ok: true, step: 'import', note: 'fine' }));
+  r = spawnSync(process.execPath, [cli, 'hold', '--report', report, '--out', out], { encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /holds no reason to hold/);
+  r = spawnSync(process.execPath, [cli, 'hold', '--report', join(dir, 'nope.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 2);
 });

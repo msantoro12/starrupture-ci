@@ -61,6 +61,8 @@ node ci/version-map.mjs remove-key <header> --key <key>
 node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
 node ci/version-map.mjs check <header> [--keys <keys.txt>]...
 node ci/version-map.mjs export-feed <header> --out <file>
+node ci/version-map.mjs import-published <header> --published <signed feed> [--retired <file>] [--changed <file>]
+node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retired <file>] [--changed <file>]
 ```
 
 - `init` writes an empty map and refuses to overwrite a file. `--built-cl` is
@@ -104,9 +106,16 @@ node ci/version-map.mjs export-feed <header> --out <file>
   not be the header. Every CL in the header goes into the feed, and a feed over
   the size cap (`FEED_MAX_BYTES`, half of the 1 MiB every loader accepts) is refused
   with its size.
+- `import-published` adds to the header every build line and row of the signed feed
+  that the header lacks, so the next `export-feed` still carries them. It reads the
+  feed only after the signature verifies. See "The published feed is part of the base".
+- `check-preserve` reads a new feed and exits 3, naming the rows, when a line of the
+  signed feed is missing from it or has other content.
 
-Exit codes: 0 ok; 3 `check` found a coverage problem; 2 usage error, a header off
-the format, or a conflicting row. A command that fails leaves the header alone.
+Exit codes: 0 ok; 3 `check` found a coverage problem, or `import-published` or
+`check-preserve` holds (rows differ, rows lost); 4 the signed feed's signature does not
+verify (`import-published`, `check-preserve`); 2 usage error, a header off the format,
+or a conflicting row. A command that fails leaves the header alone.
 
 ## The coverage rule
 
@@ -290,6 +299,31 @@ field	ACrCharacterPlayerBase::ADSMoveSpeed	128786	0x13C8	0x4	0x00	ADSMoveSpeedSc
 `parseFeed` reads a feed back strictly: any line off the format is
 an error, a scoped row with no `fp` or with 0 included, and the map it reads
 must export to the same bytes.
+
+## The published feed is part of the base
+
+The signed feed on the `vmap-feed` release is what players read. A new feed is cut from the
+loader header, so a row the feed has and the header lacks would drop out of the next one.
+To stop that, the published feed is added to the header first (`import-published`), and the new
+feed is compared with the published one before it goes out (`check-preserve`). A published row
+is never removed or rewritten by a run. Two lists name the rows that may be:
+
+| File | Lists rows that |
+|---|---|
+| `ci/retired-rows.txt` | may leave the feed (the build is gone, the key was dropped) |
+| `ci/changed-rows.txt` | may change content (a better pattern, a new offset, an absent row that found an address) |
+
+One entry per line, four fields separated by tabs: kind (`function`, `field` or `build`), key
+(`-` for a build), the build's CL number, and a reason. A reason is required. An entry names every
+row of that key on that build. Lines starting with `#` are skipped. Example, in `retired-rows.txt`:
+
+```
+function	UCrSomething::OldFunction	127004	No release of any plugin asks for it any more.
+```
+
+Both files start with no entries. An entry is never needed to keep a row; it is only the way out for
+one that is meant to go. What a run does with the base, and what to do when it holds, is in
+`MAP-MODE.md` ("The published feed as the base").
 
 ## What never goes in
 

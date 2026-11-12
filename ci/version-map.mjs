@@ -732,6 +732,14 @@ export function importPublished(base, published, { retired = NO_ROWS, changed = 
   return { map, added, conflicts, kept };
 }
 
+// The function rows of the published feed that a run must leave in the header: every one not
+// retired. Returns a test on a header row. map-mode's write uses it so that its pruning of row
+// sets nobody asks for any more never takes a published row; only the retired list lets one go.
+export function keepPublished(published, { retired = NO_ROWS } = {}) {
+  const ids = new Set(published.functions.filter((p) => !isRetired(retired, 'function', p.key, p.cl)).map(fnId));
+  return (row) => ids.has(fnId(row));
+}
+
 // Every published line the would-be feed (a parsed feed) lost or changed, one text each, unless
 // retired (may be missing) or changed (may differ). Returns { violations, checked }.
 export function preserveCheck(next, published, { retired = NO_ROWS, changed = NO_ROWS } = {}) {
