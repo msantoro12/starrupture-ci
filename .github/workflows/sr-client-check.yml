@@ -2170,6 +2170,17 @@ jobs:
           $all = $files | ForEach-Object { Get-Content $_ } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
           Copy-Item "$work\keys-all.txt" out\layout-keys.txt
+          # The layout tables and the head of the SDK's SDK.hpp (which names the build the SDK was dumped for) go to
+          # the map-mode job, which checks the stored layout of the public build against them (ci/layout-store.mjs
+          # --sdk-tables). If they cannot be copied that check is skipped there, with a note; nothing fails here.
+          try {
+            New-Item -ItemType Directory -Force out\sdk-tables | Out-Null
+            Copy-Item "$work\table-*.h" out\sdk-tables -ErrorAction Stop
+            Get-Content "$sdk\Client\SDK.hpp" -TotalCount 12 -ErrorAction Stop | Set-Content out\sdk-tables\sdk-header.txt -Encoding ascii
+          } catch {
+            Remove-Item out\sdk-tables -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "::warning title=SDK tables::the layout tables could not be copied for the stored-layout cross-check: $($_.Exception.Message)"
+          }
           # A build the published file does not hold yet is also read for the field keys that the newest published
           # build has rows for and no key list names any more (ci/MAP-MODE.md, "Carried field keys"). Only this build
           # is asked for them; out\layout-carry-keys.txt lists them and field-rows decides what each one becomes.
@@ -2527,6 +2538,7 @@ jobs:
             out/layout-keys.txt
             out/layout-carry-keys.txt
             out/layout-uses.txt
+            out/sdk-tables/*
             out/offsets-*.json
             out/rig-plugins.json
           if-no-files-found: warn
@@ -2983,9 +2995,19 @@ jobs:
             exe_sha="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.sha256 ?? ''")"
             local why
             if why="$(node tool/ci/layout-store.mjs reference "$header" --record "stored/layout-CL-$PREVIOUS_CL.json" --release stored/release.json --cl "$cl" --sha256 "$exe_sha" \
-                --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --out res/layout-stored.json --published published-ref 2>&1)"; then
+                --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --out res/layout-stored.json --published published-ref \
+                --sdk-tables res/sdk-tables --sdk-differences tool/ci/sdk-table-differences.txt 2>&1)"; then
               base=(--base res/layout-stored.json)
               echo "field-rows: $why"
+              # A known difference the SDK-table check excused, that check being skipped, or what it would have held on
+              # (report only while SDK_TABLE_CHECK in layout-store.mjs says so) is also a line of the step summary, so it
+              # is seen without opening the log; what it would have held on is also a warning annotation on the run.
+              # Writing them can never fail the job.
+              sdk_notes="$(printf '%s\n' "$why" | grep -E 'against the SDK tables was skipped|, a known difference \(|report only: this would hold' | sed 's/^layout-store: /- /' || true)"
+              printf '%s\n' "$sdk_notes" | grep -F -- '- report only: this would hold' | sed -e 's/^- //' -e 's/%/%25/g' -e 's/^/::warning title=SDK-table check (report only)::/' || true
+              if [ -n "$sdk_notes" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                printf '\n### SDK-table cross-check of the stored layout\n\n%s\n' "$sdk_notes" >> "$GITHUB_STEP_SUMMARY" || true
+              fi
             else
               missing=(--base-missing "$why")
               echo "field-rows: no stored reference layout: $why"
