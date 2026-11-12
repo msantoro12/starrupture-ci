@@ -970,6 +970,8 @@ with `publish` on or a name that is not a plain branch, and `sr-watch` cannot se
 
 `proof_run` (dispatch only, `public` with `publish` and `test_autopilot` off, else map mode refuses it) carries the CL public already runs, which the header already maps, through the whole chain: G3 passes the same CL, its field rows take the build as its own reference, the candidate goes to `auto/update-<CL>-<run>-<attempt>` (never the plain name), both rigs and the rig gate run, and the run is marked a test, so it never publishes. The push needs the candidate to differ from the loader's header (it adds the CL's field rows while the header lacks them). The feed-path rig runs only when the feed adds or changes rows over the loader it builds: pair `proof_run` with `feed_loader_ref` (a branch without the CL's rows) to be sure it runs.
 
+A proof run re-runs a CL that is usually already published, so decide skips the one rate-limit reason "already released for CL-<n>" for it, and only that one (`proofRun` of `checkRateLimits`, taken from the `proof` mark in the G3 file). The daily cap, the minimum gap between publishes, the attempts limit and every other hold reason apply to a proof run as to any other run, and a run that is not a proof run is decided as before. The run is still marked a test and never publishes.
+
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 `sr-watch.yml`) is the unattended path M on one build. It reads only the check
 job's artifacts, the loader's header and the `vmap-feed` release: no Steam login,
