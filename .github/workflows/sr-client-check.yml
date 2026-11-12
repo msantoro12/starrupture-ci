@@ -3002,9 +3002,12 @@ jobs:
               # A known difference the SDK-table check excused, that check being skipped, or what it would have held on
               # (report only while SDK_TABLE_CHECK in layout-store.mjs says so) is also a line of the step summary, so it
               # is seen without opening the log; what it would have held on is also a warning annotation on the run.
+              # A difference on a key that only a key source asks for is a warning in both modes: its lines (and their
+              # count) are in the summary too, and each is an annotation of its own.
               # Writing them can never fail the job.
-              sdk_notes="$(printf '%s\n' "$why" | grep -E 'against the SDK tables was skipped|, a known difference \(|report only: this would hold' | sed 's/^layout-store: /- /' || true)"
+              sdk_notes="$(printf '%s\n' "$why" | grep -E 'against the SDK tables was skipped|, a known difference \(|report only: this would hold|key source only: |only a key source asks for' | sed 's/^layout-store: /- /' || true)"
               printf '%s\n' "$sdk_notes" | grep -F -- '- report only: this would hold' | sed -e 's/^- //' -e 's/%/%25/g' -e 's/^/::warning title=SDK-table check (report only)::/' || true
+              printf '%s\n' "$sdk_notes" | grep -F -- '- key source only: ' | sed -e 's/^- //' -e 's/%/%25/g' -e 's/^/::warning title=SDK-table check (key source)::/' || true
               if [ -n "$sdk_notes" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
                 printf '\n### SDK-table cross-check of the stored layout\n\n%s\n' "$sdk_notes" >> "$GITHUB_STEP_SUMMARY" || true
               fi

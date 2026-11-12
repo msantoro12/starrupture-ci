@@ -3251,6 +3251,32 @@ exit 1
   assert.deepEqual(noSummary.base, ['--base', 'res/layout-stored.json']);
   miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x1c\tfor the test\n', mode: 'enforcing' }, /disagrees with the SDK table's field rows.*AFoo::Bar/);
   miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\t\n', mode: 'enforcing' }, /sdk-table-differences\.txt:1: the entry for AFoo::Bar on CL-127004 has no reason/);
+  // A key that only a key source (table-ks-*.h) asks for: a difference is a warning in the log, the summary and an annotation of its
+  // own, in both modes; it holds nothing. UWorld::GameState is at 0x120 in the record and 0x128 in the key source's table.
+  const KS_LINE = 'key source only: UWorld::GameState: SDK table 0x128/0x8/0x0, record 0x120/0x8/0x0 (asked for only by table-ks-M.h)';
+  const KS_COUNT = '1 difference on keys only a key source asks for: a warning, never a hold';
+  const ksTables = (barOffset = 16) => ({ ...sdkTables(barOffset), 'table-ks-M.h': renderHeader({ cl: 128786, detail: 1, granularity: 2, classes: [{ name: 'UWorld', sizeOf: 0, alignOf: 0, kind: 1, path: '', rows: [{ member: 'GameState', offset: 0x128, size: 8, mask: 0 }] }] }) });
+  for (const mode of ['report-only', 'enforcing']) {
+    const ks = run({ tables: ksTables(), mode });
+    assert.equal(ks.status, 0, ks.stderr);
+    assert.deepEqual(ks.base, ['--base', 'res/layout-stored.json'], `${mode}: no hold`);
+    assert.deepEqual(ks.missing, []);
+    assert.ok(ks.out.includes(`layout-store: ${KS_LINE}\nlayout-store: ${KS_COUNT}\n`), `${mode}: the log`);
+    assert.ok(ks.out.includes(`\n::warning title=SDK-table check (key source)::${KS_LINE}\n`), `${mode}: the annotation names the key and both values`);
+    assert.doesNotMatch(ks.out, /report only|::warning title=SDK-table check \(report only\)/);
+    assert.equal(ks.summary, `\n### SDK-table cross-check of the stored layout\n\n- ${KS_LINE}\n- ${KS_COUNT}\n`, `${mode}: the summary`);
+  }
+  // With a difference on a released plugin's key as well: enforcing holds on that one and the log still lists the warning;
+  // report-only holds nothing, reports the would-hold line and keeps both.
+  const both = run({ tables: ksTables(24), mode: 'enforcing' });
+  assert.deepEqual(both.base, []);
+  assert.match(both.out, /field-rows: no stored reference layout: the stored layout of CL-127004 disagrees with the SDK table's field rows.*AFoo::Bar: SDK table 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0\)\nlayout-store: key source only: UWorld::GameState: SDK table 0x128\/0x8\/0x0, record 0x120\/0x8\/0x0/);
+  const WOULD2 = WOULD.replace('1 of 1 keys', '1 of 2 keys');
+  const bothReport = run({ tables: ksTables(24), mode: 'report-only' });
+  assert.deepEqual(bothReport.base, ['--base', 'res/layout-stored.json']);
+  assert.ok(bothReport.out.includes(`\n::warning title=SDK-table check (report only)::${WOULD2}\n`));
+  assert.ok(bothReport.out.includes(`\n::warning title=SDK-table check (key source)::${KS_LINE}\n`));
+  assert.equal(bothReport.summary, `\n### SDK-table cross-check of the stored layout\n\n- ${KS_LINE}\n- ${KS_COUNT}\n- ${WOULD2}\n`);
   // A non-public check keeps its own comparison, and a proof run or a mapped first publish its self-reference.
   const other = { BRANCH: 'public_test_branch' };
   assert.deepEqual(run({ env: other, reference: true }).base, ['--base', 'res/layout-reference.json']);
