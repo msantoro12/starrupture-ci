@@ -39,7 +39,7 @@ jobs:
   poll:
     name: poll
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 17
     permissions:
       contents: write        # baseline commit to main, game-update/* branches
       pull-requests: write   # open and update the update PR, create its label
