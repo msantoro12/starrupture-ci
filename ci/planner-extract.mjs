@@ -22,8 +22,15 @@
 // Runs of one build are told apart by their title: sr-data-extract.yml names a dispatched run
 // "SR data extract <branch> <buildid>".
 //
-// --dry-run prints each decision and changes nothing (no dispatch, no issue).
-// Exit codes: 0 done; 1 an input could not be read (nothing was started); 2 usage error.
+// The cancel command (node ci/planner-extract.mjs cancel --repo <owner/name> [--wait-seconds N]) is for
+// the watcher's poll, when a build change starts the update chain: an extract that is queued or going
+// would hold the Steam session and the sr-client-rig group the chain needs, so every such extract run
+// is cancelled and the command waits (bounded) until they have ended. It never fails: a cancel that is
+// refused, a listing that cannot be read or a run that will not end is a warning, and the chain goes on.
+// A cancelled run is neither a failure nor a reason to wait: the next reconcile starts the build again.
+//
+// --dry-run prints each decision and changes nothing (no dispatch, no issue, no cancel).
+// Exit codes: 0 done (always, for cancel); 1 an input could not be read (nothing was started); 2 usage error.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -131,6 +138,35 @@ export async function reconcile({ repo, branches, owner, pin, dryRun = false, no
   return decisions;
 }
 
+// ---- cancelling extracts when a build change starts the chain ---------------------------------
+
+// The extract runs that hold or wait for the Steam session: queued or going, started for a build
+// (a title that names a branch and build id) and not a pull-request run. A build-only run has no
+// such title and never takes the session.
+export const cancelPlan = (runs) => (Array.isArray(runs) ? runs : [])
+  .filter((r) => r && r.id != null && r.event !== 'pull_request' && IN_FLIGHT.has(r.status) && runTarget(r.title))
+  .map((r) => r.id);
+
+// Cancel every such run, then wait until they have ended, for at most `waitSeconds`. Never throws.
+export async function cancelExtracts({ io, dryRun = false, waitSeconds = 240, intervalSeconds = 15, sleep = (s) => new Promise((r) => setTimeout(r, s * 1000)), log = console.log }) {
+  let ids;
+  try { ids = cancelPlan(io.runs()); } catch (e) { log(`warning: the extract runs could not be listed, nothing cancelled (${String(e.message).split('\n')[0]})`); return { cancelled: [], ended: false }; }
+  if (!ids.length) { log('no extract run is queued or going'); return { cancelled: [], ended: true }; }
+  if (dryRun) { log(`would cancel extract run(s) ${ids.join(', ')}`); return { cancelled: ids, ended: true }; }
+  const cancelled = [];
+  for (const id of ids) {
+    try { io.cancel(id); cancelled.push(id); log(`cancel requested for extract run ${id}`); } catch (e) { log(`warning: extract run ${id} could not be cancelled (${String(e.message).split('\n')[0]})`); }
+  }
+  if (!cancelled.length) return { cancelled, ended: false };
+  for (let waited = 0; ; waited += intervalSeconds) {
+    let left;
+    try { left = (io.runs() ?? []).filter((r) => cancelled.includes(r.id) && IN_FLIGHT.has(r.status)); } catch (e) { log(`warning: the extract runs could not be listed while waiting (${String(e.message).split('\n')[0]})`); return { cancelled, ended: false }; }
+    if (!left.length) { log('the cancelled extract run(s) have ended'); return { cancelled, ended: true }; }
+    if (waited + intervalSeconds > waitSeconds) { log(`warning: extract run(s) ${left.map((r) => r.id).join(', ')} still going after ${waitSeconds} seconds; the chain goes on`); return { cancelled, ended: false }; }
+    await sleep(intervalSeconds);
+  }
+}
+
 // ---- the command line: the real effects ------------------------------------------------------
 
 const exec = (cmd, args, env) => execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
@@ -142,7 +178,8 @@ export function realIo({ repo, owner, pollScript, plannerRepo = PLANNER_REPO }) 
     tags: () => exec('git', ['ls-remote', '--tags', plannerRepo, 'refs/tags/srdata-*'])
       .split('\n').map((l) => l.split('\t')[1]).filter(Boolean).map((r) => r.replace(/^refs\/tags\//, '').replace(/\^\{\}$/, '')),
     runs: () => jsonLines(gh(['api', `repos/${repo}/actions/workflows/sr-data-extract.yml/runs?per_page=100`, '--jq',
-      '.workflow_runs[] | {title: .display_title, status, conclusion, event, updatedAt: .updated_at, url: .html_url}'])),
+      '.workflow_runs[] | {id, title: .display_title, status, conclusion, event, updatedAt: .updated_at, url: .html_url}'])),
+    cancel: (id) => gh(['run', 'cancel', String(id), '-R', repo]),
     // The same look the layout refresh makes before it takes the session (sr-layout-refresh.yml, job idle).
     groupBusy: () => ['queued', 'in_progress', 'waiting', 'pending', 'requested'].some((status) =>
       gh(['api', `repos/${repo}/actions/runs?status=${status}&per_page=100`, '--jq',
@@ -165,28 +202,33 @@ export function realIo({ repo, owner, pollScript, plannerRepo = PLANNER_REPO }) 
 }
 
 function parseArgs(argv) {
-  const out = { dryRun: false };
-  for (let i = 0; i < argv.length; i++) {
+  const out = { dryRun: false, cancel: argv[0] === 'cancel' };
+  for (let i = out.cancel ? 1 : 0; i < argv.length; i++) {
     if (argv[i] === '--dry-run') { out.dryRun = true; continue; }
     if (!argv[i].startsWith('--') || argv[i + 1] === undefined) throw new Error(`bad argument ${argv[i]}`);
     out[argv[i].slice(2)] = argv[++i];
   }
-  for (const k of ['repo', 'branches', 'owner']) if (!out[k]) throw new Error(`--${k} is required`);
+  for (const k of out.cancel ? ['repo'] : ['repo', 'branches', 'owner']) if (!out[k]) throw new Error(`--${k} is required`);
   return out;
 }
 
 if (isMain(import.meta.url)) {
   let a;
   try { a = parseArgs(process.argv.slice(2)); } catch (e) {
-    console.error(`${e.message}\nusage: planner-extract.mjs --repo <owner/name> --branches <a,b> --owner <login> [--pin-file f] [--poll-script f] [--dry-run]`);
+    console.error(`${e.message}\nusage: planner-extract.mjs --repo <owner/name> --branches <a,b> --owner <login> [--pin-file f] [--poll-script f] [--dry-run]\n       planner-extract.mjs cancel --repo <owner/name> [--wait-seconds N] [--dry-run]`);
     process.exit(2);
   }
-  try {
-    const pin = readFileSync(a['pin-file'] ?? 'ci/data/extractor-ref.txt', 'utf8').trim();
-    const io = realIo({ repo: a.repo, owner: a.owner, pollScript: a['poll-script'] ?? '.github/sr-pipeline/poll-steam.mjs' });
-    await reconcile({ repo: a.repo, branches: a.branches.split(',').filter(Boolean), owner: a.owner, pin, dryRun: a.dryRun, io });
-  } catch (e) {
-    console.error(`planner-extract: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
-    process.exitCode = 1;
+  if (a.cancel) {
+    // Never fails: the chain this runs in front of must not stop for it.
+    try { await cancelExtracts({ io: realIo({ repo: a.repo }), dryRun: a.dryRun, waitSeconds: Number(a['wait-seconds'] ?? 240) || 0 }); } catch (e) { console.log(`warning: the extract cancel stopped early (${String(e.message).split('\n')[0]})`); }
+  } else {
+    try {
+      const pin = readFileSync(a['pin-file'] ?? 'ci/data/extractor-ref.txt', 'utf8').trim();
+      const io = realIo({ repo: a.repo, owner: a.owner, pollScript: a['poll-script'] ?? '.github/sr-pipeline/poll-steam.mjs' });
+      await reconcile({ repo: a.repo, branches: a.branches.split(',').filter(Boolean), owner: a.owner, pin, dryRun: a.dryRun, io });
+    } catch (e) {
+      console.error(`planner-extract: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
+      process.exitCode = 1;
+    }
   }
 }

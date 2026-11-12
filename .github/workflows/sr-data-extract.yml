@@ -1,5 +1,10 @@
 name: SR data extract
 
+# A dispatched run that downloads and extracts is titled "SR data extract <branch> <buildid>", so
+# ci/planner-extract.mjs can tell the runs of one build apart. A build-only run, a pull request run
+# and a call keep the plain title.
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.build_only == false && format('SR data extract {0} {1}', inputs.branch, inputs.buildid) || 'SR data extract' }}
+
 # For one Steam build of StarRupture: launch the game once with Dumper-7 only (no mod loader,
 # no plugin) to produce that build's .usmap, run the planner's CUE4Parse extractor
 # (GoodStuffSoftware/star-rupture-planner, tools/game-extract) on the paks with it, and
@@ -110,7 +115,8 @@ name: SR data extract
 #
 # One Steam client session per account: the launching job shares the concurrency group of
 # sr-client-rig.yml, so it never signs in while a rig run does. GitHub keeps one waiting run per
-# group (a third replaces the second); nothing cancels a run that is going.
+# group (a third replaces the second); nothing cancels a run that is going, except the watcher's
+# poll, which cancels the queued or going extract runs when a build change starts the client check.
 
 on:
   # Build-only: compiles Dumper-7 and the extractor, checks the scripts. No environment, no secret.
