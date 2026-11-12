@@ -15,7 +15,7 @@
 //   - no extract run for that branch and build is queued or going.
 // Then, in this order:
 //   - two or more failed runs for the build: raise the alert issue once and stop trying;
-//   - something that uses the Steam session (the client check, the client rig, an extract) is queued or
+//   - something that uses the Steam session (the client check, the client rig, an extract, a symbol lookup) is queued or
 //     going: wait for a later run, so nothing already waiting for the session is ever replaced;
 //   - the last failed run for the build ended less than 6 hours ago: wait.
 //
@@ -44,7 +44,7 @@ export const BACKOFF_HOURS = 6;
 export const MAX_FAILURES = 2;
 const IN_FLIGHT = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const FAILED = new Set(['failure', 'timed_out', 'startup_failure', 'stale']);
-const STEAM_WORKFLOW = /sr-(client-check|client-rig|data-extract)[.]yml/;
+const STEAM_WORKFLOW = /sr-(client-check|client-rig|data-extract|symbol-lookup)[.]yml/;
 const RUN_TITLE = /^SR data extract (\S+) (\d+)$/;
 
 // True when any listed run that uses the Steam session (a pull request run does not) is queued or going.

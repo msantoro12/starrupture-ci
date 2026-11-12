@@ -18,7 +18,7 @@ name: SR layout refresh
 # and one pending run and a newer pending run replaces an older one, so a poll that waits behind a refresh
 # is replaced by the next poll, which then runs: the watcher keeps its schedule, and a poll can be late by
 # up to the length of one refresh, once a day. The first job is a cheap look, made once the group is
-# acquired: it skips the refresh when a client check, the client rig or the data extract
+# acquired: it skips the refresh when a client check, the client rig, the data extract or a symbol lookup
 # has a run going or waiting (the watcher's own runs are covered by the group, and one waiting behind this
 # run would only make it skip).
 #
@@ -58,7 +58,7 @@ jobs:
           nl=$'\n'
           for status in queued in_progress waiting pending requested; do
             found="$(gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" \
-              --jq '.workflow_runs[] | select(.path | test("sr-(client-check|client-rig|data-extract)[.]yml")) | "\(.name) \(.html_url)"')"
+              --jq '.workflow_runs[] | select(.path | test("sr-(client-check|client-rig|data-extract|symbol-lookup)[.]yml")) | "\(.name) \(.html_url)"')"
             busy+="${found:+$found$nl}"
           done
           if [ -n "$busy" ]; then

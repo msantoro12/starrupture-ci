@@ -1,0 +1,200 @@
+name: SR symbol lookup
+
+# The branch is a choice GitHub checks; the symbol is free text until the first step has checked
+# it, so it is not put in the title (other workflows print run titles to their logs).
+run-name: SR symbol lookup ${{ inputs.branch }}
+
+# Looks a function name up in the PDB of one Steam build of StarRupture and lists every overload
+# of it: the decorated name, the undecorated signature with its argument list, the RVA, the file
+# offset, the section and the first bytes of the function as hex, so a byte pattern can be cut
+# and the right overload picked. It also reports the build id, the CL, and the exe's size and
+# SHA-256. A name with no match is a result (status no-match), not a failure of the run.
+#
+# Dispatch it by hand from main (the job runs in environment steam-client, which serves main):
+#
+#   gh workflow run sr-symbol-lookup.yml --ref main -f branch=public -f symbol=LoadPackageAsync
+#
+#   inputs
+#     branch   the Steam branch to look in (a choice)
+#     symbol   a C++ function name: letters, digits and underscore, at most 100 characters,
+#              optionally qualified with :: (Class::Function). It matches a free function, a
+#              member function of any class, or a function template of that name. A scope
+#              must be a plain class or namespace: a class template's scope is not matched
+#              when written out (use the bare name).
+#     bytes    how many leading bytes of each match to print (default 64, at most 256)
+#
+#   result
+#     the run's summary, and artifact symbol-lookup-<branch>-<symbol> (a '::' in the symbol
+#     becomes '.'), kept 14 days: result.json and result.txt.
+#
+# HOW
+#   Valve's steamcmd installs the whole build (steamcmd cannot fetch single files; about 48 GB
+#   and 4 to 5 minutes), through the same scripts the client rig and the data extract use
+#   (ci/client-rig-launch.ps1 -Phase Install, ci/steam-cleanup.ps1). The login is removed right
+#   after the install, before the lookup starts, so no step that reads the game files can see it.
+#   llvm-pdbutil (in the runner image's LLVM) lists the PDB's public symbols; dbghelp undecorates
+#   the matches (ci/symbol-undecorate.ps1); ci/symbol-lookup.mjs does the rest.
+#
+# THE STEAM SESSION
+#   It shares the concurrency group sr-client-rig with the client rig and the data extract: they
+#   never run at the same time as a lookup, and a lookup never cancels or is cancelled by them.
+#   GitHub keeps one waiting run per group, and a newer waiting run replaces an older one, so a
+#   waiting lookup can be replaced by a rig or extract run and the other way round (a replaced
+#   chain run is cancelled until the next poll starts it again). The client check's own download
+#   is NOT in this group (it is in sr-client-check-<branch>), and the watcher can start one
+#   while a lookup is installing. So start a lookup only when no client check, rig, data
+#   extract or lookup is going or waiting. The update chain does not call this workflow and does
+#   not depend on it; the planner extract and the daily layout refresh (ci/planner-extract.mjs
+#   and sr-layout-refresh.yml) count a lookup that is going or waiting as busy.
+#
+# SECRETS (by name; the values are never printed)
+#   STEAM_CI_USERNAME, STEAM_CI_LOGIN_CACHE, from environment steam-client. Only the install
+#   step and the leak gate are given them. The lookup step (which also writes the run summary)
+#   has no secret, and the login is already removed when it runs. The summary and the artifact
+#   are made from the exe, the PDB and the checked inputs only; the leak gate checks the
+#   artifact before upload.
+#
+# Nothing here writes to any repository or release, and the token is read-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Steam branch to look in'
+        type: choice
+        options:
+          - public
+          - public_test_branch
+        default: public
+      symbol:
+        description: 'C++ function name, optionally qualified (Class::Function; a class template scope is not matched)'
+        type: string
+        required: true
+      bytes:
+        description: 'Leading bytes of each match to print (default 64, at most 256)'
+        type: string
+        default: '64'
+
+permissions: {}
+
+jobs:
+  lookup:
+    name: Look up the symbol
+    runs-on: windows-latest
+    timeout-minutes: 90
+    environment: steam-client
+    permissions:
+      contents: read
+    # The same group as sr-client-rig.yml and sr-data-extract.yml: one Steam client session per
+    # account at a time. A waiting lookup is never cancelled by a newer run, and never cancels one.
+    concurrency:
+      group: sr-client-rig
+      cancel-in-progress: false
+    env:
+      BRANCH: ${{ inputs.branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+
+      # The inputs are data: they reach the script through the environment, are checked against a
+      # strict pattern, and only the checked values go on to the artifact name.
+      - name: Check the inputs
+        id: inputs
+        shell: pwsh
+        env:
+          SYMBOL: ${{ inputs.symbol }}
+          BYTES: ${{ inputs.bytes }}
+        run: node ci/symbol-lookup.mjs check
+
+      # Without the login there is nothing to do: fail with that reason.
+      - name: Check the Steam login secrets are set
+        shell: pwsh
+        env:
+          HAS_LOGIN: ${{ secrets.STEAM_CI_LOGIN_CACHE != '' && secrets.STEAM_CI_USERNAME != '' }}
+        run: |
+          if ($env:HAS_LOGIN -ne 'true') {
+            Write-Host '::error title=Steam login::The Steam login secrets are empty: environment steam-client must hold STEAM_CI_USERNAME and STEAM_CI_LOGIN_CACHE.'
+            exit 1
+          }
+
+      # Before any login, so a missing tool or a script bug costs a minute, not a download.
+      - name: Check the tools and the script helpers
+        shell: pwsh
+        run: |
+          node ci/symbol-lookup.mjs tools
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./ci/symbol-undecorate.ps1 -Check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./ci/client-rig-launch.ps1 -Check
+
+      - name: Install the game client
+        id: dl
+        timeout-minutes: 40
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+        run: ./ci/client-rig-launch.ps1 -Phase Install -Branch $env:BRANCH
+
+      # Right after the install, ahead of everything that reads the game. Runs on a failed or
+      # cancelled run too. Only the login goes here (fatal, verified); the folder goes last.
+      - name: Remove Steam and the login from the runner
+        id: cleanup
+        if: always()
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          if (-not (Test-Path ./ci/steam-cleanup.ps1)) { 'The sources were not checked out, so nothing was installed.'; exit 0 }
+          ./ci/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR -Phase Login
+          exit $LASTEXITCODE
+
+      # No secret in this step's environment. Skipped if the login could not be removed.
+      - name: Look up the symbol
+        id: lookup
+        timeout-minutes: 40
+        if: steps.cleanup.outcome == 'success'
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          SYMBOL: ${{ inputs.symbol }}
+          BYTES: ${{ steps.inputs.outputs.bytes }}
+          OUT_DIR: out
+        run: node ci/symbol-lookup.mjs run
+
+      # The only step after the install that is given the login, and it only reads files.
+      - name: Leak gate
+        id: leak
+        if: always() && steps.lookup.outcome != 'skipped'
+        shell: pwsh
+        env:
+          STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
+          STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
+        run: ./ci/leak-gate.ps1 -Path out -Strict
+
+      - name: Upload the result
+        if: always() && steps.leak.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.inputs.outputs.artifact_name }}
+          path: out
+          retention-days: 14
+          overwrite: true
+          if-no-files-found: error
+
+      # The Steam install folder, last: the login is already gone, so a folder that stays locked
+      # is a warning, never a failure.
+      - name: Remove the Steam folder
+        if: always()
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+        run: |
+          if (-not (Test-Path ./ci/steam-cleanup.ps1)) { 'The sources were not checked out, so nothing was installed.'; exit 0 }
+          ./ci/steam-cleanup.ps1 -InstallDir $env:INSTALL_DIR -Phase Folder
+          exit 0
