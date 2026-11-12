@@ -36,7 +36,7 @@
 //         the record's CL, the record is also checked against the tables' rows (every used member, not only
 //         those with a header or published row). Without the directory, with tables for another build or
 //         with unreadable ones, one line says the check was skipped; it never refuses for missing evidence.
-//         A difference refuses the record only while SDK_TABLE_CHECK is 'enforcing'; report-only (as merged), it is
+//         A difference refuses the record while SDK_TABLE_CHECK is 'enforcing'; in 'report-only' mode it is
 //         a `report only: this would hold once the check is enforcing: ...` line and the record is accepted.
 //         Either way, a difference on a key that only key-source tables (table-ks-*.h) ask for is a
 //         `key source only: ...` warning line and never refuses. A key that a released plugin's table (table-<name>.h) or
@@ -253,9 +253,9 @@ export function parseDifferences(text, where = 'list') {
 //                  a broken ci/sdk-table-differences.txt, not an error of its own. The update goes on as it would
 //                  without the check.
 //   'enforcing'    a difference, an under-half comparison or a broken list refuses the stored layout, so the public
-//                  update holds. Fully implemented and tested; to turn it on, change this one line to 'enforcing'.
+//                  update holds. This is the mode the check runs in; to go back to reporting only, change this one line.
 // Either way, a difference on a key that only key-source tables ask for is a warning and never holds (see SDK_TABLES).
-export const SDK_TABLE_CHECK = 'report-only';
+export const SDK_TABLE_CHECK = 'enforcing';
 
 // The layout tables the check generates from the Game SDK (ci/layout-table.mjs gen, one per plugin and key
 // source) are a third source, independent of the PDB scan. The tables of released plugins are table-<name>.h; those of

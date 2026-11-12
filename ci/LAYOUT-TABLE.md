@@ -224,8 +224,7 @@ game SDK. That third check is wider than the other two: the header carries about
 published version map fewer, while the tables hold every member the plugins read (854 keys in a replay
 on build 127004).
 For each key in both it compares the offset, the size and the bool mask (a class key compares its size where
-the table has one). Keys the table lacks, or the file lacks, are ignored, but the check refuses (once enforcing, see
-below) when fewer than half of the table's keys are in the file.
+the table has one). Keys the table lacks, or the file lacks, are ignored, but the check refuses when fewer than half of the table's keys are in the file.
 
     node ci/layout-store.mjs reference <header> --record <layout.json> ... --sdk-tables res/sdk-tables --sdk-differences ci/sdk-table-differences.txt
 
@@ -239,13 +238,11 @@ build it describes (its `kBuiltCL` is the build being checked), so the SDK's own
   tables, the header line is missing or has another shape, a table cannot be read, or the tables carry no sizes,
   the check is skipped with one line (`the cross-check against the SDK tables was skipped: <why>`) in the log and
   in the step summary. A skip is a note, not a hold.
-- **Report-only for now.** The mode is one setting, `SDK_TABLE_CHECK` in `ci/layout-store.mjs`, set to
-  `report-only`. A difference, too few keys compared, an unreadable list or any error of the check itself holds
-  nothing and fails nothing: the run goes on exactly as without the check, and the message, with the key and both
-  values, is written as a note in the step summary and as a warning annotation on the run, worded
-  `report only: this would hold once the check is enforcing: <message>`. A later one-line change sets the
-  setting to `enforcing`; then a disagreement refuses the stored file and the update holds, with the key and
-  both values in the message. Enforcing is fully implemented and tested; only the default is report-only.
+- **Enforcing.** The mode is one setting, `SDK_TABLE_CHECK` in `ci/layout-store.mjs`, set to `enforcing`: a
+  disagreement, too few keys compared or an unreadable list refuses the stored file and the update holds, with
+  the key and both values in the message. The other value, `report-only`, runs the check but holds nothing and
+  fails nothing: the message is a note in the step summary and a warning annotation on the run, worded
+  `report only: this would hold once the check is enforcing: <message>`.
 - **A key source never holds a publish.** The folder holds two kinds of table: `table-<name>.h` for a released
   plugin and `table-ks-<name>.h` for a key source (a branch that only supplies keys). It also holds
   `loader-keys.txt`, the loader's key list (names only, one per line; the check job writes it from the loader's
@@ -268,8 +265,8 @@ build it describes (its `kBuiltCL` is the build being checked), so the SDK's own
   tab-separated fields, `<build> <key> <offset|size|mask> <stored> <SDK> <reason>`. The build is a CL number,
   or `*` for any build. An entry excuses only the exact difference it names (key, field and those two values,
   on that build, or on any build for `*`); everything else on the key still holds. The reason is required. A
-  malformed line, a missing reason or an unreadable file holds the update once the check is enforcing
-  (report-only, it is reported); a test fails on a committed list that does not parse or lacks a reason.
+  malformed line, a missing reason or an unreadable file holds the update
+  (in `report-only` mode it is reported); a test fails on a committed list that does not parse or lacks a reason.
 - The one entry today: `*` `FEnhancedActionKeyMapping::Key`, size 0x50 stored and 0x18 in the SDK. The layout
   scan reports the enclosing struct's size for that member. The SDK is right, no row is published for the
   member, and a stored file cannot be replaced, so the difference is listed instead of held. It is for any

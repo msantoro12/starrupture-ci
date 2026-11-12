@@ -476,18 +476,14 @@ built for as well as the new one.
 - A third check compares the file with the layout tables generated from the game SDK (`ci/LAYOUT-TABLE.md`,
   "Checking the stored layout against the SDK tables"). It is the widest of the three: the tables hold every
   field the plugins read, not only the few the header and the published version map carry. It compares offset,
-  size and bool mask like the others, and (once enforcing, see below) refuses on one disagreement or when fewer
+  size and bool mask like the others, and refuses on one disagreement or when fewer
   than half of the table's keys are in the file. It runs only when the SDK describes the same build as the stored file. Tables that are
   missing, unreadable, without sizes, or for another build skip it with one line in the log and in the run's
   step summary; a skip is a note, not a hold.
-  **The check is report-only for now** (`SDK_TABLE_CHECK` in `ci/layout-store.mjs`, one line). A difference,
-  too few keys compared, an unreadable list or any error of the check itself holds nothing and fails nothing: the
-  run goes on exactly as without the check, and the message is written as a note in the step summary and as a
-  warning annotation on the run, worded `report only: this would hold once the check is enforcing: <message>`.
-  When the setting is changed to `enforcing` (a later one-line change), a disagreement refuses the file and
-  holds the update with the message
+  **The check is enforcing** (`SDK_TABLE_CHECK` in `ci/layout-store.mjs`, one line). A disagreement refuses the
+  file and holds the update with the message
   `the stored layout of CL-N disagrees with the SDK table's field rows for CL-N on X of Y keys (offset/size/mask;
-  first: <key>: SDK table ..., record ...)`. When you see it, report-only or enforcing, find out which value is
+  first: <key>: SDK table ..., record ...)`. When you see it, find out which value is
   right (the SDK's `Assertions.inl` has the compiled sizes); correct the code, or, if the stored file is the
   wrong one and cannot be replaced, add a known difference (next point).
   **A key source never holds a publish.** A table named `table-ks-<name>.h` comes from a key source, one named
@@ -504,8 +500,8 @@ built for as well as the new one.
   number, or `*` for any build. An entry excuses only the exact difference it names, on key, field and both
   values; another value on the same key, another field or another key still holds, and so does another build
   unless the entry's build is `*`. The reason is required. A line without one, or a list that cannot be read,
-  holds the update once the check is enforcing, with `sdk-table-differences.txt:<line>: ...`; report-only, it is
-  reported like a difference. Either way a test fails on it before it reaches main (a broken list is a defect in
+  holds the update, with `sdk-table-differences.txt:<line>: ...` (in `report-only` mode it is reported like a
+  difference). Either way a test fails on it before it reaches main (a broken list is a defect in
   the repository, not missing evidence). An excused difference is printed as a note in the log and in the step
   summary. The one entry today is `* FEnhancedActionKeyMapping::Key size 0x50 0x18`: the layout scan reports the
   enclosing struct's size (0x50) for that member, the SDK says 0x18 (an `FKey`), the SDK is right, and no row is
