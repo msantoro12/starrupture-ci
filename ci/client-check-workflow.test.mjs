@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { addBuild, addFunction, emit, emptyMap, exportFeed, parse, parseFeed } from './version-map.mjs';
 import { firstLogError } from './pipeline-alert.mjs';
 import { buildRecord } from './layout-store.mjs';
+import { renderHeader } from './layout-table.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -3128,7 +3129,12 @@ test('field rows: where the reference layout comes from, run against a stand-in 
     return [lines[0], 'seq\t1', ...lines.slice(1, -1), `sig\tk2\t${'A'.repeat(86)}==`, ''].join('\n');
   };
   const feedRelease = (feed, uploader = bot) => JSON.stringify({ assets: [{ name: 'version-map-client.v1.txt', size: Buffer.byteLength(feed), uploader }] });
-  const run = ({ env = {}, release: rel = release(), asset = record, reference = false, feed = null, feedRel = feed === null ? null : feedRelease(feed) } = {}) => {
+  // The SDK tables the check job uploads (res/sdk-tables): the SDK's header line and one table. AFoo::Bar is at 16 in the record.
+  const sdkTables = (barOffset = 16, cl = 127004) => ({
+    'sdk-header.txt': `#pragma once\n\n// StarRupture\n// 5.6.1-${cl}+++Earth20+Neon\n`,
+    'table-A.h': renderHeader({ cl: 128786, detail: 1, granularity: 2, classes: [{ name: 'AFoo', sizeOf: 0, alignOf: 0, kind: 1, path: '', rows: [{ member: 'Bar', offset: barOffset, size: 8, mask: 0 }] }] }),
+  });
+  const run = ({ env = {}, release: rel = release(), asset = record, reference = false, feed = null, feedRel = feed === null ? null : feedRelease(feed), tables = null, differences = null } = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'refsel-'));
     cpSync(here, join(dir, 'tool', 'ci'), { recursive: true });
     mkdirSync(join(dir, 'res'), { recursive: true });
@@ -3136,6 +3142,11 @@ test('field rows: where the reference layout comes from, run against a stand-in 
     writeFileSync(join(dir, 'res', 'result.json'), JSON.stringify({ checks: { exe: { sha256: 'c'.repeat(64) } } }));
     writeFileSync(join(dir, 'res', 'layout-keys.txt'), 'AFoo::Bar\nUWorld::GameState\n');
     if (reference) writeFileSync(join(dir, 'res', 'layout-reference.json'), '{"keys":[]}');
+    if (tables) {
+      mkdirSync(join(dir, 'res', 'sdk-tables'), { recursive: true });
+      for (const [name, body] of Object.entries(tables)) writeFileSync(join(dir, 'res', 'sdk-tables', name), body);
+    }
+    if (differences !== null) writeFileSync(join(dir, 'tool', 'ci', 'sdk-table-differences.txt'), differences);
     if (rel !== null) writeFileSync(join(dir, 'release.json'), rel);
     if (asset !== null) writeFileSync(join(dir, 'asset.json'), asset);
     if (feed !== null) writeFileSync(join(dir, 'feed.txt'), feed);
@@ -3181,13 +3192,25 @@ exit 1
   // The published version map widens the cross-check: used when it is the bot's upload, skipped with one line when it is not there.
   const wide = run({ feed: feedOf() });
   assert.deepEqual(wide.base, ['--base', 'res/layout-stored.json']);
-  assert.doesNotMatch(wide.out, /skipped/);
+  assert.doesNotMatch(wide.out, /wider cross-check.*skipped/);
   assert.match(run().out, /skipped: no version-map-client.v1.txt was downloaded from release vmap-feed/, 'no published file: skipped, the run goes on');
   assert.deepEqual(run().base, ['--base', 'res/layout-stored.json']);
   const notBot = run({ feed: feedOf(), feedRel: feedRelease(feedOf(), { login: 'someone', type: 'User' }) });
   assert.match(notBot.out, /skipped: version-map-client.v1.txt was uploaded by someone \(User\)/);
   assert.deepEqual(notBot.base, ['--base', 'res/layout-stored.json']);
   miss({ feed: feedOf(24) }, /disagrees with the version map's field rows.*AFoo::Bar: version map 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0/);
+  // The SDK tables the check job uploaded are read from res/sdk-tables, with the repository's list of known differences.
+  assert.match(run().out, /cross-check against the SDK tables was skipped: no table-\*\.h file was given/, 'no tables in the artifact: skipped, the run goes on');
+  const sdkOk = run({ tables: sdkTables() });
+  assert.deepEqual(sdkOk.base, ['--base', 'res/layout-stored.json']);
+  assert.match(sdkOk.out, /the SDK tables agree with the stored layout on 1 keys\n/);
+  miss({ tables: sdkTables(24) }, /disagrees with the SDK table's field rows.*AFoo::Bar: SDK table 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0/);
+  assert.match(run({ tables: sdkTables(16, 129402) }).out, /skipped: the SDK tables describe CL-129402/, 'tables of another build: skipped');
+  const excused = run({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\tfor the test\n' });
+  assert.deepEqual(excused.base, ['--base', 'res/layout-stored.json']);
+  assert.match(excused.out, /1 known difference excused\nlayout-store: AFoo::Bar: the offset is 0x10 in the stored layout and 0x18 in the SDK table, a known difference \(for the test\)\n/, 'the note reaches the log line the other notes use');
+  miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x1c\tfor the test\n' }, /disagrees with the SDK table's field rows.*AFoo::Bar/);
+  miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\t\n' }, /sdk-table-differences\.txt:1: the entry for AFoo::Bar on CL-127004 has no reason/);
   // A non-public check keeps its own comparison, and a proof run or a mapped first publish its self-reference.
   const other = { BRANCH: 'public_test_branch' };
   assert.deepEqual(run({ env: other, reference: true }).base, ['--base', 'res/layout-reference.json']);
@@ -3589,4 +3612,30 @@ test('carried field keys: only the target build is asked for them, and a failure
   const mm = job('map-mode');
   assert.ok(mm.includes('carry=(--carry-keys res/layout-carry-keys.txt)'));
   assert.ok(mm.includes('"${missing[@]}" "${carry[@]}" \\'));
+});
+
+test('SDK tables: the check job uploads them where the map-mode job reads them, the reader gets them and the list, and a failed copy cannot fail the check job', () => {
+  const c = job('check');
+  const layout = step(c, 'Read the used layouts from the PDBs');
+  assert.match(layout, /\n {8}continue-on-error: true\n/);
+  // Copied after every table is generated (plugin tables and key-source tables), into out\sdk-tables, with the head of the SDK's SDK.hpp.
+  const tryAt = layout.indexOf('          try {\n            New-Item -ItemType Directory -Force out\\sdk-tables | Out-Null\n');
+  assert.ok(tryAt > 0 && tryAt > layout.lastIndexOf('--out "$work\\table-$stem.h"'), 'after the last table is made');
+  const body = layout.slice(tryAt, layout.indexOf('\n          }\n', tryAt) + 5);
+  assert.ok(body.includes('Copy-Item "$work\\table-*.h" out\\sdk-tables -ErrorAction Stop'));
+  assert.ok(body.includes('Get-Content "$sdk\\Client\\SDK.hpp" -TotalCount 12 -ErrorAction Stop | Set-Content out\\sdk-tables\\sdk-header.txt -Encoding ascii'));
+  // A failure is a warning and removes the half-copied folder; it neither throws nor sets an exit code.
+  const caught = body.slice(body.indexOf('} catch {'));
+  assert.match(caught, /Remove-Item out\\sdk-tables -Recurse -Force -ErrorAction SilentlyContinue/);
+  assert.match(caught, /Write-Host "::warning title=SDK tables::/);
+  assert.ok(!/\bthrow\b|\bexit\b|Write-Error|::error/.test(caught), 'the catch only warns');
+  // The upload carries the folder, and the map-mode job reads that artifact into res/.
+  assert.ok(step(c, 'Upload the result').includes('            out/sdk-tables/*\n'));
+  const mm = job('map-mode');
+  assert.match(mm, /- name: Download the scans\n\s+uses: actions\/download-artifact@\S+ # v[\d.]+\n\s+with:\n\s+name: client-check-\$\{\{ inputs\.branch \}\}\n\s+path: res\n/);
+  // The reader is told where they are, and which list excuses known differences; this is the only call.
+  const chain = runOf(mm, 'Decide, export, sign, stage and plan the promotion');
+  assert.equal(chain.match(/layout-store\.mjs reference/g)?.length, 1);
+  assert.match(chain, /--out res\/layout-stored\.json --published published-ref \\\n\s+--sdk-tables res\/sdk-tables --sdk-differences tool\/ci\/sdk-table-differences\.txt 2>&1\)"; then/);
+  assert.ok(existsSync(join(here, 'sdk-table-differences.txt')), 'the list is in the tool checkout');
 });

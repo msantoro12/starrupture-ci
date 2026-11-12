@@ -5,6 +5,7 @@
 //        --run <run id> --sha <workflow sha> [--at <time>] [--existing <record.json> --release <release.json>]
 //   node ci/layout-store.mjs reference <header> --record <record.json> --release <release.json> --cl <target CL> --sha256 <target exe sha256>
 //        --native-keys <native-keys.txt> --layout-keys <list> --out <layout report> [--published <dir>] [--sdk-tables <dir>]
+//        [--sdk-differences <file>]
 //
 // Field rows record where a reflected key moved between the build the plugins
 // were built for and the new build. A non-public check downloads the public
@@ -35,6 +36,9 @@
 //         the record's CL, the record is also checked against the tables' rows (every used member, not only
 //         those with a header or published row). Without the directory, with tables for another build or
 //         with unreadable ones, one line says the check was skipped; it never refuses for missing evidence.
+//         --sdk-differences names a list of known differences (ci/sdk-table-differences.txt, see parseDifferences):
+//         a difference it names exactly (build, key, field, both values) does not refuse the record and is
+//         printed as a note. Without the option nothing is excused.
 //
 // A record is accepted only when ALL hold: it is the layout of the CL the header
 // was built for; its build id, image stamp and image size are those of the
@@ -170,8 +174,10 @@ const hex = (n) => (Number.isInteger(n) ? `0x${n.toString(16)}` : String(n));
 // of the header's rows proves nothing and is refused too.
 // `source` names where the rows come from ('header' or 'version map').
 // A row may say `isClass` (a class name can hold '::') and `size: null` (the source does not know the size).
+// `excused` is { list, notes } (see parseDifferences): a key whose every difference is one the list names
+// for this build, with the same two values, is not counted as wrong and adds a note to `notes` instead.
 // Returns the number of keys compared.
-function crossCheck(rows, built, record, source = 'header') {
+function crossCheck(rows, built, record, source = 'header', excused = null) {
   const by = new Map(record.keys.map((k) => [k.key, k]));
   const bad = [];
   let compared = 0;
@@ -183,6 +189,14 @@ function crossCheck(rows, built, record, source = 'header') {
     const sz = REFLECTED_SIZE_KEYS.has(r.key) || r.size === null;
     const rec = { offset: cls ? 0 : k.offset, size: k.size, mask: cls ? 0 : (k.boolMask ?? 0) };
     const diff = k.result !== 'OK' || rec.offset !== r.offset || rec.mask !== r.mask || (!sz && rec.size !== r.size);
+    if (diff && excused && k.result === 'OK') {
+      const found = [['offset', rec.offset, r.offset], ['size', rec.size, r.size], ['mask', rec.mask, r.mask]].filter(([f, have, want]) => have !== want && !(f === 'size' && sz));
+      const reasons = found.map(([f, have, want]) => excused.list.reasonFor(built, r.key, f, have, want));
+      if (found.length && reasons.every((x) => x !== null)) {
+        found.forEach(([f, have, want], i) => excused.notes.push(`${r.key}: the ${f} is ${hex(have)} in the stored layout and ${hex(want)} in the ${source}, a known difference (${reasons[i]})`));
+        continue;
+      }
+    }
     if (diff) {
       const show = (v) => `${hex(v.offset)}/${hex(v.size)}/${hex(v.mask)}`;
       bad.push(`${r.key}: ${source} ${show(r)}, record ${k.result === 'OK' ? show(rec) : k.result}`);
@@ -195,6 +209,27 @@ function crossCheck(rows, built, record, source = 'header') {
     throw new MapError(`the stored layout of CL-${built} has an entry for only ${compared} of the ${source}'s ${rows.length} field rows for CL-${built}, too few to check it against the ${source}`);
   }
   return compared;
+}
+
+// The known differences between the stored layout and the SDK tables: ci/sdk-table-differences.txt.
+// One entry per line, six fields separated by TABS: <build CL> <key> <offset|size|mask> <record value> <SDK value> <reason>.
+// Values are decimal or 0x hex. An entry excuses exactly one difference: that build, that key, that field, those two
+// values. The reason is required. '#' lines and blank lines are skipped. Returns { reasonFor(build, key, field, record, sdk), size }.
+const DIFFERENCE_FIELDS = ['offset', 'size', 'mask'];
+export function parseDifferences(text, where = 'list') {
+  const entries = new Map();
+  const value = (v) => (/^(?:0x[0-9a-f]+|\d+)$/i.test(v ?? '') ? Number(v) : null);
+  text.replace(/\r\n/g, '\n').split('\n').forEach((raw, i) => {
+    if (!raw.trim() || raw.trimStart().startsWith('#')) return;
+    const at = `${where}:${i + 1}`;
+    const [build, key, field, have, want, ...reason] = raw.split('\t');
+    if (!/^\d+$/.test(build) || !/^[\x21-\x7e]+$/.test(key ?? '') || !DIFFERENCE_FIELDS.includes(field) || value(have) === null || value(want) === null) {
+      throw new MapError(`${at}: expected "<build CL><TAB><key><TAB><offset|size|mask><TAB><record value><TAB><SDK value><TAB><reason>"`);
+    }
+    if (reason.join('\t').trim() === '') throw new MapError(`${at}: the entry for ${key} on CL-${build} has no reason`);
+    entries.set([Number(build), key, field, value(have), value(want)].join('\n'), reason.join('\t').trim());
+  });
+  return { reasonFor: (build, key, field, have, want) => entries.get([build, key, field, have, want].join('\n')) ?? null, size: entries.size };
 }
 
 // The layout tables the check generates from the Game SDK (ci/layout-table.mjs gen, one per plugin and key
@@ -270,8 +305,9 @@ const namesOf = (keys) => `${keys.length} reflected key${keys.length === 1 ? '' 
 // `published` is { text, release } for the published version map (text null when it could not be downloaded);
 // without it, or when it cannot be used, only the header's rows check the record and `skipped` says why.
 // `sdkTables` is { header, tables } (see sdkTableRows); `sdkSkipped` says why that check did not run and
-// `sdkCompared` is the number of keys it compared.
-export function referenceFor({ headerText, recordText, release, targetCl, targetSha256, fields, published = null, sdkTables = null }) {
+// `sdkCompared` is the number of keys it compared. `sdkDifferences` is a parseDifferences list (none: nothing is
+// excused); `sdkNotes` has one line per difference it excused.
+export function referenceFor({ headerText, recordText, release, targetCl, targetSha256, fields, published = null, sdkTables = null, sdkDifferences = null }) {
   const map = parse(headerText, 'the header');
   const built = map.builtCL;
   if (recordText === null || recordText === undefined) {
@@ -294,14 +330,15 @@ export function referenceFor({ headerText, recordText, release, targetCl, target
   const wider = published ? publishedRows(published.text, published.release, built) : { why: 'no published version map was given' };
   if (wider.rows) crossCheck(wider.rows, built, record, 'version map');
   const sdk = sdkTableRows(sdkTables, built);
-  const sdkCompared = sdk.rows ? crossCheck(sdk.rows, built, record, 'SDK table') : 0;
+  const sdkNotes = [];
+  const sdkCompared = sdk.rows ? crossCheck(sdk.rows, built, record, 'SDK table', sdkDifferences && { list: sdkDifferences, notes: sdkNotes }) : 0;
   const have = new Set(record.keys.map((k) => k.key));
   const listed = new Set(fields);
   const missing = [...listed].filter((k) => !have.has(k)).sort(cmp);
   if (missing.length > MISSING_FLOOR && missing.length * MISSING_SHARE_DENOMINATOR > listed.size) {
     throw new MapError(`the stored layout of CL-${built} has no entry for ${namesOf(missing)} now listed, more than the ${MISSING_FLOOR} always allowed and more than 1 in ${MISSING_SHARE_DENOMINATOR} of the ${listed.size} listed; a public check of that build, while Steam still serves it, adds them`);
   }
-  return { cl: record.cl, keys: record.keys, skipped: wider.why ?? null, sdkSkipped: sdk.why ?? null, sdkCompared, missing };
+  return { cl: record.cl, keys: record.keys, skipped: wider.why ?? null, sdkSkipped: sdk.why ?? null, sdkCompared, sdkNotes, missing };
 }
 
 function args(rest) {
@@ -315,6 +352,7 @@ function args(rest) {
 }
 
 const read = (p) => readFileSync(p, 'utf8');
+const readOrThrow = (p) => { try { return read(p); } catch (e) { throw new MapError(`${p} cannot be read: ${e.code ?? e.message}`); } };
 const readOptional = (p) => { try { return read(p); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 
 export function main(argv) {
@@ -349,20 +387,22 @@ export function main(argv) {
       const softIn = (f) => { try { return read(join(o['sdk-tables'], f)); } catch { return null; } };
       const listing = o['sdk-tables'] ? (() => { try { return readdirSync(o['sdk-tables']).filter((f) => SDK_TABLES.table.test(f)).sort(); } catch { return []; } })() : null;
       const sdkTables = listing && { header: softIn(SDK_TABLES.header), tables: listing.map((name) => ({ name, text: softIn(name) ?? '' })) };
+      const sdkDifferences = o['sdk-differences'] ? parseDifferences(readOrThrow(o['sdk-differences']), o['sdk-differences']) : null;
       const fields = keysFromCheck(read(o['native-keys']), read(o['layout-keys'])).fields;
       const report = referenceFor({
         headerText: read(header), recordText: readOptional(o.record), release: json(read(o.release), o.release),
-        targetCl: Number(o.cl), targetSha256: o.sha256, fields, published, sdkTables,
+        targetCl: Number(o.cl), targetSha256: o.sha256, fields, published, sdkTables, sdkDifferences,
       });
       if (report.skipped) process.stdout.write(`layout-store: the wider cross-check against the published version map was skipped: ${report.skipped}\n`);
       if (sdkTables && report.sdkSkipped) process.stdout.write(`layout-store: the cross-check against the SDK tables was skipped: ${report.sdkSkipped}\n`);
-      else if (sdkTables) process.stdout.write(`layout-store: the SDK tables agree with the stored layout on ${report.sdkCompared} keys\n`);
+      else if (sdkTables) process.stdout.write(`layout-store: the SDK tables agree with the stored layout on ${report.sdkCompared} keys${report.sdkNotes.length ? `, ${report.sdkNotes.length} known ${report.sdkNotes.length === 1 ? 'difference' : 'differences'} excused` : ''}\n`);
+      for (const n of report.sdkNotes) process.stdout.write(`layout-store: ${n}\n`);
       if (report.missing.length) process.stdout.write(`layout-store: the stored layout has no entry for ${namesOf(report.missing)} now listed; their rows come from the new build\n`);
       writeFileSync(o.out, JSON.stringify({ keys: report.keys }, null, 2) + '\n');
       process.stdout.write(`layout-store: reference layout = stored CL-${report.cl}\n`);
       return EXIT_OK;
     }
-    process.stderr.write('usage: layout-store.mjs record --out <f> --result <f> --scanner <f> --layout <f> --run <id> --sha <sha> [--at <t>] [--existing <f> --release <f>]\n       layout-store.mjs reference <header> --record <f> --release <f> --cl <CL> --sha256 <hex> --native-keys <f> --layout-keys <f> --out <f> [--published <dir>] [--sdk-tables <dir>]\n');
+    process.stderr.write('usage: layout-store.mjs record --out <f> --result <f> --scanner <f> --layout <f> --run <id> --sha <sha> [--at <t>] [--existing <f> --release <f>]\n       layout-store.mjs reference <header> --record <f> --release <f> --cl <CL> --sha256 <hex> --native-keys <f> --layout-keys <f> --out <f> [--published <dir>] [--sdk-tables <dir>] [--sdk-differences <file>]\n');
     return EXIT_ERROR;
   } catch (e) {
     if (!(e instanceof MapError) && !(e instanceof ParseError)) throw e;

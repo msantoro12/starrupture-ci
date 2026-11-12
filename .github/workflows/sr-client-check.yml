@@ -2170,6 +2170,17 @@ jobs:
           $all = $files | ForEach-Object { Get-Content $_ } | Where-Object { $_ } | Sort-Object -Unique -CaseSensitive
           Set-Content "$work\keys-all.txt" $all -Encoding ascii
           Copy-Item "$work\keys-all.txt" out\layout-keys.txt
+          # The layout tables and the head of the SDK's SDK.hpp (which names the build the SDK was dumped for) go to
+          # the map-mode job, which checks the stored layout of the public build against them (ci/layout-store.mjs
+          # --sdk-tables). If they cannot be copied that check is skipped there, with a note; nothing fails here.
+          try {
+            New-Item -ItemType Directory -Force out\sdk-tables | Out-Null
+            Copy-Item "$work\table-*.h" out\sdk-tables -ErrorAction Stop
+            Get-Content "$sdk\Client\SDK.hpp" -TotalCount 12 -ErrorAction Stop | Set-Content out\sdk-tables\sdk-header.txt -Encoding ascii
+          } catch {
+            Remove-Item out\sdk-tables -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "::warning title=SDK tables::the layout tables could not be copied for the stored-layout cross-check: $($_.Exception.Message)"
+          }
           # A build the published file does not hold yet is also read for the field keys that the newest published
           # build has rows for and no key list names any more (ci/MAP-MODE.md, "Carried field keys"). Only this build
           # is asked for them; out\layout-carry-keys.txt lists them and field-rows decides what each one becomes.
@@ -2527,6 +2538,7 @@ jobs:
             out/layout-keys.txt
             out/layout-carry-keys.txt
             out/layout-uses.txt
+            out/sdk-tables/*
             out/offsets-*.json
             out/rig-plugins.json
           if-no-files-found: warn
@@ -2983,7 +2995,8 @@ jobs:
             exe_sha="$(node -p "JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.sha256 ?? ''")"
             local why
             if why="$(node tool/ci/layout-store.mjs reference "$header" --record "stored/layout-CL-$PREVIOUS_CL.json" --release stored/release.json --cl "$cl" --sha256 "$exe_sha" \
-                --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --out res/layout-stored.json --published published-ref 2>&1)"; then
+                --native-keys tool/ci/native-keys.txt --layout-keys res/layout-keys.txt --out res/layout-stored.json --published published-ref \
+                --sdk-tables res/sdk-tables --sdk-differences tool/ci/sdk-table-differences.txt 2>&1)"; then
               base=(--base res/layout-stored.json)
               echo "field-rows: $why"
             else

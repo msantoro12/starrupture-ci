@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { emit, exportFeed, parse } from './version-map.mjs';
 import { renderHeader } from './layout-table.mjs';
-import { PUBLISHED, SCHEMA, SDK_TABLES, assetName, buildRecord, main, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
+import { PUBLISHED, SCHEMA, SDK_TABLES, assetName, buildRecord, main, parseDifferences, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
 
 const HEADER = readFileSync(new URL('./fixtures/version-map/loader.h', import.meta.url), 'utf8');
 // The fixture header: built for CL-127004, whose build row is public build 25646882.
@@ -450,6 +450,79 @@ test('command line: --sdk-tables names a directory; its tables are cross-checked
   const bad = run([...args, '--sdk-tables', sub]);
   assert.equal(bad.code, 3, 'a changed offset in a table refuses');
   assert.match(bad.err, /AFoo::Bar: SDK table 0x14\/0x8\/0x0, record 0x10\/0x8\/0x0/);
+});
+
+// ---- known differences of the SDK check --------------------------------------------
+
+const ROW = (build, key, field, have, want, reason = 'the scan reports the enclosing struct size') => [build, key, field, have, want, reason].join('\t');
+const KNOWN = parseDifferences(ROW(127004, 'AFoo::Baz', 'size', '0x4', '0x8'));
+const viaKnown = (recs, list = KNOWN) => ref({ ...rec(recs), args: { headerText: headerWith([]), fields: new Set(), sdkTables: sdkOf(), sdkDifferences: list } });
+
+test('known differences: the exact difference is excused, counted as compared and named in a note', () => {
+  const r = viaKnown(patched('AFoo::Baz', { size: 4 }));
+  assert.equal(r.sdkCompared, 4);
+  assert.deepEqual(r.sdkNotes, ['AFoo::Baz: the size is 0x4 in the stored layout and 0x8 in the SDK table, a known difference (the scan reports the enclosing struct size)']);
+  assert.deepEqual(viaKnown(RECS2).sdkNotes, [], 'no difference, no note');
+});
+
+test('known differences: another value, field, key or build is not excused', () => {
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { size: 6 })), /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x18\/0x6\/0x0/, 'the same key and field with another record value');
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { size: 4, offset: 32 })), /1 of 4 keys.*AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x20\/0x4\/0x0/, 'the excused field plus another one differing on the key');
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { size: 4, boolMask: 1 })), /AFoo::Baz/);
+  assert.throws(() => viaKnown(patched('AFoo::Bar', { size: 4 })), /AFoo::Bar: SDK table 0x10\/0x8\/0x0, record 0x10\/0x4\/0x0/, 'another key');
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { offset: 32 })), /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x20\/0x8\/0x0/, 'another field of the key');
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { size: 4 }), parseDifferences(ROW(128786, 'AFoo::Baz', 'size', '0x4', '0x8'))), /AFoo::Baz/, 'another build');
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { size: 4 }), parseDifferences(ROW(127004, 'AFoo::Baz', 'size', '0x8', '0x4'))), /AFoo::Baz/, 'the values the other way round');
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { result: 'NOMEMBER' })), /record NOMEMBER/, 'a key the scan could not find');
+});
+
+test('known differences: without a list nothing is excused', () => {
+  assert.throws(() => viaSdk(sdkOf(), patched('AFoo::Baz', { size: 4 })), /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x18\/0x4\/0x0/);
+  assert.deepEqual(viaSdk(sdkOf()).sdkNotes, []);
+});
+
+test('known differences: the list needs six fields and a reason; decimal and hex values both read, comments and blank lines are skipped', () => {
+  assert.equal(parseDifferences('# comment\n\n' + ROW(127004, 'A::b', 'offset', '16', '0x18') + '\r\n').size, 1);
+  assert.equal(parseDifferences('').size, 0);
+  assert.equal(parseDifferences(ROW(127004, 'A::b', 'offset', '16', '0x18')).reasonFor(127004, 'A::b', 'offset', 16, 24), 'the scan reports the enclosing struct size');
+  assert.throws(() => parseDifferences(ROW(127004, 'A::b', 'size', '0x50', '0x18', '')), /list:1: the entry for A::b on CL-127004 has no reason/);
+  assert.throws(() => parseDifferences(ROW(127004, 'A::b', 'size', '0x50', '0x18', '  ')), /has no reason/);
+  assert.throws(() => parseDifferences('127004\tA::b\tsize\t0x50\t0x18'), /has no reason/, 'a line that ends before the reason');
+  assert.throws(() => parseDifferences('127004\tA::b\tsize\t0x50'), /expected "<build CL>/);
+  assert.throws(() => parseDifferences(ROW('x', 'A::b', 'size', '0x50', '0x18')), /expected/);
+  assert.throws(() => parseDifferences(ROW(127004, 'A::b', 'width', '0x50', '0x18')), /expected/);
+  assert.throws(() => parseDifferences(ROW(127004, 'A::b', 'size', 'big', '0x18')), /expected/);
+  assert.throws(() => parseDifferences('# ok\n' + ROW(127004, 'A::b', 'size', '0x50', '0x18', '')), /list:2:/, 'the line number is named');
+});
+
+test('known differences: the list in the repository starts with the one entry for FEnhancedActionKeyMapping::Key', () => {
+  const real = parseDifferences(readFileSync(new URL('./sdk-table-differences.txt', import.meta.url), 'utf8'), 'ci/sdk-table-differences.txt');
+  assert.equal(real.size, 1);
+  assert.match(real.reasonFor(127004, 'FEnhancedActionKeyMapping::Key', 'size', 0x50, 0x18), /enclosing struct's size.*SDK value is right.*no row is published.*remove the entry when the scan is fixed/);
+  assert.equal(real.reasonFor(127004, 'FEnhancedActionKeyMapping::Key', 'offset', 0x50, 0x18), null);
+});
+
+test('command line: --sdk-differences excuses the named difference with a note; a list without a reason is an error; a missing file is an error', () => {
+  const keys = KEYS.map((k) => (k.key === 'AFoo::Baz' ? { ...k, size: 4 } : k));
+  const text = JSON.stringify(make({ layoutText: layoutText(keys) }), null, 2) + '\n';
+  const p = inDir({ 'header.h': HEADER, 'rec.json': text, 'release.json': JSON.stringify(releaseFor(text)), 'native-keys.txt': '', 'layout-keys.txt': [...FIELDS].join('\n') + '\n', 'known.txt': ROW(127004, 'AFoo::Baz', 'size', '0x4', '0x8') + '\n', 'noreason.txt': ROW(127004, 'AFoo::Baz', 'size', '0x4', '0x8', '') + '\n' });
+  const sub = mkdtempSync(join(tmpdir(), 'layout-store-known-'));
+  writeFileSync(join(sub, SDK_TABLES.header), SDK_HEADER());
+  writeFileSync(join(sub, 'table-A.h'), tableText([tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 24, 8)]), tclass('UWorld', [trow('GameState', 0x120, 8)])]));
+  const args = ['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json'), '--sdk-tables', sub];
+  const refused = run(args);
+  assert.equal(refused.code, 3, 'no list: refused');
+  assert.match(refused.err, /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x18\/0x4\/0x0/);
+  const ok = run([...args, '--sdk-differences', p('known.txt')]);
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /the SDK tables agree with the stored layout on 3 keys, 1 known difference excused\n/);
+  assert.match(ok.out, /layout-store: AFoo::Baz: the size is 0x4 in the stored layout and 0x8 in the SDK table, a known difference \(the scan reports the enclosing struct size\)\n/);
+  const bad = run([...args, '--sdk-differences', p('noreason.txt')]);
+  assert.equal(bad.code, 3);
+  assert.match(bad.err, /noreason\.txt:1: the entry for AFoo::Baz on CL-127004 has no reason/);
+  const gone = run([...args, '--sdk-differences', p('nowhere.txt')]);
+  assert.equal(gone.code, 3);
+  assert.match(gone.err, /nowhere\.txt cannot be read: ENOENT/);
 });
 
 test('command line: keys the stored layout lacks are written without a reference and named in one line', () => {

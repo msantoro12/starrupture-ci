@@ -1,0 +1,26 @@
+# Known differences between a stored layout and the SDK tables.
+#
+# A public update checks the stored layout of the build the plugins were built for against the layout
+# tables generated from the game SDK (layout-store.mjs reference). A key on which they disagree holds
+# the update. A difference that is known, and whose right value is settled, is listed here, with the
+# reason; the check then goes on and prints a note naming it. Without an entry, a difference is a hold.
+#
+# One entry per line, six fields separated by TABS (not spaces):
+#
+#   <build>   <key>   <value>   <record>   <SDK>   <reason>
+#
+#   build   the game build's CL number, digits only
+#   key     the key as the layout writes it, Class::Member
+#   value   which value differs: offset, size or mask
+#   record  the value in the stored layout, decimal or 0x hex
+#   SDK     the value in the SDK table, decimal or 0x hex
+#   reason  required, plain words: why the difference is known and which value is right
+#
+# An entry excuses exactly the difference it names: that build, that key, that value, those two numbers.
+# Any other difference on the same key, the same key with other numbers, any other key and any other
+# build is still a hold. Lines starting with # and empty lines are skipped.
+#
+# Example (a member whose stored size is wrong on build 127004):
+#
+#   127004	USomething::Member	size	0x50	0x18	The scan reports the enclosing struct's size; the SDK value is right.
+127004	FEnhancedActionKeyMapping::Key	size	0x50	0x18	The layout scan reports the enclosing struct's size for this member; the SDK value is right; no row is published for this member; remove the entry when the scan is fixed and the record corrected.
