@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { emit, exportFeed, parse } from './version-map.mjs';
 import { renderHeader } from './layout-table.mjs';
-import { PUBLISHED, SCHEMA, SDK_TABLES, assetName, buildRecord, main, parseDifferences, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
+import { PUBLISHED, SCHEMA, SDK_TABLES, SDK_TABLE_CHECK, assetName, buildRecord, main, parseDifferences, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
 
 const HEADER = readFileSync(new URL('./fixtures/version-map/loader.h', import.meta.url), 'utf8');
 // The fixture header: built for CL-127004, whose build row is public build 25646882.
@@ -31,7 +31,7 @@ const FIELDS = new Set(KEYS.map((k) => k.key));
 function ref(over = {}) {
   const text = over.recordText !== undefined ? over.recordText : JSON.stringify(make(), null, 2) + '\n';
   return referenceFor({
-    headerText: HEADER, recordText: text, release: over.release ?? releaseFor(text ?? ''), targetCl: BUILT.cl, targetSha256: SHA, fields: FIELDS, ...over.args,
+    headerText: HEADER, recordText: text, release: over.release ?? releaseFor(text ?? ''), targetCl: BUILT.cl, targetSha256: SHA, fields: FIELDS, sdkCheck: 'enforcing', ...over.args,
   });
 }
 const refuses = (over, re) => assert.throws(() => ref(over), re);
@@ -368,7 +368,12 @@ function inDir(files) {
   return (name) => join(dir, name);
 }
 
-function run(argv) {
+function run(argv, sdkCheck = 'enforcing') {
+  return runWith(argv, sdkCheck);
+}
+
+// `sdkCheck` undefined is main's own default: SDK_TABLE_CHECK.
+function runWith(argv, sdkCheck) {
   let out = '';
   let err = '';
   const o = process.stdout.write;
@@ -376,7 +381,7 @@ function run(argv) {
   process.stdout.write = (s) => { out += s; return true; };
   process.stderr.write = (s) => { err += s; return true; };
   let code;
-  try { code = main(argv); } finally { process.stdout.write = o; process.stderr.write = e; }
+  try { code = main(argv, sdkCheck); } finally { process.stdout.write = o; process.stderr.write = e; }
   return { code, out, err };
 }
 
@@ -495,11 +500,94 @@ test('known differences: the list needs six fields and a reason; decimal and hex
   assert.throws(() => parseDifferences('# ok\n' + ROW(127004, 'A::b', 'size', '0x50', '0x18', '')), /list:2:/, 'the line number is named');
 });
 
-test('known differences: the list in the repository starts with the one entry for FEnhancedActionKeyMapping::Key', () => {
+test('known differences: the list in the repository starts with the one entry for FEnhancedActionKeyMapping::Key, for any build', () => {
   const real = parseDifferences(readFileSync(new URL('./sdk-table-differences.txt', import.meta.url), 'utf8'), 'ci/sdk-table-differences.txt');
   assert.equal(real.size, 1);
-  assert.match(real.reasonFor(127004, 'FEnhancedActionKeyMapping::Key', 'size', 0x50, 0x18), /enclosing struct's size.*SDK value is right.*no row is published.*remove the entry when the scan is fixed/);
+  for (const build of [127004, 128786]) {
+    assert.match(real.reasonFor(build, 'FEnhancedActionKeyMapping::Key', 'size', 0x50, 0x18), /^The layout scan reports the enclosing struct's size for this member; the SDK value is right; no row is published for this member; the entry comes out when the scan is fixed\.$/);
+  }
   assert.equal(real.reasonFor(127004, 'FEnhancedActionKeyMapping::Key', 'offset', 0x50, 0x18), null);
+  assert.equal(real.reasonFor(127004, 'FEnhancedActionKeyMapping::Key', 'size', 0x50, 0x20), null);
+  assert.equal(real.reasonFor(127004, 'FEnhancedActionKeyMapping::Other', 'size', 0x50, 0x18), null);
+});
+
+// A broken list must not reach main: the committed file is parsed with the real parser, and every entry has a reason.
+test('known differences: the committed list parses and every entry has a reason', () => {
+  const text = readFileSync(new URL('./sdk-table-differences.txt', import.meta.url), 'utf8');
+  const parsed = parseDifferences(text, 'ci/sdk-table-differences.txt');
+  const lines = text.replace(/\r\n/g, '\n').split('\n').filter((l) => l.trim() && !l.trimStart().startsWith('#'));
+  assert.ok(lines.length >= 1);
+  assert.equal(parsed.size, lines.length, 'every entry line is an entry of its own');
+  for (const l of lines) {
+    const fields = l.split('\t');
+    assert.equal(fields.length, 6, `entry has six tab-separated fields: ${l}`);
+    assert.notEqual(fields[5].trim(), '', `entry has a reason: ${l}`);
+  }
+});
+
+test('known differences: a build of * excuses the same difference on any build, and nothing else', () => {
+  const any = parseDifferences(ROW('*', 'AFoo::Baz', 'size', '0x4', '0x8'));
+  assert.equal(any.size, 1);
+  for (const build of [127004, 128786, 1]) assert.equal(any.reasonFor(build, 'AFoo::Baz', 'size', 4, 8), 'the scan reports the enclosing struct size', `build ${build}`);
+  for (const build of [127004, 128786]) {
+    assert.equal(any.reasonFor(build, 'AFoo::Baz', 'size', 6, 8), null, 'another record value');
+    assert.equal(any.reasonFor(build, 'AFoo::Baz', 'size', 4, 16), null, 'another SDK value');
+    assert.equal(any.reasonFor(build, 'AFoo::Baz', 'offset', 4, 8), null, 'another field');
+    assert.equal(any.reasonFor(build, 'AFoo::Bar', 'size', 4, 8), null, 'another key');
+  }
+  assert.throws(() => parseDifferences(ROW('*', 'A::b', 'size', '0x50', '0x18', '')), /list:1: the entry for A::b on any build has no reason/);
+  assert.throws(() => parseDifferences(ROW('**', 'A::b', 'size', '0x50', '0x18')), /expected/);
+  // Through the check: the entry for * excuses the difference of the built CL, and the same entry still refuses another value.
+  const r = viaKnown(patched('AFoo::Baz', { size: 4 }), any);
+  assert.equal(r.sdkNotes.length, 1);
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { size: 6 }), any), /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x18\/0x6\/0x0/);
+  assert.throws(() => viaKnown(patched('AFoo::Baz', { offset: 32 }), any), /AFoo::Baz/);
+  assert.throws(() => viaKnown(patched('AFoo::Bar', { size: 4 }), any), /AFoo::Bar/);
+});
+
+// ---- report-only and enforcing -----------------------------------------------------
+
+const WOULD = /^layout-store: report only: this would hold once the check is enforcing: /m;
+const viaMode = (sdkCheck, recs, over = {}) => ref({ ...rec(recs), args: { headerText: headerWith([]), fields: new Set(), sdkTables: sdkOf(), sdkCheck, ...over } });
+
+test('SDK_TABLE_CHECK is one of the two modes', () => {
+  assert.ok(['report-only', 'enforcing'].includes(SDK_TABLE_CHECK));
+});
+
+test('report-only: a difference, too few keys compared and an unusable list never refuse and are returned as what would hold', () => {
+  const wrong = patched('AFoo::Baz', { offset: 32 });
+  const r = viaMode('report-only', wrong);
+  assert.equal(r.cl, 127004, 'the record is still the reference');
+  assert.equal(r.sdkWould.length, 1);
+  assert.match(r.sdkWould[0], /^the stored layout of CL-127004 disagrees with the SDK table's field rows for CL-127004 on 1 of 4 keys.*AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x20\/0x8\/0x0/);
+  assert.throws(() => viaMode('enforcing', wrong), /disagrees with the SDK table's field rows/, 'the same call enforcing refuses');
+  // Every kind of difference.
+  for (const recs of [patched('AFoo::Baz', { size: 4 }), patched('UCrFlag::bOn', { boolMask: 0x20 }), patched('UCrBig', { size: 0x48 }), patched('AFoo::Baz', { result: 'NOMEMBER' })]) {
+    assert.equal(viaMode('report-only', recs).sdkWould.length, 1);
+    assert.throws(() => viaMode('enforcing', recs), /disagrees with the SDK table's/);
+  }
+  // Too few keys compared.
+  const more = tclass('AMore', Array.from({ length: 5 }, (_, i) => trow(`k${i}`, 8 * i, 8)));
+  const few = viaMode('report-only', RECS2, { sdkTables: sdkOf([...TCLASSES, more]) });
+  assert.match(few.sdkWould[0], /entry for only 4 of the SDK table's 9 field rows.*too few/);
+  assert.throws(() => viaMode('enforcing', RECS2, { sdkTables: sdkOf([...TCLASSES, more]) }), /too few/);
+});
+
+test('report-only: an error of the check itself is reported, not thrown', () => {
+  const broken = { header: SDK_HEADER(), get tables() { throw new Error('boom'); } };
+  const r = viaMode('report-only', RECS2, { sdkTables: broken });
+  assert.deepEqual(r.sdkWould, ['boom']);
+  assert.equal(r.cl, 127004);
+  assert.throws(() => viaMode('enforcing', RECS2, { sdkTables: broken }), /boom/);
+});
+
+test('report-only: what the other checks hold on still holds, and agreement or a skip reports nothing', () => {
+  assert.throws(() => viaMode('report-only', swap('AFoo::Bar', { offset: 24 }), { headerText: headerWith(HROWS) }), /disagrees with the header's field rows/);
+  assert.deepEqual(viaMode('report-only', RECS2).sdkWould, []);
+  assert.deepEqual(viaMode('report-only', patched('AFoo::Baz', { offset: 32 }), { sdkTables: null }).sdkWould, []);
+  const excused = viaMode('report-only', patched('AFoo::Baz', { size: 4 }), { sdkDifferences: KNOWN });
+  assert.deepEqual(excused.sdkWould, [], 'a known difference is a note, as before');
+  assert.equal(excused.sdkNotes.length, 1);
 });
 
 test('command line: --sdk-differences excuses the named difference with a note; a list without a reason is an error; a missing file is an error', () => {
@@ -523,6 +611,48 @@ test('command line: --sdk-differences excuses the named difference with a note; 
   const gone = run([...args, '--sdk-differences', p('nowhere.txt')]);
   assert.equal(gone.code, 3);
   assert.match(gone.err, /nowhere\.txt cannot be read: ENOENT/);
+});
+
+test('command line, report-only: a difference or a broken list exits 0, writes the base report and says what would hold; enforcing refuses', () => {
+  const keys = KEYS.map((k) => (k.key === 'AFoo::Baz' ? { ...k, size: 4 } : k));
+  const text = JSON.stringify(make({ layoutText: layoutText(keys) }), null, 2) + '\n';
+  const p = inDir({ 'header.h': HEADER, 'rec.json': text, 'release.json': JSON.stringify(releaseFor(text)), 'native-keys.txt': '', 'layout-keys.txt': [...FIELDS].join('\n') + '\n', 'known.txt': ROW('*', 'AFoo::Baz', 'size', '0x4', '0x8') + '\n', 'noreason.txt': ROW('*', 'AFoo::Baz', 'size', '0x4', '0x8', '') + '\n' });
+  const sub = mkdtempSync(join(tmpdir(), 'layout-store-would-'));
+  writeFileSync(join(sub, SDK_TABLES.header), SDK_HEADER());
+  writeFileSync(join(sub, 'table-A.h'), tableText([tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 24, 8)]), tclass('UWorld', [trow('GameState', 0x120, 8)])]));
+  const args = ['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json'), '--sdk-tables', sub];
+  // A difference: enforcing refuses, report-only goes on and says what it would have done.
+  const hold = run(args, 'enforcing');
+  assert.equal(hold.code, 3);
+  assert.match(hold.err, /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x18\/0x4\/0x0/);
+  const said = run(args, 'report-only');
+  assert.equal(said.code, 0, said.err);
+  assert.equal(said.err, '');
+  assert.match(said.out, /^layout-store: report only: this would hold once the check is enforcing: the stored layout of CL-127004 disagrees with the SDK table's field rows for CL-127004 on 1 of 3 keys.*AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x18\/0x4\/0x0\)$/m);
+  assert.doesNotMatch(said.out, /SDK tables agree/);
+  assert.match(said.out, /reference layout = stored CL-127004/);
+  assert.equal(JSON.parse(readFileSync(p('base.json'), 'utf8')).keys.length, KEYS.length, 'the base report is written as without the check');
+  // A list that excuses it: nothing to report, in either mode.
+  for (const mode of ['enforcing', 'report-only']) {
+    const ok = run([...args, '--sdk-differences', p('known.txt')], mode);
+    assert.equal(ok.code, 0, ok.err);
+    assert.match(ok.out, /the SDK tables agree with the stored layout on 3 keys, 1 known difference excused\n/);
+    assert.doesNotMatch(ok.out, WOULD);
+  }
+  // A broken list: enforcing refuses, report-only reports it (and then reports the difference it no longer excuses).
+  assert.equal(run([...args, '--sdk-differences', p('noreason.txt')], 'enforcing').code, 3);
+  const broken = run([...args, '--sdk-differences', p('noreason.txt')], 'report-only');
+  assert.equal(broken.code, 0, broken.err);
+  assert.match(broken.out, /report only: this would hold once the check is enforcing: .*noreason\.txt:1: the entry for AFoo::Baz on any build has no reason\n/);
+  assert.match(broken.out, /report only: this would hold once the check is enforcing: the stored layout of CL-127004 disagrees/);
+  const gone = run([...args, '--sdk-differences', p('nowhere.txt')], 'report-only');
+  assert.equal(gone.code, 0, gone.err);
+  assert.match(gone.out, /report only: this would hold once the check is enforcing: .*nowhere\.txt cannot be read: ENOENT/);
+  // Tables of a good record: nothing to report. Missing tables: skipped as before.
+  assert.doesNotMatch(run([...args.slice(0, -2), '--sdk-tables', join(sub, 'nowhere')], 'report-only').out, WOULD);
+  // The default mode is SDK_TABLE_CHECK.
+  const dflt = runWith(args, undefined);
+  assert.equal(dflt.code, SDK_TABLE_CHECK === 'enforcing' ? 3 : 0);
 });
 
 test('command line: keys the stored layout lacks are written without a reference and named in one line', () => {

@@ -2999,9 +2999,12 @@ jobs:
                 --sdk-tables res/sdk-tables --sdk-differences tool/ci/sdk-table-differences.txt 2>&1)"; then
               base=(--base res/layout-stored.json)
               echo "field-rows: $why"
-              # A known difference the SDK-table check excused, or that check being skipped, is also a line of the step
-              # summary, so it is seen without opening the log. Writing it can never fail the job.
-              sdk_notes="$(printf '%s\n' "$why" | grep -E 'against the SDK tables was skipped|, a known difference \(' | sed 's/^layout-store: /- /' || true)"
+              # A known difference the SDK-table check excused, that check being skipped, or what it would have held on
+              # (report only while SDK_TABLE_CHECK in layout-store.mjs says so) is also a line of the step summary, so it
+              # is seen without opening the log; what it would have held on is also a warning annotation on the run.
+              # Writing them can never fail the job.
+              sdk_notes="$(printf '%s\n' "$why" | grep -E 'against the SDK tables was skipped|, a known difference \(|report only: this would hold' | sed 's/^layout-store: /- /' || true)"
+              printf '%s\n' "$sdk_notes" | grep -F -- '- report only: this would hold' | sed -e 's/^- //' -e 's/%/%25/g' -e 's/^/::warning title=SDK-table check, report only::/' || true
               if [ -n "$sdk_notes" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
                 printf '\n### SDK-table cross-check of the stored layout\n\n%s\n' "$sdk_notes" >> "$GITHUB_STEP_SUMMARY" || true
               fi

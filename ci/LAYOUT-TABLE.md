@@ -238,18 +238,25 @@ build it describes (its `kBuiltCL` is the build being checked), so the SDK's own
   tables, the header line is missing or has another shape, a table cannot be read, or the tables carry no sizes,
   the check is skipped with one line (`the cross-check against the SDK tables was skipped: <why>`) in the log and
   in the step summary. A skip is a note, not a hold.
-- A disagreement refuses the stored file and the update holds, with the key and both values in the message.
+- **Report-only for now.** The mode is one setting, `SDK_TABLE_CHECK` in `ci/layout-store.mjs`, set to
+  `report-only`. A difference, too few keys compared, an unreadable list or any error of the check itself holds
+  nothing and fails nothing: the run goes on exactly as without the check, and the message, with the key and both
+  values, is written as a note in the step summary and as a warning annotation on the run, worded
+  `report only: this would hold once the check is enforcing: <message>`. A later one-line change sets the
+  setting to `enforcing`; then a disagreement refuses the stored file and the update holds, with the key and
+  both values in the message. Enforcing is fully implemented and tested; only the default is report-only.
 - `ci/sdk-table-differences.txt` excuses known differences. Format (also at the top of the file): six
-  tab-separated fields, `<build> <key> <offset|size|mask> <stored> <SDK> <reason>`. An entry excuses only the
-  exact difference it names (that build, key, field and those two values); everything else on the key still
-  holds. The reason is required. A malformed line, a missing reason or an unreadable file holds the update.
-  A stored file is never replaced, so an entry stays while its build can still be the reference; remove it when
-  that build no longer is, or if the stored file is ever corrected. The same scan fault gives the same size in the
-  next build's stored file, so the update after that build holds until a line for it is added, once the SDK
-  value is confirmed.
-- The one entry today: `FEnhancedActionKeyMapping::Key` on 127004, size 0x50 stored and 0x18 in the SDK. The
-  layout scan returned the size of the enclosing struct for that member. The SDK is right, no row is published
-  for the member, and a stored file cannot be replaced, so the difference is listed instead of held.
+  tab-separated fields, `<build> <key> <offset|size|mask> <stored> <SDK> <reason>`. The build is a CL number,
+  or `*` for any build. An entry excuses only the exact difference it names (key, field and those two values,
+  on that build, or on any build for `*`); everything else on the key still holds. The reason is required. A
+  malformed line, a missing reason or an unreadable file holds the update once the check is enforcing
+  (report-only, it is reported); a test fails on a committed list that does not parse or lacks a reason.
+- The one entry today: `*` `FEnhancedActionKeyMapping::Key`, size 0x50 stored and 0x18 in the SDK. The layout
+  scan reports the enclosing struct's size for that member. The SDK is right, no row is published for the
+  member, and a stored file cannot be replaced, so the difference is listed instead of held. It is for any
+  build because every stored layout the scan wrote carries the same fault. The entry comes out when the scan is
+  fixed; stored files are never replaced, so take it out once no stored file written before the fix can be the
+  reference again.
 
 ## Tests
 

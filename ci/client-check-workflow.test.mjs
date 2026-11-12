@@ -3134,9 +3134,16 @@ test('field rows: where the reference layout comes from, run against a stand-in 
     'sdk-header.txt': `#pragma once\n\n// StarRupture\n// 5.6.1-${cl}+++Earth20+Neon\n`,
     'table-A.h': renderHeader({ cl: 128786, detail: 1, granularity: 2, classes: [{ name: 'AFoo', sizeOf: 0, alignOf: 0, kind: 1, path: '', rows: [{ member: 'Bar', offset: barOffset, size: 8, mask: 0 }] }] }),
   });
-  const run = ({ env = {}, release: rel = release(), asset = record, reference = false, feed = null, feedRel = feed === null ? null : feedRelease(feed), tables = null, differences = null } = {}) => {
+  const run = ({ env = {}, release: rel = release(), asset = record, reference = false, feed = null, feedRel = feed === null ? null : feedRelease(feed), tables = null, differences = null, enforcing = false } = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'refsel-'));
     cpSync(here, join(dir, 'tool', 'ci'), { recursive: true });
+    if (enforcing) {
+      // Flip the one setting of the SDK-table check, the way the later PR will.
+      const reader = join(dir, 'tool', 'ci', 'layout-store.mjs');
+      const src = readFileSync(reader, 'utf8');
+      assert.ok(src.includes("export const SDK_TABLE_CHECK = 'report-only';"), 'the setting is one line');
+      writeFileSync(reader, src.replace("export const SDK_TABLE_CHECK = 'report-only';", "export const SDK_TABLE_CHECK = 'enforcing';"));
+    }
     mkdirSync(join(dir, 'res'), { recursive: true });
     writeFileSync(join(dir, 'version_map.generated.h'), headerText);
     writeFileSync(join(dir, 'res', 'result.json'), JSON.stringify({ checks: { exe: { sha256: 'c'.repeat(64) } } }));
@@ -3205,7 +3212,28 @@ exit 1
   const sdkOk = run({ tables: sdkTables() });
   assert.deepEqual(sdkOk.base, ['--base', 'res/layout-stored.json']);
   assert.match(sdkOk.out, /the SDK tables agree with the stored layout on 1 keys\n/);
-  miss({ tables: sdkTables(24) }, /disagrees with the SDK table's field rows.*AFoo::Bar: SDK table 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0/);
+  // Report-only (as merged): a difference holds nothing. The run goes on exactly as without the check, the message is
+  // in the log, in the step summary and in a warning annotation of its own line.
+  const WOULD = "report only: this would hold once the check is enforcing: the stored layout of CL-127004 disagrees with the SDK table's field rows for CL-127004 on 1 of 1 keys (offset/size/mask; first: AFoo::Bar: SDK table 0x18/0x8/0x0, record 0x10/0x8/0x0)";
+  const report = run({ tables: sdkTables(24) });
+  assert.equal(report.status, 0, report.stderr);
+  assert.deepEqual(report.base, ['--base', 'res/layout-stored.json'], 'the stored layout is still the base');
+  assert.deepEqual(report.missing, []);
+  assert.deepEqual(report.base, sdkOk.base);
+  assert.equal(readFileSync(join(report.dir, 'res', 'layout-stored.json'), 'utf8'), readFileSync(join(sdkOk.dir, 'res', 'layout-stored.json'), 'utf8'), 'the base report is the same');
+  assert.ok(report.out.includes(`layout-store: ${WOULD}\n`), 'the log');
+  assert.ok(report.out.includes(`\n::warning title=SDK-table check, report only::${WOULD}\n`), 'the annotation is a line of its own');
+  assert.equal(report.summary, `\n### SDK-table cross-check of the stored layout\n\n- ${WOULD}\n`);
+  // A broken list reports too, and holds nothing; the same list holds when enforcing.
+  const brokenList = run({ tables: sdkTables(), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\t\n' });
+  assert.equal(brokenList.status, 0, brokenList.stderr);
+  assert.deepEqual(brokenList.base, ['--base', 'res/layout-stored.json']);
+  assert.match(brokenList.out, /\n::warning title=SDK-table check, report only::report only: this would hold once the check is enforcing: .*sdk-table-differences\.txt:1: the entry for AFoo::Bar on CL-127004 has no reason\n/);
+  assert.match(brokenList.summary, /\n- report only: this would hold once the check is enforcing: .*has no reason\n/);
+  // Enforcing (the setting flipped): the same inputs hold.
+  assert.equal(run({ tables: sdkTables(24), enforcing: true }).status, 0);
+  miss({ tables: sdkTables(24), enforcing: true }, /disagrees with the SDK table's field rows.*AFoo::Bar: SDK table 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0/);
+  assert.doesNotMatch(run({ tables: sdkTables(24), enforcing: true }).out, /report only/);
   assert.match(run({ tables: sdkTables(16, 129402) }).out, /skipped: the SDK tables describe CL-129402/, 'tables of another build: skipped');
   const excused = run({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\tfor the test\n' });
   assert.deepEqual(excused.base, ['--base', 'res/layout-stored.json']);
@@ -3219,8 +3247,8 @@ exit 1
   const noSummary = run({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\tfor the test\n', env: { GITHUB_STEP_SUMMARY: '/nonexistent-dir/summary.md' } });
   assert.equal(noSummary.status, 0, noSummary.stderr);
   assert.deepEqual(noSummary.base, ['--base', 'res/layout-stored.json']);
-  miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x1c\tfor the test\n' }, /disagrees with the SDK table's field rows.*AFoo::Bar/);
-  miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\t\n' }, /sdk-table-differences\.txt:1: the entry for AFoo::Bar on CL-127004 has no reason/);
+  miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x1c\tfor the test\n', enforcing: true }, /disagrees with the SDK table's field rows.*AFoo::Bar/);
+  miss({ tables: sdkTables(24), differences: '127004\tAFoo::Bar\toffset\t0x10\t0x18\t\n', enforcing: true }, /sdk-table-differences\.txt:1: the entry for AFoo::Bar on CL-127004 has no reason/);
   // A non-public check keeps its own comparison, and a proof run or a mapped first publish its self-reference.
   const other = { BRANCH: 'public_test_branch' };
   assert.deepEqual(run({ env: other, reference: true }).base, ['--base', 'res/layout-reference.json']);
