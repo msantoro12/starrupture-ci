@@ -6,8 +6,8 @@
 //   node ci/pipeline-alert.mjs outside --causes <file.jsonl> --owner <login> --run-url <url> --out <file.md>
 //   node ci/pipeline-alert.mjs raise --title <title> --body-file <file.md> --owner <login>
 //
-// causes: one JSON line per failed job of the run that can fail it (not the planner data extract), { id, name, step, error }. `step` is the first
-// failed step (jobs API) and `error` its first error line other than "Process completed with exit
+// causes: one JSON line per failed job of the run that can fail it (not the planner data extract),
+// { id, name, step, error }. `step` is the first failed step (jobs API) and `error` its first error line other than "Process completed with exit
 // code N". It comes from the job's failure annotations, which exist as soon as the step emits
 // them, then from the `##[error]` lines of the job log. A job log can still be missing seconds
 // after the job ended, so an unread log is fetched again, up to --tries times (default 6), 10 s

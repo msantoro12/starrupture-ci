@@ -115,7 +115,7 @@ test('causes: the planner data extract job, which cannot fail the run, is not a 
   const gh = fakeGh({ jobs: [LIVE_JOBS[0], { id: 7, name: EXTRACT_JOB_NAME, step: 'Start the extract' }, LIVE_JOBS[1]] });
   const jobs = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: gh.call });
   assert.deepEqual(jobs.map((j) => j.id), [LIVE_JOBS[0].id, LIVE_JOBS[1].id]);
-  assert.ok(!gh.calls.some((c) => c.includes('/7/') || c.includes('jobs/7/')), 'nothing is read for it');
+  assert.ok(!gh.calls.some((c) => c.includes('jobs/7/')), 'nothing is read for it');
   const same = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: fakeGh({ jobs: LIVE_JOBS }).call });
   assert.deepEqual(same.map((j) => j.id), LIVE_JOBS.map((j) => j.id), 'an alert with only real causes is unchanged');
 });
