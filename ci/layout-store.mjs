@@ -278,7 +278,7 @@ export const SDK_TABLE_CHECK = 'enforcing';
 // table asks for (a released plugin's) keeps the strict rule, and so does a key the loader reads: `loaderKeys` is the
 // loader's key list (loader-keys.txt, one key per line), whose names only count as asked for; its rows are never compared.
 // Without that list every key is strict (the loader may read any of them), and a difference says so. The keys of
-// ci/native-keys.txt (`nativeKeys`, names only) count the same way: they are in no table, and the file does not
+// ci/native-keys.txt (`nativeKeys`, names only) count the same way: they are in no released table, and the file does not
 // say which of its askers are released, so all of them are strict.
 export const SDK_TABLES = { header: 'sdk-header.txt', table: /^table-.*\.h$/, keySource: /^table-ks-/, loaderKeys: 'loader-keys.txt' };
 const RE_SDK_BUILD = /^\/\/ \d+(?:\.\d+)+-(\d+)\+\+\+/m;

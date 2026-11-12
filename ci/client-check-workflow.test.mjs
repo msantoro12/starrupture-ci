@@ -3214,7 +3214,7 @@ exit 1
   const sdkOk = run({ tables: sdkTables() });
   assert.deepEqual(sdkOk.base, ['--base', 'res/layout-stored.json']);
   assert.match(sdkOk.out, /the SDK tables agree with the stored layout on 1 keys\n/);
-  // Report-only (as merged): a difference holds nothing. The run goes on exactly as without the check, the message is
+  // Report-only: a difference holds nothing. The run goes on exactly as without the check, the message is
   // in the log, in the step summary and in a warning annotation of its own line.
   const WOULD = "report only: this would hold once the check is enforcing: the stored layout of CL-127004 disagrees with the SDK table's field rows for CL-127004 on 1 of 1 keys (offset/size/mask; first: AFoo::Bar: SDK table 0x18/0x8/0x0, record 0x10/0x8/0x0)";
   const report = run({ tables: sdkTables(24), mode: 'report-only' });
@@ -3232,7 +3232,7 @@ exit 1
   assert.deepEqual(brokenList.base, ['--base', 'res/layout-stored.json']);
   assert.match(brokenList.out, /\n::warning title=SDK-table check \(report only\)::report only: this would hold once the check is enforcing: .*sdk-table-differences\.txt:1: the entry for AFoo::Bar on CL-127004 has no reason\n/);
   assert.match(brokenList.summary, /\n- report only: this would hold once the check is enforcing: .*has no reason\n/);
-  // Enforcing (the setting flipped): the same inputs hold.
+  // Enforcing: the same inputs hold.
   assert.equal(run({ tables: sdkTables(24), mode: 'enforcing' }).status, 0);
   miss({ tables: sdkTables(24), mode: 'enforcing' }, /disagrees with the SDK table's field rows.*AFoo::Bar: SDK table 0x18\/0x8\/0x0, record 0x10\/0x8\/0x0/);
   assert.doesNotMatch(run({ tables: sdkTables(24), mode: 'enforcing' }).out, /report only/);
@@ -3722,5 +3722,6 @@ test('SDK tables: the check job uploads them where the map-mode job reads them, 
   const chain = runOf(mm, 'Decide, export, sign, stage and plan the promotion');
   assert.equal(chain.match(/layout-store\.mjs reference/g)?.length, 1);
   assert.match(chain, /--out res\/layout-stored\.json --published published-ref \\\n\s+--sdk-tables res\/sdk-tables --sdk-differences tool\/ci\/sdk-table-differences\.txt 2>&1\)"; then/);
+  assert.match(chain, /--native-keys tool\/ci\/native-keys\.txt /, 'the native keys, which count as strict, come from the tool checkout');
   assert.ok(existsSync(join(here, 'sdk-table-differences.txt')), 'the list is in the tool checkout');
 });
