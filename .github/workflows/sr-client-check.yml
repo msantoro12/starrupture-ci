@@ -1568,7 +1568,7 @@ jobs:
       # of the header. A hold is written to out/published-base.json, the carry scan is left out and map
       # mode holds the run with the same reasons; nothing here fails the job for it.
       - name: Check out the published-base tool
-        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true
+        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && inputs.refresh_layout != true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ci-base
@@ -1577,7 +1577,7 @@ jobs:
 
       - name: Take the published feed as the base
         id: pbase
-        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true
+        if: steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true && inputs.refresh_layout != true
         timeout-minutes: 5
         shell: pwsh
         env:

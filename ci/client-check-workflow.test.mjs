@@ -1633,7 +1633,7 @@ test('carry: the check job scans the base header against the new exe after the l
   assert.ok(at('Check the client build') < at('Check out the base header') && at('Check out the base header') < at(CARRY));
   assert.ok(at(CARRY) < at('Download the plugins'));
   const gate = "steps.scan.outcome == 'success' && steps.cleanup.outcome == 'success' && inputs.map_mode == true";
-  assert.equal(c.split(`if: ${gate}\n`).length - 1, 3, 'the header checkout and the two published-base steps run only in map mode, after a passing scan');
+  assert.equal(c.split(`if: ${gate}\n`).length - 1, 1, 'the header checkout runs only in map mode, after a passing scan');
   // The carry step has the same gate and also waits for a base that was taken.
   assert.ok(step(c, CARRY).includes(`if: ${gate} && steps.pbase.outputs.held != 'true'\n`));
   // The header is the one the candidate is cut from: the scanned loader commit, data only.
@@ -3281,9 +3281,13 @@ test('layout refresh: the store job still runs for it on main, and the alert, re
 });
 
 test('layout refresh: nothing on the publish path depends on it', () => {
-  for (const n of ['publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'rig-feed-other', 'feed-loader-cleanup', 'feed-gate', 'check']) {
+  for (const n of ['publish', 'push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'rig-gate', 'feed-plan', 'feed-loader', 'rig-feed', 'rig-feed-other', 'feed-loader-cleanup', 'feed-gate']) {
     assert.ok(!/refresh_layout/.test(job(n).replace(/^ *#.*\n/gm, '').replace(/\n {4}if: .*\n/, '\n')), `${n} reads no refresh input`);
   }
+  // The check job reads it only to leave the two published-base steps out: a refresh takes no base.
+  const checkBody = job('check').replace(/^ *#.*\n/gm, '').replace(/\n {4}if: .*\n/, '\n');
+  for (const name of ['Check out the published-base tool', 'Take the published feed as the base']) assert.ok(/refresh_layout/.test(step(job('check'), name)), `${name} is off in a refresh`);
+  assert.equal(checkBody.split('refresh_layout').length - 1, 2, 'the check job reads it nowhere else');
   assert.ok(!/refresh_layout/.test(jobIf('publish')));
   assert.ok(!/refresh_layout/.test(jobIf('layout-store')), 'whether the store runs does not depend on it');
   // The only jobs that name it: the map job and the three that report on or push what it makes (and the plan's refusal).
@@ -3425,10 +3429,10 @@ test('published base: no input switches it; nothing that calls the check passes 
   }
 });
 
-test('published base: the steps it adds run with map mode, and the helper runs from the repository\'s own ci folder', () => {
+test('published base: the steps it adds run with map mode and never in the layout refresh, and the helper runs from the repository\'s own ci folder', () => {
   const steps = ['Check out the published-base tool', 'Take the published feed as the base'];
   const check = job('check');
-  for (const name of steps) assert.match(step(check, name), /\n {8}if: [^\n]*inputs\.map_mode == true\n/, name);
+  for (const name of steps) assert.match(step(check, name), /\n {8}if: [^\n]*inputs\.map_mode == true && inputs\.refresh_layout != true\n/, name);
   assert.ok(!step(job('map-mode'), 'Take the published feed as the base').includes('\n        if:'), 'no condition of its own');
   assert.match(step(check, 'Check out the published-base tool'), /path: ci-base\n\s+sparse-checkout: ci\n\s+persist-credentials: false/);
   // The same helper everywhere: the check job, map mode, the chain and the publish job.

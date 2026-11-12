@@ -678,8 +678,8 @@ row is never removed or rewritten by a run.
 
 **What a run does.**
 
-1. Right after a job checks out the loader header (the check job's carry scan, map mode),
-   it fetches `version-map-client.v1.txt` from the `vmap-feed` release (3 tries, 5 and 15
+1. Right after a job checks out the loader header (the check job's carry scan, map mode;
+   not the daily layout refresh), it fetches `version-map-client.v1.txt` from the `vmap-feed` release (3 tries, 5 and 15
    seconds apart), verifies the signature with the release key, and adds the builds and rows the
    header lacks (`ci/published-base.mjs take`, which runs `version-map.mjs import-published`).
 2. Map mode writes its rows on top of that header. Rows the feed has are kept out of the prune.
