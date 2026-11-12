@@ -224,8 +224,8 @@ game SDK. That third check is wider than the other two: the header carries about
 published version map fewer, while the tables hold every member the plugins read (854 keys in a replay
 on build 127004).
 For each key in both it compares the offset, the size and the bool mask (a class key compares its size where
-the table has one). Keys the table lacks, or the file lacks, are ignored, but the check refuses when fewer than
-half of the table's keys are in the file.
+the table has one). Keys the table lacks, or the file lacks, are ignored, but the check refuses (once enforcing, see
+below) when fewer than half of the table's keys are in the file.
 
     node ci/layout-store.mjs reference <header> --record <layout.json> ... --sdk-tables res/sdk-tables --sdk-differences ci/sdk-table-differences.txt
 

@@ -3004,7 +3004,7 @@ jobs:
               # is seen without opening the log; what it would have held on is also a warning annotation on the run.
               # Writing them can never fail the job.
               sdk_notes="$(printf '%s\n' "$why" | grep -E 'against the SDK tables was skipped|, a known difference \(|report only: this would hold' | sed 's/^layout-store: /- /' || true)"
-              printf '%s\n' "$sdk_notes" | grep -F -- '- report only: this would hold' | sed -e 's/^- //' -e 's/%/%25/g' -e 's/^/::warning title=SDK-table check, report only::/' || true
+              printf '%s\n' "$sdk_notes" | grep -F -- '- report only: this would hold' | sed -e 's/^- //' -e 's/%/%25/g' -e 's/^/::warning title=SDK-table check (report only)::/' || true
               if [ -n "$sdk_notes" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
                 printf '\n### SDK-table cross-check of the stored layout\n\n%s\n' "$sdk_notes" >> "$GITHUB_STEP_SUMMARY" || true
               fi

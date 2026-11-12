@@ -177,7 +177,7 @@ const hex = (n) => (Number.isInteger(n) ? `0x${n.toString(16)}` : String(n));
 // `source` names where the rows come from ('header' or 'version map').
 // A row may say `isClass` (a class name can hold '::') and `size: null` (the source does not know the size).
 // `excused` is { list, notes } (see parseDifferences): a key whose every difference is one the list names
-// for this build, with the same two values, is not counted as wrong and adds a note to `notes` instead.
+// for this build (or `*`, any build), with the same two values, is not counted as wrong and adds a note to `notes` instead.
 // Returns the number of keys compared.
 function crossCheck(rows, built, record, source = 'header', excused = null) {
   const by = new Map(record.keys.map((k) => [k.key, k]));

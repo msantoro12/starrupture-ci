@@ -554,7 +554,7 @@ test('SDK_TABLE_CHECK is one of the two modes', () => {
   assert.ok(['report-only', 'enforcing'].includes(SDK_TABLE_CHECK));
 });
 
-test('report-only: a difference, too few keys compared and an unusable list never refuse and are returned as what would hold', () => {
+test('report-only: a difference and too few keys compared never refuse and are returned as what would hold', () => {
   const wrong = patched('AFoo::Baz', { offset: 32 });
   const r = viaMode('report-only', wrong);
   assert.equal(r.cl, 127004, 'the record is still the reference');
