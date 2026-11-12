@@ -125,6 +125,10 @@ on:
         description: 'Sign the feed with the release key and publish it when promote says so (only sr-watch passes true; the autopilot must be on and every gate must pass)'
         type: boolean
         default: false
+      refresh_layout:
+        description: 'Only refresh the saved public layout: the check and the store run, nothing after them (needs public and map_mode; only sr-layout-refresh passes true)'
+        type: boolean
+        default: false
     # A called job sees an environment secret only when the caller passes it
     # by name (the calling job cannot set an environment; the value comes from
     # the environment of the called job that reads it). Unpassed, it reads as
@@ -252,6 +256,10 @@ on:
         default: false
       publish:
         description: 'Sign the feed with the release key and publish it when promote says so (off: dry run; also refused with feed_loader_ref)'
+        type: boolean
+        default: false
+      refresh_layout:
+        description: 'Only refresh the saved public layout: the check and the store run, nothing after them (needs branch public and map_mode on; publish, proof_run, test_autopilot, first_publish and stored_reference off)'
         type: boolean
         default: false
       # Dispatch only: sr-watch calls this workflow and cannot pass it. With
@@ -491,6 +499,19 @@ jobs:
           printf '%s' "$FEED_LOADER_REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$' && ! printf '%s' "$FEED_LOADER_REF" | grep -Eq '\.\.|//|/$|\.lock$|\.$' \
             || { echo "::error::feed_loader_ref is not a plain branch name of msantoro12/StarRupture-ModLoader"; exit 2; }
           echo "The feed-path rig will build the branch $FEED_LOADER_REF of msantoro12/StarRupture-ModLoader."
+
+      # A layout refresh stores the public layout and nothing else, so it is judged before any Steam work: it
+      # needs the public build checked in map mode (that is what collects the keys and feeds the store job),
+      # and none of the switches that carry a run on past the check.
+      - name: Check the layout refresh
+        if: ${{ inputs.refresh_layout == true }}
+        env:
+          BRANCH: ${{ inputs.branch }}
+          MAP_MODE: ${{ inputs.map_mode == true }}
+          OTHERS: ${{ inputs.publish == true || inputs.proof_run == true || inputs.test_autopilot == true || inputs.first_publish == true || inputs.stored_reference == true }}
+        run: |
+          [ "$BRANCH" = public ] && [ "$MAP_MODE" = true ] && [ "$OTHERS" = false ] \
+            || { echo "::error::refresh_layout needs branch public and map_mode on, with publish, proof_run, test_autopilot, first_publish and stored_reference off"; exit 2; }
 
       # stored_reference is judged here too, before any Steam work (the check job waits for this job to pass): it is a
       # test run of a branch other than public. map-mode judges the same facts again before it reads the store.
@@ -1132,8 +1153,8 @@ jobs:
     name: check
     needs: [build, plugin-plan, plugins, key-sources-plan, key-sources]
     # A plugin that does not build fails only itself, not the client check.
-    # A first publish or a stored-reference run that plugin-plan refused never reaches the Steam login.
-    if: ${{ !cancelled() && needs.build.result == 'success' && (inputs.first_publish != true || needs.plugin-plan.result == 'success') && (inputs.stored_reference != true || needs.plugin-plan.result == 'success') && inputs.branch && inputs.branch != 'expiry-only' }}
+    # A first publish, a stored-reference run or a layout refresh that plugin-plan refused never reaches the Steam login.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (inputs.first_publish != true || needs.plugin-plan.result == 'success') && (inputs.stored_reference != true || needs.plugin-plan.result == 'success') && (inputs.refresh_layout != true || needs.plugin-plan.result == 'success') && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: windows-latest
     timeout-minutes: 120
     environment: steam-client
@@ -2466,10 +2487,13 @@ jobs:
   # the only code it runs is this repository's ci/ at main. A CL already stored is extended only for the same exe
   # and only when an Actions job uploaded the stored asset, never overwritten; an unchanged one is not uploaded
   # again, and an upload is read back. The build cannot be fetched again once public moves, so this job is red
-  # (not a warning) when the check left nothing to store.
+  # (not a warning) when the check left nothing to store. The saved file lists the keys the plugins asked for when it
+  # was saved, so sr-layout-refresh.yml runs a public check once a day with refresh_layout on, which ends here: every
+  # job after the check and this one is off for it. It has no map-mode job or alert to name a key source that failed,
+  # so the last step turns the refresh's own run red for one.
   layout-store:
     name: store the public layout
-    needs: [check]
+    needs: [check, key-sources-plan]
     if: ${{ !cancelled() && inputs.map_mode == true && inputs.branch == 'public' && needs.check.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -2525,6 +2549,23 @@ jobs:
           gh release download vmap-layouts --pattern "$name" --dir verify --clobber
           cmp "$name" "verify/$name" || { echo "::error title=Layout store::$name on the release is not the file that was uploaded"; exit 1; }
 
+      # A key source that did not build or scan leaves its keys out of the layout, and a refresh has no map-mode job or
+      # alert to say so. The store above has saved what was scanned; this makes the refresh's own run red for the rest.
+      - name: Fail a refresh that left key sources out
+        if: ${{ inputs.refresh_layout == true }}
+        env:
+          PLAN: ${{ needs.key-sources-plan.outputs.matrix }}
+        run: |
+          node -e '
+            const plan = JSON.parse(process.env.PLAN || "[]");
+            const fs = require("fs");
+            const got = new Map();
+            if (fs.existsSync("res/keysrc.json")) for (const s of JSON.parse(fs.readFileSync("res/keysrc.json", "utf8")).sources ?? []) got.set(s.name, s);
+            const bad = plan.filter((p) => { const s = got.get(p.name); return !s || s.status !== "ok" || s.layout !== "ok"; });
+            for (const p of bad) console.log("::error title=Layout refresh::key source " + p.tag + " left its keys out of the layout (it did not build, scan or have its keys read), so the saved layout may lack them");
+            process.exit(bad.length ? 1 : 0);
+          '
+
   # ---- Map mode: the update as rows in the loader's version map -----------
   # The unattended path M chain, on the scans the check job uploaded and the
   # loader's header: map-mode assemble and write, field rows from the PDB
@@ -2549,7 +2590,7 @@ jobs:
   map-mode:
     name: map mode
     needs: [build, plugins, check, key-sources-plan, key-sources]
-    if: ${{ !cancelled() && inputs.map_mode == true && needs.check.result == 'success' }}
+    if: ${{ !cancelled() && inputs.map_mode == true && inputs.refresh_layout != true && needs.check.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -4144,7 +4185,7 @@ jobs:
   alert:
     name: alert
     needs: [build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, rig-feed-other, feed-loader-cleanup, feed-gate]
-    if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' }}
+    if: ${{ always() && inputs.branch && inputs.branch != 'expiry-only' && inputs.refresh_layout != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 10   # a job log not there yet is fetched again, up to a minute per job
     permissions:
@@ -4362,7 +4403,7 @@ jobs:
   auto-apply:
     name: auto-apply ${{ matrix.name }}
     needs: [plugin-plan, check]
-    if: ${{ !cancelled() && startsWith(needs.check.outputs.autofix, '[{') }}
+    if: ${{ !cancelled() && inputs.refresh_layout != true && startsWith(needs.check.outputs.autofix, '[{') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: fork-push
@@ -4477,7 +4518,7 @@ jobs:
   report:
     name: report
     needs: [build, check, auto-apply]
-    if: always() && inputs.branch && inputs.branch != 'expiry-only'
+    if: always() && inputs.branch && inputs.branch != 'expiry-only' && inputs.refresh_layout != true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

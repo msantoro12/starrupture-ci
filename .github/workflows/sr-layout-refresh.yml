@@ -1,0 +1,94 @@
+name: SR layout refresh
+
+# Once a day, keeps the saved layout of the public build current while Steam still serves it.
+#
+# Each public check saves the layout it scanned as layout-CL-<CL>.json on the vmap-layouts release, and
+# a later public update uses it as the reference layout. The saved file lists only the keys the plugins
+# asked for when it was saved, and a public check only runs when the public build changes, so a key a
+# plugin adds later is missing until the build is checked again, which is too late once Steam stops
+# serving it. This workflow runs the public check in map mode with refresh_layout on (sr-client-check.yml):
+# the same keys are collected as in a normal run, the layout store job merges them into the saved file,
+# and every job after that is off. It opens no alert, pushes no version map rows, publishes nothing and
+# changes nothing under state/. A failed refresh, or one that left a key source out, shows red in this
+# workflow's own run and nowhere else.
+#
+# It never signs in to Steam at the same time as the update path. This workflow runs in the watcher's
+# concurrency group (sr-watch), with cancel-in-progress off: a refresh waits for a poll's run that is going,
+# a poll that starts during a refresh waits for it, and neither cancels the other. A group keeps one running
+# and one pending run and a newer pending run replaces an older one, so a poll that waits behind a refresh
+# is replaced by the next poll, which then runs: the watcher keeps its schedule, and a poll can be late by
+# up to the length of one refresh, once a day. The first job is a cheap look, made once the group is
+# acquired: it skips the refresh when a client check, the client rig or the data extract started by hand
+# has a run going or waiting (the watcher's own runs are covered by the group, and one waiting behind this
+# run would only make it skip).
+#
+# Schedule: 04:47 UTC, away from the watcher (minutes 7 and 37), the planner (23 and 53), the weekly
+# login-age check (Monday 06:17) and the nightly compile check (03:23). It runs from main only: a
+# schedule always does, and the steam-client environment only serves main.
+
+on:
+  schedule:
+    - cron: '47 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sr-watch
+  cancel-in-progress: false
+
+jobs:
+  idle:
+    name: steam is idle
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      idle: ${{ steps.look.outputs.idle }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Look for a run that uses Steam
+        id: look
+        run: |
+          set -euo pipefail
+          busy=""
+          nl=$'\n'
+          for status in queued in_progress waiting pending requested; do
+            found="$(gh api "repos/$GH_REPO/actions/runs?status=$status&per_page=100" \
+              --jq '.workflow_runs[] | select(.path | test("sr-(client-check|client-rig|data-extract)[.]yml")) | "\(.name) \(.html_url)"')"
+            busy+="${found:+$found$nl}"
+          done
+          if [ -n "$busy" ]; then
+            echo "::notice title=Layout refresh skipped::a run that uses Steam is going or waiting, so the refresh waits for tomorrow:"
+            echo "$busy"
+            echo "idle=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "idle=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Calls the client check the way sr-watch does: the called workflow reads the Steam login from the
+  # steam-client environment (main only) once the caller passes it by name. These permissions are a
+  # ceiling that GitHub checks when it parses the call, the same as sr-watch's client-check job; the
+  # jobs that run for a refresh ask for no more than contents: write (the layout store job) and the
+  # read access of the check.
+  refresh:
+    name: refresh the public layout
+    needs: idle
+    if: ${{ needs.idle.outputs.idle == 'true' }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+      checks: read
+    uses: ./.github/workflows/sr-client-check.yml
+    with:
+      branch: public
+      map_mode: true
+      refresh_layout: true
+    secrets:
+      STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
+      STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
