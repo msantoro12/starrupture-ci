@@ -1,8 +1,8 @@
 name: SR data extract
 
 # A dispatched run that downloads and extracts is titled "SR data extract <branch> <buildid>", so
-# ci/planner-extract.mjs can tell the runs of one build apart. A build-only run, a pull request run
-# and a call keep the plain title.
+# ci/planner-extract.mjs can tell the runs of one build apart. Any other run (build only, a pull
+# request, a call) is titled plain "SR data extract".
 run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.build_only == false && format('SR data extract {0} {1}', inputs.branch, inputs.buildid) || 'SR data extract' }}
 
 # For one Steam build of StarRupture: launch the game once with Dumper-7 only (no mod loader,
@@ -522,6 +522,7 @@ jobs:
           CLEANUP: ${{ steps.cleanup.outcome }}
           USMAP_OK: ${{ steps.usmap.outputs.ok }}
           UPLOAD: ${{ steps.upload.outcome }}
+          CANCELLED: ${{ cancelled() }}
         run: |
           # One status, and the reason of the stage that set it:
           #   login-failed    the launch could not sign in (rig-login-failed.txt; reason: rig-reason.txt)
@@ -571,4 +572,6 @@ jobs:
             $reason = "$reason The login also could not be removed from the runner: $(if ($cleanupReason) { $cleanupReason } else { 'see the cleanup step.' })".Trim()
           }
           "### Data extract: $(if ($status) { $status } else { 'stopped before the game started' })`n`nbuild $env:BUILDID, artifact: $(if ($artifact) { $artifact } else { 'none' })`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          if ($status -ne 'ok') { Write-Host "::error title=Data extract::status '$status'. $reason"; exit 1 }
+          # A run that was cancelled (the watcher's poll cancels one when a build change starts the update path)
+          # reports its status but does not fail on top of the cancel: the run ends as cancelled, not failed.
+          if ($status -ne 'ok' -and $env:CANCELLED -ne 'true') { Write-Host "::error title=Data extract::status '$status'. $reason"; exit 1 }

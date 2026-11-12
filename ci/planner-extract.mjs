@@ -30,7 +30,7 @@
 // A cancelled run is neither a failure nor a reason to wait: the next reconcile starts the build again.
 //
 // --dry-run prints each decision and changes nothing (no dispatch, no issue, no cancel).
-// Exit codes: 0 done (always, for cancel); 1 an input could not be read (nothing was started); 2 usage error.
+// Exit codes: 0 done (always, for cancel); 1 something could not be read or done (an input, the dispatch or the alert call); 2 usage error.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -43,7 +43,7 @@ export const PLANNER_REPO = 'https://github.com/GoodStuffSoftware/star-rupture-p
 export const BACKOFF_HOURS = 6;
 export const MAX_FAILURES = 2;
 const IN_FLIGHT = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
-const FAILED = new Set(['failure', 'timed_out']);
+const FAILED = new Set(['failure', 'timed_out', 'startup_failure', 'stale']);
 const RUN_TITLE = /^SR data extract (\S+) (\d+)$/;
 
 export const alertTitle = (branch, buildid) => `SR data extract: ${branch} ${buildid} needs attention`;
@@ -148,19 +148,26 @@ export const cancelPlan = (runs) => (Array.isArray(runs) ? runs : [])
   .map((r) => r.id);
 
 // Cancel every such run, then wait until they have ended, for at most `waitSeconds`. Never throws.
+// Each call to GitHub is tried up to three times, five seconds apart: one transient error must not
+// leave the extract holding the Steam session in front of the chain.
 export async function cancelExtracts({ io, dryRun = false, waitSeconds = 240, intervalSeconds = 15, sleep = (s) => new Promise((r) => setTimeout(r, s * 1000)), log = console.log }) {
+  const tried = async (fn) => {
+    for (let n = 1; ; n++) {
+      try { return fn(); } catch (e) { if (n === 3) throw e; await sleep(5); }
+    }
+  };
   let ids;
-  try { ids = cancelPlan(io.runs()); } catch (e) { log(`warning: the extract runs could not be listed, nothing cancelled (${String(e.message).split('\n')[0]})`); return { cancelled: [], ended: false }; }
+  try { ids = cancelPlan(await tried(() => io.runs())); } catch (e) { log(`warning: the extract runs could not be listed, nothing cancelled (${String(e.message).split('\n')[0]})`); return { cancelled: [], ended: false }; }
   if (!ids.length) { log('no extract run is queued or going'); return { cancelled: [], ended: true }; }
   if (dryRun) { log(`would cancel extract run(s) ${ids.join(', ')}`); return { cancelled: ids, ended: true }; }
   const cancelled = [];
   for (const id of ids) {
-    try { io.cancel(id); cancelled.push(id); log(`cancel requested for extract run ${id}`); } catch (e) { log(`warning: extract run ${id} could not be cancelled (${String(e.message).split('\n')[0]})`); }
+    try { await tried(() => io.cancel(id)); cancelled.push(id); log(`cancel requested for extract run ${id}`); } catch (e) { log(`warning: extract run ${id} could not be cancelled (${String(e.message).split('\n')[0]})`); }
   }
   if (!cancelled.length) return { cancelled, ended: false };
   for (let waited = 0; ; waited += intervalSeconds) {
     let left;
-    try { left = (io.runs() ?? []).filter((r) => cancelled.includes(r.id) && IN_FLIGHT.has(r.status)); } catch (e) { log(`warning: the extract runs could not be listed while waiting (${String(e.message).split('\n')[0]})`); return { cancelled, ended: false }; }
+    try { left = ((await tried(() => io.runs())) ?? []).filter((r) => cancelled.includes(r.id) && IN_FLIGHT.has(r.status)); } catch (e) { log(`warning: the extract runs could not be listed while waiting (${String(e.message).split('\n')[0]})`); return { cancelled, ended: false }; }
     if (!left.length) { log('the cancelled extract run(s) have ended'); return { cancelled, ended: true }; }
     if (waited + intervalSeconds > waitSeconds) { log(`warning: extract run(s) ${left.map((r) => r.id).join(', ')} still going after ${waitSeconds} seconds; the chain goes on`); return { cancelled, ended: false }; }
     await sleep(intervalSeconds);
@@ -184,7 +191,7 @@ export function realIo({ repo, owner, pollScript, plannerRepo = PLANNER_REPO }) 
     groupBusy: () => ['queued', 'in_progress', 'waiting', 'pending', 'requested'].some((status) =>
       gh(['api', `repos/${repo}/actions/runs?status=${status}&per_page=100`, '--jq',
         '.workflow_runs[] | select(.event != "pull_request") | select(.path | test("sr-(client-check|client-rig|data-extract)[.]yml")) | .html_url']).trim() !== ''),
-    liveBuildid: (branch) => { try { return exec('node', [pollScript, '--live-buildid', branch]).trim(); } catch { return ''; } },
+    liveBuildid: (branch) => { try { return exec('node', [pollScript, '--live-buildid', branch]).trim(); } catch (e) { console.log(`${branch}: ${String(e.stderr || e.message).trim().split('\n')[0]}`); return ''; } },
     artifacts: (name) => jsonLines(gh(['api', `repos/${repo}/actions/artifacts?name=${name}&per_page=100`, '--jq',
       '.artifacts[] | {name, expired, run: .workflow_run.id}'])).map((a) => ({
       name: a.name, expired: a.expired, runConclusion: a.expired ? '' : gh(['api', `repos/${repo}/actions/runs/${a.run}`, '--jq', '.conclusion']).trim(),
@@ -212,6 +219,9 @@ function parseArgs(argv) {
   return out;
 }
 
+// Warnings go to the run page as annotations, so they are seen without opening the log.
+const annotated = (line) => console.log(/^warning: /.test(line) ? `::warning title=Planner data extract::${line.slice(9)}` : line);
+
 if (isMain(import.meta.url)) {
   let a;
   try { a = parseArgs(process.argv.slice(2)); } catch (e) {
@@ -220,14 +230,16 @@ if (isMain(import.meta.url)) {
   }
   if (a.cancel) {
     // Never fails: the chain this runs in front of must not stop for it.
-    try { await cancelExtracts({ io: realIo({ repo: a.repo }), dryRun: a.dryRun, waitSeconds: Number(a['wait-seconds'] ?? 240) || 0 }); } catch (e) { console.log(`warning: the extract cancel stopped early (${String(e.message).split('\n')[0]})`); }
+    try { await cancelExtracts({ io: realIo({ repo: a.repo }), dryRun: a.dryRun, waitSeconds: Number(a['wait-seconds'] ?? 240) || 0, log: annotated }); } catch (e) { annotated(`warning: the extract cancel stopped early (${String(e.message).split('\n')[0]})`); }
   } else {
     try {
       const pin = readFileSync(a['pin-file'] ?? 'ci/data/extractor-ref.txt', 'utf8').trim();
       const io = realIo({ repo: a.repo, owner: a.owner, pollScript: a['poll-script'] ?? '.github/sr-pipeline/poll-steam.mjs' });
       await reconcile({ repo: a.repo, branches: a.branches.split(',').filter(Boolean), owner: a.owner, pin, dryRun: a.dryRun, io });
     } catch (e) {
-      console.error(`planner-extract: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
+      const why = String(e.stderr || e.message).trim().split('\n')[0];
+      console.error(`planner-extract: ${why}`);
+      console.log(`::error title=Planner data extract::${why}`);
       process.exitCode = 1;
     }
   }

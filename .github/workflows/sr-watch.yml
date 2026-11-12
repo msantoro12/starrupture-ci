@@ -204,6 +204,8 @@ jobs:
       # A cancelled extract is not a failure; the next reconcile starts that build again.
       # Known and accepted: a client check started by hand (a direct dispatch of sr-client-check.yml)
       # does not pass through this poll, so it cancels nothing and waits behind a running extract.
+      # (actions: write sits on this whole job because a separate cancel job would need `needs` on the
+      # chain jobs; "Re-run failed jobs" does not re-run the poll, so use a forced run to start a chain.)
       - name: Cancel planner data extract runs
         if: steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && startsWith(steps.poll.outputs.client_matrix, '[{')
         continue-on-error: true
@@ -327,7 +329,7 @@ jobs:
 
   # ---- Planner data extract: start it for a build that has none ----
   # One job for both the start after the chain and the reconcile on every poll (the same call,
-  # ci/planner-extract.mjs). It needs the client check, so it starts only after every job of the chain,
+  # ci/planner-extract.mjs). It needs the client check, so it starts only after every client-check job,
   # the publish included, has ended and the Steam session is free. No job needs it, so it can never hold
   # or fail the chain, and continue-on-error keeps its own failure from reddening this run.
   # It dispatches sr-data-extract.yml (a run of its own) and holds no secret: that run reads the

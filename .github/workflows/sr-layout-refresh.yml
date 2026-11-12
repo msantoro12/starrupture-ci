@@ -18,7 +18,7 @@ name: SR layout refresh
 # and one pending run and a newer pending run replaces an older one, so a poll that waits behind a refresh
 # is replaced by the next poll, which then runs: the watcher keeps its schedule, and a poll can be late by
 # up to the length of one refresh, once a day. The first job is a cheap look, made once the group is
-# acquired: it skips the refresh when a client check, the client rig or the data extract started by hand
+# acquired: it skips the refresh when a client check, the client rig or the data extract
 # has a run going or waiting (the watcher's own runs are covered by the group, and one waiting behind this
 # run would only make it skip).
 #

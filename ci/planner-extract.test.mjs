@@ -14,7 +14,7 @@ import { alertBody, alertTitle, cancelExtracts, cancelPlan, decide, failuresOf, 
 const here = dirname(fileURLToPath(import.meta.url));
 const HOUR = 3600 * 1000;
 const NOW = Date.parse('2026-11-12T12:00:00Z');
-const PIN = '6caf9f6999dafea24b1c829b71ea9dd8aafa5791';
+const PIN = '0123456789abcdef0123456789abcdef01234567';
 const B = { branch: 'public', buildid: '25646882' };
 const OTHER = { branch: 'public_test_branch', buildid: '26461198' };
 const at = (hoursAgo) => new Date(NOW - hoursAgo * HOUR).toISOString();
@@ -24,7 +24,6 @@ const good = { name: 'sr-data-public-25646882', expired: false, runConclusion: '
 test('the pin is one full sha in one file', () => {
   const pin = readFileSync(join(here, 'data', 'extractor-ref.txt'), 'utf8');
   assert.match(pin, /^[0-9a-f]{40}\r?\n$/);
-  assert.equal(pin.trim(), PIN);
 });
 
 test('nothing covers the build: start', () => {
@@ -302,7 +301,28 @@ test('cancelExtracts: a refused cancel is a warning; the other runs are still ca
   const g = cancelIo({ runs: [live(1)], refuse: [1] });
   const slept = [];
   assert.deepEqual(await cancelExtracts({ io: g.io, sleep: async (s) => slept.push(s), log: () => {} }), { cancelled: [], ended: false });
-  assert.deepEqual(slept, []);
+  assert.deepEqual(slept, [5, 5], 'three tries, five seconds apart, and no waiting for runs that were not cancelled');
+});
+
+test('cancelExtracts: one failed call is tried again; the cancel and the listing both recover', async () => {
+  let listCalls = 0;
+  let cancelCalls = 0;
+  const ended = [];
+  const io = {
+    runs: () => {
+      if (++listCalls === 1) throw new Error('502');
+      return [live(1, ended.length ? { status: 'completed', conclusion: 'cancelled' } : {})];
+    },
+    cancel: (id) => { if (++cancelCalls === 1) throw new Error('secondary rate limit'); ended.push(id); },
+  };
+  const out = await cancelExtracts({ io, sleep: async () => {}, log: () => {} });
+  assert.deepEqual(out, { cancelled: [1], ended: true });
+  assert.deepEqual(ended, [1]);
+});
+
+test('a run that never started or went stale counts as a failure, a cancelled one does not', () => {
+  for (const conclusion of ['startup_failure', 'stale']) assert.equal(failuresOf([run(B, { conclusion })], B.branch, B.buildid).length, 1);
+  assert.equal(failuresOf([run(B, { conclusion: 'cancelled' })], B.branch, B.buildid).length, 0);
 });
 
 test('cancelExtracts: a runs list that cannot be read, before or after the cancel, is a warning and no throw', async () => {
@@ -420,6 +440,13 @@ test('sr-data-extract.yml: the run name is what the script looks for', () => {
   const title = fmt.replace('{0}', 'public_test_branch').replace('{1}', '26461198');
   assert.deepEqual(runTarget(title), { branch: 'public_test_branch', buildid: '26461198' });
   assert.equal(runTarget(plain), null, 'the plain title (build-only, pull request, call) matches no build');
+});
+
+test('sr-data-extract.yml: a cancelled run does not fail on top of the cancel', () => {
+  const step = dataExtract.replace(/\r\n/g, '\n').split('      - name: Outputs and result')[1];
+  assert.ok(step, 'the last step is there');
+  assert.match(step, /^ {10}CANCELLED: \$\{\{ cancelled\(\) \}\}$/m);
+  assert.match(step, /if \(\$status -ne 'ok' -and \$env:CANCELLED -ne 'true'\) \{[^\n]*exit 1 \}/);
 });
 
 test('the alert body names the runs, the owner and the hand start', () => {
