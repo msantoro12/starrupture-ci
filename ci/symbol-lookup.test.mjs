@@ -12,7 +12,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import {
@@ -357,13 +357,12 @@ test('renderSummary: a heading line and the text in a code block; no secret-shap
 // ---- the tools -------------------------------------------------------------------------------
 
 test('findPdbutil: PATH first, then the LLVM folder of Program Files; an error when it is nowhere', () => {
-  const sep = process.platform === 'win32' ? ';' : ':';
   const have = (set) => (p) => set.has(p);
-  const onPath = join('C:\\tools', 'llvm-pdbutil.exe');
-  assert.equal(findPdbutil({ PATH: ['C:\\a', 'C:\\tools'].join(sep) }, have(new Set([onPath]))), onPath);
-  const fallback = join('C:\\PF', 'LLVM', 'bin', 'llvm-pdbutil.exe');
-  assert.equal(findPdbutil({ PATH: 'C:\\a', ProgramFiles: 'C:\\PF' }, have(new Set([fallback]))), fallback);
-  assert.throws(() => findPdbutil({ PATH: 'C:\\a', ProgramFiles: 'C:\\PF' }, () => false), /llvm-pdbutil was not found/);
+  const onPath = join('tools', 'llvm-pdbutil.exe');
+  assert.equal(findPdbutil({ PATH: ['a', 'tools'].join(delimiter) }, have(new Set([onPath]))), onPath);
+  const fallback = join('PF', 'LLVM', 'bin', 'llvm-pdbutil.exe');
+  assert.equal(findPdbutil({ PATH: 'a', ProgramFiles: 'PF' }, have(new Set([fallback]))), fallback);
+  assert.throws(() => findPdbutil({ PATH: 'a', ProgramFiles: 'PF' }, () => false), /llvm-pdbutil was not found/);
 });
 
 test('undecorate: names go in on standard input, never on a command line; the answer is the last line', () => {
