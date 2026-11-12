@@ -495,11 +495,10 @@ built for as well as the new one.
   (names only, never compared). When only key-source tables ask for a key, a difference on it (or a stored
   `NOTYPE`) is a warning, never a hold, in report-only and in enforcing mode. If the update goes on, the warning
   is in the log, in the step summary and as an annotation, and the count is a line of its own; if it holds for
-  another reason, the warnings are in the log only. A key that a released plugin's table or the loader's list
-  also names is judged as before. A released plugin's native members (`ci/native-keys.txt`) are in no table, and a
-  plugin that is not built here has no table at all, so such keys count as strict only through the loader's list
-  or a released table. Without `loader-keys.txt` every key is strict, and
-  the difference says the loader's key list was missing.
+  another reason, the warnings are in the log only. A key that a released plugin's table, the loader's list or
+  `ci/native-keys.txt` also names is judged as before (the native keys are names only, never compared; the file
+  does not say which plugins are released, so all of its keys are strict). Without `loader-keys.txt` every key is
+  strict, and the difference says the loader's key list was missing.
 - `ci/sdk-table-differences.txt` lists the known differences for that third check: one line per difference, six
   tab-separated fields (build, key, offset|size|mask, stored value, SDK value, reason). The build is a CL
   number, or `*` for any build. An entry excuses only the exact difference it names, on key, field and both

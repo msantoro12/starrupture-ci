@@ -251,10 +251,12 @@ build it describes (its `kBuiltCL` is the build being checked), so the SDK's own
   `loader-keys.txt`, the loader's key list (names only, one per line; the check job writes it from the loader's
   table and its native keys). A key that only key-source tables ask for is a *key-source key*: a difference on
   it (the SDK row against the stored value, or a stored `NOTYPE`) is a warning, never a hold, in either mode.
-  A key that a released plugin's table names, or that is in `loader-keys.txt`, is judged as before. The loader
-  list only says which keys the loader reads; its rows are not compared. A released plugin's native members
-  (`ci/native-keys.txt`) are in no table, and a plugin that is not built here has no table at all, so such
-  keys count as strict only through the loader list or a released table.
+  A key that a released plugin's table names, or that is in `loader-keys.txt`, or that is named in
+  `ci/native-keys.txt`, is judged as before. The loader list and `ci/native-keys.txt` only say which keys are
+  asked for; their rows are not compared. A plugin's native members are in no table, and a plugin that is not
+  built here has no table at all, so this file is how they count. It does not say which of its plugins are
+  released, so every key in it is strict. `layout-store.mjs reference` already reads that file (`--native-keys`),
+  so no copy of it is uploaded.
   When in doubt a key is strict: without `loader-keys.txt` (or with an empty one) every key is strict, and the
   difference says `the loader's key list was missing, so it counts as strict`.
   When the update goes on, a warning is in the log, the step summary and a warning annotation

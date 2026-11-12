@@ -41,8 +41,8 @@
 //         Either way, a difference on a key that only key-source tables (table-ks-*.h) ask for is a
 //         `key source only: ...` warning line and never refuses. A key that a released plugin's table (table-<name>.h) or
 //         the loader also asks for stays strict. The loader's keys come from loader-keys.txt in the same directory (names
-//         only, never compared). A released plugin's native members (ci/native-keys.txt) are in no table, and a plugin that
-//         is not built here has no table at all, so their keys count as strict only through that list or a released table.
+//         only, never compared); every key named in --native-keys (ci/native-keys.txt) is strict too, also by name only.
+//         A plugin that is not built here has no table at all, so it is covered by its lines in that file.
 //         Without loader-keys.txt every key is strict, and a difference says so.
 //         --sdk-differences names a list of known differences (ci/sdk-table-differences.txt, see parseDifferences):
 //         a difference it names exactly (build or *, key, field, both values) does not refuse the record and is
@@ -260,7 +260,7 @@ export const SDK_TABLE_CHECK = 'report-only';
 // The layout tables the check generates from the Game SDK (ci/layout-table.mjs gen, one per plugin and key
 // source) are a third source, independent of the PDB scan. The tables of released plugins are table-<name>.h; those of
 // key sources (branches that only supply keys) are table-ks-<name>.h (see the check job of sr-client-check.yml).
-// `sdk` is { header, tables: [{ name, text }], loaderKeys }:
+// `sdk` is { header, tables: [{ name, text }], loaderKeys, nativeKeys }:
 // `header` is the head of the SDK checkout's Client/SDK.hpp, whose `// <engine version>-<CL>+++...` line names
 // the build the SDK was dumped for, `tables` are the table-*.h files and `loaderKeys` is the text of loader-keys.txt
 // (null when absent). The CL written into a table
@@ -277,7 +277,9 @@ export const SDK_TABLE_CHECK = 'report-only';
 // those tables): a difference on it is returned as a warning, never a refusal, in both modes. A key that any other
 // table asks for (a released plugin's) keeps the strict rule, and so does a key the loader reads: `loaderKeys` is the
 // loader's key list (loader-keys.txt, one key per line), whose names only count as asked for; its rows are never compared.
-// Without that list every key is strict (the loader may read any of them), and a difference says so.
+// Without that list every key is strict (the loader may read any of them), and a difference says so. The keys of
+// ci/native-keys.txt (`nativeKeys`, names only) count the same way: they are in no table, and the file does not
+// say which of its askers are released, so all of them are strict.
 export const SDK_TABLES = { header: 'sdk-header.txt', table: /^table-.*\.h$/, keySource: /^table-ks-/, loaderKeys: 'loader-keys.txt' };
 const RE_SDK_BUILD = /^\/\/ \d+(?:\.\d+)+-(\d+)\+\+\+/m;
 
@@ -288,9 +290,10 @@ function sdkTableRows(sdk, built) {
   if (!sdkCl) return { why: `${SDK_TABLES.header} is missing or names no SDK build` };
   if (Number(sdkCl) !== built) return { why: `the SDK tables describe CL-${sdkCl}, the stored layout is CL-${built}` };
   const rows = new Map();
-  // The names the loader reads: none when its list is absent or empty. Each counts as asked for by a released plugin.
+  // The names the loader reads: none when its list is absent or empty. Each counts as asked for by a released plugin,
+  // and so does every key of ci/native-keys.txt (`nativeKeys`).
   const names = (sdk.loaderKeys ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
-  const released = new Set(names);
+  const released = new Set([...names, ...(sdk.nativeKeys ?? [])]);
   const add = (row, from) => {
     const id = `${row.key}\t${row.offset}\t${row.size}\t${row.mask}`;
     rows.set(id, { ...row, from: [...(rows.get(id)?.from ?? []), ...(from ? [from] : [])] });
@@ -351,7 +354,7 @@ const namesOf = (keys) => `${keys.length} reflected key${keys.length === 1 ? '' 
 // `recordText` the downloaded record (null when it could not be downloaded), `fields` the reflected keys now listed.
 // `published` is { text, release } for the published version map (text null when it could not be downloaded);
 // without it, or when it cannot be used, only the header's rows check the record and `skipped` says why.
-// `sdkTables` is { header, tables, loaderKeys } (see sdkTableRows); `sdkSkipped` says why that check did not run and
+// `sdkTables` is { header, tables, loaderKeys, nativeKeys } (see sdkTableRows); `sdkSkipped` says why that check did not run and
 // `sdkCompared` is the number of keys it compared. `sdkDifferences` is a parseDifferences list (none: nothing is
 // excused); `sdkNotes` has one line per difference it excused. `sdkCheck` is SDK_TABLE_CHECK: when it is not 'enforcing',
 // whatever would refuse in the SDK-table check is returned in `sdkWould` (the messages) instead of thrown.
@@ -451,7 +454,8 @@ export function main(argv, sdkCheck = SDK_TABLE_CHECK) {
       // The SDK tables, likewise: anything unreadable there is absent, and the check is skipped.
       const softIn = (f) => { try { return read(join(o['sdk-tables'], f)); } catch { return null; } };
       const listing = o['sdk-tables'] ? (() => { try { return readdirSync(o['sdk-tables']).filter((f) => SDK_TABLES.table.test(f)).sort(); } catch { return []; } })() : null;
-      const sdkTables = listing && { header: softIn(SDK_TABLES.header), tables: listing.map((name) => ({ name, text: softIn(name) ?? '' })), loaderKeys: softIn(SDK_TABLES.loaderKeys) };
+      const checkKeys = keysFromCheck(read(o['native-keys']), read(o['layout-keys']));
+      const sdkTables = listing && { header: softIn(SDK_TABLES.header), tables: listing.map((name) => ({ name, text: softIn(name) ?? '' })), loaderKeys: softIn(SDK_TABLES.loaderKeys), nativeKeys: [...checkKeys.owners.keys()] };
       // A list that cannot be read or parsed is a defect in the repository: it refuses when enforcing, and is
       // reported (nothing excused) when not.
       const listWould = [];
@@ -462,7 +466,7 @@ export function main(argv, sdkCheck = SDK_TABLE_CHECK) {
           listWould.push(e.message);
         }
       }
-      const fields = keysFromCheck(read(o['native-keys']), read(o['layout-keys'])).fields;
+      const fields = checkKeys.fields;
       const report = referenceFor({
         headerText: read(header), recordText: readOptional(o.record), release: json(read(o.release), o.release),
         targetCl: Number(o.cl), targetSha256: o.sha256, fields, published, sdkTables, sdkDifferences, sdkCheck,
