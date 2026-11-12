@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { emit, exportFeed, parse } from './version-map.mjs';
+import { emit, exportFeed, parse, parseKeys, unionKeys } from './version-map.mjs';
+import { planFieldRows } from './field-rows.mjs';
 import { renderHeader } from './layout-table.mjs';
 import { PUBLISHED, SCHEMA, SDK_TABLES, SDK_TABLE_CHECK, assetName, buildRecord, main, parseDifferences, readRecord, referenceFor, sameLayout } from './layout-store.mjs';
 
@@ -181,6 +182,50 @@ test('reference: the cap is 5% of the listed keys, never below 10', () => {
   refuses(lacking(100, 89), /no entry for 11 reflected keys/);
   assert.equal(ref(lacking(2000, 1900)).missing.length, 100, '100 of 2000 is exactly 5%');
   refuses(lacking(2000, 1899), /no entry for 101 reflected keys/);
+});
+
+// ---- keys of other kinds with no entry in the record --------------------------
+
+// A class key (a struct's own size), an FTransform key (its PDB size is the register's) and a key the loader
+// itself reads, each listed but absent from the record.
+const KINDS = ['ACrCrafter', 'FTransform::Translation', 'UWorld::NetDriver'];
+const ok = (key, offset, size) => ({ key, result: 'OK', offset, size, boolMask: 0 });
+const gone = (key) => ({ key, result: 'NOMEMBER' });
+const plan = (listed, nextRows) => planFieldRows(unionKeys([parseKeys(listed.map((k) => `field ${k}`).join('\n') + '\n')]), nextRows, ref({ args: { fields: new Set([...FIELDS, ...listed]) } }).keys, 130000);
+
+test('reference: a class key, an FTransform key and a loader key with no entry are listed as missing and count against the allowance', () => {
+  const out = ref({ args: { fields: new Set([...FIELDS, ...KINDS]) } });
+  assert.deepEqual(out.missing, [...KINDS].sort());
+  assert.equal(out.keys.length, 4, 'the reference gets no entry for them');
+  // Seven others make ten, still allowed; an eleventh refuses, whatever kind it is.
+  const seven = Array.from({ length: 7 }, (_, i) => `Y::k${i}`);
+  assert.equal(ref({ args: { fields: new Set([...FIELDS, ...KINDS, ...seven]) } }).missing.length, 10);
+  for (const kind of KINDS) {
+    const eight = Array.from({ length: 8 }, (_, i) => `Y::k${i}`);
+    refuses({ args: { fields: new Set([...FIELDS, ...KINDS.filter((k) => k !== kind), ...eight, kind]) } }, /no entry for 11 reflected keys/);
+  }
+});
+
+test('field rows: a class key or an FTransform key with no entry that the new build resolves is a note, with no row', () => {
+  const out = plan(['ACrCrafter', 'FTransform::Translation'], [ok('ACrCrafter', 0, 0x70), ok('FTransform::Translation', 0x20, 0x20)]);
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(out.rows, []);
+  assert.ok(out.notes.includes('ACrCrafter: new on this build; the reference has no entry for it'));
+  assert.ok(out.notes.includes('FTransform::Translation: new on this build; the reference has no entry for it'));
+});
+
+test('field rows: a loader key with no entry that the new build resolves gets its row and a note', () => {
+  const out = plan(['UWorld::NetDriver'], [ok('UWorld::NetDriver', 0x38, 8)]);
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(out.rows.map((r) => [r.key, r.offset, r.size]), [['UWorld::NetDriver', 0x38, 8]]);
+  assert.ok(out.notes.some((n) => n.startsWith('UWorld::NetDriver: new on this build; the reference has no entry for it, so the row is the new build\'s')));
+});
+
+test('field rows: any of the three with no entry that the new build does not resolve holds the run', () => {
+  for (const key of KINDS) {
+    const out = plan([key], [gone(key)]);
+    assert.deepEqual(out.problems, [`${key}: the saved layout has no entry for it and the new build does not resolve it`]);
+  }
 });
 
 // ---- cross-check against the header's field rows ------------------------------
