@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS } from './decide.mjs';
+import { checkRateLimits, decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS } from './decide.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const NOW = Date.parse('2026-10-29T12:00:00Z');
@@ -364,6 +364,43 @@ test('rate limit: one release per CL per repo', () => {
   holds(decide(base({ history: ok({ releases: [rel(60 * 30, 'ModLoader', '127999')], attempts: {} }) })), /already released for CL-127999/);
   // the same CL in another repo does not count
   assert.equal(decide(base({ history: ok({ releases: [rel(60 * 30, 'Waila', '127999')], attempts: {} }) })).decision, 'M');
+});
+
+test('rate limit: a proof run skips the once-per-CL reason and no other', () => {
+  const proof = ok({ ok: true, cl: '127004', previousCl: '127004', proof: true });
+  const published = (min = 60 * 30) => ok({ releases: [rel(min)], attempts: {} });
+  // A build already published: a proof run does not hold for it and decides as it does for a build that never was.
+  const r = decide(base({ g3: proof, history: published() }));
+  assert.equal(r.decision, 'M');
+  assert.deepEqual(r.reasons, []);
+  assert.deepEqual(r, decide(base({ g3: proof, history: ok({ releases: [], attempts: {} }) })));
+  // The same history for a run that is not a proof run still holds, with the same words.
+  const plain = decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '126000' }), history: published() }));
+  holds(plain);
+  assert.deepEqual(plain.reasons, ['rate limit: ModLoader already released for CL-127004']);
+  // Only the boolean marks a proof run.
+  for (const mark of ['true', 1, false, null]) holds(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '126000', proof: mark }), history: published() })), /already released for CL-127004/);
+  // The daily cap, the gap and the attempts limit apply to a proof run as ever.
+  holds(decide(base({ g3: proof, history: ok({ releases: [rel(60), rel(120, 'ModLoader', '126000')], attempts: {} }) })), /2 ModLoader releases in the last 24 h/);
+  holds(decide(base({ g3: proof, history: published(29) })), /30 minutes/);
+  const missB = ok(aob([aobRow('SpawnActor', 'MISSING')]));
+  holds(decide(base({ g3: proof, g4: missB, history: ok({ releases: [], attempts: { 127004: 2 } }) })), /2 auto-fix attempts/);
+  // The skip is the one reason: on a published build the cap's reason comes out alone.
+  const capped = decide(base({ g3: proof, history: ok({ releases: [rel(60), rel(120)], attempts: {} }) }));
+  assert.deepEqual(capped.reasons, ['rate limit: 2 ModLoader releases in the last 24 h (limit 2)']);
+  // The workflow decides a proof run with the candidate flag: wouldBe M, nothing different on a published build.
+  const cand = decide(base({ g3: proof, candidate: true, history: published() }));
+  assert.equal(cand.decision, 'M');
+  assert.equal(cand.wouldBe, 'M');
+  assert.equal(cand.candidate, true);
+  assert.deepEqual(cand.reasons, []);
+});
+
+test('rate limit: checkRateLimits skips the once-per-CL reason only with proofRun', () => {
+  const args = { historyLoaded: ok({ releases: [rel(60 * 30)], attempts: {} }), repo: 'ModLoader', cl: '127004', path: 'M', nowMs: NOW, maxPerDay: 2 };
+  assert.deepEqual(checkRateLimits(args), ['rate limit: ModLoader already released for CL-127004']);
+  assert.deepEqual(checkRateLimits({ ...args, proofRun: false }), ['rate limit: ModLoader already released for CL-127004']);
+  assert.deepEqual(checkRateLimits({ ...args, proofRun: true }), []);
 });
 
 test('rate limit: at most 2 releases per repo in 24 h', () => {

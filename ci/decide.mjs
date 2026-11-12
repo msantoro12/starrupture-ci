@@ -68,7 +68,8 @@
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
 //           ("proof": true, an owner's proof run only: it re-runs a CL the header already maps, which the
-//           client check verified, so any CL passes; "firstPublish": true counts only together with
+//           client check verified, so any CL passes, and the once-per-CL rate limit is skipped for it, no other
+//           limit; "firstPublish": true counts only together with
 //           --first-publish: the header already maps the CL this run publishes, so it is not newer)
 //   G4:     the raw `sr-aobscan --json` output of the CLIENT exe (target "client"). The
 //           client check alone decides: a dedicated server build, when one exists for the
@@ -152,7 +153,7 @@ function checkG3(loaded, { firstPublish = false } = {}) {
   if (!bypass && Number(v.cl) <= Number(v.previousCl)) {
     return { error: `G3: CL-${v.cl} is not newer than CL-${v.previousCl}` };
   }
-  return { cl: v.cl };
+  return { cl: v.cl, proof: v.proof === true };
 }
 
 // G4 is the raw AobScan JSON. Do not trust its summary: recompute from the rows.
@@ -447,7 +448,9 @@ export function checkAutopilot(loaded) {
 // Returns a list of reasons the rate limits forbid a release now.
 // rollForward: an owner-dispatched re-publish of a CL's feed (a newer seq that
 // replaces a bad one); the one-per-CL limit does not apply, the others do.
-export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay, rollForward = false }) {
+// proofRun: the owner's proof run re-runs a CL that is already released, so the same one reason is
+// skipped for it; it never publishes, and the cap, the gap and the attempts limit apply to it as ever.
+export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay, rollForward = false, proofRun = false }) {
   const bad = checkEnvelope('history', historyLoaded);
   if (bad) return [bad];
   const h = historyLoaded.value;
@@ -462,7 +465,7 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
   }
   const reasons = [];
   const sameCl = mine.filter((r) => r.cl === cl).length;
-  if (!rollForward && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${repo} already released for CL-${cl}`);
+  if (!rollForward && !proofRun && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${repo} already released for CL-${cl}`);
   // A release dated in the future counts as recent, never as old.
   const lastDay = mine.filter((r) => nowMs - r.at < DAY_MS).length;
   if (lastDay >= maxPerDay) reasons.push(`rate limit: ${lastDay} ${repo} releases in the last 24 h (limit ${maxPerDay})`);
@@ -607,7 +610,7 @@ export function decide(inputs) {
 
   const limited = checkRateLimits({
     historyLoaded: inputs.history, repo: inputs.repo, cl: g3.cl, path, nowMs: inputs.now,
-    maxPerDay: ap.error ? 0 : ap.maxPerDay,
+    maxPerDay: ap.error ? 0 : ap.maxPerDay, proofRun: g3.proof === true,
   });
   limited.forEach(fail);
 
