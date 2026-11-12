@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -341,7 +341,9 @@ const TCLASSES = [
   tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 24, 8)]), tclass('UCrBig', [], 0x40, 2),
   tclass('UCrFlag', [trow('bOn', 0x565, 1, 0x10)]),
 ];
-const sdkOf = (classes = TCLASSES, over = {}) => ({ header: SDK_HEADER(), tables: [{ name: 'table-A.h', text: tableText(classes) }], ...over });
+// The loader's key list (loader-keys.txt) names a key none of the tables does, as the real one names far more than any table.
+const LOADER_KEYS = 'ULoader::Elsewhere\n';
+const sdkOf = (classes = TCLASSES, over = {}) => ({ header: SDK_HEADER(), tables: [{ name: 'table-A.h', text: tableText(classes) }], loaderKeys: LOADER_KEYS, ...over });
 const viaSdk = (sdk, recs = RECS2) => ref({ ...rec(recs), args: { headerText: headerWith([]), fields: new Set(), sdkTables: sdk } });
 const skipsSdk = (sdk, re, recs) => { const r = viaSdk(sdk, recs); assert.match(r.sdkSkipped, re); assert.equal(r.sdkCompared, 0); assert.equal(r.cl, 127004); };
 
@@ -698,6 +700,190 @@ test('command line, report-only: a difference or a broken list exits 0, writes t
   // The default mode is SDK_TABLE_CHECK.
   const dflt = runWith(args, undefined);
   assert.equal(dflt.code, SDK_TABLE_CHECK === 'enforcing' ? 3 : 0);
+});
+
+// ---- keys that only a key source asks for ------------------------------------------
+
+// A key source's table is table-ks-<name>.h; a released plugin's is table-<name>.h. FIntPoint is asked for by the key source only.
+const KS_CLASSES = [tclass('FIntPoint', [trow('X', 0, 4), trow('Y', 4, 4)])];
+const ksTable = (classes = KS_CLASSES, name = 'table-ks-M.h') => ({ name, text: tableText(classes) });
+const withKs = (...extra) => ({ ...sdkOf(), tables: [...sdkOf().tables, ...(extra.length ? extra : [ksTable()])] });
+const NOTYPE_XY = [...RECS2, { key: 'FIntPoint::X', result: 'NOTYPE' }, { key: 'FIntPoint::Y', result: 'NOTYPE' }];
+const KS_X = 'FIntPoint::X: SDK table 0x0/0x4/0x0, record NOTYPE (asked for only by table-ks-M.h)';
+const KS_Y = 'FIntPoint::Y: SDK table 0x4/0x4/0x0, record NOTYPE (asked for only by table-ks-M.h)';
+
+test('key source: a NOTYPE record entry on a key only a key source asks for is a warning in both modes, never a hold', () => {
+  for (const mode of ['enforcing', 'report-only']) {
+    const r = viaMode(mode, NOTYPE_XY, { sdkTables: withKs() });
+    assert.deepEqual(r.sdkWarnings, [KS_X, KS_Y], mode);
+    assert.deepEqual(r.sdkWould, [], mode);
+    assert.equal(r.sdkCompared, 6, 'the two keys were compared');
+    assert.equal(r.cl, 127004);
+  }
+  // A measured value that differs is a warning too, and names the record's offset/size/mask.
+  const off = viaMode('enforcing', [...RECS2, entry('FIntPoint::X', 8), entry('FIntPoint::Y', 4)].map((k) => (k.key === 'FIntPoint::Y' ? { ...k, size: 4 } : k)), { sdkTables: withKs() });
+  assert.deepEqual(off.sdkWarnings, ['FIntPoint::X: SDK table 0x0/0x4/0x0, record 0x8/0x8/0x0 (asked for only by table-ks-M.h)']);
+  // No difference, no warning.
+  assert.deepEqual(viaMode('enforcing', [...RECS2, { ...entry('FIntPoint::X', 0), size: 4 }, { ...entry('FIntPoint::Y', 4), size: 4 }], { sdkTables: withKs() }).sdkWarnings, []);
+  // Several key-source tables are all named.
+  const two = viaMode('enforcing', NOTYPE_XY, { sdkTables: withKs(ksTable(), ksTable(KS_CLASSES, 'table-ks-N.h')) });
+  assert.match(two.sdkWarnings[0], /\(asked for only by table-ks-M\.h, table-ks-N\.h\)$/);
+  assert.equal(two.sdkWarnings.length, 2);
+});
+
+test('key source: a key that a released plugin table also asks for keeps the strict rule, and a NOTYPE entry on a released key is unchanged', () => {
+  const plugin = { name: 'table-B.h', text: tableText(KS_CLASSES) };
+  for (const tables of [withKs(ksTable(), plugin).tables, [...sdkOf().tables, plugin, ksTable()]]) {
+    const sdk = { ...sdkOf(), tables };
+    assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: sdk }), /disagrees with the SDK table's field rows.*on 2 of 6 keys.*FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE; FIntPoint::Y: SDK table 0x4\/0x4\/0x0, record NOTYPE\)$/);
+    const r = viaMode('report-only', NOTYPE_XY, { sdkTables: sdk });
+    assert.equal(r.sdkWould.length, 1);
+    assert.deepEqual(r.sdkWarnings, []);
+  }
+  // Only the name has to match: the plugin table may list the key with other numbers, and both its rows are strict.
+  const other = { name: 'table-B.h', text: tableText([tclass('FIntPoint', [trow('X', 8, 4)])]) };
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: withKs(ksTable(), other) }), /FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE/);
+  // A name without the exact prefix is a released table, and the same key in a released and a key-source table with the same numbers is one strict row.
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: withKs(ksTable(KS_CLASSES, 'table-ksM.h')) }), /disagrees with the SDK table's/);
+  // A NOTYPE entry on a released plugin's key holds, a key-source table next to it changes nothing.
+  assert.throws(() => viaMode('enforcing', patched('AFoo::Baz', { result: 'NOTYPE' }), { sdkTables: withKs() }), /1 of 4 keys.*AFoo::Baz: SDK table 0x18\/0x8\/0x0, record NOTYPE\)$/);
+  assert.deepEqual(viaMode('report-only', patched('AFoo::Baz', { result: 'NOTYPE' }), { sdkTables: withKs() }).sdkWarnings, []);
+  assert.equal(viaMode('report-only', patched('AFoo::Baz', { result: 'NOTYPE' }), { sdkTables: sdkOf() }).sdkWould.length, 1, 'as without the key-source table');
+});
+
+test('loader keys: a key the loader reads and only a key source names is strict; the list names keys and is never compared', () => {
+  const sdk = { ...withKs(), loaderKeys: 'ULoader::Elsewhere\nFIntPoint::X\n' };
+  const strict = /disagrees with the SDK table's field rows.*on 1 of 6 keys \(offset\/size\/mask; first: FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE\)$/;
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: sdk }), (e) => {
+    assert.match(e.message, strict);
+    assert.deepEqual(e.sdkWarnings, [KS_Y], 'the other key is still only a key source key');
+    return true;
+  });
+  const r = viaMode('report-only', NOTYPE_XY, { sdkTables: sdk });
+  assert.equal(r.sdkWould.length, 1);
+  assert.match(r.sdkWould[0], strict);
+  assert.deepEqual(r.sdkWarnings, [KS_Y]);
+  // A class name in the list makes the class row strict too.
+  const klass = { ...withKs(ksTable([tclass('FSized', [trow('A', 0, 4)], 0x10, 2)])), loaderKeys: 'FSized\n' };
+  assert.throws(() => viaMode('enforcing', [...RECS2, entry('FSized', 0)], { sdkTables: klass }), /FSized: SDK table 0x0\/0x10\/0x0/);
+  // The list only says who asks: a key it names that no table has is not compared, whatever the record holds.
+  const wild = patched('FTransform::Translation', { offset: 0x99 });
+  const plain = viaSdk(sdkOf(), wild);
+  const listed = viaSdk(sdkOf(TCLASSES, { loaderKeys: 'FTransform::Translation\nULoader::Elsewhere\n' }), wild);
+  assert.equal(listed.sdkCompared, plain.sdkCompared);
+  assert.deepEqual(listed.sdkWarnings, []);
+  // The real list mixes LF and CRLF lines and may carry spaces: names are trimmed, so both keys are strict here.
+  const mixed = { ...withKs(), loaderKeys: 'ULoader::Elsewhere\r\n FIntPoint::X \r\n\r\nFIntPoint::Y\n' };
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: mixed }), /on 2 of 6 keys.*FIntPoint::X: .*FIntPoint::Y: SDK table 0x4\/0x4\/0x0, record NOTYPE\)$/);
+});
+
+test('loader keys: without the list every key is strict and the difference says so', () => {
+  const say = "(asked for only by table-ks-M.h; the loader's key list was missing, so it counts as strict)";
+  for (const loaderKeys of [null, undefined, '', '\r\n \n']) {
+    const sdk = { ...withKs(), loaderKeys };
+    assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: sdk }), (e) => {
+      assert.ok(e.message.includes(`FIntPoint::X: SDK table 0x0/0x4/0x0, record NOTYPE ${say}`), e.message);
+      assert.ok(e.message.includes('on 2 of 6 keys'));
+      assert.deepEqual(e.sdkWarnings, []);
+      return true;
+    });
+    const r = viaMode('report-only', NOTYPE_XY, { sdkTables: sdk });
+    assert.equal(r.sdkWould.length, 1);
+    assert.ok(r.sdkWould[0].includes(say));
+    assert.deepEqual(r.sdkWarnings, []);
+    // No difference, nothing to say; a released key is judged as ever.
+    assert.deepEqual(viaMode('enforcing', [...RECS2, { ...entry('FIntPoint::X', 0), size: 4 }, { ...entry('FIntPoint::Y', 4), size: 4 }], { sdkTables: sdk }).sdkWould, []);
+    assert.throws(() => viaMode('enforcing', patched('AFoo::Baz', { result: 'NOTYPE' }), { sdkTables: { ...sdkOf(), loaderKeys } }), /AFoo::Baz: SDK table 0x18\/0x8\/0x0, record NOTYPE\)$/);
+  }
+});
+
+test('key source: a blueprint class or a size-0 row in a released table still makes the key strict; a size-0 key-source row compares offset and mask only', () => {
+  const released = (...classes) => ({ name: 'table-B.h', text: tableText(classes) });
+  // The released table names FIntPoint::X only as a member of a blueprint class (which is not compared): the key is still asked for.
+  const bp = released(tclass('FIntPoint', [trow('X', 0, 4)], 0, 4));
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: withKs(ksTable(), bp) }), (e) => {
+    assert.match(e.message, /on 1 of \d+ keys.*first: FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE\)$/);
+    assert.deepEqual(e.sdkWarnings, [KS_Y]);
+    return true;
+  });
+  // A released member row with size 0 (offset and mask only) counts as asked for as well.
+  const unsized = released(tclass('FIntPoint', [trow('X', 0, 0)]));
+  assert.throws(() => viaMode('enforcing', NOTYPE_XY, { sdkTables: withKs(ksTable(), unsized) }), /FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE/);
+  // A key-source row with size 0: offset and mask are compared, the size is not.
+  const ks0 = ksTable([tclass('FIntPoint', [trow('X', 0, 0)])]);
+  const ok = viaMode('enforcing', [...RECS2, { ...entry('FIntPoint::X', 0), size: 12 }], { sdkTables: withKs(ks0) });
+  assert.deepEqual(ok.sdkWarnings, [], 'another size is no difference');
+  const moved = viaMode('enforcing', [...RECS2, entry('FIntPoint::X', 8)], { sdkTables: withKs(ks0) });
+  assert.deepEqual(moved.sdkWarnings, ['FIntPoint::X: SDK table 0x0/null/0x0, record 0x8/0x8/0x0 (asked for only by table-ks-M.h)']);
+});
+
+test('key source: both kinds at once hold on the strict one and still list the warnings', () => {
+  const recs = patched('AFoo::Baz', { offset: 32 }).concat(NOTYPE_XY.slice(RECS2.length));
+  const strict = /disagrees with the SDK table's field rows.*on 1 of 6 keys \(offset\/size\/mask; first: AFoo::Baz: SDK table 0x18\/0x8\/0x0, record 0x20\/0x8\/0x0\)$/;
+  assert.throws(() => viaMode('enforcing', recs, { sdkTables: withKs() }), (e) => {
+    assert.match(e.message, strict);
+    assert.doesNotMatch(e.message, /FIntPoint/, 'the warnings are not part of the hold message');
+    assert.deepEqual(e.sdkWarnings, [KS_X, KS_Y]);
+    return true;
+  });
+  const r = viaMode('report-only', recs, { sdkTables: withKs() });
+  assert.equal(r.sdkWould.length, 1);
+  assert.match(r.sdkWould[0], strict);
+  assert.deepEqual(r.sdkWarnings, [KS_X, KS_Y]);
+});
+
+test('key source: the known-differences list still excuses a key-source key whose record is measured', () => {
+  const list = parseDifferences(ROW(127004, 'FIntPoint::X', 'offset', '0x8', '0x0'));
+  const r = viaMode('enforcing', [...RECS2, entry('FIntPoint::X', 8), { key: 'FIntPoint::Y', result: 'NOTYPE' }].map((k) => (k.key === 'FIntPoint::X' ? { ...k, size: 4 } : k)), { sdkTables: withKs(), sdkDifferences: list });
+  assert.equal(r.sdkNotes.length, 1);
+  assert.deepEqual(r.sdkWarnings, [KS_Y]);
+});
+
+test('key source, command line: the warnings are log lines with a count, both modes exit 0; with a hold they follow the hold message', () => {
+  const text = JSON.stringify(make({ layoutText: layoutText([...KEYS, ...NOTYPE_XY.slice(RECS2.length)]) }), null, 2) + '\n';
+  const p = inDir({ 'header.h': HEADER, 'rec.json': text, 'release.json': JSON.stringify(releaseFor(text)), 'native-keys.txt': '', 'layout-keys.txt': [...FIELDS].join('\n') + '\n' });
+  const sub = mkdtempSync(join(tmpdir(), 'layout-store-ks-'));
+  writeFileSync(join(sub, SDK_TABLES.header), SDK_HEADER());
+  writeFileSync(join(sub, 'table-A.h'), tableText([tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 24, 8)]), tclass('UWorld', [trow('GameState', 0x120, 8)])]));
+  writeFileSync(join(sub, 'table-ks-M.h'), tableText(KS_CLASSES));
+  writeFileSync(join(sub, SDK_TABLES.loaderKeys), LOADER_KEYS);
+  const args = ['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json'), '--sdk-tables', sub];
+  for (const mode of ['enforcing', 'report-only']) {
+    const o = run(args, mode);
+    assert.equal(o.code, 0, o.err);
+    assert.match(o.out, /the SDK tables agree with the stored layout on 3 keys\n/, 'the two warned keys are not counted as agreeing');
+    assert.match(o.out, new RegExp(`layout-store: key source only: ${KS_X.replace(/[().\/]/g, '\\$&')}\n`));
+    assert.match(o.out, new RegExp(`layout-store: key source only: ${KS_Y.replace(/[().\/]/g, '\\$&')}\n`));
+    assert.match(o.out, /layout-store: 2 differences on keys only a key source asks for: warnings, never a hold\n/);
+    assert.doesNotMatch(o.out, WOULD);
+  }
+  // One warned key: singular count line.
+  writeFileSync(join(sub, 'table-ks-M.h'), tableText([tclass('FIntPoint', [trow('X', 0, 4)])]));
+  assert.match(run(args, 'enforcing').out, /layout-store: 1 difference on keys only a key source asks for: a warning, never a hold\n/);
+  // Without the loader's key list the key-source keys are strict: a hold in enforcing, a would-hold line in report-only, both saying why.
+  unlinkSync(join(sub, SDK_TABLES.loaderKeys));
+  const noList = run(args, 'enforcing');
+  assert.equal(noList.code, 3);
+  assert.match(noList.err, /FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE \(asked for only by table-ks-M\.h; the loader's key list was missing, so it counts as strict\)/);
+  assert.doesNotMatch(noList.err, /a warning, never a hold/);
+  const noListSaid = run(args, 'report-only');
+  assert.equal(noListSaid.code, 0, noListSaid.err);
+  assert.match(noListSaid.out, /report only: this would hold once the check is enforcing: .*the loader's key list was missing/);
+  // The list the check job writes is read from the folder, and names a key without comparing it.
+  writeFileSync(join(sub, SDK_TABLES.loaderKeys), 'ULoader::Elsewhere\nFIntPoint::X\n');
+  const named = run(args, 'enforcing');
+  assert.equal(named.code, 3);
+  assert.match(named.err, /FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE\)/);
+  writeFileSync(join(sub, SDK_TABLES.loaderKeys), LOADER_KEYS);
+  // A hold on a released key: the hold message first, then the warnings.
+  writeFileSync(join(sub, 'table-A.h'), tableText([tclass('AFoo', [trow('Bar', 16, 8), trow('Baz', 32, 8)]), tclass('UWorld', [trow('GameState', 0x120, 8)])]));
+  const held = run(args, 'enforcing');
+  assert.equal(held.code, 3);
+  assert.match(held.err, /^the stored layout of CL-127004 disagrees with the SDK table's field rows .*AFoo::Baz.*\nlayout-store: key source only: FIntPoint::X: SDK table 0x0\/0x4\/0x0, record NOTYPE \(asked for only by table-ks-M\.h\)\nlayout-store: 1 difference on keys only a key source asks for: a warning, never a hold\n$/);
+  const said = run(args, 'report-only');
+  assert.equal(said.code, 0, said.err);
+  assert.match(said.out, WOULD);
+  assert.match(said.out, /key source only: FIntPoint::X/);
 });
 
 test('command line: keys the stored layout lacks are written without a reference and named in one line', () => {

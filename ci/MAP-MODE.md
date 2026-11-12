@@ -490,6 +490,16 @@ built for as well as the new one.
   first: <key>: SDK table ..., record ...)`. When you see it, report-only or enforcing, find out which value is
   right (the SDK's `Assertions.inl` has the compiled sizes); correct the code, or, if the stored file is the
   wrong one and cannot be replaced, add a known difference (next point).
+  **A key source never holds a publish.** A table named `table-ks-<name>.h` comes from a key source, one named
+  `table-<name>.h` from a released plugin; `loader-keys.txt` in the same folder lists the keys the loader reads
+  (names only, never compared). When only key-source tables ask for a key, a difference on it (or a stored
+  `NOTYPE`) is a warning, never a hold, in report-only and in enforcing mode. If the update goes on, the warning
+  is in the log, in the step summary and as an annotation, and the count is a line of its own; if it holds for
+  another reason, the warnings are in the log only. A key that a released plugin's table or the loader's list
+  also names is judged as before. A released plugin's native members (`ci/native-keys.txt`) are in no table, and a
+  plugin that is not built here has no table at all, so such keys count as strict only through the loader's list
+  or a released table. Without `loader-keys.txt` every key is strict, and
+  the difference says the loader's key list was missing.
 - `ci/sdk-table-differences.txt` lists the known differences for that third check: one line per difference, six
   tab-separated fields (build, key, offset|size|mask, stored value, SDK value, reason). The build is a CL
   number, or `*` for any build. An entry excuses only the exact difference it names, on key, field and both
