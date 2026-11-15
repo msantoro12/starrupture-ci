@@ -812,7 +812,7 @@ from them. The staged index is not kept between runs, so a plan is all they prod
 
 ```
 node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
-node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
+node ci/staging.mjs rederive --branches <branches.json> --build <build.json> --out <staged.json>
 node ci/staging.mjs target --repo <owner/name> --plan <stage-plan.json>
 node ci/staging.mjs push --repo <owner/name> --plan <stage-plan.json> --build <build.json> --header <file> --checkout <dir> --run-id <n> --run-attempt <n>
 node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilot <autopilot.json> --history <history.json> --last-seq <N> --now <ISO time> [--verify <verify.json>] [--roll-forward] [--out <plan.json>]
@@ -820,7 +820,7 @@ node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilo
 
 - **Staging** puts the build's rows on the loader fork's `auto/update-<CL>` branch (a
   newer build at the same CL gets `-<run>`, so nothing is force-pushed). The commit
-  message carries the record, and `state/staged.json` is the readable index of those
+  message carries the record (the CL, the build id, the exe hash, the scan results and whether the build is staged; `rederive` takes the Steam branch and product version from the run's `build.json`), and `state/staged.json` is the readable index of those
   branches. The index holds pointers; the rows live in the header. `stage` is handed
   only a branch push and an index write, so it cannot reach signing, the feed or a
   release. `stage` only plans the push (`done: false`, in the map-mode job, which holds

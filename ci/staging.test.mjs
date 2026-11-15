@@ -48,7 +48,7 @@ test('replaying the current staged build gives the loader branch and the index',
   assert.equal(e.buildid, 26271156);
   assert.equal(e.superseded, false);
   assert.deepEqual(e.repos[LOADER_REPO], { ref: 'auto/update-128786', sha: staged().repo.sha, tree: staged().repo.tree, verdict: 'FIXED' });
-  assert.deepEqual(e.verifiedOn, ['public 25646882', 'public_test_branch 26271156']);
+  assert.deepEqual(e.verifiedOn, ['25646882', '26271156']);
 });
 
 test('no signing, no publishing and no release runs on a staged build', () => {
@@ -65,6 +65,34 @@ test('the record rides in the commit message and reads back', () => {
   const rec = makeRecord(staged());
   assert.deepEqual(parseCommitRecord(commitMessage(rec)), rec);
   assert.throws(() => parseCommitRecord('Add map rows\n'), StagingError);
+});
+
+test('the commit message of a build of either Steam branch names no branch and no product version', () => {
+  const { fx } = effects();
+  const forbidden = /public_test_branch|PTB|PTR|\bpublic\b|Kobalt|\+\+Earth/i;
+  for (const build of [staged(), pub({ productVersion: '++Earth20+Kobalt-PTR2-CL-129402' })]) {
+    const { message } = stage(build, { index: {}, effects: fx });
+    assert.doesNotMatch(message, forbidden, build.branch);
+    assert.match(message, new RegExp(`CL-${build.cl}`));
+    assert.match(message, new RegExp(`\\b${build.buildid}\\b`));
+  }
+});
+
+test('a record written before the branch left the message still reads and re-derives', () => {
+  const old = { CL: 128786, branch: 'public_test_branch', buildid: 26271156, productVersion: '++Earth20+Kobalt-PTR1-CL-128786', exeSha256: 'ab'.repeat(32), imageStamp: '0x6b000001', size: 0x0a430000, run: 7, verdicts: { [LOADER_REPO]: 'FIXED' }, verifiedOn: ['public 25646882', 'public_test_branch 26271156'] };
+  const message = `Add map rows for CL-128786\n\nStaged from public_test_branch 26271156; not signed, not published.\n\nStaging-Record: ${JSON.stringify(old)}\n`;
+  assert.deepEqual(parseCommitRecord(message), old);
+  const index = rederive([{ ref: 'auto/update-128786', sha: 'a'.repeat(40), tree: 'b'.repeat(40), message }]);
+  assert.equal(index['128786'].branch, 'public_test_branch');
+  assert.equal(index['128786'].productVersion, old.productVersion);
+});
+
+test('a current staged record needs the run\'s build to name the Steam branch', () => {
+  const { fx } = effects();
+  const a = stage(staged(), { index: {}, effects: fx });
+  const branches = [{ ref: a.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: a.message }];
+  assert.throws(() => rederive(branches), /does not name the Steam branch/);
+  assert.deepEqual(rederive(branches, staged()), a.index);
 });
 
 test('a newer build at the same CL gets the run id, and a taken name is refused', () => {
@@ -101,8 +129,8 @@ test('a build first seen on public gets a branch and a record of the public exe 
   assert.equal(calls.writeIndex.length, 0, 'nothing is written to the staged index');
   assert.deepEqual(plan.index, before, 'the index comes back unchanged');
   const rec = parseCommitRecord(plan.message);
-  assert.equal(rec.branch, 'public');
-  assert.deepEqual(rec.verifiedOn, ['public 26461198']);
+  assert.equal(rec.staged, false);
+  assert.deepEqual(rec.verifiedOn, ['26461198']);
   assert.match(plan.message, /not signed, not published/);
   assert.throws(() => stage(pub({ scans: [{ exe: 'public', buildid: '1', ok: false }] }), { index: {}, effects: fx }), /did not pass/);
   assert.throws(() => stage(pub({ scans: [] }), { index: {}, effects: fx }), /no scan on the public exe/);
@@ -116,7 +144,7 @@ test('a public record is not a staged build when the index is re-derived', () =>
     { ref: a.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: a.message },
     { ref: p.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: p.message },
   ];
-  assert.deepEqual(Object.keys(rederive(branches)), ['128786']);
+  assert.deepEqual(Object.keys(rederive(branches, staged())), ['128786']);
 });
 
 test('the index is re-derived from the fork branches', () => {
@@ -127,7 +155,9 @@ test('the index is re-derived from the fork branches', () => {
     { ref: b.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: b.message },
     { ref: a.branch, sha: staged().repo.sha, tree: staged().repo.tree, message: a.message },
   ];
-  assert.deepEqual(rederive(branches), b.index);
+  const want = structuredClone(b.index);
+  want['128900'].productVersion = null; // only the run's own build gives a product version
+  assert.deepEqual(rederive(branches, staged()), want);
 });
 
 test('the command line stages in dry run and writes the index, and refuses a bad build', () => {

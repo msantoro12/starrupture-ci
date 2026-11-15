@@ -2,7 +2,7 @@
 // Staging, dry-run form (version-map step 45, design R5 "staging").
 //
 //   node ci/staging.mjs stage --build <build.json> --index <staged.json> [--branches <file>] [--out <plan.json>]
-//   node ci/staging.mjs rederive --branches <branches.json> --out <staged.json>
+//   node ci/staging.mjs rederive --branches <branches.json> --build <build.json> --out <staged.json>
 //   node ci/staging.mjs target --repo <owner/name> --plan <stage-plan.json>      (the allowlist check alone)
 //   node ci/staging.mjs push --repo <owner/name> --plan <stage-plan.json> --build <build.json> --header <file> \
 //        --checkout <dir> --run-id <id> --run-attempt <n> [--proof true] [--first-publish true]      (the push job of sr-client-check.yml only)
@@ -79,14 +79,14 @@ export function makeRecord(b) {
   }
   need(b.repo && typeof b.repo.sha === 'string' && typeof b.repo.tree === 'string' && typeof b.repo.verdict === 'string' && b.repo.verdict !== '', 'build: repo needs sha, tree and verdict');
   return {
-    CL: b.cl, branch: b.branch, buildid: Number(b.buildid), productVersion: b.productVersion ?? null,
+    CL: b.cl, buildid: Number(b.buildid), staged: b.branch !== 'public',
     exeSha256: b.exeSha256, imageStamp: b.imageStamp, size: b.size, run: b.run,
     verdicts: { [LOADER_REPO]: b.repo.verdict },
-    verifiedOn: b.scans.filter((s) => s.exe === b.branch || s.exe === 'public').map((s) => `${s.exe} ${s.buildid}`).sort(),
+    verifiedOn: b.scans.filter((s) => s.exe === b.branch || s.exe === 'public').map((s) => String(s.buildid)).sort(),
   };
 }
 
-export const commitMessage = (rec) => `Add map rows for CL-${rec.CL}\n\nStaged from ${rec.branch} ${rec.buildid}; not signed, not published.\n\n${RECORD_KEY}${JSON.stringify(rec)}\n`;
+export const commitMessage = (rec) => `Add map rows for CL-${rec.CL}\n\nStaged build ${rec.buildid}; not signed, not published.\n\n${RECORD_KEY}${JSON.stringify(rec)}\n`;
 
 export function parseCommitRecord(message) {
   const line = String(message).split('\n').find((l) => l.startsWith(RECORD_KEY));
@@ -105,8 +105,8 @@ export function branchName(cl, existing = [], run) {
   return next;
 }
 
-const entryOf = (rec, ref, sha, tree) => ({
-  branch: rec.branch, buildid: rec.buildid, productVersion: rec.productVersion, exeSha256: rec.exeSha256, imageStamp: rec.imageStamp,
+const entryOf = (rec, { branch, productVersion }, ref, sha, tree) => ({
+  branch, buildid: rec.buildid, productVersion, exeSha256: rec.exeSha256, imageStamp: rec.imageStamp,
   repos: { [LOADER_REPO]: { ref, sha, tree, verdict: rec.verdicts[LOADER_REPO] } },
   verifiedOn: rec.verifiedOn, run: rec.run, superseded: false,
 });
@@ -124,24 +124,35 @@ export function stage(build, { index, existingBranches = [], effects }) {
   const rec = makeRecord(build);
   const branch = branchName(rec.CL, existingBranches, rec.run);
   const message = commitMessage(rec);
-  if (rec.branch === 'public') {
+  if (!rec.staged) {
     // Pushed for the candidate build and the rig, but nothing to promote later: the index is left alone.
     effects.pushBranch({ repo: LOADER_REPO, branch, message });
     return { repo: LOADER_REPO, branch, message, index: structuredClone(index ?? {}) };
   }
-  const next = updateIndex(index, rec.CL, entryOf(rec, branch, build.repo.sha, build.repo.tree));
+  const next = updateIndex(index, rec.CL, entryOf(rec, { branch: build.branch, productVersion: build.productVersion ?? null }, branch, build.repo.sha, build.repo.tree));
   effects.pushBranch({ repo: LOADER_REPO, branch, message });
   effects.writeIndex(next);
   return { repo: LOADER_REPO, branch, message, index: next };
 }
 
+// A record written before the Steam branch left the message names it in `branch`; a current one
+// only says whether the build is staged, and the run's own build.json names the branch.
+const isStaged = (rec) => rec.staged ?? rec.branch !== 'public';
+
 // The index, rebuilt from the fork's branches (it is missing or stale after sr-watch rebuilds the PR branch).
-export function rederive(branches) {
+// `build` is the run's build.json: it gives the Steam branch of a record that does not name it, and the
+// product version of the record for that same build id.
+export function rederive(branches, build = null) {
   let index = {};
   // A record of a public build is no staged entry (see stage).
-  const recs = branches.map((b) => ({ b, rec: parseCommitRecord(b.message) })).filter(({ rec }) => rec.branch !== 'public')
+  const recs = branches.map((b) => ({ b, rec: parseCommitRecord(b.message) })).filter(({ rec }) => isStaged(rec))
     .sort((x, y) => x.rec.CL - y.rec.CL || x.rec.run - y.rec.run);
-  for (const { b, rec } of recs) index = updateIndex(index, rec.CL, entryOf(rec, b.ref, b.sha, b.tree));
+  for (const { b, rec } of recs) {
+    const branch = rec.branch ?? build?.branch;
+    need(typeof branch === 'string' && branch !== '', `CL-${rec.CL}: the record does not name the Steam branch; pass --build`);
+    const productVersion = rec.productVersion ?? (build && Number(build.buildid) === rec.buildid ? build.productVersion ?? null : null);
+    index = updateIndex(index, rec.CL, entryOf(rec, { branch, productVersion }, b.ref, b.sha, b.tree));
+  }
   return index;
 }
 
@@ -230,8 +241,8 @@ export function main(argv) {
       process.stdout.write(`branch=${r.branch}\nsha=${r.sha}\n`);
       return 0;
     }
-    if (cmd === 'rederive' && o.branches && o.out) {
-      writeFileSync(o.out, JSON.stringify(rederive(readJson(o.branches)), null, 2) + '\n');
+    if (cmd === 'rederive' && o.branches && o.build && o.out) {
+      writeFileSync(o.out, JSON.stringify(rederive(readJson(o.branches), readJson(o.build)), null, 2) + '\n');
       return 0;
     }
   } catch (e) {
@@ -239,7 +250,7 @@ export function main(argv) {
     process.stderr.write(`refused: ${e.message}\n`);
     return 3;
   }
-  process.stderr.write('usage: staging.mjs stage --build <f> --index <f> [--branches <f>] [--out <f>]\n       staging.mjs rederive --branches <f> --out <f>\n       staging.mjs target --repo <owner/name> --plan <f>\n       staging.mjs push --repo <owner/name> --plan <f> --build <f> --header <f> --checkout <dir> --run-id <n> --run-attempt <n> [--proof true] [--first-publish true]\n');
+  process.stderr.write('usage: staging.mjs stage --build <f> --index <f> [--branches <f>] [--out <f>]\n       staging.mjs rederive --branches <f> --build <f> --out <f>\n       staging.mjs target --repo <owner/name> --plan <f>\n       staging.mjs push --repo <owner/name> --plan <f> --build <f> --header <f> --checkout <dir> --run-id <n> --run-attempt <n> [--proof true] [--first-publish true]\n');
   return 2;
 }
 
