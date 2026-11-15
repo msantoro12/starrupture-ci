@@ -407,7 +407,7 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
   The loader's optional lines are the two heap members and the six image-library members
   (`UTexture::PrivateResource`, `FTexture::TextureRHI`, `FD3D12Texture::ResourceLocation`,
