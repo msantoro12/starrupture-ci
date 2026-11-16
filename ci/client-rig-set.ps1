@@ -18,7 +18,7 @@
 #                                            only if the loader declines cleanly and loads nothing (not with -ExpectRefused)
 #   -RemovePlugins "Codex"                   dropped from the install but still expected
 # Names are the loader, or a plugin by repo name, log name or asset name, in any case.
-# A name in -Expect that is not one of the ten is an extra plugin to expect.
+# A name in -Expect that is not one of the eleven is an extra plugin to expect.
 #
 # -CandidateDir is a downloaded build artifact laid over the release set. Two layouts:
 #   the game folder's   dwmapi.dll, ModLoader/..., ModLoader/Plugins/*.dll
@@ -59,11 +59,11 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $PlanPath) { $PlanPath = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }) 'rig-plan.json' }
 
-# The ten plugins, read from plugin-names.json (also read by the client check's map step). Name is the repo's short name (and the key of the inputs), LogName the
+# The eleven plugins, read from plugin-names.json (also read by the client check's map step). Name is the repo's short name (and the key of the inputs), LogName the
 # name in the loader's "Plugin info" line, Asset the release asset's prefix: <Asset>-Client.dll
 # is installed as <Asset>.dll. Owner, when present, is the GitHub owner of that plugin's repo
-# (MiniMap is its author's, LetMeInside; the other nine take -Owner). StripV: the plugin logs its
-# version without the release tag's leading v (MiniMap prints 1.2.0 for v1.2.0), so that is what
+# (MiniMap and PersistentIdFix are their author's, LetMeInside; the other nine take -Owner). StripV: the plugin logs its
+# version without the release tag's leading v (MiniMap prints 1.2.0 for v1.2.0, PersistentIdFix 1.3.1 for v1.3.1), so that is what
 # the log must show. Pin = { Tag, Digest } is the one reviewed release of a plugin whose owner is
 # neither msantoro12 nor AlienXAXS: such a plugin runs beside the live Steam login only at that tag,
 # and only when the release API's digest for its client DLL is that sha256. A plugin of a third
@@ -198,7 +198,7 @@ function Resolve-Plan {
     $tagMap = @{}
     foreach ($k in $tagIn.Keys) {
         $c = Find-Entry $k
-        if (-not $c) { throw "tags names '$k', which is not the loader or one of the ten plugins" }
+        if (-not $c) { throw "tags names '$k', which is not the loader or one of the eleven plugins" }
         $tagMap[$c] = $tagIn[$k]
     }
     $expIn = Read-Pairs $Expect 'expect'
@@ -217,7 +217,7 @@ function Resolve-Plan {
     $removed = @{}
     foreach ($n in (Read-Names $RemovePlugins)) {
         $c = Find-Entry $n
-        if (-not $c -or $c -eq 'Loader') { throw "remove_plugins names '$n', which is not one of the ten plugins" }
+        if (-not $c -or $c -eq 'Loader') { throw "remove_plugins names '$n', which is not one of the eleven plugins" }
         $removed[$c] = $true
     }
 

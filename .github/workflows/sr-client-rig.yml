@@ -33,7 +33,7 @@ on:
         type: string
         default: public
       tags:
-        description: 'Release tags to take instead of each repo''s Latest, as Name=tag (space separated). Names: Loader, BetterCheats, BetterDrone, CameraControls, Codex, Compass, MiniMap, ProductionViewer, RuptureTimer, WAILA, WaveOptimiser. MiniMap (another author) accepts only its reviewed tag, the Pin in ci/plugin-names.json'
+        description: 'Release tags to take instead of each repo''s Latest, as Name=tag (space separated). Names: Loader, BetterCheats, BetterDrone, CameraControls, Codex, Compass, MiniMap, PersistentIdFix, ProductionViewer, RuptureTimer, WAILA, WaveOptimiser. MiniMap and PersistentIdFix (another author) accept only their reviewed tag, the Pin in ci/plugin-names.json'
         type: string
         default: ''
       candidate_run_id:

@@ -84,8 +84,8 @@ The client rig is a required gate on the unattended path (owner: version updates
 verified and deployed with the GitHub rig). After `candidate-loader`, the jobs `rig-branch`
 and `rig-other` call `sr-client-rig.yml` with the candidate (`candidate_run_id` = this run,
 `candidate_artifact` and `expect` from `candidate-loader`), the default plugin set (the
-Latest releases of the nine plugins of msantoro12 and AlienXAXS, and the reviewed release of
-MiniMap) and both Steam secrets by name. They run
+Latest releases of the nine plugins of msantoro12 and AlienXAXS, and the reviewed releases of
+MiniMap and PersistentIdFix) and both Steam secrets by name. They run
 one after the other, `rig-other` after `rig-branch` whatever its result, because the rig's
 concurrency group keeps one pending run. `rig-branch` runs on the Steam branch the check is
 for and gets `map-mode`'s `expect_refused`; `rig-other` runs on the other branch and gets
@@ -123,7 +123,7 @@ Policy (owner), in plain words:
   initialised, nothing crashes, and the game process is still alive when the rig stops it. The
   summary names the expectation. Anything else fails the rig. A CL in the map is judged as before.
 - Plugins of other authors are pinned. A rig plugin whose owner is neither msantoro12 nor
-  AlienXAXS (MiniMap) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
+  AlienXAXS (MiniMap, PersistentIdFix) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
   in the client check as well as in the rig: the check's `plugin-plan` reads the same Pin,
   fetches that tag and never builds such a plugin from source; a digest mismatch, a missing or
   malformed Pin fails the plugin (FETCH-FAILED) and the rig. A newer release does not change
@@ -860,7 +860,7 @@ scanned for its keys alone, so every key it requests gets a row on every build.
 
 Input `key_sources` (both triggers): space-separated `msantoro12/StarRupture-Plugin-<Name>@<branch>[:<commit>]`.
 The default is the nine plugins on `gss/plugin-work`, plus the MiniMap key-scan build
-(`feat/full-version-map`, pinned to a commit). Only `msantoro12` plugin repositories are accepted, the ref
+(`feat/full-version-map`, pinned to a commit) and the PersistentIdFix Client build (`main`, pinned to a commit). Only `msantoro12` plugin repositories are accepted, the ref
 is a branch name (never a pull request ref or a tag), and a ref with no commit pin is accepted only
 for the nine plugins on `gss/plugin-work`; anything else needs `:<40-digit commit>`, which must be the
 branch head or in its history. Nothing from an issue or a fork pull request is ever built.
@@ -873,8 +873,10 @@ Jobs (map mode only; none holds a secret or an environment):
    `keysrc-<branch>-<name>` for one day. A plugin is built the way the `plugins` job builds one. MiniMap
    needs the Unreal Engine headers for its readback adapter, so it is built `MiniMapKeyScanOnly` on the same Plugin SDK
    commit as every key source: the DLL reports `<version>-keyscan` and refuses at PluginInit,
-   but every key request runs first. A MiniMap build without `-keyscan` in it is not taken. These DLLs are
-   never installed, released or published.
+   but every key request runs first. A MiniMap build without `-keyscan` in it is not taken. PersistentIdFix
+   finds both SDKs through the one property `StarRupturePluginSDKRoot` (the Game SDK is a submodule of the Plugin SDK), so
+   its Client Release build is made on that root alone, on the same Plugin SDK commit; its Server build is not part of this.
+   These DLLs are never installed, released or published.
 3. The `check` job (it alone has the game files) downloads the artifacts after the login cache is removed, scans each with
    `sr-aobscan --plugin` into `out/keysrc-<name>.json` and writes `out/keysrc.json` (status, commit, number of keyed
    requests). In the layout step each source's keys and uses are read from its source with `layout-table.mjs gen`
