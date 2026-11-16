@@ -634,7 +634,7 @@ jobs:
           # job itself and never becomes an artifact. A latest release that
           # cannot be resolved costs only that plugin (FETCH-FAILED), never
           # the plan.
-          # A plugin whose owner is neither msantoro12 nor AlienXAXS (MiniMap) is not taken at its
+          # A plugin whose owner is neither msantoro12 nor AlienXAXS (MiniMap, PersistentIdFix) is not taken at its
           # latest release: it is the reviewed release in its Pin in ci/plugin-names.json (tag, and the
           # sha256 of its client DLL), the one release the rig runs too. A newer release is only
           # reported for review (the `review` output) and changes nothing that is scanned or predicted.
@@ -2159,7 +2159,7 @@ jobs:
             if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
             $components.Add($m.name)
           }
-          # A plugin of the plan that is not built here (MiniMap: its author's release DLL, and its
+          # A plugin of the plan that is not built here (MiniMap, PersistentIdFix: their author's release DLLs; MiniMap's
           # project needs the Unreal Engine headers, which a hosted runner does not have) has no source
           # to read keys from, but ci/native-keys.txt still names the fixed-offset members it reads.
           # Their rows belong in the map, so those lines join the key list as a component of their own.
@@ -2884,7 +2884,7 @@ jobs:
           # The build row's label is "steam_build <build id>": it names the
           # build and never the Steam branch it was found on.
           # The loader's registry scan, then each plugin scan. A plugin is
-          # tracked when it is one of the built `plugins`; otherwise (MiniMap)
+          # tracked when it is one of the built `plugins`; otherwise (MiniMap, PersistentIdFix)
           # its failing rows go to the pattern path.
           node -e '
             const fs = require("fs");
@@ -3798,7 +3798,7 @@ jobs:
   # sr-client-rig.yml, each launching the real client under the real Steam client
   # with the candidate loader (candidate-loader's artifact, this run's id) laid over
   # the plugin releases the check read (the `tags` input: the Latest released plugins and
-  # the reviewed release of MiniMap, resolved and read once in the check job):
+  # the reviewed releases of MiniMap and PersistentIdFix, resolved and read once in the check job):
   #   rig-branch  the Steam branch this check is for, with map-mode's expect_refused:
   #               the plugins the loader refuses on that build must be refused, and
   #               every other plugin must load.

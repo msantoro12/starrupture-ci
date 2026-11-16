@@ -436,6 +436,8 @@ test('rig set: docs say eleven and name the MiniMap and PersistentIdFix source r
   assert.match(readme, /LetMeInside\/StarRupture-Plugin-PersistentIdFix/);
   assert.match(readme, /eleven plugins/);
   assert.ok(!/one of the nine/.test(readme), 'no "one of the nine" left');
+  assert.match(readme, /not one of the eleven is an extra plugin/);
+  assert.ok(!/one of the ten/.test(readme), 'no "one of the ten" left');
   assert.match(wf, /MiniMap/, 'the tags input lists MiniMap');
   assert.match(wf, /PersistentIdFix/, 'the tags input lists PersistentIdFix');
 });
