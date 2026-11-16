@@ -30,7 +30,7 @@ name: SR client check
 # login, after the login cache is deleted from disk. Deleting it does not
 # clear it from the runner's memory, so that code only ever comes from the
 # owners the inputs allow (msantoro12 and AlienXAXS; for a latest release also
-# LetMeInside, MiniMap's author), the same trust as scanner_ref. The fork
+# LetMeInside, the author of MiniMap and PersistentIdFix), the same trust as scanner_ref. The fork
 # deploy keys are only in the auto-apply job (environment fork-push), which
 # runs no plugin code and no action but actions/checkout, and checks every
 # field of its work list: the commit must be the one plugin-plan resolved
@@ -93,7 +93,7 @@ on:
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
+        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release'
       plugin_sdk_repo:
         type: string
         default: 'AlienXAXS/StarRupture-Plugin-SDK'
@@ -112,7 +112,7 @@ on:
       key_sources:
         description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on gss/plugin-work. They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:5bc7e08ce523194665f7173a16f57b9a15ab82b2'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:5bc7e08ce523194665f7173a16f57b9a15ab82b2 msantoro12/StarRupture-Plugin-PersistentIdFix@main:da10067b6343726dde69910321144091e8889f57'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
         type: string
@@ -220,7 +220,7 @@ on:
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release'
+        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release'
       plugin_sdk_repo:
         description: 'Plugin SDK repository the plugins build against (msantoro12 or AlienXAXS)'
         type: string
@@ -244,7 +244,7 @@ on:
       key_sources:
         description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on gss/plugin-work. They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:5bc7e08ce523194665f7173a16f57b9a15ab82b2'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:5bc7e08ce523194665f7173a16f57b9a15ab82b2 msantoro12/StarRupture-Plugin-PersistentIdFix@main:da10067b6343726dde69910321144091e8889f57'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied (medium only for a replay)'
         type: choice
@@ -634,7 +634,7 @@ jobs:
           # job itself and never becomes an artifact. A latest release that
           # cannot be resolved costs only that plugin (FETCH-FAILED), never
           # the plan.
-          # A plugin whose owner is neither msantoro12 nor AlienXAXS (MiniMap) is not taken at its
+          # A plugin whose owner is neither msantoro12 nor AlienXAXS (MiniMap, PersistentIdFix) is not taken at its
           # latest release: it is the reviewed release in its Pin in ci/plugin-names.json (tag, and the
           # sha256 of its client DLL), the one release the rig runs too. A newer release is only
           # reported for review (the `review` output) and changes nothing that is scanned or predicted.
@@ -922,9 +922,12 @@ jobs:
             const WORK = "gss/plugin-work";
             // A repository that is not built the way the nine are: MiniMap needs Unreal Engine headers for its
             // readback adapter, so its key-scan build (MiniMapKeyScanOnly, no engine) is used, on the Plugin SDK
-            // commit it was written against. Every other key source builds on KEY_SDK_REPO at KEY_SDK_REF (the workflow env).
+            // commit it was written against. PersistentIdFix takes the Plugin SDK root as one property and
+            // reads its Game SDK from there, so it has a recipe of its own. Every other key source builds on
+            // KEY_SDK_REPO at KEY_SDK_REF (the workflow env).
             const RECIPES = {
               MiniMap: { recipe: "keyscan" },
+              PersistentIdFix: { recipe: "sdkroot" },
             };
             const fail = (why) => { console.log("::error title=Key sources::" + why); process.exit(1); };
             const env = process.env;
@@ -1018,8 +1021,8 @@ jobs:
           repository: ${{ matrix.pluginSdkRepo }}
           ref: ${{ matrix.pluginSdkRef }}
           path: plugin-sdk
-          # The key-scan build reads the Game SDK that the Plugin SDK pins.
-          submodules: ${{ matrix.recipe == 'keyscan' && 'recursive' || 'false' }}
+          # The key-scan and sdkroot builds read the Game SDK that the Plugin SDK pins.
+          submodules: ${{ matrix.recipe != 'standard' && 'recursive' || 'false' }}
           persist-credentials: false
 
       - name: Check out the Game SDK
@@ -1105,6 +1108,30 @@ jobs:
           # The plugin's own version string (in its PluginInfo, not the file's version resource) ends -keyscan.
           $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($dll[0].FullName))
           if ($text -notmatch '\d+\.\d+\.\d+-keyscan') { throw "$($dll[0].Name) does not carry a -keyscan version: it would not refuse in game, so it is not taken" }
+          New-Item -ItemType Directory -Force ..\out | Out-Null
+          Copy-Item $dll[0].FullName ..\out\
+
+      # PersistentIdFix finds both SDKs through StarRupturePluginSDKRoot (the Game SDK is the Plugin SDK's
+      # submodule), so it is built on the Plugin SDK commit every key source uses, with nothing else set.
+      # Its Server build is not part of this: only the Client Release DLL is scanned. The DLL is never
+      # installed, never a candidate and never in the rig's set. SR_KEY_SOURCE_BUILD is not defined here: the
+      # plugin passes its patterns as they are and does not use PLUGIN_MAP_PATTERN, so the define would change nothing.
+      - name: Build the key source on the Plugin SDK root (Client Release)
+        if: matrix.recipe == 'sdkroot'
+        shell: pwsh
+        working-directory: plugin
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sln = @(Get-ChildItem -File -Filter *.sln)
+          if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          msbuild $sln[0].Name `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /p:StarRupturePluginSDKRoot="$env:GITHUB_WORKSPACE\plugin-sdk\" `
+            /m /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = @(Get-ChildItem 'bin\x64\Client Release\plugins' -File -Filter *.dll)
+          if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
           New-Item -ItemType Directory -Force ..\out | Out-Null
           Copy-Item $dll[0].FullName ..\out\
 
@@ -2132,7 +2159,7 @@ jobs:
             if ($native.ContainsKey($m.name)) { Add-Content "$work\keys-$($m.name).txt" $native[$m.name] }
             $components.Add($m.name)
           }
-          # A plugin of the plan that is not built here (MiniMap: its author's release DLL, and its
+          # A plugin of the plan that is not built here (MiniMap, PersistentIdFix: their author's release DLLs; MiniMap's
           # project needs the Unreal Engine headers, which a hosted runner does not have) has no source
           # to read keys from, but ci/native-keys.txt still names the fixed-offset members it reads.
           # Their rows belong in the map, so those lines join the key list as a component of their own.
@@ -2857,7 +2884,7 @@ jobs:
           # The build row's label is "steam_build <build id>": it names the
           # build and never the Steam branch it was found on.
           # The loader's registry scan, then each plugin scan. A plugin is
-          # tracked when it is one of the built `plugins`; otherwise (MiniMap)
+          # tracked when it is one of the built `plugins`; otherwise (MiniMap, PersistentIdFix)
           # its failing rows go to the pattern path.
           node -e '
             const fs = require("fs");
@@ -3771,7 +3798,7 @@ jobs:
   # sr-client-rig.yml, each launching the real client under the real Steam client
   # with the candidate loader (candidate-loader's artifact, this run's id) laid over
   # the plugin releases the check read (the `tags` input: the Latest released plugins and
-  # the reviewed release of MiniMap, resolved and read once in the check job):
+  # the reviewed releases of MiniMap and PersistentIdFix, resolved and read once in the check job):
   #   rig-branch  the Steam branch this check is for, with map-mode's expect_refused:
   #               the plugins the loader refuses on that build must be refused, and
   #               every other plugin must load.

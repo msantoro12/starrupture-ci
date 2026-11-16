@@ -1516,7 +1516,7 @@ test('N2 alert: a hold that staged no candidate is not "ready"', { skip: !bash }
 // ------------------------------------------------------------ the bases are the released line
 
 const DEFAULT_PLUGINS = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls']
-  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release';
+  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release';
 const defaultOf = (section, input) => section.match(new RegExp(`\\n {6}${input}:\\n(?: {8}description: [^\\n]*\\n)? {8}type: string\\n {8}default: '([^']*)'\\n`))?.[1];
 
 test('bases: both triggers default to AlienX main for the loader, both SDKs and the nine plugins; only the scanner overlay is the fork\'s', () => {
@@ -1553,7 +1553,8 @@ test('bases: no workflow, script or doc reads a default base from the stale gss 
   for (const [name, text] of Object.entries(texts)) assert.ok(!/gss\/(loader|plugin|sdk)-work/.test(withoutKeySources(text)), `${name} still names a gss work branch`);
   // The nine default plugins are AlienX's, every one a branch ref, so plugin-plan resolves each to a commit before any plugin code runs.
   const entries = defaultOf(call, 'plugins').split(' ');
-  assert.equal(entries.length, 10);
+  assert.equal(entries.length, 11);
+  assert.deepEqual(entries.slice(9), ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', 'LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release']);
   assert.equal(entries.filter((e) => /^AlienXAXS\/StarRupture-Plugin-[A-Za-z]+@main$/.test(e)).length, 9);
 });
 
@@ -1744,14 +1745,15 @@ test('carry: map mode uploads carry.json with its other files, and the gate runs
 
 const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls'];
 const KEY_PIN = '5bc7e08ce523194665f7173a16f57b9a15ab82b2';
+const PIDFIX_PIN = 'da10067b6343726dde69910321144091e8889f57';
 const HEX40 = 'a'.repeat(40);
 // The Plugin SDK the key sources build against: the one pin, in the workflow env (the Loader agent moves it with sr-update's).
 const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: '52b48fcc1632f0b713695919c7ba7978111dc428' };
 // The node program of a step's `node -e '...'` run block.
 const nodeScriptOf = (j, name) => runOf(j, name).match(/node -e '\n([\s\S]*)\n'\s*$/)[1];
 
-test('key sources: both triggers default to the nine work branches and the pinned MiniMap key-scan build', () => {
-  const want = [...KEY_NINE.map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`), `msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:${KEY_PIN}`];
+test('key sources: both triggers default to the nine work branches, the pinned MiniMap key-scan build and the pinned PersistentIdFix build', () => {
+  const want = [...KEY_NINE.map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`), `msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:${KEY_PIN}`, `msantoro12/StarRupture-Plugin-PersistentIdFix@main:${PIDFIX_PIN}`];
   for (const s of [call, dispatch]) assert.deepEqual(defaultOf(s, 'key_sources').split(' '), want);
 });
 
@@ -1766,14 +1768,17 @@ const keyPlan = (env = {}) => {
   return { r, dir, entries: r.status === 0 ? JSON.parse(readFileSync(file, 'utf8')) : null };
 };
 
-test('key sources: the default list is accepted, MiniMap gets its key-scan recipe and the others the standard build', () => {
+test('key sources: the default list is accepted, MiniMap gets its key-scan recipe, PersistentIdFix its own and the others the standard build', () => {
   const { r, entries } = keyPlan();
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.equal(entries.length, 10);
+  assert.equal(entries.length, 11);
   const mini = entries.find((e) => e.name === 'MiniMap');
   assert.deepEqual([mini.recipe, mini.pin, mini.branch, mini.tag, mini.component], ['keyscan', KEY_PIN, 'feat/full-version-map', 'msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map', 'MiniMap@feat/full-version-map']);
   assert.deepEqual([mini.pluginSdkRepo, mini.pluginSdkRef], [KEY_SDK.repo, KEY_SDK.ref], 'MiniMap builds on the pinned fork SDK too');
-  for (const e of entries.filter((x) => x !== mini)) {
+  const pid = entries.find((e) => e.name === 'PersistentIdFix');
+  assert.deepEqual([pid.recipe, pid.pin, pid.branch, pid.repo, pid.tag, pid.component], ['sdkroot', PIDFIX_PIN, 'main', 'msantoro12/StarRupture-Plugin-PersistentIdFix', 'msantoro12/StarRupture-Plugin-PersistentIdFix@main', 'PersistentIdFix@main']);
+  assert.deepEqual([pid.pluginSdkRepo, pid.pluginSdkRef], [KEY_SDK.repo, KEY_SDK.ref], 'PersistentIdFix builds on the pinned fork SDK too');
+  for (const e of entries.filter((x) => x !== mini && x !== pid)) {
     assert.deepEqual([e.recipe, e.branch, e.pin, e.repo], ['standard', 'gss/plugin-work', '', `msantoro12/StarRupture-Plugin-${e.name}`]);
     assert.equal(e.tag, `${e.repo}@gss/plugin-work`);
     assert.deepEqual([e.pluginSdkRepo, e.pluginSdkRef], [KEY_SDK.repo, KEY_SDK.ref], `${e.name} builds on the pinned fork SDK`);
@@ -1785,6 +1790,8 @@ test('key sources: only msantoro12 plugin repositories, branch names, and a comm
   const refused = [
     ['AlienXAXS/StarRupture-Plugin-BetterCheats@gss/plugin-work', /is not msantoro12\/StarRupture-Plugin-/],
     ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', /is not msantoro12\/StarRupture-Plugin-/],
+    [`LetMeInside/StarRupture-Plugin-PersistentIdFix@main:${PIDFIX_PIN}`, /is not msantoro12\/StarRupture-Plugin-/],
+    ['msantoro12/StarRupture-Plugin-PersistentIdFix@main', /has no commit pin/],
     ['msantoro12/StarRupture-ModLoader@gss/plugin-work', /is not msantoro12\/StarRupture-Plugin-/],
     ['msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work;echo', /is not msantoro12\/StarRupture-Plugin-/],
     ['msantoro12/StarRupture-Plugin-Codex@gss/plugin-work:abc123', /is not msantoro12\/StarRupture-Plugin-/],
@@ -1925,6 +1932,12 @@ test('key sources: built in jobs of their own with no secret and no environment,
   assert.match(mini, /-keyscan/);
   assert.match(j, /- name: Build the key-scan build[^\n]*\n {8}if: matrix\.recipe == 'keyscan'/);
   assert.match(j, /- name: Build the key source \(Client Release\)\n {8}if: matrix\.recipe == 'standard'/);
+  // The PersistentIdFix build: the Client Release configuration only, on the Plugin SDK root, never the Server build.
+  const pid = runOf(j, 'Build the key source on the Plugin SDK root (Client Release)');
+  assert.match(pid, /\/p:Configuration="Client Release"/);
+  assert.match(pid, /\/p:StarRupturePluginSDKRoot=/);
+  assert.ok(!/Server/.test(pid), 'no Server build');
+  assert.match(j, /- name: Build the key source on the Plugin SDK root[^\n]*\n {8}if: matrix\.recipe == 'sdkroot'/);
 });
 
 test('key sources: nothing but the scan, the layout keys and the scans builder reads them', () => {

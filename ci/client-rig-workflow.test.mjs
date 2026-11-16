@@ -403,34 +403,43 @@ test('the rig is in the node test line', () => {
   assert.match(read('.github', 'workflows', 'sr-node-tests.yml'), /node --test [^\n]*ci\/client-rig-workflow\.test\.mjs/);
 });
 
-// ---- Leg B3: MiniMap, the tenth plugin, from its author's repo ----
+// ---- Leg B3: MiniMap and PersistentIdFix, from their author's repos ----
 
 const names = JSON.parse(read('ci', 'plugin-names.json'));
 // Leg C2: MiniMap is another author's plugin, so the rig runs it only at this reviewed release.
 const PIN_TAG = 'v1.2.0';
 const PIN_HEX = '7d1ec9264b763e13519fa211c9409ff9655c8fd40357cdf285e2a7614e0d43e1';
+const PID_TAG = 'v1.3.1';
+const PID_HEX = 'f916120794660282f275a512aaea3f030998ddf7f8d4234d67482f6a3ced0126';
+const THIRD_PARTY = ['MiniMap', 'PersistentIdFix'];
 
-test('rig set: ten plugins, MiniMap from its author with the version form it logs, pinned to a reviewed release', () => {
-  assert.equal(names.length, 10);
-  assert.deepEqual(names.map((p) => p.Name).sort(), ['BetterCheats', 'BetterDrone', 'CameraControls', 'Codex', 'Compass', 'MiniMap', 'ProductionViewer', 'RuptureTimer', 'WAILA', 'WaveOptimiser']);
+test('rig set: eleven plugins, MiniMap and PersistentIdFix from their author with the version form they log, pinned to a reviewed release', () => {
+  assert.equal(names.length, 11);
+  assert.deepEqual(names.map((p) => p.Name).sort(), ['BetterCheats', 'BetterDrone', 'CameraControls', 'Codex', 'Compass', 'MiniMap', 'PersistentIdFix', 'ProductionViewer', 'RuptureTimer', 'WAILA', 'WaveOptimiser']);
   const m = names.find((p) => p.Name === 'MiniMap');
   assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'MiniMap: atlas texture interface initialization failed', Pin: { Tag: PIN_TAG, Digest: `sha256:${PIN_HEX}` } });
+  const pid = names.find((p) => p.Name === 'PersistentIdFix');
+  assert.deepEqual(pid, { Name: 'PersistentIdFix', Repo: 'StarRupture-Plugin-PersistentIdFix', LogName: 'PersistentIdFix', Asset: 'PersistentIdFix', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'PersistentIdFix: failed to initialize statistics UI', Pin: { Tag: PID_TAG, Digest: `sha256:${PID_HEX}` } });
   // The other nine keep the rig's owner and Latest: no owner, no pin.
-  for (const p of names.filter((x) => x.Name !== 'MiniMap')) {
+  for (const p of names.filter((x) => !THIRD_PARTY.includes(x.Name))) {
     assert.ok(!('Owner' in p) && !('StripV' in p) && !('Pin' in p) && !('UiOffInitFailure' in p), `${p.Name}: unchanged`);
   }
   // Every plugin whose owner is neither the rig's nor the loader's author has a pin.
   for (const p of names.filter((x) => x.Owner && !['msantoro12', 'AlienXAXS'].includes(x.Owner))) assert.ok(p.Pin?.Tag && /^sha256:[0-9a-f]{64}$/.test(p.Pin.Digest), `${p.Name} is pinned`);
-  assert.match(setup, /the ten plugins/);
+  assert.match(setup, /the eleven plugins/);
   assert.ok(!/one of the nine/.test(setup), 'the script no longer counts nine');
 });
 
-test('rig set: docs say ten and name the MiniMap source repo', () => {
+test('rig set: docs say eleven and name the MiniMap and PersistentIdFix source repos', () => {
   const readme = read('.github', 'sr-pipeline', 'README.md');
   assert.match(readme, /LetMeInside\/StarRupture-Plugin-MiniMap/);
-  assert.match(readme, /ten plugins/);
+  assert.match(readme, /LetMeInside\/StarRupture-Plugin-PersistentIdFix/);
+  assert.match(readme, /eleven plugins/);
   assert.ok(!/one of the nine/.test(readme), 'no "one of the nine" left');
+  assert.match(readme, /not one of the eleven is an extra plugin/);
+  assert.ok(!/one of the ten/.test(readme), 'no "one of the ten" left');
   assert.match(wf, /MiniMap/, 'the tags input lists MiniMap');
+  assert.match(wf, /PersistentIdFix/, 'the tags input lists PersistentIdFix');
 });
 
 // Runs Resolve with a stand-in releases API: every repo has a Latest release holding the
@@ -455,9 +464,9 @@ function resolveWithMock(args, { minimapLatest = PIN_TAG, minimapDigest = PIN_HE
       'function Invoke-RestMethod { param($Headers, $Uri, $TimeoutSec)',
       `  Add-Content -LiteralPath '${uris}' -Value $Uri`,
       '  if ($Uri -notmatch \'/repos/([^/]+)/([^/]+)/releases/(latest|tags/(.+))$\') { throw "unexpected $Uri" }',
-      `  $repo = $Matches[2]; $tag = if ($Matches[4]) { $Matches[4] } elseif ($repo -eq 'StarRupture-Plugin-MiniMap') { '${minimapLatest}' } else { 'v1.0.0' }`,
-      '  $p = $names | Where-Object { $_.Repo -eq $repo }',
-      `  $digest = if ($repo -eq 'StarRupture-Plugin-MiniMap') { 'sha256:${minimapDigest}' } else { 'sha256:' + ('a' * 64) }`,
+      `  $repo = $Matches[2]; $p = $names | Where-Object { $_.Repo -eq $repo }`,
+      `  $tag = if ($Matches[4]) { $Matches[4] } elseif ($repo -eq 'StarRupture-Plugin-MiniMap') { '${minimapLatest}' } elseif ($p -and $p.PSObject.Properties['Pin']) { $p.Pin.Tag } else { 'v1.0.0' }`,
+      `  $digest = if ($repo -eq 'StarRupture-Plugin-MiniMap') { 'sha256:${minimapDigest}' } elseif ($p -and $p.PSObject.Properties['Pin']) { $p.Pin.Digest } else { 'sha256:' + ('a' * 64) }`,
       '  $assets = if ($p) { @(@{ name = "$($p.Asset)-Client.dll"; id = 11; browser_download_url = "https://x/$repo/$($p.Asset)-Client.dll"; digest = $digest; updated_at = \'t\' }, @{ name = "$($p.Asset)-v1.zip"; id = 12; browser_download_url = \'https://x/z\'; updated_at = \'t\' }, @{ name = \'manifest.json\'; id = 13; browser_download_url = \'https://x/m\'; updated_at = \'t\' }) } else { @(@{ name = \'StarRupture-ModLoader-Client-1.zip\'; id = 21; browser_download_url = \'https://x/loader.zip\'; updated_at = \'t\' }) }',
       '  return [pscustomobject]@{ tag_name = $tag; assets = @($assets | ForEach-Object { [pscustomobject]$_ }) }',
       '}',
@@ -485,11 +494,21 @@ function resolveWithMock(args, { minimapLatest = PIN_TAG, minimapDigest = PIN_HE
 const MINIMAP_LATEST_URL = 'https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/latest';
 const MINIMAP_PIN_URL = `https://api.github.com/repos/LetMeInside/StarRupture-Plugin-MiniMap/releases/tags/${PIN_TAG}`;
 
-test('rig set: Resolve gives ten plugins, MiniMap from LetMeInside at its pinned release, its DLL picked, its logged version without the v', (t) => {
+test('rig set: Resolve gives eleven plugins, MiniMap and PersistentIdFix from LetMeInside at their pinned releases, their DLLs picked, their logged versions without the v', (t) => {
   const out = resolveWithMock('-Branch public');
   if (!out) return t.skip('no PowerShell on this machine');
   assert.equal(out.r.status, 0, out.text);
-  assert.equal(out.plan.plugins.length, 10);
+  assert.equal(out.plan.plugins.length, 11);
+  const pid = out.plan.plugins.find((p) => p.name === 'PersistentIdFix');
+  assert.equal(pid.tag, PID_TAG);
+  assert.equal(pid.expect, '1.3.1', 'the log prints 1.3.1 for the tag v1.3.1');
+  assert.equal(pid.logName, 'PersistentIdFix');
+  assert.equal(pid.dll, 'PersistentIdFix.dll');
+  assert.equal(pid.asset.name, 'PersistentIdFix-Client.dll', 'the client DLL, not the zip or the manifest');
+  assert.equal(pid.uiOffInitFailure, 'PersistentIdFix: failed to initialize statistics UI');
+  assert.ok(out.uris.includes(`https://api.github.com/repos/LetMeInside/StarRupture-Plugin-PersistentIdFix/releases/tags/${PID_TAG}`), out.uris.join('\n'));
+  assert.ok(!out.uris.some((u) => /AlienXAXS\/StarRupture-Plugin-PersistentIdFix/.test(u)), 'PersistentIdFix is not looked up under the rig owner');
+  assert.equal(out.plan.downloads.find((d) => d.repo === 'StarRupture-Plugin-PersistentIdFix').digest, PID_HEX);
   const m = out.plan.plugins.find((p) => p.name === 'MiniMap');
   assert.equal(m.tag, PIN_TAG);
   assert.equal(m.expect, '1.2.0', 'the log prints 1.2.0 for the tag v1.2.0');
@@ -498,7 +517,7 @@ test('rig set: Resolve gives ten plugins, MiniMap from LetMeInside at its pinned
   assert.equal(m.expectRefused, false, 'refused on public is a fail');
   // Its init needs the UI layer the rig turns off: the data comes from plugin-names.json, and no other plugin has it.
   assert.equal(m.uiOffInitFailure, 'MiniMap: atlas texture interface initialization failed');
-  assert.deepEqual(out.plan.plugins.filter((p) => p.uiOffInitFailure).map((p) => p.name), ['MiniMap']);
+  assert.deepEqual(out.plan.plugins.filter((p) => p.uiOffInitFailure).map((p) => p.name), ['MiniMap', 'PersistentIdFix']);
   assert.equal(m.asset.name, 'MiniMap-Client.dll', 'the client DLL, not the zip or the manifest');
   // The pinned release is fetched by its tag; Latest is only asked about, to see whether a newer one waits.
   assert.ok(out.uris.includes(MINIMAP_PIN_URL), out.uris.join('\n'));
@@ -506,7 +525,7 @@ test('rig set: Resolve gives ten plugins, MiniMap from LetMeInside at its pinned
   assert.ok(!out.uris.some((u) => /StarRupture-Plugin-Codex\/releases\/tags/.test(u)), 'the nine owner and AlienX plugins resolve Latest, not a tag');
   assert.ok(!out.uris.some((u) => /AlienXAXS\/StarRupture-Plugin-MiniMap/.test(u)), 'MiniMap is not looked up under the rig owner');
   // The other nine are as before: the tag is what the log must show.
-  for (const p of out.plan.plugins.filter((x) => x.name !== 'MiniMap')) assert.equal(p.expect, 'v1.0.0', `${p.name} keeps the tag`);
+  for (const p of out.plan.plugins.filter((x) => !THIRD_PARTY.includes(x.name))) assert.equal(p.expect, 'v1.0.0', `${p.name} keeps the tag`);
   // The cache key covers MiniMap's asset id and the reviewed digest, which is what the download is checked against.
   const dl = out.plan.downloads.find((d) => d.repo === 'StarRupture-Plugin-MiniMap');
   assert.equal(dl.id, '11');
@@ -533,7 +552,7 @@ test('rig set: a newer MiniMap release is reported for review and never run, and
   // The run is not blocked and the cache key does not move with the unreviewed release.
   const same = resolveWithMock('-Branch public');
   assert.equal(out.plan.cacheKey, same.plan.cacheKey);
-  assert.equal(out.plan.plugins.length, 10);
+  assert.equal(out.plan.plugins.length, 11);
 });
 
 test('rig set: the pinned tag with another digest fails, and says why', (t) => {
