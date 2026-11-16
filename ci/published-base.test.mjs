@@ -308,9 +308,10 @@ test('the script runs as a command: usage is exit 2 and writes no report', () =>
   } finally { s.done(); }
 });
 
-test('the committed retired and changed lists are the ones the helper passes, and they hold no entry yet', () => {
-  for (const f of ['retired-rows.txt', 'changed-rows.txt']) {
-    const text = readFileSync(join(here, f), 'utf8');
-    assert.equal(text.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length, 0, f);
-  }
+test('the committed retired and changed lists are the ones the helper passes, and one retired entry, no changed entry', () => {
+  const entries = (f) => readFileSync(join(here, f), 'utf8').split('\n').filter((l) => l.trim() && !l.trim().startsWith('#'));
+  const retired = entries('retired-rows.txt');
+  assert.equal(retired.length, 1);
+  assert.deepEqual(retired[0].split('\t').slice(0, 3), ['field', 'UCrUW_InventorySlot::ItemIcon', '129402']);
+  assert.equal(entries('changed-rows.txt').length, 0);
 });

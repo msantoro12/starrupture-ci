@@ -324,12 +324,12 @@ env:
   # commonly observed value. Warn this many days ahead.
   LOGIN_DAYS: '200'
   WARN_DAYS: '30'
-  # The Plugin SDK every key source builds against, and the one place that names it: the owner's fork
-  # branch gss/sdk-dev at the commit sr-update builds the installed plugins against (the plugin work
-  # branches use headers, plugin_presets.h among them, that only that branch has). Move it with
-  # sr-update's pin, never alone.
+  # The Plugin SDK every key source builds against, and the one place that names it: the commit
+  # sr-update builds the installed plugins against, the v1.24.0 release commit (the plugin work
+  # branches use headers, plugin_presets.h and plugin_images.h among them, that it carries). Move it
+  # with sr-update's pin, never alone.
   KEY_SDK_REPO: msantoro12/StarRupture-Plugin-SDK
-  KEY_SDK_REF: 52b48fcc1632f0b713695919c7ba7978111dc428
+  KEY_SDK_REF: d7fda62873283d798006900a08b5fa2106b0ac7e
 
 jobs:
   # ---- sr-aobscan, built from the loader's live patterns (no secrets) ------

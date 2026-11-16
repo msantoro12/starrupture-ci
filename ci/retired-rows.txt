@@ -21,3 +21,5 @@
 # Example (a function key that no plugin asks for on build 127004 any more):
 #
 #   function	UCrSomething::OldFunction	127004	No release of any plugin asks for it any more.
+
+field	UCrUW_InventorySlot::ItemIcon	129402	Codex v1.2.0 no longer reads it, and a loader answers the field from the game's reflection when there is no row.

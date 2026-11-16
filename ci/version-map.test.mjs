@@ -823,8 +823,22 @@ test('preserveCheck: retired entries excuse a missing line, changed entries a di
   assert.deepEqual(preserveCheck(noBuild, p.map, { retired: list(['build', '-', '130001', 'the build is gone']) }).violations, []);
 });
 
-test('the row lists: the committed files are empty, and an entry needs a kind, a key, a CL and a reason', () => {
-  for (const name of ['retired-rows.txt', 'changed-rows.txt']) assert.equal(parseRowList(readFileSync(join(here, name), 'utf8'), name).size, 0, name);
+test('the committed retired list lets a feed lose the ItemIcon row and nothing else', () => {
+  const retired = parseRowList(readFileSync(join(here, 'retired-rows.txt'), 'utf8'), 'retired-rows.txt');
+  const row = (key, cl) => ({ key, cl, offset: 16, size: 8, mask: 0 });
+  const published = { builds: [{ cl: 129402 }], functions: [], fields: [row('UCrUW_InventorySlot::ItemIcon', 129402), row('UCrUW_InventorySlot::TooltipAnchor', 129402), row('UCrUW_InventorySlot::ItemIcon', 128786)] };
+  const next = { builds: published.builds, functions: [], fields: published.fields.slice(1) };
+  assert.deepEqual(preserveCheck(next, published, { retired }).violations, []);
+  assert.equal(preserveCheck(next, published).violations.length, 1, 'without the entry the loss is a hold');
+  const other = { ...next, fields: published.fields.slice(0, 1) };
+  assert.deepEqual(preserveCheck(other, published, { retired }).violations, ['field UCrUW_InventorySlot::TooltipAnchor @ CL-129402: missing', 'field UCrUW_InventorySlot::ItemIcon @ CL-128786: missing'], 'only that key on that build is excused');
+});
+
+test('the row lists: the committed retired list holds only the ItemIcon row and the changed list none, and an entry needs a kind, a key, a CL and a reason', () => {
+  const committed = parseRowList(readFileSync(join(here, 'retired-rows.txt'), 'utf8'), 'retired-rows.txt');
+  assert.equal(committed.size, 1);
+  assert.ok(committed.has('field', 'UCrUW_InventorySlot::ItemIcon', 129402));
+  assert.equal(parseRowList(readFileSync(join(here, 'changed-rows.txt'), 'utf8'), 'changed-rows.txt').size, 0);
   assert.equal(list(['function', 'GWorld', '127004', 'a reason'], ['build', '-', '128786', 'another']).size, 2);
   assert.equal(parseRowList('# a comment\n\n   \n').size, 0);
   assert.match(thrown(() => list(['function', 'GWorld', '127004'])).message, /list:1: the entry for function GWorld on CL-127004 has no reason/);

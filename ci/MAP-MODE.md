@@ -887,8 +887,8 @@ Jobs (map mode only; none holds a secret or an environment):
    "Settle the key sources" names it in the run summary and as a line of the pipeline-alert issue
    (`key source <repo>@<branch> (<sha12>, checked the branch, not an installed DLL): <cause>`, from
    `alerts.json`), and map mode goes on without the keys only that source requests. A list that was
-   refused or could not be resolved still stops the run. Every source builds against the Plugin SDK fork
-   branch `gss/sdk-dev` at the commit `KEY_SDK_REF` in the workflow `env`, the one place that names it
+   refused or could not be resolved still stops the run. Every source builds against the Plugin SDK at
+   the commit `KEY_SDK_REF` in the workflow `env`, the one place that names it
    (move it with sr-update's pin; MiniMap's key-scan keeps its own). Then the
    scans builder adds each source's scan after the released plugin scans: owner the name the plugin reports,
    `tracked: true`, rank `current`, tag `<repo>@<branch>`.

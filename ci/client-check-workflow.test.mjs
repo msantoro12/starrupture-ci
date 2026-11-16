@@ -1748,7 +1748,7 @@ const KEY_PIN = '5bc7e08ce523194665f7173a16f57b9a15ab82b2';
 const PIDFIX_PIN = 'da10067b6343726dde69910321144091e8889f57';
 const HEX40 = 'a'.repeat(40);
 // The Plugin SDK the key sources build against: the one pin, in the workflow env (the Loader agent moves it with sr-update's).
-const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: '52b48fcc1632f0b713695919c7ba7978111dc428' };
+const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: 'd7fda62873283d798006900a08b5fa2106b0ac7e' };
 // The node program of a step's `node -e '...'` run block.
 const nodeScriptOf = (j, name) => runOf(j, name).match(/node -e '\n([\s\S]*)\n'\s*$/)[1];
 

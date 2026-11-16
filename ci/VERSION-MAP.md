@@ -335,9 +335,13 @@ row of that key on that build. Lines starting with `#` are skipped. Example, in 
 function	UCrSomething::OldFunction	127004	No release of any plugin asks for it any more.
 ```
 
-Both files start with no entries. An entry is never needed to keep a row; it is only the way out for
-one that is meant to go. A test run that measures a build again keeps the published rows it did not
-measure or measured as absent; only a different measured value needs a `changed-rows.txt` entry. What a run does with the base, and what to do when it holds, is in
+`changed-rows.txt` starts with no entries; `retired-rows.txt` holds the Codex ItemIcon row of
+CL-129402, which no release reads any more. A field entry also keeps that key out of the key list
+carried to any future build (`carriedFieldKeys` in `version-map.mjs` uses the key alone;
+`MAP-MODE.md` calls it "a field entry on any build"). An entry is never needed to keep a row; it is
+only the way out for one that is meant to go. A test run that measures a build again keeps the
+published rows it did not measure or measured as absent; only a different measured value needs a
+`changed-rows.txt` entry. What a run does with the base, and what to do when it holds, is in
 `MAP-MODE.md` ("The published feed as the base").
 
 ## What never goes in
