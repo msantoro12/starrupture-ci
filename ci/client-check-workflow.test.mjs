@@ -1744,7 +1744,7 @@ test('carry: map mode uploads carry.json with its other files, and the gate runs
 // ---- Key sources: fork builds scanned for map keys only ----------------------------------------------------
 
 const KEY_NINE = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls'];
-const KEY_PIN = '5bc7e08ce523194665f7173a16f57b9a15ab82b2';
+const KEY_PIN = '48ad5db5f9a2115647f8d6d6d781b050f6675b90';
 const PIDFIX_PIN = 'da10067b6343726dde69910321144091e8889f57';
 const HEX40 = 'a'.repeat(40);
 // The Plugin SDK the key sources build against: the one pin, in the workflow env (the Loader agent moves it with sr-update's).
