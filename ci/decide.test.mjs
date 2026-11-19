@@ -1031,6 +1031,20 @@ test('other branch: the same CL on both branches gives the same list as the chec
   assert.deepEqual(refused.expectRefusedOther, ['WAILA']);
 });
 
+test('rig on CL-130045: a v70 plugin is refused, one that declares CL-130045 is admitted, one built on CL-127004 whose flag is unknown is not predicted', () => {
+  const rows = [
+    v('MiniMap', 70, 'CL-127004 (none declared)'),
+    v('Declares', 74, 'CL-130045', { rule3: { migrated: false } }),
+    v('Migrated', 74, 'CL-129402', { rule3: { migrated: true } }),
+    v('Plain', 74, 'CL-127004 (none declared)', { rule3: { migrated: false } }),
+    v('NoBuild', 74, 'CL-127004 (none declared)', { rule3: { migrated: true } }),
+    v('Unknown', 74, 'CL-127004'),
+  ];
+  assert.deepEqual(expectedRefusals(rows, 130045), ['MiniMap', 'NoBuild', 'Plain']);
+  // The same plugins on their own build load.
+  assert.deepEqual(expectedRefusals([v('MiniMap', 70, 'CL-127004 (none declared)'), v('Plain', 74, 'CL-127004 (none declared)', { rule3: { migrated: false } })], 127004), []);
+});
+
 test('other branch: the loader rule and the interface range predict a refusal; a probe note about the scanned build predicts none', () => {
   // A probe note is about the scanned CL (129402), not another build.
   const noted = v('Noted', 74, 'CL-129402', { note: "Needs an update to run on CL-129402: it does not declare PLUGIN_MAP_MIGRATED, so it would read this game's data where CL-127004 had it." });

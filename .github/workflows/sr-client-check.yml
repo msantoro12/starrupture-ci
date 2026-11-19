@@ -1995,6 +1995,7 @@ jobs:
           sparse-checkout: |
             ci/client-rig-set.ps1
             ci/plugin-names.json
+            .github/sr-pipeline/rig-branches.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
