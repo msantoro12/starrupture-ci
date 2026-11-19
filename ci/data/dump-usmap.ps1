@@ -1,5 +1,6 @@
 # The payload of the data-extract launch: inject Dumper-7 into the running game, wait for
-# the .usmap it writes, and leave a copy under <OutDir>/usmap. Run by
+# the .usmap it writes, and leave a copy under <OutDir>/usmap, and its CppSDK headers with a
+# build_cl.txt (the build's changelist, read from the game exe) under <OutDir>/sdk. Run by
 # ci/client-rig-launch.ps1 -PayloadScript, once the game process exists (as a background
 # job of the launch, so the launch keeps watching for Steam's load error and for crashes).
 #
@@ -10,7 +11,7 @@
 #
 #   -GamePid         the game's process id
 #   -Bin             the game's Win64 folder (the game's working directory: Dumper-7.ini goes here)
-#   -OutDir          where usmap/<name>.usmap is written
+#   -OutDir          where usmap/<name>.usmap and sdk/ are written
 #   -DllPath         the Dumper-7.dll built by the workflow (default: $env:DUMPER_DLL)
 #   -InjectDelaySec  wait after the process appears before injecting (engine init, DRM stub)
 #   -SleepTimeoutSec Dumper-7's own delay between injection and the dump (its SleepTimeout)
@@ -93,6 +94,32 @@ function Find-Usmap([string]$Dir) {
     @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Filter '*.usmap' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending) | Select-Object -First 1
 }
 
+# The CppSDK folder Dumper-7 wrote (<folder>/<game>/CppSDK: SDK.hpp and the SDK/ headers).
+function Find-CppSdk([string]$Dir) {
+    @(Get-ChildItem -LiteralPath $Dir -Recurse -Directory -Filter 'CppSDK' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending) | Select-Object -First 1
+}
+
+# The build's changelist: the game exe's ProductVersion ends in CL-<n> (the client check reads it the same way).
+function ConvertTo-Cl([string]$ProductVersion) {
+    if ($ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' }
+}
+
+# Keeps Dumper-7's CppSDK as <Dest>/ (folder structure as written) and <Dest>/build_cl.txt (the
+# changelist number alone). Throws, naming what is wrong, if the CppSDK is missing or empty or the CL is unknown.
+function Copy-CppSdk([string]$DumpDir, [string]$Dest, [string]$Cl) {
+    if ($Cl -notmatch '^\d+$') { throw "the game build's changelist is unknown (ProductVersion does not end in CL-<n>), so the SDK was not kept" }
+    $cpp = Find-CppSdk $DumpDir
+    if (-not $cpp) { throw "Dumper-7 wrote no CppSDK folder under $DumpDir" }
+    if (-not (Test-Path -LiteralPath (Join-Path $cpp.FullName 'SDK.hpp'))) { throw "the CppSDK folder has no SDK.hpp ($($cpp.FullName))" }
+    $files = @(Get-ChildItem -LiteralPath $cpp.FullName -Recurse -File)
+    if ($files.Count -lt 1) { throw "the CppSDK folder is empty ($($cpp.FullName))" }
+    Remove-Item -LiteralPath $Dest -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $Dest | Out-Null
+    Copy-Item -Path (Join-Path $cpp.FullName '*') -Destination $Dest -Recurse -Force
+    [IO.File]::WriteAllText((Join-Path $Dest 'build_cl.txt'), $Cl, (New-Object Text.UTF8Encoding $false))
+    "sdk: $($files.Count) files, build CL-$Cl"
+}
+
 function Read-Shared([string]$path) {
     $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite,Delete')
     try { (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
@@ -113,6 +140,28 @@ if ($Check) {
     $u = Find-Usmap $tmp
     Remove-Item -LiteralPath $tmp -Recurse -Force
     if (-not $u -or $u.Name -notlike '*.usmap') { throw 'the usmap was not found' }
+    if ((ConvertTo-Cl '5.6.1-130045+++Earth20+Neon-CL-130045') -ne '130045' -or (ConvertTo-Cl '5.6.1-1+++Earth20+Neon-StarRupture') -ne '') { throw 'the changelist was not read from the ProductVersion' }
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("dump-check-" + [guid]::NewGuid())
+    try {
+        $dumpDir = Join-Path $tmp 'dumper'
+        New-Item -ItemType Directory -Force (Join-Path $dumpDir 'g\CppSDK\SDK') | Out-Null
+        Set-Content (Join-Path $dumpDir 'g\CppSDK\SDK.hpp') '#pragma once'
+        Set-Content (Join-Path $dumpDir 'g\CppSDK\SDK\Basic.hpp') '#pragma once'
+        $kept = Join-Path $tmp 'sdk'
+        Copy-CppSdk $dumpDir $kept '130045' | Out-Null
+        if (-not (Test-Path -LiteralPath (Join-Path $kept 'SDK\Basic.hpp')) -or -not (Test-Path -LiteralPath (Join-Path $kept 'SDK.hpp'))) { throw 'the CppSDK was not kept with its folder structure' }
+        if ([IO.File]::ReadAllText((Join-Path $kept 'build_cl.txt')) -ne '130045') { throw 'build_cl.txt does not hold the changelist alone' }
+        $cases = @{
+            'an unknown CL'      = { Copy-CppSdk $dumpDir (Join-Path $tmp 'a') '' }
+            'a missing CppSDK'   = { Copy-CppSdk (Join-Path $tmp 'none') (Join-Path $tmp 'b') '130045' }
+            'an empty CppSDK'    = { New-Item -ItemType Directory -Force (Join-Path $tmp 'e\g\CppSDK') | Out-Null; Copy-CppSdk (Join-Path $tmp 'e') (Join-Path $tmp 'c') '130045' }
+        }
+        foreach ($k in $cases.Keys) {
+            $refused = $false
+            try { $cases[$k].Invoke() | Out-Null } catch { $refused = $true }
+            if (-not $refused) { throw "$k was accepted" }
+        }
+    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
     # A process that does not exist: the injector must say so, not throw.
     $r = [SrInject]::Inject(2147483000, 'C:\nope.dll')
     if ($r -notlike 'OpenProcess failed*') { throw "the injector answered '$r' for a missing process" }
@@ -179,3 +228,9 @@ $dest = Join-Path $OutDir 'usmap'
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item -LiteralPath $u.FullName -Destination (Join-Path $dest $u.Name) -Force
 "usmap: $($u.Name), $($u.Length) bytes"
+
+# The SDK headers beside the usmap, kept for a later job. Last, so a failure here still leaves the
+# usmap copied; the workflow's SDK step then fails the run with the reason.
+$exe = Join-Path $Bin 'StarRuptureGameSteam-Win64-Shipping.exe'
+$cl = if (Test-Path -LiteralPath $exe) { ConvertTo-Cl ([string](Get-Item -LiteralPath $exe).VersionInfo.ProductVersion) } else { '' }
+Copy-CppSdk $dump (Join-Path $OutDir 'sdk') $cl

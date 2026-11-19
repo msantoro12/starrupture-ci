@@ -34,13 +34,14 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.build_only == f
 #     artifact_name  sr-data-<branch>-<buildid>, or empty if nothing was uploaded. The branch
 #                    is in the name because a build promoted from another branch to public
 #                    keeps its build id: a consumer dedupes on branch + buildid.
+#     sdk_artifact_name  sr-sdk-<branch>-<buildid>, or empty if the SDK was not uploaded.
 #     status         ok | login-failed | usmap-failed | cleanup-failed | extract-failed.
 #                    login-failed: Steam did not accept the saved CI login (rejected,
 #                    rate-limited, Guard code asked, client never signed in): the login needs
 #                    renewing, Dumper-7 is not at fault. usmap-failed: the game process ran
 #                    (or a usmap exists) but no usable .usmap came out. extract-failed: the
 #                    usmap exists but the extractor ran and failed (its changelist/data guard
-#                    included), or the leak gate or the upload failed. cleanup-failed: the
+#                    included), or the SDK could not be kept, or the leak gate or an upload failed. cleanup-failed: the
 #                    Steam login could not be removed from the runner, so the extractor never
 #                    ran (the usmap is still uploaded). The reason text is never empty. Empty: the job failed
 #                    before the game started for another reason (install, build id mismatch,
@@ -53,6 +54,11 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.build_only == f
 #     usmap/<name>.usmap
 #     extract/        the extractor's output: manifest.json, the raw JSON, localization/, icons/*.png
 #   Nothing else goes in: no log, no game file, nothing from the Steam login (the leak gate checks).
+#   artifact sr-sdk-<branch>-<buildid>, kept 30 days (a second artifact, so the one above stays small)
+#     the CppSDK folder Dumper-7 wrote (SDK.hpp, SDK/*.hpp and the rest, folder structure as written)
+#     build_cl.txt    the build's changelist number alone, read from the game exe's ProductVersion
+#                     (ends in CL-<n>); ci/data/dump-usmap.ps1 copies both while the game is still up,
+#                     before the Steam login is removed. A missing or empty CppSDK fails the run.
 #   Artifacts of a public repository can be downloaded by any signed-in GitHub user.
 #
 # FLOW
@@ -163,6 +169,9 @@ on:
       artifact_name:
         description: 'sr-data-<branch>-<buildid>, or empty if nothing was uploaded'
         value: ${{ jobs.extract.outputs.artifact_name }}
+      sdk_artifact_name:
+        description: 'sr-sdk-<branch>-<buildid>, or empty if the SDK was not uploaded'
+        value: ${{ jobs.extract.outputs.sdk_artifact_name }}
       status:
         description: 'ok, login-failed, usmap-failed, cleanup-failed or extract-failed; empty if the job failed before the game started'
         value: ${{ jobs.extract.outputs.status }}
@@ -339,6 +348,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       artifact_name: ${{ steps.final.outputs.artifact_name }}
+      sdk_artifact_name: ${{ steps.final.outputs.sdk_artifact_name }}
       status: ${{ steps.final.outputs.status }}
     env:
       BRANCH: ${{ inputs.branch }}
@@ -444,6 +454,23 @@ jobs:
             Write-Host "::error title=usmap::no usable .usmap came out of the dump ($($f.Count) found)"
           }
 
+      # The payload kept the CppSDK and build_cl.txt under out/sdk while the game was up. This only
+      # checks they are there; a missing or empty SDK fails the run (the usmap is still uploaded).
+      - name: Find the SDK
+        id: sdk
+        if: always() && steps.launch.outcome != 'skipped'
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem out/sdk -Recurse -File -ErrorAction SilentlyContinue)
+          $cl = if (Test-Path out/sdk/build_cl.txt) { (Get-Content -LiteralPath out/sdk/build_cl.txt -Raw).Trim() } else { '' }
+          if ($files.Count -gt 1 -and (Test-Path out/sdk/SDK.hpp) -and $cl -match '^\d+$') {
+            "ok=true" >> $env:GITHUB_OUTPUT
+            "sdk: $($files.Count) files, build CL-$cl"
+          } else {
+            "ok=false" >> $env:GITHUB_OUTPUT
+            Write-Host "::error title=sdk::the CppSDK was not kept ($($files.Count) files under out/sdk, build_cl.txt '$cl'); see the payload lines of the launch step"
+          }
+
       # After the cleanup: no Steam client and no login file on the runner, and no secret in this
       # step's environment. The secrets are still in the runner's memory (see TRUST): the
       # extractor is main-reachable code, checked by the build job.
@@ -487,7 +514,12 @@ jobs:
         env:
           STEAM_USER: ${{ secrets.STEAM_CI_USERNAME }}
           STEAM_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
-        run: ./ci/leak-gate.ps1 -Path stage -Strict
+          SDK_OK: ${{ steps.sdk.outputs.ok }}
+        run: |
+          $paths = @('stage')
+          if ($env:SDK_OK -eq 'true') { $paths += 'out/sdk' }
+          ./ci/leak-gate.ps1 -Path $paths -Strict
+          exit $LASTEXITCODE
 
       - name: Upload the usmap and the extract
         id: upload
@@ -496,6 +528,19 @@ jobs:
         with:
           name: sr-data-${{ env.BRANCH }}-${{ env.BUILDID }}
           path: stage
+          retention-days: 30
+          overwrite: true
+          if-no-files-found: error
+
+      # The SDK headers, as a second artifact so the one above stays small and unchanged. The leak gate
+      # above has read these files too.
+      - name: Upload the SDK
+        id: sdkupload
+        if: always() && steps.leak.outcome == 'success' && steps.sdk.outputs.ok == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sr-sdk-${{ env.BRANCH }}-${{ env.BUILDID }}
+          path: out/sdk
           retention-days: 30
           overwrite: true
           if-no-files-found: error
@@ -522,13 +567,14 @@ jobs:
           CLEANUP: ${{ steps.cleanup.outcome }}
           USMAP_OK: ${{ steps.usmap.outputs.ok }}
           UPLOAD: ${{ steps.upload.outcome }}
+          SDK_UPLOAD: ${{ steps.sdkupload.outcome }}
           CANCELLED: ${{ job.status == 'cancelled' }}
         run: |
           # One status, and the reason of the stage that set it:
           #   login-failed    the launch could not sign in (rig-login-failed.txt; reason: rig-reason.txt)
           #   cleanup-failed  the login could not be removed after the launch (rig-cleanup-reason.txt)
           #   usmap-failed    the game ran but no usmap came out (rig-reason.txt, if the launch gave one)
-          #   extract-failed  the extractor (rig-extract-reason.txt), the leak gate or the upload failed
+          #   extract-failed  the extractor (rig-extract-reason.txt), the SDK copy, the leak gate or an upload failed
           # Empty until the game started (boot.json saw the process, or a usmap came out); a status
           # that says ok needs the upload.
           $loginFailed = Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-login-failed.txt')
@@ -542,11 +588,13 @@ jobs:
           } elseif ($env:CLEANUP -eq 'failure') {
             $status = 'cleanup-failed'
           } elseif ($started) {
-            $status = if ($env:USMAP_OK -ne 'true') { 'usmap-failed' } elseif ($env:UPLOAD -ne 'success') { 'extract-failed' } else { $env:STAGE_STATUS }
+            $status = if ($env:USMAP_OK -ne 'true') { 'usmap-failed' } elseif ($env:UPLOAD -ne 'success' -or $env:SDK_UPLOAD -ne 'success') { 'extract-failed' } else { $env:STAGE_STATUS }
           }
           $artifact = if ($env:UPLOAD -eq 'success') { "sr-data-$env:BRANCH-$env:BUILDID" } else { '' }
+          $sdkArtifact = if ($env:SDK_UPLOAD -eq 'success') { "sr-sdk-$env:BRANCH-$env:BUILDID" } else { '' }
           "status=$status" >> $env:GITHUB_OUTPUT
           "artifact_name=$artifact" >> $env:GITHUB_OUTPUT
+          "sdk_artifact_name=$sdkArtifact" >> $env:GITHUB_OUTPUT
           function Read-Reason([string]$name) {
             $f = Join-Path $env:RUNNER_TEMP $name
             if (Test-Path -LiteralPath $f) { (Get-Content -LiteralPath $f -Raw).Trim() } else { '' }
@@ -563,7 +611,7 @@ jobs:
               'login-failed' { 'Steam did not accept the saved CI login.' }
               'cleanup-failed' { 'The Steam login could not be removed from the runner, so the extractor did not run.' }
               'usmap-failed' { 'The game ran but no usable .usmap came out.' }
-              'extract-failed' { 'The extractor, the leak gate or the upload failed; see the failed step.' }
+              'extract-failed' { 'The extractor, the SDK copy, the leak gate or an upload failed; see the failed step.' }
               default { 'The job stopped before the game started; see the failed step.' }
             }
           }
@@ -571,7 +619,7 @@ jobs:
           if ($status -eq 'login-failed' -and $env:CLEANUP -eq 'failure') {
             $reason = "$reason The login also could not be removed from the runner: $(if ($cleanupReason) { $cleanupReason } else { 'see the cleanup step.' })".Trim()
           }
-          "### Data extract: $(if ($status) { $status } else { 'stopped before the game started' })`n`nbuild $env:BUILDID, artifact: $(if ($artifact) { $artifact } else { 'none' })`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "### Data extract: $(if ($status) { $status } else { 'stopped before the game started' })`n`nbuild $env:BUILDID, artifact: $(if ($artifact) { $artifact } else { 'none' }), sdk artifact: $(if ($sdkArtifact) { $sdkArtifact } else { 'none' })`n`n$reason" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           # A run that was cancelled (the watcher's poll cancels one when a build change starts the update path)
           # reports its status but does not fail on top of the cancel: the run ends as cancelled, not failed.
           if ($status -ne 'ok' -and $env:CANCELLED -ne 'true') { Write-Host "::error title=Data extract::status '$status'. $reason"; exit 1 }
