@@ -402,6 +402,15 @@ test('the SDK is its own artifact, the leak gate reads it, and the usmap artifac
   assert.match(extractJob, /sdk_artifact_name: \$\{\{ steps\.final\.outputs\.sdk_artifact_name \}\}/);
 });
 
+test('the SDK step comments out the unbuildable asserts before the gate and the upload, and a failed edit keeps the SDK from going up', () => {
+  const find = stepOf(extractJob, 'Find the SDK');
+  assert.match(find, /node ci\/sdk-asserts\.mjs out\/sdk\n\s+if \(\$LASTEXITCODE -eq 0\) \{\n\s+"ok=true" >> \$env:GITHUB_OUTPUT/, 'ok=true only after the edit succeeded');
+  assert.match(find, /\} else \{\n\s+"ok=false" >> \$env:GITHUB_OUTPUT\n\s+Write-Host "::error title=sdk::the unbuildable asserts/, 'a failed edit sets ok=false and says why');
+  assert.ok(find.indexOf('sdk-asserts.mjs') < find.indexOf('"ok=true"'), 'the edit comes first');
+  assert.ok(extractJob.indexOf('id: sdk\n') < extractJob.indexOf('id: leak\n'), 'the edit is done before the leak gate reads out/sdk');
+  assert.match(stepOf(extractJob, 'Upload the SDK'), /steps\.sdk\.outputs\.ok == 'true'/, 'the SDK goes up only when the step said ok');
+});
+
 test('the comments do not call planner main reviewed', () => {
   assert.ok(!/reviewed code|review and merge/i.test(extract));
   assert.match(extract, /main\n# branch protection: today main is unprotected/);
