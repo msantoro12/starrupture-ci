@@ -422,14 +422,15 @@ export function holdsCl(map, cl) {
 }
 
 // Why two build rows for one CL are not the same build, or null when they are.
-// A build is its CL, Steam build id, image stamp and image size; the label's
-// branch word is not part of it.
+// A build is its CL, image stamp and image size (a build row holds no exe hash);
+// the label's branch word and Steam build id are not part of it: two Steam
+// client branches can serve the same exe under different build ids. The labels
+// must still carry a Steam build id, so a malformed label is refused.
 export function buildMismatch(old, b) {
   const oldId = buildIdOf(old.source);
   const newId = buildIdOf(b.source);
   if (oldId === null) return `the table's label "${old.source}" for CL-${b.cl} has no Steam build id (expected "<branch> <buildid>")`;
   if (newId === null) return `the label "${b.source}" for CL-${b.cl} has no Steam build id (expected "steam_build <buildid>")`;
-  if (oldId !== newId) return `Steam build id ${oldId} in the table, ${newId} measured`;
   if (old.stamp !== b.stamp || old.size !== b.size) return 'another image stamp or size';
   return null;
 }

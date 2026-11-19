@@ -581,13 +581,17 @@ test('a feed refuses an address-only row whose build has no image stamp', () => 
   assert.throws(() => exportFeed(map), /address-only row .*image stamp/);
 });
 
-test('addBuild compares the Steam build id, stamp and size, not the label', () => {
+test('addBuild compares the image stamp and size, not the label or the Steam build id', () => {
   const map = emptyMap('loader', 127004);
   addBuild(map, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
   assert.equal(addBuild(map, { cl: 127004, stamp: 1, size: 2, source: 'steam_build 25646882' }), false);
   assert.equal(map.builds[0].source, 'public 25646882');
-  assert.throws(() => addBuild(map, { cl: 127004, stamp: 1, size: 2, source: 'steam_build 25646883' }), /Steam build id 25646882 in the table, 25646883 measured/);
+  // another client branch serving the same exe under its own Steam build id: the same build, the row stays as it is
+  assert.equal(addBuild(map, { cl: 127004, stamp: 1, size: 2, source: 'steam_build 25646883' }), false);
+  assert.deepEqual(map.builds, [{ cl: 127004, stamp: 1, size: 2, source: 'public 25646882' }]);
   assert.throws(() => addBuild(map, { cl: 127004, stamp: 9, size: 2, source: 'public 25646882' }), /another image stamp or size/);
+  assert.throws(() => addBuild(map, { cl: 127004, stamp: 1, size: 3, source: 'steam_build 25646883' }), /another image stamp or size/);
+  assert.equal(addBuild(map, { cl: 127005, stamp: 7, size: 8, source: 'steam_build 25646884' }), true);
   assert.throws(() => addBuild(map, { cl: 127004, stamp: 1, size: 2, source: 'steam_build' }), /no Steam build id/);
 });
 
