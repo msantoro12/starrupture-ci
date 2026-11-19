@@ -229,10 +229,10 @@ test('adding a branch to rig-branches.json is all it takes to rig it: the poll p
   const dir = mkdtempSync(join(tmpdir(), 'pollsteam-list-'));
   writeFileSync(join(dir, 'poll-steam.mjs'), readFileSync(SCRIPT, 'utf8'));
   const list = JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'));
-  writeFileSync(join(dir, 'rig-branches.json'), JSON.stringify([...list, 'v.0.3.5_for_ds']));
-  const info = { [CLIENT]: { public: branch(101, 1010), 'v.0.3.5_for_ds': branch(130, 1300) }, [SERVER]: serverInfo };
-  // public_test_branch is not listed: the added branch is the other one of public.
+  writeFileSync(join(dir, 'rig-branches.json'), JSON.stringify([...list, 'v.9.9.9_new']));
+  const info = { [CLIENT]: { public: branch(101, 1010), 'v.9.9.9_new': branch(130, 1300) }, [SERVER]: serverInfo };
+  // Steam lists only public and the new branch: the added branch is the other one of public.
   const r = await withApi(info, (base) => runOther(base, 'public', dir));
-  assert.equal(r.stdout, 'v.0.3.5_for_ds 130\n');
-  assert.equal((await withApi(info, (base) => runOther(base, 'v.0.3.5_for_ds', dir))).stdout, 'public 101\n');
+  assert.equal(r.stdout, 'v.9.9.9_new 130\n');
+  assert.equal((await withApi(info, (base) => runOther(base, 'v.9.9.9_new', dir))).stdout, 'public 101\n');
 });

@@ -734,7 +734,7 @@ test('rig legs: both branches listed is the same as before (a leg per branch, ea
   const mm = job('map-mode');
   // The one list is a data file; the workflow names no branch but the 'public' that publishes.
   const listed = JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'));
-  assert.deepEqual(listed, ['public', 'public_test_branch'], 'today: the two branches the pipeline rigs');
+  assert.deepEqual(listed, ['public', 'public_test_branch', 'v.0.3.5_for_ds'], 'today: the branches the pipeline rigs');
   for (const n of ['rig-other', 'rig-feed-other']) {
     assert.ok(!/public_test_branch/.test(job(n)), `${n} names no branch of its own: it takes map-mode's other_branch`);
     assert.equal(mapOf(job(n), 'with').branch, '${{ needs.map-mode.outputs.other_branch }}');

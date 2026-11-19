@@ -623,7 +623,7 @@ test('rig set: expect_decline marks the plan, is only true or false, and cannot 
 
 test('rig set: the branch must be one of the rig branches in .github/sr-pipeline/rig-branches.json, and adding a branch there is all it takes', (t) => {
   const listed = JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'));
-  assert.ok(listed.includes('public') && listed.includes('public_test_branch'), 'today the list is public and the test branch');
+  assert.ok(listed.includes('public') && listed.includes('public_test_branch') && listed.includes('v.0.3.5_for_ds'), 'today the list is public, the test branch and the second client branch');
   for (const b of listed) {
     const ok = resolveWithMock(`-Branch ${b}`);
     if (!ok) return t.skip('no PowerShell on this machine');
@@ -631,13 +631,13 @@ test('rig set: the branch must be one of the rig branches in .github/sr-pipeline
     assert.equal(ok.plan.branch, b);
   }
   // A branch outside the list is refused, naming the list.
-  const no = resolveWithMock('-Branch v.0.3.5_for_ds');
+  const no = resolveWithMock('-Branch v.9.9.9_unlisted');
   assert.notEqual(no.r.status, 0);
-  assert.match(no.text, /branch 'v\.0\.3\.5_for_ds' is not one of the rig branches \(public, public_test_branch\)/);
+  assert.match(no.text, /branch 'v\.9\.9\.9_unlisted' is not one of the rig branches \(public, public_test_branch, v\.0\.3\.5_for_ds\)/);
   // The same branch, added to the list and nothing else, is rigged.
-  const added = resolveWithMock('-Branch v.0.3.5_for_ds', { rigBranches: [...listed, 'v.0.3.5_for_ds'] });
+  const added = resolveWithMock('-Branch v.9.9.9_unlisted', { rigBranches: [...listed, 'v.9.9.9_unlisted'] });
   assert.equal(added.r.status, 0, added.text);
-  assert.equal(added.plan.branch, 'v.0.3.5_for_ds');
+  assert.equal(added.plan.branch, 'v.9.9.9_unlisted');
   // A branch that left the list is no longer accepted.
   assert.notEqual(resolveWithMock('-Branch public_test_branch', { rigBranches: ['public'] }).r.status, 0);
   // The Steam install step takes a dotted name too (it is only checked as a plain name before it reaches steamcmd).
