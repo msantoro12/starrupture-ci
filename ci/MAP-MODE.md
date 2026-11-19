@@ -88,12 +88,16 @@ Latest releases of the nine plugins of msantoro12 and AlienXAXS, and the reviewe
 MiniMap and PersistentIdFix) and both Steam secrets by name. They run
 one after the other, `rig-other` after `rig-branch` whatever its result, because the rig's
 concurrency group keeps one pending run. `rig-branch` runs on the Steam branch the check is
-for and gets `map-mode`'s `expect_refused`; `rig-other` runs on the other branch and gets
+for and gets `map-mode`'s `expect_refused`; `rig-other` runs on the other branch Steam lists
+now (`map-mode`'s `other_branch`, from `.github/sr-pipeline/rig-branches.json`) and gets
 `expect_refused_other`: exactly the refusals the loader's own rule predicts for that
 branch's current build, so any refusal the rule does not predict is a fail (that branch's
 current build must keep working with the same DLLs). `rig-gate` writes both verdicts,
 reasons and logs artifacts into the run summary
-and is red unless both passed. `publish` needs both rig jobs at verdict `PASS`; the promote
+and is red unless both passed. `publish` needs both rig jobs at verdict `PASS` (except when
+Steam lists no other branch: `other_branch` is `none`, there is no second leg, `rig-other` is
+not run, and the gate, `publish` and the alert expect only the first; a listed branch always
+has a leg that has to pass, see "Which branches get a rig leg" in `.github/sr-pipeline/README.md`); the promote
 step above is only a plan. With the autopilot off, publish is held and the rigs still run.
 Details: `.github/sr-pipeline/README.md`, "Client test rig".
 
@@ -112,9 +116,9 @@ Policy (owner), in plain words:
 - Expected refusals on the other branch: `expect_refused_other` is `decision.json`'s
   `expectRefusedOther`, which `decide.mjs` computes from `--other-cl N` (the CL the other
   branch's Steam build id has in the candidate map's build rows; the watcher passes the id
-  as `other_buildid`; a dispatch without it reads the other branch's live build id from Steam,
-  with the code of the watcher's poll, and stops the chain with a message if it cannot; an
-  explicit `other_buildid` wins). A build the map has no row for: nothing is declared as refused. A plugin of interface v72 or later
+  as `other_buildid`; a dispatch without it reads the other branch and its live build id from
+  Steam, with the code of the watcher's poll (`poll-steam.mjs --other-branch`), and stops the
+  chain with a message if it cannot; an explicit `other_buildid` wins, for a branch Steam lists). A build the map has no row for: nothing is declared as refused. A plugin of interface v72 or later
   that is not built here has no known migration flag and is not predicted.
 - A build the candidate map has no row for on the other branch: the loader cannot run it and
   declines. `decide.mjs --other-unmapped` sets `expectDeclineOther`, map mode passes

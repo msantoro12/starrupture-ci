@@ -4,11 +4,20 @@
 //
 //   node poll-steam.mjs --state <steam.json> --out-dir <dir> [--force]
 //   node poll-steam.mjs --live-buildid <client branch>
+//   node poll-steam.mjs --other-branch <client branch>
 //
 // The second form reads one client branch's current build id from the same API, with the same
 // retries and shape checks, and prints just the number on stdout (the log goes to stderr). It
 // reads no state and writes none. It exits 1 with the cause on stderr when the id cannot be read,
 // and never falls back to a recorded one.
+//
+// The third form prints "<branch> <build id>" for the other rigged client branch of the one named,
+// or an empty line when Steam lists none; same reads, same failure rules.
+//
+// rig-branches.json is the one list of client branches the pipeline rigs, in the order a check pairs
+// them: the other branch of a check is the first one in the list, other than its own, that Steam
+// lists now. A branch Steam does not list has no rig leg, whatever the recorded state says. To rig
+// another branch, add its name there.
 //
 // <steam.json> is the baseline checked out from main. The updated state is
 // written only on a real build id change or a first-time seed.
@@ -19,9 +28,10 @@
 //   client_matrix=<json> client branches for sr-client-check.yml, as
 //                        [{"branch":"public","buildid":"...","other_buildid":"..."}]:
 //                        the changed ones, or every recorded one on a forced run
-//                        (other_buildid: the build id of the other client branch,
-//                        public <-> public_test_branch, as of this poll); []
-//                        when there is no alert
+//                        (other_buildid: the build id of the other rigged client branch as of
+//                        this poll, empty when Steam lists none); [] when there is no alert.
+//                        Only branches Steam lists now are in it: a branch that vanished stays
+//                        in the recorded state, but is neither checked nor paired
 //
 // Failure policy: an API problem never raises an alert. Each request is
 // retried; an app that still fails is skipped for this run and its recorded
@@ -31,12 +41,18 @@
 import { readFileSync, writeFileSync, mkdirSync, appendFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+// The client branches the rig covers, in pairing order.
+const RIG_BRANCHES = JSON.parse(readFileSync(new URL('./rig-branches.json', import.meta.url), 'utf8'));
+// The other rigged branch of `branch` among the ones listed (an object keyed by branch name).
+const otherRigBranch = (branch, listed) => RIG_BRANCHES.find((b) => b !== branch && listed[b]);
+
 const APPS = [
   // branches: null means "every branch the API lists without a password": a second
   // beta is tracked the day it appears, as the dedicated server's branches are.
   { id: '1631270', name: 'StarRupture', short: 'client', branches: null },
   { id: '3809400', name: 'StarRupture Dedicated Server', short: 'server', branches: null },
 ];
+const CLIENT_APP = APPS[0].id;
 const NEWS_APP = '1631270';
 const ATTEMPTS = 3;
 const BACKOFF_MS = [5000, 20000];
@@ -50,12 +66,14 @@ const statePath = opt('--state');
 const outDir = opt('--out-dir');
 const force = args.includes('--force');
 const liveBranch = opt('--live-buildid');
-if (!liveBranch && (!statePath || !outDir)) {
-  console.error('usage: poll-steam.mjs --state <steam.json> --out-dir <dir> [--force] | --live-buildid <client branch>');
+const pairBranch = opt('--other-branch');
+const liveForm = liveBranch || pairBranch;
+if (!liveForm && (!statePath || !outDir)) {
+  console.error('usage: poll-steam.mjs --state <steam.json> --out-dir <dir> [--force] | --live-buildid <client branch> | --other-branch <client branch>');
   process.exit(2);
 }
-// The attempt log of a request: stdout carries only the answer in the live form.
-const log = liveBranch ? console.error : console.log;
+// The attempt log of a request: stdout carries only the answer in the live forms.
+const log = liveForm ? console.error : console.log;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const warn = (msg) => console.log(`::warning::${msg}`);
@@ -115,6 +133,28 @@ async function fetchNewestNews() {
   }
 }
 
+// Written whole before exit: a piped stdout can still hold the answer when exit() runs.
+const finish = async (answer, why) => {
+  await new Promise((done) => (why ? process.stderr : process.stdout).write(`${why || answer}\n`, done));
+  process.exit(why ? 1 : 0);
+};
+
+if (pairBranch) {
+  const app = APPS[0];
+  let answer = '';
+  let why = '';
+  try {
+    const listed = await fetchBranches(app);
+    const other = otherRigBranch(pairBranch, listed);
+    if (other) answer = `${other} ${listed[other].buildid}`;
+    const unpaired = RIG_BRANCHES.filter((b) => b !== pairBranch && b !== other && listed[b]);
+    if (unpaired.length) console.error(`Steam also lists ${unpaired.join(', ')}, which this check does not pair (one other leg).`);
+  } catch (e) {
+    why = `could not read the live branches of ${app.name}: ${e.message}`;
+  }
+  await finish(answer, why);
+}
+
 if (liveBranch) {
   const app = APPS[0];
   let id;
@@ -126,9 +166,7 @@ if (liveBranch) {
   } catch (e) {
     why = `could not read the live build id of ${app.name}/${liveBranch}: ${e.message}`;
   }
-  // Written whole before exit: a piped stdout can still hold the answer when exit() runs.
-  await new Promise((done) => (why ? process.stderr : process.stdout).write(`${why || id}\n`, done));
-  process.exit(why ? 1 : 0);
+  await finish(id, why);
 }
 
 function loadState() {
@@ -145,6 +183,7 @@ const changes = [];
 const failed = [];
 const seeded = [];
 let dirty = false;
+let clientLive = null; // the branches Steam lists now for the client app; null when its poll failed
 
 for (const app of APPS) {
   console.log(`Polling ${app.name} (${app.id})`);
@@ -156,6 +195,7 @@ for (const app of APPS) {
     warn(`Steam poll for ${app.name} (${app.id}) failed after ${ATTEMPTS} attempts (${e.message}); skipping it this run, state unchanged.`);
     continue;
   }
+  if (app.id === CLIENT_APP) clientLive = current;
   const known = state.apps[app.id];
   if (!known) {
     // First sight of this app: record it, never alert on the baseline.
@@ -187,11 +227,13 @@ if (dirty) {
 }
 
 const alert = changes.length > 0 || (force && !everyoneFailed);
-const CLIENT_APP = APPS[0].id;
-// other_buildid: the build the other client branch (public <-> public_test_branch) runs as of this
-// poll, which the check needs to find its CL; empty when the state does not hold that branch.
-const clientBranches = state.apps[CLIENT_APP]?.branches ?? {};
-const otherBuildid = (branch) => clientBranches[branch === 'public' ? 'public_test_branch' : 'public']?.buildid ?? '';
+// The recorded client branches Steam lists now (all the recorded ones when the client poll failed, as
+// nothing newer is known). A branch Steam dropped stays in the recorded state, but its id is not a build
+// that runs anywhere: it is neither checked nor passed on as another branch's other_buildid.
+const clientBranches = Object.fromEntries(Object.entries(state.apps[CLIENT_APP]?.branches ?? {}).filter(([b]) => !clientLive || clientLive[b]));
+// other_buildid: the build the other rigged client branch runs as of this poll, which the check needs to
+// find its CL; empty when Steam lists none.
+const otherBuildid = (branch) => clientBranches[otherRigBranch(branch, clientBranches)]?.buildid ?? '';
 const clientMatrix = !alert
   ? []
   : changes.length > 0
@@ -210,7 +252,7 @@ if (alert) {
     rows = changes.map((c) => `| ${c.app.name} | ${c.branch} | ${c.was ?? '(new branch)'} | ${c.now} | ${iso(c.timeupdated)} |`);
   } else {
     const all = APPS.flatMap((app) =>
-      Object.entries(state.apps[app.id]?.branches ?? {}).map(([branch, v]) => ({ app, branch, ...v })),
+      Object.entries(app.id === CLIENT_APP ? clientBranches : state.apps[app.id]?.branches ?? {}).map(([branch, v]) => ({ app, branch, ...v })),
     );
     title = 'Game update check (forced): ' + all.map((c) => `${c.app.short} ${c.branch} ${c.buildid}`).join(', ');
     rows = all.map((c) => `| ${c.app.name} | ${c.branch} | (forced run) | ${c.buildid} | ${iso(c.timeupdated)} |`);

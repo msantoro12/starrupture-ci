@@ -446,7 +446,7 @@ test('rig set: docs say eleven and name the MiniMap and PersistentIdFix source r
 // client DLL beside a zip and a manifest (MiniMap's real layout), the loader its client zip.
 // minimapLatest is the tag /latest names for MiniMap, minimapDigest the digest of its client DLL
 // on every release, plugins the plugin-names.json the script reads (default: the repository's).
-function resolveWithMock(args, { minimapLatest = PIN_TAG, minimapDigest = PIN_HEX, plugins = null } = {}) {
+function resolveWithMock(args, { minimapLatest = PIN_TAG, minimapDigest = PIN_HEX, plugins = null, rigBranches = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'rig-res-'));
   try {
     const plan = join(dir, 'plan.json');
@@ -458,6 +458,9 @@ function resolveWithMock(args, { minimapLatest = PIN_TAG, minimapDigest = PIN_HE
     mkdirSync(tool);
     copyFileSync(join(here, 'client-rig-set.ps1'), join(tool, 'client-rig-set.ps1'));
     writeFileSync(join(tool, 'plugin-names.json'), JSON.stringify(plugins ?? names));
+    // The list of rigged branches, where the script looks for it (beside ci/, under .github/sr-pipeline).
+    mkdirSync(join(dir, '.github', 'sr-pipeline'), { recursive: true });
+    writeFileSync(join(dir, '.github', 'sr-pipeline', 'rig-branches.json'), JSON.stringify(rigBranches ?? JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'))));
     writeFileSync(wrapper, [
       "$ErrorActionPreference = 'Stop'",
       `$names = Get-Content -LiteralPath '${join(tool, 'plugin-names.json')}' -Raw | ConvertFrom-Json`,
@@ -616,6 +619,29 @@ test('rig set: expect_decline marks the plan, is only true or false, and cannot 
   const both = resolveWithMock("-Branch public_test_branch -ExpectDecline 'true' -ExpectRefused 'MiniMap'");
   assert.notEqual(both.r.status, 0);
   assert.match(both.text, /expect_decline and expect_refused exclude each other/);
+});
+
+test('rig set: the branch must be one of the rig branches in .github/sr-pipeline/rig-branches.json, and adding a branch there is all it takes', (t) => {
+  const listed = JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'));
+  assert.ok(listed.includes('public') && listed.includes('public_test_branch'), 'today the list is public and the test branch');
+  for (const b of listed) {
+    const ok = resolveWithMock(`-Branch ${b}`);
+    if (!ok) return t.skip('no PowerShell on this machine');
+    assert.equal(ok.r.status, 0, ok.text);
+    assert.equal(ok.plan.branch, b);
+  }
+  // A branch outside the list is refused, naming the list.
+  const no = resolveWithMock('-Branch v.0.3.5_for_ds');
+  assert.notEqual(no.r.status, 0);
+  assert.match(no.text, /branch 'v\.0\.3\.5_for_ds' is not one of the rig branches \(public, public_test_branch\)/);
+  // The same branch, added to the list and nothing else, is rigged.
+  const added = resolveWithMock('-Branch v.0.3.5_for_ds', { rigBranches: [...listed, 'v.0.3.5_for_ds'] });
+  assert.equal(added.r.status, 0, added.text);
+  assert.equal(added.plan.branch, 'v.0.3.5_for_ds');
+  // A branch that left the list is no longer accepted.
+  assert.notEqual(resolveWithMock('-Branch public_test_branch', { rigBranches: ['public'] }).r.status, 0);
+  // The Steam install step takes a dotted name too (it is only checked as a plain name before it reaches steamcmd).
+  assert.ok(read('ci', 'client-rig-launch.ps1').includes("-notmatch '^[A-Za-z0-9_.]+$') { throw \"bad branch name '$Branch'\""));
 });
 
 test('rig workflow: expect_decline reaches the set step through the environment, not the script text', () => {

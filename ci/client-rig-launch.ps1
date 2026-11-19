@@ -332,7 +332,7 @@ function Assert-ValveSigned([string]$file) {
 
 # ---- Phase Install: steamcmd -------------------------------------------------------------
 function Install-Client {
-    if ($Branch -notmatch '^[A-Za-z0-9_]+$') { throw "bad branch name '$Branch'" }
+    if ($Branch -notmatch '^[A-Za-z0-9_.]+$') { throw "bad branch name '$Branch'" }
     New-Item -ItemType Directory -Force $root | Out-Null
     $zip = Join-Path $env:RUNNER_TEMP 'steamcmd.zip'
     Invoke-WebRequest -Uri 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip' -OutFile $zip -TimeoutSec 120
