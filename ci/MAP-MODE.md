@@ -122,10 +122,13 @@ Policy (owner), in plain words:
   that is not built here has no known migration flag and is not predicted.
 - A build the candidate map has no row for on the other branch: the loader cannot run it and
   declines. `decide.mjs --other-unmapped` sets `expectDeclineOther`, map mode passes
-  `expect_decline: true` to `rig-other`, and that rig passes only on a clean decline: the
+  `expect_decline: true` to `rig-other`, and that rig passes on a clean decline (or, from loader v1.26.0, on a fallback boot, see below): the
   version-mismatch line and the aborted hook installation are logged, no plugin is read or
   initialised, nothing crashes, and the game process is still alive when the rig stops it. The
-  summary names the expectation. Anything else fails the rig. A CL in the map is judged as before.
+  summary names the expectation. Anything else fails the rig. A loader from v1.26.0 may instead run the newest known build's
+  values and log "Trying the newest known build's values"; the rig then judges a boot (no crash, hooks installed, boot
+  finished, no preload plugin, each plugin loaded at its expected version or refused by the loader) and notes that the
+  build ran on checked values. `[UnknownBuild] Enabled=0` keeps the decline. A CL in the map is judged as before.
 - Plugins of other authors are pinned. A rig plugin whose owner is neither msantoro12 nor
   AlienXAXS (MiniMap, PersistentIdFix) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
   in the client check as well as in the rig: the check's `plugin-plan` reads the same Pin,

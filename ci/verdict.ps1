@@ -54,6 +54,12 @@
 #                                       no other ERROR line, and the game process still alive when the
 #                                       rig stopped it. The 180 s Stage 1 gate release line is the one
 #                                       ERROR the decline itself causes. Everything else fails.
+#                                       A loader from v1.26.0 on may instead boot the build on the
+#                                       newest known build's values (its "Trying the newest known
+#                                       build's values" line). That passes as a boot (Get-FallbackChecks):
+#                                       the version map checks with no game-version-OK line, and a
+#                                       plugin the loader refuses on this build counts as declared.
+#                                       Older loaders, and [UnknownBuild] Enabled=0, still decline.
 #       "feed": { "seq": 41, "cl": 130000 }   optional: the run seeded the loader's feed cache with
 #                                       this feed (client-rig-set.ps1 -FeedFile). The loader must
 #                                       log it applied, with that seq, before the game version gate;
@@ -233,7 +239,10 @@ function Get-ExpectedOff {
 # size the running game reflects. Returns Bad (what fails), Notes (what passes but is worth a
 # look), Sizes (one line per sizes[] entry, passing or not), SizeCounts (entries per result),
 # Parsed (reports read) and Changes (changes[] entries seen).
-function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
+# With -Fallback (the build has no rows in the version map and the loader runs on the newest known
+# build's values) a size with no row and a feature that is off are notes: the loader switches both
+# off by design. Nothing else is relaxed.
+function Get-CompatJudgement($Ml, $Boot, $Set = $null, [bool]$Fallback = $false) {
     $arrow = [string][char]0x2192
     $bad = New-Object System.Collections.Generic.List[string]
     $notes = New-Object System.Collections.Generic.List[string]
@@ -325,7 +334,7 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
                     'mismatch'       { $sizeLines.Add($line + 'MISMATCH'); $bad.Add("${name}: ${plugin}: $key size row is $rowText, the game reflects $reflText") }
                     'row-only'       { $sizeLines.Add($line + 'unreflected, row only') }
                     'reflected-only' { $sizeLines.Add($line + 'no row, reflected only') }
-                    'no-row'         { $sizeLines.Add($line + 'NO ROW'); $bad.Add("${name}: ${plugin}: $key is unreflected and has no size row") }
+                    'no-row'         { $sizeLines.Add($line + $(if ($Fallback) { 'NO ROW, feature stays off' } else { 'NO ROW' })); if (-not $Fallback) { $bad.Add("${name}: ${plugin}: $key is unreflected and has no size row") } }
                     'pending'        { $sizeLines.Add($line + 'pending, widget class not loaded at the main menu, feature off') }
                 }
             }
@@ -353,6 +362,8 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
             if ($keys.Count -gt 0 -and $notOptional.Count -eq 0) {
                 $from = @($keys | ForEach-Object { $k = $_; $src = if (@($repos | Where-Object { $optional.Contains("$_|$k".ToLowerInvariant()) })) { 'optional in native-keys.txt' } else { "listed in expected-off.txt for $ver" }; "$k ($src)" })
                 $notes.Add("$plugin$(if ($ver -ne '') { " $ver" }) feature ""$title"" is off, accepted: " + ($from -join ', '))
+            } elseif ($Fallback -and $keys.Count -gt 0) {
+                $notes.Add("$plugin feature ""$title"" is off, accepted on a build with no rows: " + ($keys -join ', '))
             } else {
                 $bad.Add("$plugin feature ""$title"" is off" + $(if ($keys.Count -eq 0) { ': names no keys' } else { ': not optional or expected off: ' + ($notOptional -join ', ') }))
             }
@@ -530,6 +541,38 @@ function Invoke-DeclineChecks($ml, $au, $hashes, [bool]$haveLog) {
     $script:Notes = @()
 }
 
+# ---- A fallback boot (set.json expectDecline, loader v1.26.0 and later) ----
+# On a build its map has no row for, the loader (core/version_check.cpp) logs the three lines below and
+# goes on with the newest known build's values; every value is checked against the game before use and
+# what does not check out stays off. There is no version-mismatch line and no game-version-OK line.
+#   WARN  [ModLoader] Unknown game build: '<ProductVersion>' (CL-<n>) is not in the version object map (it has <builds>)
+#   WARN  [ModLoader] Trying the newest known build's values (CL-<m>): each hook, address and field is checked ...
+#   INFO  [ModLoader] Unknown-build session marked ([UnknownBuild] Session=<id> in modloader.ini); a clean exit clears it
+# The same two WARN lines, then "did not end cleanly ... mods stay off this time", mean the guard held mods off:
+# a decline of another kind, which fails here. Everything else a known build is judged on still applies.
+$script:FallbackTryRe = "\[ModLoader\] Trying the newest known build's values \(CL-(\d+)\)"
+function Get-FallbackChecks($ml, [bool]$haveLog) {
+    $unk = First-Match $ml "\[ModLoader\] Unknown game build: '.*' \(CL-(\d+)\) is not in the version object map \(it has (.+)\)\s*$" -Case
+    $try = First-Match $ml $script:FallbackTryRe -Case
+    $marked = First-Match $ml '\[ModLoader\] Unknown-build session marked \(\[UnknownBuild\] Session=\S+ in modloader\.ini\)' -Case
+    $stop = First-Match $ml '\[ModLoader\] VERSION MISMATCH|Hook installation aborted|mods stay off this time|Could not write the unknown-build session marker|Game version OK:'
+    $cl = $null; $known = $null; $newest = $null
+    if ($unk -and $unk -cmatch "\(CL-(\d+)\) is not in the version object map \(it has (.+)\)\s*$") { $cl = $Matches[1]; $known = $Matches[2] }
+    if ($try -and $try -cmatch $script:FallbackTryRe) { $newest = $Matches[1] }
+    # The build is not one the loader lists, and the values come from one it does.
+    $listed = $cl -and $newest -and $cl -cne $newest -and $known -cmatch "CL-$newest(\D|$)" -and $known -cnotmatch "CL-$cl(\D|$)"
+    Add-Check 'loader_fallback_boot' ([bool]($listed -and $marked -and -not $stop)) $(
+        if ($stop) { "FOUND: $stop" } elseif ($unk -and $try -and $marked -and $listed) { "$unk  /  $try  /  $marked" } elseif ($unk -and $try -and $marked) { "the build CL-$cl and the fallback CL-$newest do not fit the builds listed: $unk" } else { '' })
+    $gv = First-Match $ml 'Game version OK:'
+    Add-Check 'no_game_version_ok' ($haveLog -and $null -eq $gv) $(if ($gv) { "FOUND: $gv" } elseif ($haveLog) { 'no Game version OK line' } else { '' })
+    # Preload plugins run only on the build they were written for, so none may run here.
+    $preSkip = First-Match $ml '\[Preload\] Phase skipped:'
+    $preRun = First-Match $ml '\[Preload\] (Loading |\S+ is running|---- Preload phase: )'
+    Add-Check 'preload_off' ($null -ne $preSkip -and $null -eq $preRun) $(if ($preRun) { "FOUND: $preRun" } else { $preSkip })
+    $script:Notes = @()
+    if ($cl -and $newest) { $script:Notes = @("build CL-$cl is not in the version object map: it ran on checked values from CL-$newest") }
+}
+
 function Get-DeclineRows($specs) {
     foreach ($s in $specs) { [pscustomobject]@{ name = $s.Repo; expected = $s.Expect; logVersion = ''; state = 'not loaded (the loader declined this build)'; note = '' } }
 }
@@ -542,7 +585,11 @@ function Invoke-ClientVerdict {
     $proxy = Read-Lines (Join-Path $OutDir 'proxy.log')
     $au = Read-Lines (Join-Path $OutDir 'autoupdate.log')
     $haveLog = ($null -ne $ml) -and $ml.Count -gt 0
-    $compat = Get-CompatJudgement $ml $boot $set
+    # An unmapped build (expectDecline) is a decline unless the loader says it went on with the newest known
+    # build's values (from v1.26.0): then it is judged as a boot, Get-FallbackChecks in place of the version gate.
+    $unmapped = [bool](Get-Prop $set 'expectDecline' $false)
+    $fallback = $unmapped -and $null -ne (First-Match $ml $script:FallbackTryRe -Case)
+    $compat = Get-CompatJudgement $ml $boot $set $fallback
 
     # ---- the set under test ----
     $specs = @()
@@ -604,7 +651,7 @@ function Invoke-ClientVerdict {
     Add-Check 'loader_build_line' ([bool]($buildLine -and $loaderExpect -ne '' -and ($logLoader -ceq $loaderExpect))) $(if ($buildLine) { "$buildLine  (expected $loaderExpect)" } else { '' })
     # A build the candidate map has no row for: judged as a decline, not as a boot. The handoff checks are not
     # run: the loader declined before reading any plugin, so there is nothing to hand off.
-    if ([bool](Get-Prop $set 'expectDecline' $false)) {
+    if ($unmapped -and -not $fallback) {
         Invoke-DeclineChecks $ml $au $hashes $haveLog
         Set-ClientResult $set $loaderExpect $logLoader @(Get-DeclineRows $specs) 0 'declined the build cleanly: it logged the version mismatch, loaded no plugin and the game kept running'
         return
@@ -612,7 +659,7 @@ function Invoke-ClientVerdict {
     $clientBuild = First-Match $ml 'Running client build of modloader'
     Add-Check 'loader_client_build' ($null -ne $clientBuild) $clientBuild
     $gv = First-Match $ml 'Game version OK:'
-    Add-Check 'game_version_ok' ($null -ne $gv) $gv
+    if ($fallback) { Get-FallbackChecks $ml $haveLog } else { Add-Check 'game_version_ok' ($null -ne $gv) $gv }
 
     # ---- the seeded feed (feed-path rig only) ----
     # The cache holds a TEST-signed feed for the running build, with rows the loader's own map
@@ -652,6 +699,8 @@ function Invoke-ClientVerdict {
     $pfOk = $false
     if ($pf -and $pf -match 'complete: (\d+)/(\d+) usable \((\d+) fatal, (\d+) non-fatal\)') {
         $pfOk = ([int]$Matches[2] -gt 0) -and ($Matches[1] -eq $Matches[2]) -and ([int]$Matches[3] -eq 0) -and ([int]$Matches[4] -eq 0)
+        # No rows to check against: a loader entry that is not fatal may fail, and that loader feature stays off.
+        if ($fallback) { $pfOk = ([int]$Matches[2] -gt 0) -and ([int]$Matches[3] -eq 0) }
     }
     Add-Check 'preflight_all_usable' $pfOk $pf
     $pfPassed = First-Match $ml '\[init\] Pattern preflight passed in'
@@ -709,6 +758,14 @@ function Invoke-ClientVerdict {
 
     # ---- plugins ----
     $found = Get-PluginLines $ml $specs
+    # On an unmapped build the set cannot name the refusals in advance (the loader refuses a plugin that does not
+    # take its game data from the version map). A plugin the loader itself refuses is judged as declared refused:
+    # not loaded, a refusal line, no fault. A plugin with no refusal line is judged as loaded, as always.
+    if ($fallback) {
+        foreach ($s in $specs) {
+            if (-not $s.Refused -and @($found | Where-Object { $_.Kind -eq 'refused' -and $_.Name -ceq $s.LogName }).Count -gt 0) { $s.Refused = $true }
+        }
+    }
     # A declared refusal accounts for that plugin's refusal lines only: a fault or crash
     # line of the same plugin still fails the crash, error and fault checks.
     foreach ($s in $specs) {
@@ -830,7 +887,7 @@ function Invoke-ClientVerdict {
         }
     }
     $scanOk = First-Match $ml '\[HookScan\] .*pattern\(s\) resolved, no failures'
-    Add-Check 'hookscan_clean' ($haveLog -and $null -eq $scanBad -and $null -ne $scanOk) $(if ($scanBad) { "FOUND: $scanBad" } elseif ($scanOk) { $scanOk } else { '' })
+    Add-Check 'hookscan_clean' ($haveLog -and $null -eq $scanBad -and ($null -ne $scanOk)) $(if ($scanBad) { "FOUND: $scanBad" } elseif ($scanOk) { $scanOk } else { '' })
 
     Add-HandoffChecks $ml $boot -RequireBootField -SkipCompat
     # A compat report is judged by what it says (Get-CompatJudgement), not by existing.
@@ -841,7 +898,7 @@ function Invoke-ClientVerdict {
         else {
             $sizeSummary = if ($compat.Sizes.Count -gt 0) { '; size rows: ' + (($compat.SizeCounts.Keys | ForEach-Object { "$($compat.SizeCounts[$_]) $_" }) -join ', ') } else { '' }
             "$($compat.Parsed) report(s) judged: " + $(if ($compat.Notes.Count -gt 0) { $compat.Notes -join '; ' } else { 'nothing moved' }) + $sizeSummary })
-    $script:Notes = @($compat.Notes) + @($compat.Sizes)
+    $script:Notes = @($script:Notes) + @($compat.Notes) + @($compat.Sizes)
 
     # ---- crashes and errors ----
     $crashRe = 'CRASHED|FATAL ENGINE CRASH|\[PluginGuard\]'
@@ -865,7 +922,7 @@ function Invoke-ClientVerdict {
     Add-Check 'no_loader_errors' ($haveLog -and $errLines.Count -eq 0) $(
         if ($errLines.Count -gt 0) { "$($errLines.Count) found, first: $($errLines[0])" } elseif ($haveLog) { 'no unexpected ERROR line in ModLoader.log' } else { '' })
 
-    Set-ClientResult $set $loaderExpect $logLoader $rows $wantInit ''
+    Set-ClientResult $set $loaderExpect $logLoader $rows $wantInit $(if ($fallback) { 'booted a build its version map has no row for, on checked values from the newest known build; each plugin loaded at its expected version or was refused by the loader' } else { '' })
 }
 
 if ($Client) {

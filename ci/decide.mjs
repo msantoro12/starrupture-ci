@@ -36,8 +36,9 @@
 //   --other-unmapped "<branch> runs build <id>", the other Steam branch's build when the candidate map has no
 //     row for it (so no CL to give --other-cl): the decision lists `expectDeclineOther: true`, the
 //     other branch's rig input expect_decline, and a note naming the expectation. The rig then passes
-//     only if the loader declines cleanly there (the version-mismatch line, no plugin loaded, no crash,
-//     the game still running; ci/verdict.ps1 -Client) and fails otherwise. Not with --other-cl.
+//     if the loader declines cleanly there (the version-mismatch line, no plugin loaded, no crash,
+//     the game still running) or boots on the newest known build's checked values (loader v1.26.0 and
+//     later; ci/verdict.ps1 -Client) and fails otherwise. Not with --other-cl.
 //   G3 CL not a forward CL (equal or lower than before)  -> HOLD
 //   GObjects, GNames, AppendString or GWorld not resolved (G4 scan) -> HOLD, no path
 //   a used class moved (G5 usedChanged non-empty) and the field rows do not

@@ -53,7 +53,7 @@ on:
         type: string
         default: ''
       expect_decline:
-        description: 'true: the loader''s map has no row for this build, so the rig passes only if the loader declines cleanly (the version-mismatch line, no plugin loaded, no crash, the game still running)'
+        description: 'true: the loader''s map has no row for this build, so the rig passes if the loader declines cleanly (the version-mismatch line, no plugin loaded, no crash, the game still running) or, from loader v1.26.0, boots on the newest known build''s checked values (no crash, nothing the loader refuses left loaded)'
         type: string
         default: ''
       remove_plugins:
@@ -87,7 +87,7 @@ on:
         type: string
         default: ''
       expect_decline:
-        description: 'true: the loader''s map has no row for this build, so the rig passes only if the loader declines cleanly (the version-mismatch line, no plugin loaded, no crash, the game still running)'
+        description: 'true: the loader''s map has no row for this build, so the rig passes if the loader declines cleanly (the version-mismatch line, no plugin loaded, no crash, the game still running) or, from loader v1.26.0, boots on the newest known build''s checked values (no crash, nothing the loader refuses left loaded)'
         type: string
         default: ''
       remove_plugins:
