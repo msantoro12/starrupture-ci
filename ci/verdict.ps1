@@ -311,6 +311,11 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
                     'row-only'       { if ($null -eq $rowSize) { $problem = 'row-only without a row size' } }
                     'reflected-only' { if ($null -eq $refl) { $problem = 'reflected-only without a reflected size' } }
                     'no-row'         { }
+                    # 2026-11-19: the one pending entry the rig accepts. BetterCheats asks for the size of WBP_InventorySlot_C_SetSlotSize,
+                    # a Blueprint widget class that is not loaded while the game sits at the main menu (it loads with the screen that uses it).
+                    # The loader leaves the request pending: the feature that lists it stays off and greyed, the plugin loads, nothing runs
+                    # against an unknown size. Any other key left pending, or a pending entry that carries a size, still fails.
+                    'pending'        { if ($plugin -cne 'BetterCheats' -or $key -cne 'WBP_InventorySlot_C_SetSlotSize') { $problem = 'is pending: only BetterCheats WBP_InventorySlot_C_SetSlotSize may be, while its widget class is not loaded at the main menu' } elseif ($null -ne $rowSize -or $null -ne $refl) { $problem = 'is pending but carries a size' } }
                     default          { $problem = "has the unknown result '$res'" }
                 }
                 if ($problem) { $bad.Add("${name}: ${plugin}: $key $problem"); continue }
@@ -321,6 +326,7 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null) {
                     'row-only'       { $sizeLines.Add($line + 'unreflected, row only') }
                     'reflected-only' { $sizeLines.Add($line + 'no row, reflected only') }
                     'no-row'         { $sizeLines.Add($line + 'NO ROW'); $bad.Add("${name}: ${plugin}: $key is unreflected and has no size row") }
+                    'pending'        { $sizeLines.Add($line + 'pending, widget class not loaded at the main menu, feature off') }
                 }
             }
         }

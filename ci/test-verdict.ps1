@@ -369,6 +369,7 @@ $szMismatch = Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 52 'mismatch'
 $szRowOnly = Size-Entry 'BetterCheats' 'FMassEntityManager' 129402 176 $null 'row-only'
 $szNoRow = Size-Entry 'BetterCheats' 'FMassEntityManager' $null $null $null 'no-row'
 $szReflOnly = Size-Entry 'Compass' 'FCrPlayerPersonalMarkerData' $null $null 40 'reflected-only'
+$szPending = Size-Entry 'BetterCheats' 'WBP_InventorySlot_C_SetSlotSize' $null $null $null 'pending'
 $missRow = '{ "name": "Fname_AppendString", "module": "StarRuptureGameSteam-Win64-Shipping.exe", "pattern": "48 89 5C 24 ?? 57", "required": REQ, "found": false }'
 $uiOffErr = "[19:00:31.326] [ERROR] [T:02032] [Plugin:MiniMap] $uiOffText"
 $tb = 'test-branch'
@@ -431,6 +432,10 @@ $rigCases = [ordered]@{
  'sizes unreflected, no row' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szNoRow" };                                   Fail = 'compat_report_ok' }
  'sizes result says match'   = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 52 'match') };  Fail = 'compat_report_ok' }
  'sizes result says differ'  = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 48 'mismatch') }; Fail = 'compat_report_ok' }
+ 'sizes pending, the one key' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szPending" } }
+ 'sizes pending, another key' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $(Size-Entry 'BetterCheats' 'FMassEntityManager' $null $null $null 'pending')" };  Fail = 'compat_report_ok' }
+ 'sizes pending, other plugin' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'WBP_InventorySlot_C_SetSlotSize' $null $null $null 'pending') };             Fail = 'compat_report_ok' }
+ 'sizes pending with a size' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'BetterCheats' 'WBP_InventorySlot_C_SetSlotSize' 129402 48 $null 'pending') };      Fail = 'compat_report_ok' }
  'sizes unknown result'      = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 48 'fine') };  Fail = 'compat_report_ok' }
  'sizes entry no plugin'     = @{ Run = $tb; Mut = { param($c) Add-Sizes $c ($szMatch -replace '"plugin": "AxRuptureTimer", ', '') };  Fail = 'compat_report_ok' }
  'sizes not a list'          = @{ Run = $tb; Mut = { param($c) $c.compat = [regex]::Replace($c.compat, '(\r?\n)\}\s*$', ",`$1  `"sizes`": 7`$1}") }; Fail = 'compat_report_ok' }
@@ -511,6 +516,11 @@ foreach ($k in $rigCases.Keys) {
             if (@($j.notes) -notcontains $moved) { $problems += 'the layout-moved note went missing' }
         }
         if ($k -eq 'sizes unreflected, row' -and @($j.notes) -notcontains 'size row BetterCheats: FMassEntityManager row 0xB0 (CL-129402), reflected none: unreflected, row only') { $problems += 'row-only line missing' }
+        if ($k -eq 'sizes pending, the one key') {
+            if (@($j.notes) -notcontains 'size row BetterCheats: WBP_InventorySlot_C_SetSlotSize row none, reflected none: pending, widget class not loaded at the main menu, feature off') { $problems += 'pending line missing' }
+            if ($r.Out -notmatch 'compat_report_ok\s+PASS') { $problems += 'compat_report_ok not PASS' }
+        }
+        if ($k -eq 'sizes pending, another key' -and $vt -notmatch 'FMassEntityManager is pending: only BetterCheats WBP_InventorySlot_C_SetSlotSize may be') { $problems += 'the other key is not refused by name' }
         if ($k -eq 'sizes mismatch' -and @($j.notes) -notcontains 'size row Codex: FAuSimpleItem row 0x30 (CL-129402), reflected 0x34: MISMATCH') { $problems += 'mismatch line missing' }
         if ($k -in 'cl-129402 real', 'sizes empty' -and (@($j.notes) | Where-Object { $_ -like 'size row*' })) { $problems += 'size lines without class-key rows' }
         if ($k -eq 'public real') {
