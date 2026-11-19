@@ -413,7 +413,7 @@ test('sr-watch.yml: the cancel step runs only when the client chain starts and c
   const cond = /^        if: (.*)$/m.exec(step)[1];
   // The same condition as the client-check job, so a cancel happens exactly when the Steam chain starts.
   const chain = /^    if: (.*)$/m.exec(watchJobs['client-check'])[1];
-  assert.equal(cond, "steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && startsWith(steps.poll.outputs.client_matrix, '[{')");
+  assert.equal(cond, "steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && inputs.rehearsal != true && startsWith(steps.poll.outputs.client_matrix, '[{')");
   assert.equal(cond.replace(/steps\.poll\./g, 'needs.poll.').replace('steps.pr.outputs.skip', 'needs.poll.outputs.skip'), chain);
   assert.match(step, /^        continue-on-error: true$/m);
   assert.match(step, /^        timeout-minutes: [1-9]$/m);
