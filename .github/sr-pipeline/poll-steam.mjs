@@ -2,7 +2,7 @@
 // Polls Steam build ids for the StarRupture client and dedicated server and
 // compares them with the recorded state. No dependencies (Node 18+ fetch).
 //
-//   node poll-steam.mjs --state <steam.json> --out-dir <dir> [--force]
+//   node poll-steam.mjs --state <steam.json> --out-dir <dir> [--force | --rehearsal]
 //   node poll-steam.mjs --live-buildid <client branch>
 //   node poll-steam.mjs --other-branch <client branch>
 //
@@ -21,6 +21,11 @@
 //
 // <steam.json> is the baseline checked out from main. The updated state is
 // written only on a real build id change or a first-time seed.
+//
+// --rehearsal (sr-watch's rehearsal input): the alert and the client matrix are the public branch's
+// current build alone, whether or not it changed, and the state file is never written (dirty=false),
+// so the run can go through the chain on a build that is already handled. Nothing alerts when Steam
+// does not list public now.
 // Writes <out-dir>/pr-title.txt, pr-branch.txt and pr-body.md when the run
 // should raise an alert. Sets these step outputs when GITHUB_OUTPUT is set:
 //   changed=true|false   alert wanted (real change, or --force)
@@ -65,11 +70,12 @@ const opt = (name) => {
 const statePath = opt('--state');
 const outDir = opt('--out-dir');
 const force = args.includes('--force');
+const rehearsal = args.includes('--rehearsal');
 const liveBranch = opt('--live-buildid');
 const pairBranch = opt('--other-branch');
 const liveForm = liveBranch || pairBranch;
 if (!liveForm && (!statePath || !outDir)) {
-  console.error('usage: poll-steam.mjs --state <steam.json> --out-dir <dir> [--force] | --live-buildid <client branch> | --other-branch <client branch>');
+  console.error('usage: poll-steam.mjs --state <steam.json> --out-dir <dir> [--force | --rehearsal] | --live-buildid <client branch> | --other-branch <client branch>');
   process.exit(2);
 }
 // The attempt log of a request: stdout carries only the answer in the live forms.
@@ -221,12 +227,13 @@ for (const app of APPS) {
 }
 
 const everyoneFailed = failed.length === APPS.length;
-if (dirty) {
+if (dirty && !rehearsal) {
   mkdirSync(dirname(statePath), { recursive: true });
   writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n');
 }
 
-const alert = changes.length > 0 || (force && !everyoneFailed);
+const rehearsalBuild = rehearsal ? clientLive?.public?.buildid : undefined;
+const alert = rehearsal ? rehearsalBuild !== undefined : changes.length > 0 || (force && !everyoneFailed);
 // The recorded client branches Steam lists now (all the recorded ones when the client poll failed, as
 // nothing newer is known). A branch Steam dropped stays in the recorded state, but its id is not a build
 // that runs anywhere: it is neither checked nor passed on as another branch's other_buildid.
@@ -236,7 +243,9 @@ const clientBranches = Object.fromEntries(Object.entries(state.apps[CLIENT_APP]?
 const otherBuildid = (branch) => clientBranches[otherRigBranch(branch, clientBranches)]?.buildid ?? '';
 const clientMatrix = !alert
   ? []
-  : changes.length > 0
+  : rehearsal
+    ? [{ branch: 'public', buildid: rehearsalBuild, other_buildid: otherBuildid('public') }]
+    : changes.length > 0
     ? changes.filter((c) => c.app.id === CLIENT_APP).map((c) => ({ branch: c.branch, buildid: c.now, other_buildid: otherBuildid(c.branch) }))
     : Object.entries(clientBranches).map(([branch, v]) => ({ branch, buildid: v.buildid, other_buildid: otherBuildid(branch) }));
 const lines = [];
@@ -310,6 +319,6 @@ const summary = [
 console.log(summary.join('\n'));
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join('\n') + '\n');
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `changed=${alert}\ndirty=${dirty}\nclient_matrix=${JSON.stringify(clientMatrix)}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT, `changed=${alert}\ndirty=${dirty && !rehearsal}\nclient_matrix=${JSON.stringify(clientMatrix)}\n`);
 }
 for (const l of lines) console.log(l);

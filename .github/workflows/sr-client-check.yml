@@ -129,6 +129,10 @@ on:
         description: 'Only refresh the saved public layout: the check and the store run, nothing after them (needs public and map_mode; only sr-layout-refresh passes true)'
         type: boolean
         default: false
+      rehearsal:
+        description: 'Rehearsal (only sr-watch passes true, from its rehearsal input): the whole chain on a build that is already released, signed with the release key, published only to the vmap-feed-rehearsal prerelease (needs public, map_mode and publish)'
+        type: boolean
+        default: false
     # A called job sees an environment secret only when the caller passes it
     # by name (the calling job cannot set an environment; the value comes from
     # the environment of the called job that reads it). Unpassed, it reads as
@@ -2590,7 +2594,7 @@ jobs:
   layout-store:
     name: store the public layout
     needs: [check, key-sources-plan]
-    if: ${{ !cancelled() && inputs.map_mode == true && inputs.branch == 'public' && needs.check.result == 'success' && github.ref == 'refs/heads/main' }}
+    if: ${{ !cancelled() && inputs.map_mode == true && inputs.branch == 'public' && needs.check.result == 'success' && github.ref == 'refs/heads/main' && inputs.rehearsal != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -2752,7 +2756,16 @@ jobs:
       LOADER_REPO: ${{ inputs.loader_repo }}
       # The proof of the stored reference (dispatch only): every input it needs is part of the condition, so any other run takes its base as usual.
       STORED_REFERENCE: ${{ inputs.stored_reference == true && inputs.branch != 'public' && inputs.branch != 'expiry-only' && inputs.map_mode == true && inputs.publish != true && inputs.test_autopilot == true && inputs.proof_run != true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
+      # A rehearsal (sr-watch's input): every input it needs is part of the condition, so any other run is an ordinary one.
+      REHEARSAL: ${{ inputs.rehearsal == true && inputs.branch == 'public' && inputs.map_mode == true && inputs.publish == true && inputs.test_autopilot != true && inputs.proof_run != true && inputs.first_publish != true && contains(github.workflow_ref, '/.github/workflows/sr-watch.yml@') }}
     steps:
+      # A rehearsal that is not one (another branch, no map mode or publish, a call from anywhere but sr-watch) stops here: it is never run as an ordinary one.
+      - name: Refuse a rehearsal that is not one
+        if: ${{ inputs.rehearsal == true }}
+        run: |
+          [ "$REHEARSAL" = true ] \
+            || { echo "::error::a rehearsal needs branch public, map_mode and publish on, and a call from sr-watch"; exit 2; }
+
       # A first_publish dispatch that is not a first publish (a base outside the fork, a branch that is not an
       # auto/update-<CL>-<run>-<attempt> one, any other input) stops here: it is never run as an ordinary one.
       - name: Refuse a first publish that is not one
@@ -3145,6 +3158,8 @@ jobs:
           [ "$CANDIDATE" = true ] && test_flag=(--candidate)
           first_flag=()
           [ "$FIRST_PUBLISH" = true ] && first_flag=(--first-publish)
+          rehearsal_flag=()
+          if [ "$REHEARSAL" = true ]; then rehearsal_flag=(--rehearsal); fi
           # The other Steam branch: the other client branch the rig covers (.github/sr-pipeline/rig-branches.json) that Steam
           # lists now, read live. Steam listing none means no other leg: nothing is run or judged for a branch that is
           # not there (a build id recorded for it on main names a build that no longer runs). Its current build: the id the
@@ -3207,7 +3222,7 @@ jobs:
           d=0
           node tool/ci/decide.mjs --repo ModLoader --autopilot tool/state/autopilot.json \
             --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json --fields field-rows.json \
-            --history history.json --out decision.json "${test_flag[@]}" "${first_flag[@]}" "${other_flag[@]}" "${rig_flag[@]}" || d=$?
+            --history history.json --out decision.json "${test_flag[@]}" "${first_flag[@]}" "${rehearsal_flag[@]}" "${other_flag[@]}" "${rig_flag[@]}" || d=$?
           decision="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).decision")"
           would="$(node -p "JSON.parse(require('fs').readFileSync('decision.json','utf8')).wouldBe ?? ''")"
           echo "decision=$decision" >> "$GITHUB_OUTPUT"
@@ -3397,6 +3412,10 @@ jobs:
   # state/autopilot.json (which is never changed) and checks instead that this repository's
   # vmap-feed release carries no feed. The chain's decision must carry the first-publish mark,
   # and no other chain may.
+  # A rehearsal (sr-watch's rehearsal input) goes through every condition above, then signs with the same key
+  # in this same job and uploads to the vmap-feed-rehearsal prerelease instead: the steps that write the
+  # vmap-feed release are off for it, the steps that write the staging release are on only for it, and the
+  # live release is only read (the seq to rise above, the rows to keep), then checked unchanged.
   # The promote step (ci/promote.mjs plan, in map-mode) only writes a plan; this is the one job
   # that acts on it. The only job that reads the release key (k2, VMAP_SIGN_KEY in the vmap-sign
   # environment, deployments from main only). It signs the chain's feed with the chain's one seq
@@ -3421,6 +3440,8 @@ jobs:
       TEST_INPUT: ${{ inputs.test_autopilot == true || inputs.proof_run == true }}
       CHAIN_SEQ: ${{ needs.map-mode.outputs.seq }}
       FIRST_PUBLISH: ${{ needs.map-mode.outputs.first_publish }}
+      REHEARSAL: ${{ inputs.rehearsal == true }}
+      STAGING_RELEASE: vmap-feed-rehearsal
     steps:
       - name: Check out the sign tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3451,6 +3472,8 @@ jobs:
             // The first-publish mark and the first_publish input of this run must agree: a chain that skipped the
             // autopilot is signed only by the run that asked for it, and a first publish never goes the ordinary way.
             if ((d.firstPublish === true) !== (process.env.FIRST_PUBLISH === "true")) { console.error("::error::the chain and this run disagree on first_publish; refusing to sign it"); process.exit(2); }
+            // The same for a rehearsal: its chain skipped the release limits, so only a rehearsal signs it, and a rehearsal signs no other chain.
+            if ((d.rehearsal === true) !== (process.env.REHEARSAL === "true")) { console.error("::error::the chain and this run disagree on rehearsal; refusing to sign it"); process.exit(2); }
           '
 
       - name: Check that no feed is published yet
@@ -3535,7 +3558,15 @@ jobs:
             console.log("The autopilot is on for path M on main.");
           '
 
-      - name: Sign with the release key, verify, publish
+      # A rehearsal only: what the live release holds right now, to show after the upload that it did not move.
+      - name: Note the live release before staging
+        if: ${{ env.REHEARSAL == 'true' }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/tags/vmap-feed" --jq '[.assets[] | [.name, .id, .updated_at, .size]]' > live-assets.before.json
+          echo "The live release holds $(node -p "JSON.parse(require('fs').readFileSync('live-assets.before.json','utf8')).length") assets."
+
+      - name: Sign with the release key and verify
         env:
           VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
         run: |
@@ -3551,6 +3582,11 @@ jobs:
             h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString(), seq: Number(process.env.CHAIN_SEQ) });
             fs.writeFileSync("vmap-history.json", JSON.stringify(h, null, 1) + "\n");
           '
+
+      - name: Publish to the live release
+        if: ${{ env.REHEARSAL != 'true' }}
+        run: |
+          set -euo pipefail
           gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
           # The history first: if only one upload lands, the history may name a release that is not out
           # (a re-run signs again: a release without the feed asset counts as no feed), never a feed that the
@@ -3560,7 +3596,46 @@ jobs:
           if [ "$FIRST_PUBLISH" = true ]; then gh release upload vmap-feed version-map-client.v1.txt
           else gh release upload vmap-feed version-map-client.v1.txt --clobber; fi
 
+      # A rehearsal's only write: the prerelease named in STAGING_RELEASE, with the same asset names. Not the Latest
+      # release, and no step here names the live release: it is neither created, edited nor uploaded to.
+      - name: Upload to the staging prerelease
+        if: ${{ env.REHEARSAL == 'true' }}
+        run: |
+          set -euo pipefail
+          gh release view "$STAGING_RELEASE" > /dev/null 2>&1 || gh release create "$STAGING_RELEASE" --prerelease --latest=false --title "Version map feed rehearsal" --notes "Signed feeds of rehearsal runs (sr-watch, rehearsal input). Not read by the loader or by vmap-publish; never the live feed."
+          [ "$(gh release view "$STAGING_RELEASE" --json isPrerelease,isDraft --jq '.isPrerelease and (.isDraft | not)')" = true ] \
+            || { echo "::error::$STAGING_RELEASE is not a published prerelease; nothing was uploaded to it"; exit 2; }
+          gh release upload "$STAGING_RELEASE" vmap-history.json --clobber
+          gh release upload "$STAGING_RELEASE" version-map-client.v1.txt --clobber
+
+      - name: Verify what was staged
+        if: ${{ env.REHEARSAL == 'true' }}
+        run: |
+          set -euo pipefail
+          gh release download "$STAGING_RELEASE" --pattern version-map-client.v1.txt --pattern vmap-history.json --dir staged --clobber
+          out="$(node tool/ci/vmap-sign.mjs verify staged/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
+          echo "$out"
+          case "$out" in "ok seq=$CHAIN_SEQ key=k2") ;; *) echo "::error::the staged feed is not seq $CHAIN_SEQ signed with the release key k2: $out"; exit 2 ;; esac
+          for f in version-map-client.v1.txt vmap-history.json; do
+            want="$(sha256sum "$f" | cut -d' ' -f1)"
+            got="$(sha256sum "staged/$f" | cut -d' ' -f1)"
+            [ "$want" = "$got" ] || { echo "::error::the staged $f has sha256 $got, not the $want that was signed and uploaded"; exit 2; }
+            echo "$f sha256 $got"
+          done
+          [ "$(gh release view "$STAGING_RELEASE" --json isPrerelease --jq .isPrerelease)" = true ] || { echo "::error::$STAGING_RELEASE is not a prerelease"; exit 2; }
+          echo "### Rehearsal: staged the feed on $STAGING_RELEASE (prerelease): seq $CHAIN_SEQ, release key k2, sha256 $(sha256sum staged/version-map-client.v1.txt | cut -d' ' -f1). The live release was not written." >> "$GITHUB_STEP_SUMMARY"
+
+      # A rehearsal only: read the live release again; it must be what it was before the staging upload.
+      - name: Check the live release did not move
+        if: ${{ env.REHEARSAL == 'true' }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/tags/vmap-feed" --jq '[.assets[] | [.name, .id, .updated_at, .size]]' > live-assets.after.json
+          cmp -s live-assets.before.json live-assets.after.json || { echo "::error::the live release changed during a rehearsal"; diff live-assets.before.json live-assets.after.json || true; exit 2; }
+          echo "The live release is unchanged."
+
       - name: Verify what was published
+        if: ${{ env.REHEARSAL != 'true' }}
         run: |
           set -euo pipefail
           # Download the assets as the loader will, and check them against what was signed here.
@@ -3608,7 +3683,8 @@ jobs:
       LOADER_REPO: ${{ inputs.loader_repo }}
       PUSH_REPO: msantoro12/StarRupture-ModLoader
       # A proof run and a first publish push auto/update-<CL>-<run>-<attempt> only, never the plain name.
-      PROOF: ${{ inputs.proof_run == true || needs.map-mode.outputs.first_publish == 'true' }}
+      # A rehearsal pushes the run-suffixed name too: it never writes the plain auto/update-<CL> a real update would use.
+      PROOF: ${{ inputs.proof_run == true || inputs.rehearsal == true || needs.map-mode.outputs.first_publish == 'true' }}
       # A first publish whose candidate header is its base's own has no commit to push: the base is the candidate.
       FIRST_PUBLISH: ${{ needs.map-mode.outputs.first_publish == 'true' }}
     steps:
@@ -4587,7 +4663,7 @@ jobs:
           '
 
       - name: Open or update the issue
-        if: steps.what.outputs.alert == 'true'
+        if: steps.what.outputs.alert == 'true' && inputs.rehearsal != true
         run: |
           node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"
 
@@ -4629,7 +4705,7 @@ jobs:
   auto-apply:
     name: auto-apply ${{ matrix.name }}
     needs: [plugin-plan, check]
-    if: ${{ !cancelled() && inputs.refresh_layout != true && startsWith(needs.check.outputs.autofix, '[{') }}
+    if: ${{ !cancelled() && inputs.refresh_layout != true && inputs.rehearsal != true && startsWith(needs.check.outputs.autofix, '[{') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: fork-push
