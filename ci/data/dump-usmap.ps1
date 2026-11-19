@@ -116,7 +116,7 @@ function Copy-CppSdk([string]$DumpDir, [string]$Dest, [string]$Cl) {
     Remove-Item -LiteralPath $Dest -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $Dest | Out-Null
     Copy-Item -Path (Join-Path $cpp.FullName '*') -Destination $Dest -Recurse -Force
-    [IO.File]::WriteAllText((Join-Path $Dest 'build_cl.txt'), $Cl, (New-Object Text.UTF8Encoding $false))
+    [IO.File]::WriteAllText((Join-Path $Dest 'build_cl.txt'), "$Cl`n", (New-Object Text.UTF8Encoding $false))
     "sdk: $($files.Count) files, build CL-$Cl"
 }
 
@@ -150,7 +150,7 @@ if ($Check) {
         $kept = Join-Path $tmp 'sdk'
         Copy-CppSdk $dumpDir $kept '130045' | Out-Null
         if (-not (Test-Path -LiteralPath (Join-Path $kept 'SDK\Basic.hpp')) -or -not (Test-Path -LiteralPath (Join-Path $kept 'SDK.hpp'))) { throw 'the CppSDK was not kept with its folder structure' }
-        if ([IO.File]::ReadAllText((Join-Path $kept 'build_cl.txt')) -ne '130045') { throw 'build_cl.txt does not hold the changelist alone' }
+        if ([IO.File]::ReadAllText((Join-Path $kept 'build_cl.txt')) -ne "130045`n") { throw 'build_cl.txt does not hold the changelist alone' }
         $cases = @{
             'an unknown CL'      = { Copy-CppSdk $dumpDir (Join-Path $tmp 'a') '' }
             'a missing CppSDK'   = { Copy-CppSdk (Join-Path $tmp 'none') (Join-Path $tmp 'b') '130045' }
