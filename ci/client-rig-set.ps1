@@ -15,7 +15,8 @@
 #   -Expect "Waila=v0.21.0"                  version the log must show, instead of the release tag
 #   -ExpectRefused "Codex"                   plugins that must be refused on this build
 #   -ExpectDecline true                      the build is one the loader's map has no row for: the rig passes
-#                                            only if the loader declines cleanly and loads nothing (not with -ExpectRefused)
+#                                            if the loader declines cleanly and loads nothing, or boots on checked values
+#                                            from the newest known build (not with -ExpectRefused)
 #   -RemovePlugins "Codex"                   dropped from the install but still expected
 # Names are the loader, or a plugin by repo name, log name or asset name, in any case.
 # A name in -Expect that is not one of the eleven is an extra plugin to expect.

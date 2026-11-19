@@ -651,6 +651,18 @@ test('rig workflow: expect_decline reaches the set step through the environment,
   assert.ok(!/-ExpectDecline \$\{\{/.test(wf), 'never interpolated into the command');
 });
 
+// The loader (v1.26.0 and later) logs these lines when it runs a build its version object map has no row for on the
+// newest known build's values (core/version_check.cpp). An unmapped-build rig passes as a boot when it sees them, and
+// as a clean decline when it does not; if the loader's wording moves, the verdict must move with it.
+test('rig verdict: an unmapped build passes as a clean decline or as a fallback boot, on the loader\'s own lines', () => {
+  for (const s of ["Trying the newest known build's values", 'Unknown game build:', 'is not in the version object map', 'Unknown-build session marked', 'Phase skipped:']) {
+    assert.ok(verdictPs.includes(s), `verdict.ps1 matches the loader line "${s}"`);
+  }
+  assert.match(verdictPs, /\$fallback = \$unmapped -and/);
+  assert.match(verdictPs, /if \(\$unmapped -and -not \$fallback\)/);
+  assert.match(verdictPs, /VERSION MISMATCH/, 'the clean decline is still judged');
+});
+
 test('rig artifact: its name carries the branch, the candidate and the run, so two rigs of one run do not collide', () => {
   assert.match(wf, /\n {6}ARTIFACT_NAME: sr-client-rig-\$\{\{ inputs\.branch \}\}-\$\{\{ inputs\.candidate_artifact \|\| 'release' \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}\n/);
   assert.match(step('Upload the scrubbed logs'), /name: \$\{\{ env\.ARTIFACT_NAME \}\}/);

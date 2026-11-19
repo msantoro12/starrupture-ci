@@ -585,6 +585,8 @@ $declineCases = [ordered]@{
  'crash dump'                   = @{ Mut = { param($c) $c.boot.crash_files = @('Crashes\crash.dmp') };                                                  Fail = 'no_crash_files' }
  'crash dialog'                 = @{ Mut = { param($c) $c.boot.crash_dialog = 'The game has crashed' };                                                 Fail = 'no_crash_dialog' }
  'update traffic'               = @{ Mut = { param($c) $c.ml += "$($decSig)[AutoUpdate] Manifest URL: https://example.invalid/manifest-client.json (compiled-in default)" }; Fail = 'no_update_check' }
+ # [UnknownBuild] Enabled=0 (loader v1.26.0 and later) keeps the decline and adds one INFO line after it
+ 'unknown builds switched off'  = @{ Mut = { param($c) $c.ml += "$($decSig)[ModLoader] Unknown game builds are switched off ([UnknownBuild] Enabled=0 in modloader.ini)" } }
 }
 foreach ($k in $declineCases.Keys) {
     $r = New-DeclineCase $k $declineCases[$k].Mut
@@ -605,6 +607,88 @@ foreach ($k in $declineCases.Keys) {
     }
     if ($problems.Count -gt 0) { $bad++ }
     'decline {0,-30} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
+}
+
+# ---- client mode, a fallback boot on an unmapped build (loader v1.26.0 and later) -------------
+# The CL-129402 rig's real boot log (above) with its "Game version OK" line replaced by the three lines the loader
+# writes when it runs a build its map has no row for on the newest known build's values (core/version_check.cpp,
+# loader branch feat/unknown-build-fallback at bed230c; the text is the source's, with the build filled in). The set
+# is the one an unmapped build gets: expectDecline, and no plugin declared refused (MiniMap is refused by the loader
+# itself, as the log shows). No fallback log from a real rig run exists yet.
+$fbWarn = '[18:48:43.029] [WARN ] [T:03508] '
+$fbInfo = '[18:48:43.029] [INFO ] [T:03508] '
+$fbErr = '[18:48:43.029] [ERROR] [T:03508] '
+$fbUnknown = "$($fbWarn)[ModLoader] Unknown game build: '++Earth20+Kobalt-PTR2-CL-130045' (CL-130045) is not in the version object map (it has ...-CL-127004 or ...-CL-128786 or ...-CL-129402)"
+$fbTrying = "$($fbWarn)[ModLoader] Trying the newest known build's values (CL-129402): each hook, address and field is checked against this game before use, and anything that does not check out stays off"
+$fbMarked = "$($fbInfo)[ModLoader] Unknown-build session marked ([UnknownBuild] Session=130045:33333333:F482000:cand-42399350787-556ce13 in modloader.ini); a clean exit clears it"
+$fbGuard = "$($fbWarn)[ModLoader] The last session on this build with this ModLoader did not end cleanly (crash, hang or forced close), so mods stay off this time. To try again, set Retry=1 under [UnknownBuild] in ModLoader\modloader.ini"
+function Use-Fallback($c) {
+    $c.set | Add-Member -NotePropertyName expectDecline -NotePropertyValue $true -Force
+    foreach ($p in $c.set.plugins) { $p.expectRefused = $false }
+    $c.ml = @($c.ml | ForEach-Object { if ($_ -match 'Game version OK:') { $fbUnknown; $fbTrying; $fbMarked } else { $_ } })
+}
+$fbCases = [ordered]@{
+ 'fallback boot'                = @{ Mut = { param($c) Use-Fallback $c } }
+ 'old loader, same build'       = @{ Mut = { param($c) Use-Fallback $c; $c.ml = @($c.ml | Where-Object { $_ -notmatch 'Unknown game build|Trying the newest|session marked' }) }; Fail = 'loader_declined' }
+ 'boot expected, not a decline' = @{ Mut = { param($c) Use-Fallback $c; $c.set.PSObject.Properties.Remove('expectDecline') };               Fail = 'game_version_ok' }
+ # What a fallback boot may differ in: loader entries that are not fatal, features and sizes the loader leaves off
+ 'non-fatal preflight entry'    = @{ Mut = { param($c) Use-Fallback $c; $c.ml = @($c.ml | ForEach-Object { $_ -replace '65/65 usable \(0 fatal, 0 non-fatal\)', '64/65 usable (0 fatal, 1 non-fatal)' }) } }
+ 'feature off, no rows'         = @{ Mut = { param($c) Use-Fallback $c; Add-CycleOff $c } }
+ 'size with no row'             = @{ Mut = { param($c) Use-Fallback $c; Add-Sizes $c "$szMatch, $szNoRow" } }
+ # The ways it can go wrong
+ 'fatal preflight entry'        = @{ Mut = { param($c) Use-Fallback $c; $c.ml = @($c.ml | ForEach-Object { $_ -replace '65/65 usable \(0 fatal, 0 non-fatal\)', '64/65 usable (1 fatal, 0 non-fatal)' }) }; Fail = 'preflight_all_usable' }
+ 'preflight failed'             = @{ Mut = { param($c) Use-Fallback $c; Drop $c 'Pattern preflight passed in'; $c.ml += "$($fbErr)[init] Pattern preflight failed -- mod loader disabled" }; Fail = 'preflight_passed_line' }
+ 'size mismatch'                = @{ Mut = { param($c) Use-Fallback $c; Add-Sizes $c "$szMatch, $szMismatch" };                                    Fail = 'compat_report_ok' }
+ 'compat safe-off'              = @{ Mut = { param($c) Use-Fallback $c; Edit-Report $c '"outcome": "partial"' '"outcome": "safe-off"' };            Fail = 'compat_report_ok' }
+ 'layout safe-off'              = @{ Mut = { param($c) Use-Fallback $c; $c.ml += "$($fbErr)[init] Layout mismatch -- plugins are switched off for this session" }; Fail = 'plugins_not_switched_off' }
+ 'game version ok as well'      = @{ Mut = { param($c) Use-Fallback $c; $c.ml += '[18:48:43.029] [INFO ] [T:03508] [ModLoader] Game version OK: ++Earth20+Kobalt-PTR2-CL-130045' }; Fail = 'no_game_version_ok' }
+ 'guard held mods off'          = @{ Mut = { param($c) Use-Fallback $c; $c.ml = @($c.ml | Where-Object { $_ -notmatch 'Trying the newest|session marked' }); $c.ml += $fbGuard }; Fail = 'loader_declined' }
+ 'marker not written'           = @{ Mut = { param($c) Use-Fallback $c; $c.ml = @($c.ml | Where-Object { $_ -notmatch 'session marked' }); $c.ml += "$($fbErr)[ModLoader] Could not write the unknown-build session marker to modloader.ini, so a crash on this build could not be caught next time; not trying the newest known values"; $c.ml += "$($fbErr)[ModLoader] VERSION MISMATCH: expected '...-CL-127004', got '++Earth20+Kobalt-PTR2-CL-130045'" }; Fail = 'loader_fallback_boot' }
+ 'no session marker'            = @{ Mut = { param($c) Use-Fallback $c; Drop $c 'session marked' };                                               Fail = 'loader_fallback_boot' }
+ 'build is a listed one'        = @{ Mut = { param($c) Use-Fallback $c; $c.ml = @($c.ml | ForEach-Object { $_ -replace "\(CL-130045\) is not in", '(CL-129402) is not in' }) }; Fail = 'loader_fallback_boot' }
+ 'preload plugin running'       = @{ Mut = { param($c) Use-Fallback $c; $c.ml += "$($fbInfo)[Preload] ---- Preload phase: 1 DLL(s) ----" };                Fail = 'preload_off' }
+ 'no preload skip line'         = @{ Mut = { param($c) Use-Fallback $c; Drop $c '\[Preload\] Phase skipped' };                                    Fail = 'preload_off' }
+ 'refused plugin also loaded'   = @{ Mut = { param($c) Use-Fallback $c; $c.ml += "$($fbInfo)[ModLoader] Successfully loaded plugin DLL: MiniMap v1.2.0 (PluginInit deferred)" }; Fail = 'plugin_not_loaded_MiniMap' }
+ 'plugin neither loaded nor refused' = @{ Mut = { param($c) Use-Fallback $c; Drop $c 'Waila' };                                                      Fail = 'plugin_loaded_WAILA' }
+ 'plugin init failed'           = @{ Mut = { param($c) Use-Fallback $c; $c.ml += "$($fbInfo)[ModLoader] Plugin initialization failed: Codex" };      Fail = 'plugin_no_fault_Codex' }
+ 'plugin outside the set'       = @{ Mut = { param($c) Use-Fallback $c; $c.ml += "$($fbInfo)[ModLoader] Plugin info - Name: Stranger, Version: v1.0.0, Author: X, Interface: 75" }; Fail = 'no_unexpected_plugin' }
+ 'plugin at another version'    = @{ Mut = { param($c) Use-Fallback $c; $c.ml = @($c.ml | ForEach-Object { $_ -replace 'Name: BetterDrone, Version: v0\.23\.0', 'Name: BetterDrone, Version: v0.22.0' }) }; Fail = 'plugin_version_BetterDrone' }
+ 'crash marker'                 = @{ Mut = { param($c) Use-Fallback $c; $c.ml += "$($fbErr)[CrashReporter] *** FATAL ENGINE CRASH *** -- suppressing CrashReportClient upload" }; Fail = 'no_crash_markers' }
+ 'crash dump'                   = @{ Mut = { param($c) Use-Fallback $c; $c.boot.crash_files = @('Crashes\crash.dmp') };                            Fail = 'no_crash_files' }
+ 'crash dialog'                 = @{ Mut = { param($c) Use-Fallback $c; $c.boot.crash_dialog = 'The game has crashed' };                          Fail = 'no_crash_dialog' }
+ 'game exited'                  = @{ Mut = { param($c) Use-Fallback $c; $c.boot.exited_early = $true; $c.boot.alive_at_end = $false; $c.boot.exit_code = 53 }; Fail = 'client_alive_at_end' }
+ 'hooks not installed'          = @{ Mut = { param($c) Use-Fallback $c; Drop $c 'Engine hooks installed in' };                                    Fail = 'engine_hooks_installed' }
+ 'hung before boot finished'    = @{ Mut = { param($c) Use-Fallback $c; Drop $c 'Boot sequence finished in' };                                     Fail = 'boot_sequence_finished' }
+ 'update traffic'               = @{ Mut = { param($c) Use-Fallback $c; $c.ml += "$($fbInfo)[AutoUpdate] Manifest URL: https://example.invalid/manifest-client.json (compiled-in default)" }; Fail = 'no_update_check' }
+}
+foreach ($k in $fbCases.Keys) {
+    $r = New-RigCase "fallback-$k" 'test-branch' $fbCases[$k].Mut
+    $mustFail = $fbCases[$k].Fail
+    $want = if ($mustFail) { 1 } else { 0 }
+    $failed = ($r.Out -split "`n" | Where-Object { $_ -match ' FAIL\s*$' -and $_ -notmatch '^VERDICT' } | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
+    $problems = @()
+    if ($r.Exit -ne $want) { $problems += "exit $($r.Exit), want $want" }
+    if ($mustFail -and (($failed -split ',') -notcontains $mustFail)) { $problems += "check $mustFail did not fail" }
+    if (-not $mustFail -and $failed) { $problems += "unexpected failures: $failed" }
+    $vf = Join-Path $r.Dir 'verdict.json'
+    if (Test-Path $vf) {
+        $j = Get-Content -LiteralPath $vf -Raw -Encoding UTF8 | ConvertFrom-Json
+        $vt = Get-Content -LiteralPath (Join-Path $r.Dir 'verdict.txt') -Raw -Encoding UTF8
+        if ($k -eq 'fallback boot') {
+            if ($j.reason -notmatch 'booted a build its version map has no row for') { $problems += "reason: $($j.reason)" }
+            if (@($j.notes) -notcontains 'build CL-130045 is not in the version object map: it ran on checked values from CL-129402') { $problems += 'the fallback note is missing' }
+            $mm = @($j.plugins | Where-Object { $_.name -eq 'MiniMap' })[0]
+            if ($mm.state -notlike 'refused*') { $problems += "MiniMap state $($mm.state)" }
+            foreach ($n in 'loader_fallback_boot', 'no_game_version_ok', 'preload_off', 'engine_hooks_installed', 'boot_sequence_finished', 'client_alive_at_end', 'plugin_not_loaded_MiniMap') { if ($r.Out -notmatch "$n\s+PASS") { $problems += "$n not PASS" } }
+            if ($r.Out -match '(?m)^(loader_declined|game_version_ok)\s') { $problems += 'a decline or known-build check ran' }
+        }
+        if ($k -eq 'non-fatal preflight entry' -and $vt -notmatch 'preflight_all_usable\s+PASS\s+.*64/65 usable \(0 fatal, 1 non-fatal\)') { $problems += 'the non-fatal entry is not shown' }
+        if ($k -eq 'feature off, no rows' -and @($j.notes) -notcontains "BetterDrone feature ""$cycleTitle"" is off, accepted on a build with no rows: $cycleKey") { $problems += 'the off feature is not a note' }
+        if ($k -eq 'size with no row' -and @($j.notes) -notcontains 'size row BetterCheats: FMassEntityManager row none, reflected none: NO ROW, feature stays off') { $problems += 'the no-row size is not a note' }
+        if ($k -eq 'refused plugin also loaded' -and $vt -notmatch 'plugin_not_loaded_MiniMap\s+FAIL') { $problems += 'refused and loaded not caught' }
+    } else { $problems += 'no verdict.json' }
+    if ($problems.Count -gt 0) { $bad++ }
+    'fallback {0,-34} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
 }
 
 # Client mode keeps the logs' text off the console and out of GITHUB_STEP_SUMMARY: the
