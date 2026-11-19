@@ -46,6 +46,9 @@
 #                                       <logName>", and nothing else for the plugin, passes it
 #                                       as loaded and one fewer is expected to initialise
 #       ],
+#       "knownCls": [127004, 128786],   optional, with expectDecline: the CLs of the candidate map's build rows.
+#                                       A Game version OK line naming one of them means the exe is a known build
+#                                       under another Steam build id: the rig is then judged as a boot, not a decline.
 #       "expectDecline": true,          optional: the build is one the loader's map has no row for
 #                                       (client-rig-set.ps1 -ExpectDecline). The rig passes only on a
 #                                       clean decline: the version-mismatch line and the aborted hook
@@ -588,6 +591,11 @@ function Invoke-ClientVerdict {
     # An unmapped build (expectDecline) is a decline unless the loader says it went on with the newest known
     # build's values (from v1.26.0): then it is judged as a boot, Get-FallbackChecks in place of the version gate.
     $unmapped = [bool](Get-Prop $set 'expectDecline' $false)
+    # The Steam build id is not the exe: two client branches can serve one exe under different build ids, and the
+    # loader decides by the exe's CL. When the loader logs a Game version OK line whose CL is in knownCls (the CLs
+    # of the candidate map's build rows, which the set step records), the build is a known one: judged as a boot.
+    $gvKnown = First-Match $ml 'Game version OK: .*-CL-(\d+)\s*$' -Case
+    if ($unmapped -and $gvKnown -and $gvKnown -cmatch '-CL-(\d+)\s*$' -and @(@(Get-Prop $set 'knownCls' @()) | ForEach-Object { [string]$_ }) -ccontains $Matches[1]) { $unmapped = $false }
     $fallback = $unmapped -and $null -ne (First-Match $ml $script:FallbackTryRe -Case)
     $compat = Get-CompatJudgement $ml $boot $set $fallback
 

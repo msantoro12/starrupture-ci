@@ -50,7 +50,7 @@ test('triggers: dispatch and call only, no schedule, no pull request, one set of
   const names = (s) => [...s.matchAll(/\n {6}([a-z_]+):\n {8}description:/g)].map((m) => m[1]);
   const dispatch = on.slice(on.indexOf('  workflow_dispatch:'), on.indexOf('  workflow_call:'));
   const call = on.slice(on.indexOf('  workflow_call:'), on.indexOf('    outputs:'));
-  const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'expect_decline', 'remove_plugins'];
+  const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'expect_decline', 'known_cls', 'remove_plugins'];
   // The feed inputs name an artifact of the calling run: a dispatch has none, so only a call takes them.
   const feedInputs = ['feed_artifact', 'feed_seq', 'feed_cl'];
   assert.deepEqual(names(dispatch), want);
@@ -621,6 +621,21 @@ test('rig set: expect_decline marks the plan, is only true or false, and cannot 
   assert.match(both.text, /expect_decline and expect_refused exclude each other/);
 });
 
+test('rig set: known_cls goes into the plan with expect_decline only, as CL numbers', (t) => {
+  const plain = resolveWithMock('-Branch public_test_branch');
+  if (!plain) return t.skip('no PowerShell on this machine');
+  assert.deepEqual(plain.plan.knownCls, [], 'nothing known is nothing declared');
+  const ok = resolveWithMock("-Branch public_test_branch -ExpectDecline 'true' -KnownCls '127004 129402'");
+  assert.equal(ok.r.status, 0, ok.text);
+  assert.deepEqual(ok.plan.knownCls, [127004, 129402]);
+  const alone = resolveWithMock("-Branch public_test_branch -KnownCls '127004'");
+  assert.notEqual(alone.r.status, 0);
+  assert.match(alone.text, /known_cls only goes with expect_decline/);
+  const odd = resolveWithMock("-Branch public_test_branch -ExpectDecline 'true' -KnownCls '127004 abc'");
+  assert.notEqual(odd.r.status, 0);
+  assert.match(odd.text, /known_cls names 'abc', which is not a CL number/);
+});
+
 test('rig set: the branch must be one of the rig branches in .github/sr-pipeline/rig-branches.json, and adding a branch there is all it takes', (t) => {
   const listed = JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'));
   assert.ok(listed.includes('public') && listed.includes('public_test_branch') && listed.includes('v.0.3.5_for_ds'), 'today the list is public, the test branch and the second client branch');
@@ -647,7 +662,9 @@ test('rig set: the branch must be one of the rig branches in .github/sr-pipeline
 test('rig workflow: expect_decline reaches the set step through the environment, not the script text', () => {
   assert.equal(wf.match(/\n {6}expect_decline:\n {8}description:/g)?.length, 2, 'declared by both triggers');
   assert.match(wf, /\n {6}EXPECT_DECLINE: \$\{\{ inputs\.expect_decline \}\}\n/);
-  assert.ok(wf.includes('-ExpectDecline $env:EXPECT_DECLINE'));
+  assert.ok(wf.includes('-ExpectDecline $env:EXPECT_DECLINE -KnownCls $env:KNOWN_CLS'));
+  assert.equal(wf.match(/\n {6}known_cls:\n {8}description:/g)?.length, 2, 'declared by both triggers');
+  assert.match(wf, /\n {6}KNOWN_CLS: \$\{\{ inputs\.known_cls \}\}\n/);
   assert.ok(!/-ExpectDecline \$\{\{/.test(wf), 'never interpolated into the command');
 });
 

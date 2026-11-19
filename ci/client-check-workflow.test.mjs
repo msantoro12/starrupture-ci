@@ -612,6 +612,9 @@ test('rig gate: the first rig runs on the branch of this check, the second on th
 test('rig gate: each rig declares the refusals the loader rule predicts for the build ITS branch runs, and the rule is written down', () => {
   assert.equal(mapOf(job('rig-branch'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused }}');
   assert.equal(mapOf(job('rig-other'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused_other }}');
+  // The Steam build id of the other branch may have no build row while its exe is a known one: the rig is told the CLs the candidate map holds.
+  assert.equal(mapOf(job('rig-other'), 'with').known_cls, '${{ needs.map-mode.outputs.known_cls }}');
+  assert.equal(mapOf(job('rig-branch'), 'with').known_cls, undefined, 'the rig of the public branch has no decline to soften');
   const comment = wf.slice(wf.indexOf('  # ---- Client rig: the candidate loader'), wf.indexOf('\n  rig-branch:\n')).replace(/\n\s*#\s*/g, ' ');
   assert.match(comment, /rig-other\s+the other Steam branch[\s\S]*?the refusals the loader's own rule predicts for THAT branch's current build/);
   assert.match(comment, /any refusal it does not predict is a fail/);
@@ -1286,7 +1289,7 @@ test('other branch: the branch and its CL come from what Steam lists now, throug
   assert.match(a.out, /branch=\[public_test_branch\] cl=\[129402\] flag=\[--other-cl 129402\] id=\[26271156\]/);
   assert.match(a.out, /the other branch \(public_test_branch\) runs build 26271156 = CL-129402/);
   assert.match(a.err, /live read: --other-branch public$/m);
-  assert.match(a.outputs, /^other_branch=public_test_branch\nother_cl=129402\n$/);
+  assert.match(a.outputs, /^other_branch=public_test_branch\nother_cl=129402\nknown_cls=127004 129402\n$/);
   // A dispatch without the input takes the live id Steam just gave.
   const b = run({ branch: 'public_test_branch', live: 'public 25646882' });
   assert.equal(b.status, 0, b.err);
@@ -1309,7 +1312,7 @@ test('other branch: the branch and its CL come from what Steam lists now, throug
     assert.equal(none.status, 0, none.err);
     assert.match(none.out, /branch=\[none\] cl=\[\] flag=\[\] id=\[\]/);
     assert.match(none.out, /::notice title=No other branch::/);
-    assert.equal(none.outputs, 'other_branch=none\nother_cl=\n');
+    assert.equal(none.outputs, 'other_branch=none\nother_cl=\nknown_cls=127004 129402\n');
   }
   // A first publish carries two builds, so it needs the other branch.
   const first = run({ branch: 'public', live: '', first: 'true' });

@@ -2720,6 +2720,7 @@ jobs:
       # 'true' when that build's CL is not in the candidate map (decide --other-unmapped): the loader has no rows
       # for it, so the other branch's rig passes on a clean decline or a fallback boot (rig input expect_decline).
       expect_decline_other: ${{ steps.chain.outputs.expect_decline_other }}
+      known_cls: ${{ steps.chain.outputs.known_cls }}
       # The releases the rigs run, as the rig's tags input takes them (Name=tag, space separated; empty when the check could not
       # resolve them, and then the rigs resolve the Latest themselves and nothing is declared for them).
       rig_tags: ${{ steps.chain.outputs.rig_tags }}
@@ -3192,6 +3193,15 @@ jobs:
             else other_flag=(--other-unmapped "the other branch runs build $other_buildid"); echo "::notice title=Other branch not in the map::the other branch ($other_branch) runs build $other_buildid, which has no row in the candidate map: its rig expects a clean decline"; fi
           fi
           echo "other_cl=$other_cl" >> "$GITHUB_OUTPUT"
+          # The CLs the candidate map holds a build row for. A Steam build id with no row can still be an exe the
+          # loader knows (a second client branch serving the same exe), so the other branch's rig is told these
+          # and expects a boot, not a decline, when the loader accepts the build as one of them.
+          known_cls="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parse } from "./tool/ci/version-map.mjs";
+            process.stdout.write(parse(readFileSync(process.argv[1], "utf8"), "the header").builds.map((b) => b.cl).join(" "));
+          ' "$header")"
+          echo "known_cls=$known_cls" >> "$GITHUB_OUTPUT"
           # A first publish carries both builds: the other branch's live build must be in the header, with
           # rows, and must not be this run's own. Judged here, before anything is exported or signed.
           if [ "$FIRST_PUBLISH" = true ]; then
@@ -3951,7 +3961,9 @@ jobs:
       expect: ${{ needs.candidate-loader.outputs.expect }}
       tags: ${{ needs.map-mode.outputs.rig_tags }}
       expect_refused: ${{ needs.map-mode.outputs.expect_refused_other }}
-      # A build the candidate map has no row for: this rig passes on a clean decline or a fallback boot.
+      known_cls: ${{ needs.map-mode.outputs.known_cls }}
+      # A build the candidate map has no row for: this rig passes on a clean decline or a fallback boot; if the
+      # loader accepts the build as one of known_cls (a known exe under a new Steam build id) it must boot.
       expect_decline: ${{ needs.map-mode.outputs.expect_decline_other }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
