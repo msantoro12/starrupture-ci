@@ -159,7 +159,7 @@ jobs:
             let branches = [];
             try { branches = JSON.parse(e.MATRIX).map((x) => x.branch); } catch {}
             const have = new Set(pr.labels.map((l) => l.name));
-            const missing = branches.filter((b) => /^[A-Za-z0-9_]+$/.test(b) && !have.has("chain-passed-" + b));
+            const missing = branches.filter((b) => /^[A-Za-z0-9_.]+$/.test(b) && !have.has("chain-passed-" + b));
             if (hours >= Number(e.STALE_HOURS) && missing.length) console.log(pr.number + " " + Math.floor(hours) + " " + missing.join(","));
           ')"
           [ -n "$stale" ] || { echo "No stale update PR."; exit 0; }
@@ -319,7 +319,7 @@ jobs:
           node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl || true
           node ci/pipeline-alert.mjs outside --causes failed-jobs.jsonl --owner "$OWNER" --run-url "$RUN_URL" --out alert.md
           [ -s alert.md ] || exit 0
-          branches="$(node -e 'let b = []; try { b = JSON.parse(process.env.MATRIX).map((x) => x.branch); } catch {} console.log(b.filter((x) => /^[A-Za-z0-9_]+$/.test(x)).join(" "))')"
+          branches="$(node -e 'let b = []; try { b = JSON.parse(process.env.MATRIX).map((x) => x.branch); } catch {} console.log(b.filter((x) => /^[A-Za-z0-9_.]+$/.test(x)).join(" "))')"
           if [ -z "$branches" ]; then
             node ci/pipeline-alert.mjs raise --title "SR watch: the update chain needs attention" --body-file alert.md --owner "$OWNER"
           fi

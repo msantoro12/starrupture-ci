@@ -64,7 +64,7 @@ on:
   workflow_call:
     inputs:
       branch:
-        description: 'Client branch: public or public_test_branch'
+        description: 'Client branch (one of .github/sr-pipeline/rig-branches.json)'
         type: string
         required: true
       buildid:
@@ -72,7 +72,7 @@ on:
         type: string
         default: ''
       other_buildid:
-        description: 'Build id of the other client branch (public or public_test_branch); its CL decides which refusals the rig of that branch expects. Empty: read live from Steam'
+        description: 'Build id of the other client branch the rig covers (the one Steam lists now, see .github/sr-pipeline/rig-branches.json); its CL decides which refusals the rig of that branch expects. Empty: read live from Steam. Ignored when Steam lists no other branch'
         type: string
         default: ''
       pr:
@@ -581,8 +581,10 @@ jobs:
             || { echo "::error::cannot read the version map header of $LOADER_REF"; exit 2; }
           other_buildid="$OTHER_BUILDID"
           if [ -z "$other_buildid" ]; then
-            other_buildid="$(node tool/.github/sr-pipeline/poll-steam.mjs --live-buildid public_test_branch)" \
+            found="$(node tool/.github/sr-pipeline/poll-steam.mjs --other-branch public)" \
               || { echo "::error::cannot read the live build id of the other Steam branch"; exit 2; }
+            [ -n "$found" ] || { echo "::error::first_publish is refused: Steam lists no other client branch, so the feed would not carry two builds"; exit 2; }
+            other_buildid="${found#* }"
           fi
           public_buildid="$BUILDID"
           if [ -z "$public_buildid" ]; then
@@ -1237,7 +1239,7 @@ jobs:
           $failed = $false
           $root = 'C:\steamcmd'
           try {
-            if ($env:BRANCH -notmatch '^[A-Za-z0-9_]+$') { throw "bad branch name '$env:BRANCH'" }
+            if ($env:BRANCH -notmatch '^[A-Za-z0-9_.]+$') { throw "bad branch name '$env:BRANCH'" }
             $user = "$env:STEAM_USER".Trim()
             if ($user -notmatch '^[A-Za-z0-9_]{3,64}$') { throw 'STEAM_CI_USERNAME is not a valid Steam account name' }
             Write-Host "::add-mask::$user"
@@ -2719,6 +2721,10 @@ jobs:
       rig_tags: ${{ steps.chain.outputs.rig_tags }}
       # The CL of the build the other Steam branch runs when the candidate map holds it (empty otherwise): the feed-path gate's second leg.
       other_cl: ${{ steps.chain.outputs.other_cl }}
+      # The other client branch this run rigs: the other rigged branch Steam lists now (.github/sr-pipeline/rig-branches.json),
+      # or 'none' when Steam lists none. The one answer that says whether the second rig leg exists: its job, the rig gate, the
+      # alert and publish all read it. Anything but 'none' is a leg that has to pass (a missing value is never read as 'no leg').
+      other_branch: ${{ steps.chain.outputs.other_branch }}
       # 'true' for a first publish (see the input): the push and the publish job read this one answer.
       first_publish: ${{ steps.write.outputs.first_publish }}
     env:
@@ -3139,29 +3145,38 @@ jobs:
           [ "$CANDIDATE" = true ] && test_flag=(--candidate)
           first_flag=()
           [ "$FIRST_PUBLISH" = true ] && first_flag=(--first-publish)
-          # The other Steam branch's current build: the id the dispatch names (other_buildid; sr-watch passes its
-          # poll's), else read live from Steam the way the watcher's poll reads it. Never the id recorded on main:
-          # that is the build as of the last merged update PR, so after the other branch moved it names a build
-          # that no longer runs there. An id that cannot be read stops the chain here, with the cause.
-          other_branch=public; [ "$BRANCH" = public ] && other_branch=public_test_branch
-          other_buildid="$OTHER_BUILDID"
-          if [ -z "$other_buildid" ]; then
-            other_buildid="$(node tool/.github/sr-pipeline/poll-steam.mjs --live-buildid "$other_branch")" \
-              || { echo "::error title=Other branch build id::cannot read the live build id of the other Steam branch from Steam, so its rig cannot know what the loader must do there; pass other_buildid to name it"; exit 2; }
-          fi
-          case "$other_buildid" in ""|*[!0-9]*) echo "::error title=Other branch build id::the build id of the other Steam branch is not a number: '$other_buildid'"; exit 2 ;; esac
-          other_cl="$(node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { parse, clOfBuild } from "./tool/ci/version-map.mjs";
-            const cl = clOfBuild(parse(readFileSync(process.argv[1], "utf8"), "the header"), process.argv[2]);
-            if (cl !== null) process.stdout.write(String(cl));
-          ' "$header" "$other_buildid")"
-          echo "other_cl=$other_cl" >> "$GITHUB_OUTPUT"
-          # A build the candidate map has no row for cannot be run by the loader: it declines, and the
-          # other branch's rig passes only if the decline is clean (decide --other-unmapped).
+          # The other Steam branch: the other client branch the rig covers (.github/sr-pipeline/rig-branches.json) that Steam
+          # lists now, read live. Steam listing none means no other leg: nothing is run or judged for a branch that is
+          # not there (a build id recorded for it on main names a build that no longer runs). Its current build: the id the
+          # dispatch names (other_buildid; sr-watch passes its poll's), else the live one just read. Never the id recorded on
+          # main: that is the build as of the last merged update PR, so after the other branch moved it names a build that
+          # no longer runs there. Steam answering nothing readable stops the chain here, with the cause.
+          found="$(node tool/.github/sr-pipeline/poll-steam.mjs --other-branch "$BRANCH")" \
+            || { echo "::error title=Other branch::cannot read the client branches Steam lists now, so the rig cannot tell which branch is the other one or what the loader must do there"; exit 2; }
+          read -r other_branch live_other_buildid <<< "$found"
+          other_branch="${other_branch:-none}"
+          echo "other_branch=$other_branch" >> "$GITHUB_OUTPUT"
+          other_buildid=""
+          other_cl=""
           other_flag=()
-          if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "the other branch runs build $other_buildid = CL-$other_cl"
-          else other_flag=(--other-unmapped "the other branch runs build $other_buildid"); echo "::notice title=Other branch not in the map::the other branch runs build $other_buildid, which has no row in the candidate map: its rig expects a clean decline"; fi
+          if [ "$other_branch" = none ]; then
+            [ "$FIRST_PUBLISH" != true ] || { echo "::error::first_publish is refused: Steam lists no other client branch, so the feed would not carry two builds"; exit 2; }
+            echo "::notice title=No other branch::Steam lists no other client branch the rig covers, so this run has no second rig leg"
+          else
+            other_buildid="${OTHER_BUILDID:-$live_other_buildid}"
+            case "$other_buildid" in ""|*[!0-9]*) echo "::error title=Other branch build id::the build id of the other Steam branch is not a number: '$other_buildid'"; exit 2 ;; esac
+            other_cl="$(node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+              import { parse, clOfBuild } from "./tool/ci/version-map.mjs";
+              const cl = clOfBuild(parse(readFileSync(process.argv[1], "utf8"), "the header"), process.argv[2]);
+              if (cl !== null) process.stdout.write(String(cl));
+            ' "$header" "$other_buildid")"
+            # A build the candidate map has no row for cannot be run by the loader: it declines, and the
+            # other branch's rig passes only if the decline is clean (decide --other-unmapped).
+            if [ -n "$other_cl" ]; then other_flag=(--other-cl "$other_cl"); echo "the other branch ($other_branch) runs build $other_buildid = CL-$other_cl"
+            else other_flag=(--other-unmapped "the other branch runs build $other_buildid"); echo "::notice title=Other branch not in the map::the other branch ($other_branch) runs build $other_buildid, which has no row in the candidate map: its rig expects a clean decline"; fi
+          fi
+          echo "other_cl=$other_cl" >> "$GITHUB_OUTPUT"
           # A first publish carries both builds: the other branch's live build must be in the header, with
           # rows, and must not be this run's own. Judged here, before anything is exported or signed.
           if [ "$FIRST_PUBLISH" = true ]; then
@@ -3368,7 +3383,9 @@ jobs:
   #     publish is the one exception (below);
   #   - the chain marked it publishable (ci/promote.mjs isPublishable) and is not a test run;
   #   - both client rigs (rig-branch, rig-other) ended with verdict PASS on the candidate
-  #     loader: a failed, cancelled or skipped rig keeps the feed unsigned;
+  #     loader: a failed, cancelled or skipped rig keeps the feed unsigned. The one exception is a
+  #     second leg that does not exist: map-mode's other_branch is exactly 'none' (Steam lists no
+  #     other rigged branch), and then rig-branch alone decides;
   #   - the feed gate (feed-gate) ended PASS, or SKIP with its reason (the feed adds or changes no
   #     row for the build of either Steam branch compared with the compiled map of the release the
   #     feed-path rig would run): the feed as players read it was tested in the real game, or has
@@ -3389,7 +3406,7 @@ jobs:
   publish:
     name: publish the feed
     needs: [check, map-mode, rig-branch, rig-other, feed-gate]
-    if: ${{ !cancelled() && inputs.test_autopilot != true && inputs.proof_run != true && inputs.publish == true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' && needs.feed-gate.result == 'success' && (needs.feed-gate.outputs.state == 'PASS' || needs.feed-gate.outputs.state == 'SKIP') }}
+    if: ${{ !cancelled() && inputs.test_autopilot != true && inputs.proof_run != true && inputs.publish == true && needs.map-mode.outputs.test == 'false' && inputs.branch == 'public' && needs.map-mode.outputs.decision == 'M' && needs.map-mode.outputs.publishable == 'true' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' && (needs.map-mode.outputs.other_branch == 'none' || (needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS')) && needs.feed-gate.result == 'success' && (needs.feed-gate.outputs.state == 'PASS' || needs.feed-gate.outputs.state == 'SKIP') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -3802,7 +3819,8 @@ jobs:
   #   rig-branch  the Steam branch this check is for, with map-mode's expect_refused:
   #               the plugins the loader refuses on that build must be refused, and
   #               every other plugin must load.
-  #   rig-other   the other Steam branch (public <-> public_test_branch) with the refusals
+  #   rig-other   the other Steam branch (the other client branch of .github/sr-pipeline/rig-branches.json
+  #               that Steam lists now; map-mode's other_branch) with the refusals
   #               the loader's own rule predicts for THAT branch's current build
   #               (map-mode's expect_refused_other: decide's loaderRefusal on the other
   #               branch's CL, the CL found through its build id in the candidate map),
@@ -3812,6 +3830,9 @@ jobs:
   #               rule predicts there (a v70 plugin on a newer build) is declared, and any
   #               refusal it does not predict is a fail. Public is never excused by hand:
   #               when that CL cannot be named, nothing is declared and a refusal fails.
+  #               When Steam lists no other rigged branch (map-mode's other_branch is 'none'), there is
+  #               no second leg: rig-other is skipped and the gate, publish and the alert expect nothing
+  #               of it. A listed branch always gets its leg, and its rig has to pass.
   # They run one after the other: the rig's concurrency group keeps only one pending run,
   # so a second queued call would cancel the first. rig-other waits for rig-branch whatever
   # its result (!cancelled() keeps it running after a failure), so a failing first rig does
@@ -3840,15 +3861,15 @@ jobs:
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
 
   rig-other:
-    name: client rig (${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }})
+    name: client rig (${{ needs.map-mode.outputs.other_branch || 'other branch' }})
     needs: [map-mode, candidate-loader, rig-branch]
-    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.candidate-loader.result == 'success' }}
+    if: ${{ !cancelled() && needs.map-mode.result == 'success' && needs.candidate-loader.result == 'success' && needs.map-mode.outputs.other_branch != '' && needs.map-mode.outputs.other_branch != 'none' }}
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/sr-client-rig.yml
     with:
-      branch: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      branch: ${{ needs.map-mode.outputs.other_branch }}
       candidate_run_id: ${{ github.run_id }}
       candidate_artifact: ${{ needs.candidate-loader.outputs.artifact }}
       expect: ${{ needs.candidate-loader.outputs.expect }}
@@ -3918,6 +3939,7 @@ jobs:
       MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
       SEQ: ${{ needs.map-mode.outputs.seq }}
       OTHER_CL: ${{ needs.map-mode.outputs.other_cl }}
+      OTHER_BRANCH: ${{ needs.map-mode.outputs.other_branch }}
       RIG_TAGS: ${{ needs.map-mode.outputs.rig_tags }}
       FEED_LOADER_REF: ${{ contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') && inputs.feed_loader_ref || '' }}
       PUBLISH: ${{ inputs.publish == true }}
@@ -4021,7 +4043,9 @@ jobs:
           leg "$cl"; rstate="${LEG%%|*}"; rreason="${LEG#*|}"
           ocl=""
           case "${OTHER_CL:-}" in
-            "") ostate=SKIP; oreason="the candidate map holds no build row for the build the other branch runs, so the feed carries nothing for it (its candidate rig expects a clean decline)" ;;
+            "") ostate=SKIP
+              if [ "${OTHER_BRANCH:-}" = none ]; then oreason="Steam lists no other client branch, so there is no second build to carry"
+              else oreason="the candidate map holds no build row for the build the other branch runs, so the feed carries nothing for it (its candidate rig expects a clean decline)"; fi ;;
             0*|*[!0-9]*) finish FAIL "the CL of the other branch's build is not a number ('$OTHER_CL')" ;;
             "$cl") ostate=SKIP; oreason="the other branch runs the same build as this one (CL-$cl), covered by the leg above" ;;
             *) ocl="$OTHER_CL"; leg "$ocl"; ostate="${LEG%%|*}"; oreason="${LEG#*|}" ;;
@@ -4161,7 +4185,7 @@ jobs:
   # The second leg: the same loader build, on the other Steam branch, when the feed delivers rows for the
   # build that branch runs. Its rig runs after the first one (the rig's concurrency group keeps one pending run).
   rig-feed-other:
-    name: client rig (${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}, feed path)
+    name: client rig (${{ needs.map-mode.outputs.other_branch || 'other branch' }}, feed path)
     needs: [map-mode, feed-plan, feed-loader, rig-feed]
     if: ${{ !cancelled() && inputs.branch == 'public' && needs.feed-plan.outputs.other_state == 'RUN' && needs.feed-loader.result == 'success' }}
     permissions:
@@ -4169,7 +4193,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/sr-client-rig.yml
     with:
-      branch: ${{ inputs.branch == 'public' && 'public_test_branch' || 'public' }}
+      branch: ${{ needs.map-mode.outputs.other_branch }}
       candidate_run_id: ${{ github.run_id }}
       candidate_artifact: ${{ needs.feed-loader.outputs.artifact }}
       expect: ${{ needs.feed-loader.outputs.expect }}
@@ -4297,7 +4321,8 @@ jobs:
   # Runs for every candidate the chain staged (the same cue as push-loader) and writes
   # the decision, the candidate and both rigs' verdict, reason and logs artifact into the
   # run summary. It fails unless both rigs passed, so a rig that failed, was cancelled or
-  # never ran for a staged candidate is a red job, never a skipped green. The publish job
+  # never ran for a staged candidate is a red job, never a skipped green. The one leg it does
+  # not expect is the second one when Steam lists no other rigged branch (other_branch 'none'). The publish job
   # reads the two rigs itself; this job is what a person reads. With the autopilot off the
   # rigs still run on the candidate and publish stays held.
   rig-gate:
@@ -4322,6 +4347,8 @@ jobs:
       BRANCH_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused }}
       OTHER_EXPECT_REFUSED: ${{ needs.map-mode.outputs.expect_refused_other }}
       OTHER_NAME: the other branch
+      # 'none' when Steam lists no other rigged branch: the one case where the other leg is not expected.
+      OTHER_BRANCH: ${{ needs.map-mode.outputs.other_branch }}
       OTHER_RESULT: ${{ needs.rig-other.result }}
       OTHER_VERDICT: ${{ needs.rig-other.outputs.verdict }}
       OTHER_REASON: ${{ needs.rig-other.outputs.reason }}
@@ -4341,7 +4368,9 @@ jobs:
               return { name, pass, line: "- **" + name + "**: " + state + (why ? " - " + why : "") + ". " + rule + " Logs: " + logs + "." };
             };
             const a = one("BRANCH", e.BRANCH_NAME, e.BRANCH_EXPECT_REFUSED ? "Must be refused here: " + e.BRANCH_EXPECT_REFUSED + "." : "No refusals expected.");
-            const b = one("OTHER", e.OTHER_NAME, e.OTHER_EXPECT_REFUSED ? "Must be refused here (the loader rule for the build this branch runs): " + e.OTHER_EXPECT_REFUSED + ". Any other refusal is a fail." : "No refusals expected: its current build must keep working with the same DLLs.");
+            // No other leg only when map-mode says so in so many words; a missing answer is a leg that did not run.
+            const noOther = e.OTHER_BRANCH === "none";
+            const b = noOther ? { name: e.OTHER_NAME, pass: true, line: "- **" + e.OTHER_NAME + "**: no leg - Steam lists no other client branch the rig covers, so there is nothing to run or judge for it." } : one("OTHER", e.OTHER_NAME, e.OTHER_EXPECT_REFUSED ? "Must be refused here (the loader rule for the build this branch runs): " + e.OTHER_EXPECT_REFUSED + ". Any other refusal is a fail." : "No refusals expected: its current build must keep working with the same DLLs.");
             const ok = a.pass && b.pass;
             const md = ["### Client rig gate: " + (ok ? "PASS" : "FAIL"), "",
               "Decision " + (e.DECISION || "none") + (e.PUBLISHABLE === "true" ? ", publishable" : ", not publishable") + ". Candidate loader " + (e.CANDIDATE_VERSION || "none") + (e.CANDIDATE_SHA ? " (loader commit " + e.CANDIDATE_SHA.slice(0, 7) + ")" : "") + ", job " + e.CANDIDATE_RESULT + ". The feed is published only when both rigs pass.", "", a.line, b.line];
@@ -4421,6 +4450,8 @@ jobs:
       BRANCH_RIG_ARTIFACT: ${{ needs.rig-branch.outputs.artifact }}
       BRANCH_RIG_REVIEW: ${{ needs.rig-branch.outputs.review }}
       OTHER_RIG_NAME: the other branch
+      # 'none' when Steam lists no other rigged branch: the one case where the other rig is not expected.
+      OTHER_BRANCH: ${{ needs.map-mode.outputs.other_branch }}
       OTHER_RIG_RESULT: ${{ needs.rig-other.result }}
       OTHER_RIG_VERDICT: ${{ needs.rig-other.outputs.verdict }}
       OTHER_RIG_REASON: ${{ needs.rig-other.outputs.reason }}
@@ -4517,7 +4548,7 @@ jobs:
             if (expected && e.PUSH_RESULT === "success" && e.CANDIDATE_RESULT !== "success") {
               lines.push("- the **candidate loader** did not build and pass its tests (candidate-loader " + (e.CANDIDATE_RESULT === "failure" ? "failed" : "ended " + e.CANDIDATE_RESULT) + ")", ...why("candidate loader"));
             }
-            const rigs = ["BRANCH", "OTHER"].map((p) => ({ name: e[p + "_RIG_NAME"], result: e[p + "_RIG_RESULT"], verdict: e[p + "_RIG_VERDICT"], reason: e[p + "_RIG_REASON"], artifact: e[p + "_RIG_ARTIFACT"] }));
+            const rigs = ["BRANCH", "OTHER"].filter((p) => !(p === "OTHER" && e.OTHER_BRANCH === "none")).map((p) => ({ name: e[p + "_RIG_NAME"], result: e[p + "_RIG_RESULT"], verdict: e[p + "_RIG_VERDICT"], reason: e[p + "_RIG_REASON"], artifact: e[p + "_RIG_ARTIFACT"] }));
             const badRigs = expected ? rigs.filter((x) => !(x.result === "success" && x.verdict === "PASS")) : [];
             if (e.RIG_GATE_RESULT === "failure" || badRigs.length) {
               lines.push("- **client rig gate** failed: the feed is published only when both rigs pass");

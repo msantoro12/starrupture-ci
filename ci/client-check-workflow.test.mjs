@@ -523,7 +523,7 @@ const evalExpr = (expr, ctx) => {
   return new Function('needs', 'inputs', 'github', 'contains', 'startsWith', `return (${js});`)(ctx.needs, ctx.inputs, ctx.github ?? { workflow_ref: SR_WATCH_REF }, contains, (a, b) => String(a).startsWith(b));
 };
 const okNeeds = () => ({
-  'map-mode': { result: 'success', outputs: { test: 'false', decision: 'M', publishable: 'true', staged: 'true', expect_refused: '' } },
+  'map-mode': { result: 'success', outputs: { test: 'false', decision: 'M', publishable: 'true', staged: 'true', expect_refused: '', other_branch: 'public_test_branch' } },
   'candidate-loader': { result: 'success', outputs: { artifact: 'loader-candidate-public', version: 'cand-1-abcdef0', expect: 'Loader=cand-1-abcdef0', sha: 'a'.repeat(40) } },
   'rig-branch': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public-x-1-1' } },
   'rig-other': { result: 'success', outputs: { verdict: 'PASS', reason: 'All 40 checks passed', artifact: 'sr-client-rig-public_test_branch-x-1-1' } },
@@ -595,22 +595,25 @@ test('rig gate: the candidate, the run id and the expect come from candidate-loa
   assert.ok(!/remove_plugins/.test(job('rig-branch') + job('rig-other')));
 });
 
-test('rig gate: the first rig runs on the branch of this check, the second on the other one', () => {
+test('rig gate: the first rig runs on the branch of this check, the second on the other one Steam lists', () => {
   assert.equal(mapOf(job('rig-branch'), 'with').branch, '${{ inputs.branch }}');
   const other = mapOf(job('rig-other'), 'with').branch;
+  assert.equal(other, '${{ needs.map-mode.outputs.other_branch }}');
   for (const [mine, theirs] of [['public', 'public_test_branch'], ['public_test_branch', 'public']]) {
-    assert.equal(evalExpr(other, { needs: okNeeds(), inputs: { branch: mine } }), theirs, `${mine} -> ${theirs}`);
+    const n = okNeeds();
+    n['map-mode'].outputs.other_branch = theirs;
+    assert.equal(evalExpr(other, { needs: n, inputs: { branch: mine } }), theirs, `${mine} -> ${theirs}`);
   }
   // The job name follows the same rule, so the Actions list says which branch each rig is.
   assert.match(job('rig-branch'), /\n {4}name: client rig \(\$\{\{ inputs\.branch \}\}\)\n/);
-  assert.equal(job('rig-other').match(/\n {4}name: client rig \((\$\{\{ .* \}\})\)\n/)[1], other);
+  assert.match(job('rig-other'), /\n {4}name: client rig \(\$\{\{ needs\.map-mode\.outputs\.other_branch \|\| 'other branch' \}\}\)\n/);
 });
 
 test('rig gate: each rig declares the refusals the loader rule predicts for the build ITS branch runs, and the rule is written down', () => {
   assert.equal(mapOf(job('rig-branch'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused }}');
   assert.equal(mapOf(job('rig-other'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused_other }}');
   const comment = wf.slice(wf.indexOf('  # ---- Client rig: the candidate loader'), wf.indexOf('\n  rig-branch:\n')).replace(/\n\s*#\s*/g, ' ');
-  assert.match(comment, /rig-other\s+the other Steam branch[^.]*the refusals the loader's own rule predicts for THAT branch's current build/);
+  assert.match(comment, /rig-other\s+the other Steam branch[\s\S]*?the refusals the loader's own rule predicts for THAT branch's current build/);
   assert.match(comment, /any refusal it does not predict is a fail/);
   const readme = readFileSync(join(here, '..', '.github', 'sr-pipeline', 'README.md'), 'utf8').replace(/\r\n/g, '\n');
   assert.match(readme, /the loader's own rule predicts for the other branch's current build/);
@@ -721,6 +724,134 @@ test('rig gate: the summary carries both verdicts, reasons and the logs artifact
   assert.equal(run({ BRANCH_VERDICT: '' }).status, 1);
   // No expected refusals says so.
   assert.match(run({ BRANCH_EXPECT_REFUSED: '' }).md, /No refusals expected\./);
+});
+
+// ------------------------------------------------------------ the rig legs follow the branches Steam lists now
+// map-mode's other_branch is the one answer: the other rigged branch Steam lists now, or 'none'. Both rig legs, the gate,
+// publish and the alert read it. Listed means a leg that has to pass; the sentinel 'none' is the only way to have no leg.
+
+test('rig legs: both branches listed is the same as before (a leg per branch, each named by the branch it runs), and a branch added to the list is a leg with no workflow change', () => {
+  const mm = job('map-mode');
+  // The one list is a data file; the workflow names no branch but the 'public' that publishes.
+  const listed = JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'));
+  assert.deepEqual(listed, ['public', 'public_test_branch'], 'today: the two branches the pipeline rigs');
+  for (const n of ['rig-other', 'rig-feed-other']) {
+    assert.ok(!/public_test_branch/.test(job(n)), `${n} names no branch of its own: it takes map-mode's other_branch`);
+    assert.equal(mapOf(job(n), 'with').branch, '${{ needs.map-mode.outputs.other_branch }}');
+    assert.match(job(n), /\n {4}name: client rig \(\$\{\{ needs\.map-mode\.outputs\.other_branch \|\| 'other branch' \}\}/);
+  }
+  assert.ok(!/public_test_branch/.test(mm.slice(mm.indexOf('poll-steam.mjs --other-branch'), mm.indexOf('echo "other_cl=$other_cl"'))), 'the step that finds the other branch names none');
+  // Both listed: both legs run, the same as before.
+  for (const [mine, theirs] of [['public', 'public_test_branch'], ['public_test_branch', 'public']]) {
+    const n = okNeeds();
+    n['map-mode'].outputs.other_branch = theirs;
+    assert.equal(evalExpr(jobIf('rig-branch'), { needs: n, inputs: { ...okInputs(), branch: mine } }), true);
+    assert.equal(evalExpr(jobIf('rig-other'), { needs: n, inputs: { ...okInputs(), branch: mine } }), true, `${mine}: the other leg (${theirs}) runs`);
+    assert.equal(evalExpr(mapOf(job('rig-other'), 'with').branch, { needs: n, inputs: { branch: mine } }), theirs);
+  }
+  // A branch added to the list (a dotted name too) is a leg: the expression just carries the name.
+  const added = okNeeds();
+  added['map-mode'].outputs.other_branch = 'v.0.3.5_for_ds';
+  assert.equal(evalExpr(jobIf('rig-other'), { needs: added, inputs: okInputs() }), true);
+  assert.equal(evalExpr(mapOf(job('rig-other'), 'with').branch, { needs: added, inputs: okInputs() }), 'v.0.3.5_for_ds');
+});
+
+test('rig legs: a branch Steam no longer lists has no leg, and a listed branch always does (only the exact answer none skips it)', () => {
+  const none = okNeeds();
+  none['map-mode'].outputs.other_branch = 'none';
+  none['rig-other'] = { result: 'skipped', outputs: {} };
+  assert.equal(evalExpr(jobIf('rig-other'), { needs: none, inputs: okInputs() }), false, 'no listed other branch: its rig does not run');
+  assert.equal(evalExpr(jobIf('rig-branch'), { needs: none, inputs: okInputs() }), true, 'the branch of this check is rigged as ever');
+  // An empty or missing answer is not "no leg": the leg expected is the one that fails closed.
+  for (const v of ['', undefined]) {
+    const n = okNeeds();
+    if (v === undefined) delete n['map-mode'].outputs.other_branch; else n['map-mode'].outputs.other_branch = v;
+    n['rig-other'] = { result: 'skipped', outputs: {} };
+    assert.equal(evalExpr(jobIf('publish'), { needs: n, inputs: okInputs() }), false, `publish needs the leg when other_branch is ${JSON.stringify(v)}`);
+  }
+  // Publish: with the leg gone, the first rig alone decides, and it still has to pass.
+  const run = (mut) => { const n = okNeeds(); n['map-mode'].outputs.other_branch = 'none'; n['rig-other'] = { result: 'skipped', outputs: {} }; mut(n); return evalExpr(jobIf('publish'), { needs: n, inputs: okInputs() }); };
+  assert.equal(run(() => {}), true, 'one leg, passing: the feed is published');
+  assert.equal(run((n) => { n['rig-branch'] = { result: 'failure', outputs: { verdict: 'FAIL' } }; }), false, 'one leg, failing: held');
+  assert.equal(run((n) => { n['rig-branch'] = { result: 'skipped', outputs: {} }; }), false, 'one leg, not run: held');
+  assert.equal(run((n) => { n['feed-gate'] = { result: 'failure', outputs: {} }; }), false, 'the other conditions still apply');
+  // A listed branch whose rig fails still holds the feed.
+  const listedFail = okNeeds();
+  listedFail['rig-other'] = { result: 'failure', outputs: { verdict: 'FAIL' } };
+  assert.equal(evalExpr(jobIf('publish'), { needs: listedFail, inputs: okInputs() }), false, 'a listed branch that fails is not excused');
+  listedFail['map-mode'].outputs.other_branch = 'v.0.3.5_for_ds';
+  assert.equal(evalExpr(jobIf('publish'), { needs: listedFail, inputs: okInputs() }), false, 'nor is a branch added to the list');
+  listedFail['rig-other'] = { result: 'skipped', outputs: {} };
+  assert.equal(evalExpr(jobIf('publish'), { needs: listedFail, inputs: okInputs() }), false, 'a listed branch whose leg did not run is not a pass either');
+});
+
+test('rig legs: the rig gate expects no leg for a branch that is not listed, and fails a listed leg that fails', { skip: !bash }, () => {
+  const g = job('rig-gate');
+  assert.match(g, /\n {6}OTHER_BRANCH: \$\{\{ needs\.map-mode\.outputs\.other_branch \}\}\n/);
+  const head = '        run: |\n';
+  const script = g.slice(g.indexOf(head) + head.length).replace(/^ {10}/gm, '');
+  const base = {
+    RUN_URL: 'https://github.com/o/r/actions/runs/7', DECISION: 'HOLD', PUBLISHABLE: 'false', CANDIDATE_RESULT: 'success', CANDIDATE_VERSION: 'cand-7-abcdef0', CANDIDATE_SHA: 'abcdef0123456789abcdef0123456789abcdef01',
+    BRANCH_NAME: 'public', BRANCH_RESULT: 'success', BRANCH_VERDICT: 'PASS', BRANCH_REASON: 'All 41 checks passed', BRANCH_ARTIFACT: 'sr-client-rig-public-cand-7-1',
+    OTHER_NAME: 'client rig (other branch)', OTHER_RESULT: 'skipped', OTHER_VERDICT: '', OTHER_REASON: '', OTHER_ARTIFACT: '',
+  };
+  const run = (over = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'rig-gate-'));
+    const summary = join(dir, 'summary.md');
+    writeFileSync(summary, '');
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...base, ...over, GITHUB_STEP_SUMMARY: summary } });
+    return { status: r.status, out: r.stdout, md: readFileSync(summary, 'utf8') };
+  };
+  // Steam lists no other branch: the one leg decides, and the summary says why there is no second.
+  const one = run({ OTHER_BRANCH: 'none' });
+  assert.equal(one.status, 0, one.out);
+  assert.match(one.md, /### Client rig gate: PASS/);
+  assert.match(one.md, /\*\*public\*\*: PASS - All 41 checks passed/);
+  assert.match(one.md, /no leg - Steam lists no other client branch the rig covers/);
+  // The one leg failing still fails the gate.
+  const failed = run({ OTHER_BRANCH: 'none', BRANCH_RESULT: 'failure', BRANCH_VERDICT: 'FAIL', BRANCH_REASON: 'plugin_not_refused_MiniMap: FOUND' });
+  assert.equal(failed.status, 1);
+  assert.match(failed.md, /### Client rig gate: FAIL/);
+  // A listed branch (any name) that did not run, or failed, fails the gate: no leg is only the answer none.
+  for (const other of ['public_test_branch', 'v.0.3.5_for_ds', '', undefined]) {
+    const set = other === undefined ? {} : { OTHER_BRANCH: other };
+    const skipped = run(set);
+    assert.equal(skipped.status, 1, `listed ${JSON.stringify(other)} with no leg is a fail`);
+    assert.match(skipped.md, /### Client rig gate: FAIL/);
+    const bad = run({ ...set, OTHER_NAME: other || 'x', OTHER_RESULT: 'failure', OTHER_VERDICT: 'FAIL', OTHER_REASON: 'plugin_not_refused_MiniMap: FOUND' });
+    assert.equal(bad.status, 1, `listed ${JSON.stringify(other)} failing is a fail`);
+    assert.match(bad.out, /::error title=Client rig gate::/);
+    const good = run({ ...set, OTHER_NAME: other || 'x', OTHER_RESULT: 'success', OTHER_VERDICT: 'PASS', OTHER_REASON: 'All 41 checks passed' });
+    assert.equal(good.status, 0, `listed ${JSON.stringify(other)} passing is a pass`);
+  }
+});
+
+test('rig legs: the alert lists no rig for a branch that is not listed, and still lists a listed one that is bad', { skip: !bash }, () => {
+  assert.match(job('alert'), /\n {6}OTHER_BRANCH: \$\{\{ needs\.map-mode\.outputs\.other_branch \}\}\n/);
+  const skipped = { OTHER_RIG_NAME: 'client rig (other branch)', OTHER_RIG_RESULT: 'skipped', OTHER_RIG_VERDICT: '', OTHER_RIG_REASON: '' };
+  const none = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { ...skipped, OTHER_BRANCH: 'none' } });
+  assert.equal(none.outputs.alert, 'false', 'one leg, passing: nothing to alert on');
+  // A listed branch whose leg did not run is named, as it always was.
+  const listed = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { ...skipped, OTHER_BRANCH: 'public', RIG_GATE_RESULT: 'failure' } });
+  assert.match(listed.md, /client rig gate\*\* failed/);
+  assert.match(listed.md, /rig client rig \(other branch\): did not run/);
+  // The sentinel is exact: an empty answer is a leg that is missing, not a leg that is not there.
+  assert.match(alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { ...skipped, OTHER_BRANCH: '' } }).md, /client rig gate\*\* failed/);
+  // The one leg failing is still named when the other is not listed.
+  const bad = alertRun({ decision: HOLD_ONLY_AUTOPILOT, env: { ...skipped, OTHER_BRANCH: 'none', BRANCH_RIG_RESULT: 'failure', BRANCH_RIG_VERDICT: 'FAIL', BRANCH_RIG_REASON: 'plugin_not_refused_MiniMap: FOUND', RIG_GATE_RESULT: 'failure' } });
+  assert.match(bad.md, /rig public_test_branch: FAIL - plugin_not_refused_MiniMap: FOUND/);
+  assert.doesNotMatch(bad.md, /rig client rig \(other branch\)/);
+});
+
+test('rig legs: with no other branch listed the feed-path plan carries no second build, and says so', { skip: !bash }, () => {
+  const none = feedPlanRun({ cl: 130001, otherBranch: 'none' });
+  assert.equal(none.status, 0, none.stderr);
+  assert.equal(none.other_state, 'SKIP');
+  assert.match(none.other_reason, /Steam lists no other client branch, so there is no second build to carry/);
+  // A listed branch whose build the candidate map lacks keeps its own reason (its candidate rig expects a clean decline).
+  const unmapped = feedPlanRun({ cl: 130001, otherBranch: 'public_test_branch' });
+  assert.equal(unmapped.other_state, 'SKIP');
+  assert.match(unmapped.other_reason, /candidate map holds no build row for the build the other branch runs/);
 });
 
 test('rig gate: the nested call fits its callers (permissions ceiling, depth, main-only environment)', () => {
@@ -1099,18 +1230,20 @@ test('plugin keys (leg C1): sr-watch passes the nine fork keys by name; the clie
 
 // ------------------------------------------------------------ leg C2: expected refusals on the other branch, pinned third-party plugins
 
-const OTHER_STEP_FROM = '          other_branch=public; [ "$BRANCH" = public ] && other_branch=public_test_branch\n';
+const OTHER_STEP_FROM = '          found="$(node tool/.github/sr-pipeline/poll-steam.mjs --other-branch "$BRANCH")" \\\n';
+const OTHER_STEP_TO = '          echo "other_cl=$other_cl" >> "$GITHUB_OUTPUT"\n';
 const otherStep = () => {
   const mm = job('map-mode');
   const start = mm.indexOf(OTHER_STEP_FROM);
-  const end = mm.indexOf('\n', mm.indexOf("its rig expects a clean decline\"; fi", start)) + 1;
-  assert.ok(start > 0 && end > start, 'the step that finds the other branch\'s CL exists');
+  const end = mm.indexOf(OTHER_STEP_TO, start) + OTHER_STEP_TO.length;
+  assert.ok(start > 0 && end > start, 'the step that finds the other branch and its CL exists');
   return mm.slice(start, end).replace(/^ {10}/gm, '');
 };
 
 test('other branch: map-mode finds the other branch\'s CL, hands it to decide, and outputs the rig input before the chain can stop', () => {
   const mm = job('map-mode');
   assert.match(mm, /\n {6}expect_refused_other: \$\{\{ steps\.chain\.outputs\.expect_refused_other \}\}\n/);
+  assert.match(mm, /\n {6}other_branch: \$\{\{ steps\.chain\.outputs\.other_branch \}\}\n/);
   assert.match(mm, /\n {6}OTHER_BUILDID: \$\{\{ inputs\.other_buildid \}\}\n/);
   const find = mm.indexOf(OTHER_STEP_FROM);
   const decideAt = mm.indexOf('node tool/ci/decide.mjs --repo');
@@ -1125,51 +1258,68 @@ test('other branch: map-mode finds the other branch\'s CL, hands it to decide, a
   assert.match(dispatch, /\n {6}other_buildid:\n {8}description: [^\n]*\n {8}type: string\n {8}default: ''\n/);
 });
 
-test('other branch: the CL comes from the dispatch input or a live Steam read through the candidate map\'s build rows; a build the map lacks is declared unmapped; an unreadable id stops the chain', { skip: !bash }, () => {
+test('other branch: the branch and its CL come from what Steam lists now, through the candidate map\'s build rows; none listed is no leg; a build the map lacks is declared unmapped; an unreadable Steam stops the chain', { skip: !bash }, () => {
   const header = (() => {
     const m = emptyMap('loader', 127004);
     addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
     addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
     return emit(m);
   })();
-  // live: the id the poll's live read prints (the stub standing in for poll-steam.mjs), or null for a read that fails.
-  const run = ({ branch, otherBuildid = '', live = null }) => {
+  // live: the line the poll's --other-branch form prints ("<branch> <build id>", or empty for none listed), standing in for
+  // poll-steam.mjs; null for a read that fails.
+  const run = ({ branch, otherBuildid = '', live = null, first = 'false' }) => {
     const dir = mkdtempSync(join(tmpdir(), 'other-cl-'));
     cpSync(here, join(dir, 'tool', 'ci'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
     mkdirSync(join(dir, 'tool', '.github', 'sr-pipeline'), { recursive: true });
-    writeFileSync(join(dir, 'tool', '.github', 'sr-pipeline', 'poll-steam.mjs'), "console.error('live read: ' + process.argv.slice(2).join(' '));\nif (process.env.STUB_LIVE !== undefined) console.log(process.env.STUB_LIVE); else process.exit(1);\n");
+    writeFileSync(join(dir, 'tool', '.github', 'sr-pipeline', 'poll-steam.mjs'), "console.error('live read: ' + process.argv.slice(2).join(' '));\nif (process.env.STUB_LIVE === undefined) process.exit(1); else console.log(process.env.STUB_LIVE);\n");
     writeFileSync(join(dir, 'version_map.generated.h'), header);
-    const script = `set -euo pipefail\nheader=version_map.generated.h\n${otherStep()}\nprintf 'cl=[%s] flag=[%s] id=[%s]\\n' "$other_cl" "\${other_flag[*]}" "$other_buildid"`;
-    const env = { ...process.env, BRANCH: branch, OTHER_BUILDID: otherBuildid, GITHUB_OUTPUT: join(dir, 'out.txt') };
+    const script = `set -euo pipefail\nheader=version_map.generated.h\n${otherStep()}\nprintf 'branch=[%s] cl=[%s] flag=[%s] id=[%s]\\n' "$other_branch" "$other_cl" "\${other_flag[*]}" "$other_buildid"`;
+    const env = { ...process.env, BRANCH: branch, OTHER_BUILDID: otherBuildid, FIRST_PUBLISH: first, GITHUB_OUTPUT: join(dir, 'out.txt') };
     delete env.STUB_LIVE;
     if (live !== null) env.STUB_LIVE = live;
     const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env });
-    return { status: r.status, out: r.stdout, err: r.stderr };
+    return { status: r.status, out: r.stdout, err: r.stderr, outputs: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '' };
   };
-  // A public check, the watcher saw the other branch on build 26271156 (CL-129402): the input is used, Steam is not asked.
-  const a = run({ branch: 'public', otherBuildid: '26271156' });
+  // A public check, the watcher saw the other branch on build 26271156 (CL-129402): the id is the input's; Steam names the branch.
+  const a = run({ branch: 'public', otherBuildid: '26271156', live: 'public_test_branch 27000000' });
   assert.equal(a.status, 0, a.err);
-  assert.match(a.out, /cl=\[129402\] flag=\[--other-cl 129402\] id=\[26271156\]/);
-  assert.match(a.out, /the other branch runs build 26271156 = CL-129402/);
-  assert.ok(!/live read/.test(a.err), 'an explicit other_buildid is never second-guessed');
-  // A dispatch without the input reads the other branch's live id, as the watcher's poll does.
-  const b = run({ branch: 'public_test_branch', live: '25646882' });
+  assert.match(a.out, /branch=\[public_test_branch\] cl=\[129402\] flag=\[--other-cl 129402\] id=\[26271156\]/);
+  assert.match(a.out, /the other branch \(public_test_branch\) runs build 26271156 = CL-129402/);
+  assert.match(a.err, /live read: --other-branch public$/m);
+  assert.match(a.outputs, /^other_branch=public_test_branch\nother_cl=129402\n$/);
+  // A dispatch without the input takes the live id Steam just gave.
+  const b = run({ branch: 'public_test_branch', live: 'public 25646882' });
   assert.equal(b.status, 0, b.err);
-  assert.match(b.out, /cl=\[127004\] flag=\[--other-cl 127004\] id=\[25646882\]/);
-  assert.match(b.err, /live read: --live-buildid public$/m);
-  // The input wins over the live read.
-  assert.match(run({ branch: 'public', otherBuildid: '25646882', live: '26271156' }).out, /cl=\[127004\]/);
+  assert.match(b.out, /branch=\[public\] cl=\[127004\] flag=\[--other-cl 127004\] id=\[25646882\]/);
+  assert.match(b.err, /live read: --other-branch public_test_branch$/m);
+  // The input wins over the live id.
+  assert.match(run({ branch: 'public', otherBuildid: '25646882', live: 'public_test_branch 26271156' }).out, /cl=\[127004\]/);
+  // Another branch can be the second one: the name is whatever the poll prints, the CL is found the same way.
+  assert.match(run({ branch: 'public', live: 'v.0.3.5_for_ds 26271156' }).out, /branch=\[v\.0\.3\.5_for_ds\] cl=\[129402\]/);
   // A build the candidate map has no row for: no CL, declared unmapped (decide then expects a clean decline).
-  const c = run({ branch: 'public', otherBuildid: '999' });
+  const c = run({ branch: 'public', otherBuildid: '999', live: 'public_test_branch 1' });
   assert.equal(c.status, 0, c.err);
-  assert.match(c.out, /cl=\[\] flag=\[--other-unmapped the other branch runs build 999\] id=\[999\]/);
-  assert.match(c.out, /::notice title=Other branch not in the map::the other branch runs build 999, which has no row in the candidate map: its rig expects a clean decline/);
-  assert.match(run({ branch: 'public', live: '26999999' }).out, /--other-unmapped the other branch runs build 26999999/);
-  // Fails closed: a live read that fails, or prints no number, or an input that is no number, stops the chain.
-  for (const odd of [{ live: null }, { live: '' }, { live: 'html' }, { otherBuildid: 'not-a-build' }]) {
+  assert.match(c.out, /branch=\[public_test_branch\] cl=\[\] flag=\[--other-unmapped the other branch runs build 999\] id=\[999\]/);
+  assert.match(c.out, /::notice title=Other branch not in the map::the other branch \(public_test_branch\) runs build 999, which has no row in the candidate map: its rig expects a clean decline/);
+  assert.match(run({ branch: 'public', live: 'public_test_branch 26999999' }).out, /--other-unmapped the other branch runs build 26999999/);
+  // Steam lists no other rigged branch: no leg, no id, no CL, nothing handed to decide, and the answer says so in so many words.
+  // A recorded or dispatched id for a branch that is not there is ignored.
+  for (const otherBuildid of ['', '26271156']) {
+    const none = run({ branch: 'public', otherBuildid, live: '' });
+    assert.equal(none.status, 0, none.err);
+    assert.match(none.out, /branch=\[none\] cl=\[\] flag=\[\] id=\[\]/);
+    assert.match(none.out, /::notice title=No other branch::/);
+    assert.equal(none.outputs, 'other_branch=none\nother_cl=\n');
+  }
+  // A first publish carries two builds, so it needs the other branch.
+  const first = run({ branch: 'public', live: '', first: 'true' });
+  assert.equal(first.status, 2);
+  assert.match(first.out, /first_publish is refused: Steam lists no other client branch/);
+  // Fails closed: a read that fails, a number that is not one, or an input that is no number stops the chain.
+  for (const odd of [{ live: null }, { live: 'public_test_branch html' }, { live: 'public_test_branch' }, { live: 'public_test_branch 1', otherBuildid: 'not-a-build' }]) {
     const r = run({ branch: 'public', ...odd });
     assert.equal(r.status, 2, JSON.stringify(odd));
-    assert.match(r.out + r.err, /::error title=Other branch build id::(cannot read the live build id of the other Steam branch from Steam|the build id of the other Steam branch is not a number)/, JSON.stringify(odd));
+    assert.match(r.out + r.err, /::error title=Other branch(?: build id)?::(cannot read the client branches Steam lists now|the build id of the other Steam branch is not a number)/, JSON.stringify(odd));
     assert.ok(!/cl=\[/.test(r.out), 'no CL is declared after a failure');
   }
   // The id recorded on main (state/steam.json) is never the source: it names the build of the last merged update PR.
@@ -2443,7 +2593,7 @@ const headerWithFeedRows = (edit = (r) => r) => {
   const base = parse(readFileSync(join(here, 'fixtures', 'version-map', 'loader.h'), 'utf8'), 'loader.h');
   return emit({ ...base, builds: base.builds.concat(feed.builds.filter((b) => b.cl === 130001)), functions: base.functions.concat(feed.functions.map(edit)), fields: base.fields.concat(feed.fields) });
 };
-const feedPlanRun = ({ cl, withFeed = true, tag = 'v9.9.9', header = null, ref = '', publish = 'true', refSha = 'b'.repeat(40) }) => {
+const feedPlanRun = ({ cl, withFeed = true, tag = 'v9.9.9', header = null, ref = '', publish = 'true', refSha = 'b'.repeat(40), otherBranch = '' }) => {
   const dir = mkdtempSync(join(tmpdir(), 'feedplan-'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   for (const f of readdirSync(here).filter((n) => n.endsWith('.mjs') && !n.endsWith('.test.mjs'))) copyFileSync(join(here, f), join(dir, 'tool', 'ci', f));
@@ -2469,7 +2619,7 @@ const feedPlanRun = ({ cl, withFeed = true, tag = 'v9.9.9', header = null, ref =
   chmodSync(join(bin, 'gh'), 0o755);
   const out = join(dir, 'out.txt');
   writeFileSync(out, '');
-  const r = spawnSync(bash, ['-c', runOf(job('feed-plan'), 'Plan the feed-path rig')], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, FAKE_REF_SHA: refSha, GITHUB_OUTPUT: out, MOD_OWNER: 'AlienXAXS', SEQ: '1761900000', RIG_TAGS: '', FEED_LOADER_REF: ref, PUBLISH: publish, PATH: bin + delimiter + process.env.PATH } });
+  const r = spawnSync(bash, ['-c', runOf(job('feed-plan'), 'Plan the feed-path rig')], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, FAKE_REF_SHA: refSha, GITHUB_OUTPUT: out, MOD_OWNER: 'AlienXAXS', SEQ: '1761900000', RIG_TAGS: '', FEED_LOADER_REF: ref, PUBLISH: publish, OTHER_BRANCH: otherBranch, PATH: bin + delimiter + process.env.PATH } });
   const o = Object.fromEntries(readFileSync(out, 'utf8').split('\n').filter(Boolean).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
   const calls = existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8') : '';
   rmSync(dir, { recursive: true, force: true });
@@ -2804,7 +2954,7 @@ test('first_publish: the plugin-plan step refuses what is not a first publish, a
     mkdirSync(join(dir, 'bin'));
     cpSync(here, join(dir, 'tool', 'ci'), { recursive: true, filter: (src) => !/[\\/]fixtures([\\/]|$)/.test(src) });
     mkdirSync(join(dir, 'tool', '.github', 'sr-pipeline'), { recursive: true });
-    writeFileSync(join(dir, 'tool', '.github', 'sr-pipeline', 'poll-steam.mjs'), "console.error('live read: ' + process.argv.slice(2).join(' '));\nconsole.log(process.argv[3] === 'public' ? '25646882' : process.env.STUB_LIVE);\n");
+    writeFileSync(join(dir, 'tool', '.github', 'sr-pipeline', 'poll-steam.mjs'), "console.error('live read: ' + process.argv.slice(2).join(' '));\nconsole.log(process.argv[2] === '--other-branch' ? (process.env.STUB_LIVE ? 'public_test_branch ' + process.env.STUB_LIVE : '') : '25646882');\n");
     writeFileSync(join(dir, 'base.src'), base);
     writeFileSync(join(dir, 'bin', 'gh'), '#!/bin/bash\nr="' + release + '"\nif [ "$2" = -H ]; then cat base.src; exit 0; fi\nif [ "$r" = 404 ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi\nif [ "$r" = feed ]; then echo \'{"assets":[{"name":"version-map-client.v1.txt"}]}\'; exit 0; fi\nif [ "$r" = empty ]; then echo \'{"assets":[]}\'; exit 0; fi\necho "gh: boom" >&2; exit 1\n');
     chmodSync(join(dir, 'bin', 'gh'), 0o755);
@@ -2813,7 +2963,7 @@ test('first_publish: the plugin-plan step refuses what is not a first publish, a
   const good = run();
   assert.equal(good.status, 0, good.stdout + good.stderr);
   assert.match(good.stdout, /The base holds 1 function rows for CL-129402/);
-  assert.match(good.stderr, /live read: --live-buildid public_test_branch/, 'the other branch\'s live id is read when the dispatch names none');
+  assert.match(good.stderr, /live read: --other-branch public/, 'the other branch and its live id are read when the dispatch names none');
   assert.equal(run({}, { release: 'empty' }).status, 0, 'a release without a feed');
   assert.equal(run({ OTHER_BUILDID: '26271156', BUILDID: '25646882' }, { live: '' }).status, 0, 'the inputs are used and Steam is not asked');
   for (const env of [{ BRANCH: 'public_test_branch' }, { MAP_MODE: 'false' }, { PUBLISH: 'false' }, { PROOF: 'true' }, { TEST_RUN: 'true' }]) {
@@ -2847,6 +2997,8 @@ test('first_publish: the plugin-plan step refuses what is not a first publish, a
   assert.match(same.stdout, /run the same build/);
   // An unreadable live id stops it too.
   assert.equal(run({}, { live: '' }).status, 2, 'no live id');
+  // Steam lists no other client branch: there is no second build, so the feed cannot carry two.
+  assert.match(run({}, { live: '' }).stdout, /first_publish is refused: Steam lists no other client branch/);
 });
 
 test('first_publish: map-mode proves the other build twice, before anything is exported and again on the signed feed', { skip: !bash }, () => {

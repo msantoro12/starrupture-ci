@@ -190,7 +190,9 @@ function Get-Pin($Plugin, [string]$PluginOwner) {
 }
 
 function Resolve-Plan {
-    if ($Branch -notin 'public', 'public_test_branch') { throw "branch '$Branch' is not public or public_test_branch" }
+    # The branches the pipeline rigs: the one list, shared with the watcher's poll and the check.
+    $rigBranches = @(Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\.github\sr-pipeline\rig-branches.json') | ConvertFrom-Json | ForEach-Object { $_ })
+    if ($Branch -cnotin $rigBranches) { throw "branch '$Branch' is not one of the rig branches ($($rigBranches -join ', '))" }
     if ($Owner -cnotin 'AlienXAXS', 'msantoro12') { throw "mod owner '$Owner' is not AlienXAXS or msantoro12" }
 
     # ---- inputs ----

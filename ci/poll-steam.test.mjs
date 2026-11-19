@@ -172,3 +172,67 @@ test('--live-buildid fails closed when the API does not answer, after the poll\'
   assert.match(r.stderr, /attempt 3\/3 failed/);
   assert.match(r.stderr, /could not read the live build id of StarRupture\/public: HTTP 404/);
 });
+
+// The legs of a check follow the branches Steam lists now, from .github/sr-pipeline/rig-branches.json.
+test('a client branch Steam no longer lists is neither checked nor paired, and its recorded entry is left alone', async () => {
+  // public_test_branch is recorded (build 110) but Steam lists only public now.
+  const gone = { [CLIENT]: { public: branch(101, 1010) }, [SERVER]: serverInfo };
+  const r = await withApi(gone, (base) => run(base, recorded));
+  assert.equal(r.code, 0, r.log);
+  assert.deepEqual(JSON.parse(r.outputs.client_matrix), [{ branch: 'public', buildid: '101', other_buildid: '' }]);
+  // Read-only: a partial answer must not forget a real branch, so the recorded entry stays.
+  assert.equal(r.state.apps[CLIENT].branches.public_test_branch.buildid, '110');
+  // A forced run lists only what Steam lists now, and the alert body names no vanished branch.
+  const forced = await withApi(gone, (base) => run(base, recorded, ['--force']));
+  assert.deepEqual(JSON.parse(forced.outputs.client_matrix), [{ branch: 'public', buildid: '101', other_buildid: '' }]);
+  assert.ok(!/public_test_branch/.test(forced.file('pr-body.md')), 'a branch Steam does not list is not in the update PR');
+  // Both listed: the same as before (each is the other's pair, with the current ids).
+  const both = await withApi({ [CLIENT]: { public: branch(101, 1010), public_test_branch: branch(111, 1110) }, [SERVER]: serverInfo }, (base) => run(base, recorded));
+  assert.deepEqual(JSON.parse(both.outputs.client_matrix), [{ branch: 'public', buildid: '101', other_buildid: '111' }, { branch: 'public_test_branch', buildid: '111', other_buildid: '101' }]);
+});
+
+function runOther(base, pair, dir = null) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [dir ? join(dir, 'poll-steam.mjs') : SCRIPT, '--other-branch', pair], {
+      env: { ...process.env, SR_STEAMCMD_API: base, SR_NEWS_API: base },
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    p.stdout.on('data', (d) => { stdout += d; });
+    p.stderr.on('data', (d) => { stderr += d; });
+    p.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test('--other-branch prints the other rigged branch Steam lists now and its build id, or an empty line when there is none', async () => {
+  const both = { [CLIENT]: { public: branch(101, 1010), public_test_branch: branch(111, 1110) }, [SERVER]: serverInfo };
+  assert.equal((await withApi(both, (base) => runOther(base, 'public'))).stdout, 'public_test_branch 111\n');
+  assert.equal((await withApi(both, (base) => runOther(base, 'public_test_branch'))).stdout, 'public 101\n');
+  // One listed: no other branch. Success, an empty answer.
+  const one = await withApi({ [CLIENT]: { public: branch(101, 1010) }, [SERVER]: serverInfo }, (base) => runOther(base, 'public'));
+  assert.equal(one.code, 0, one.stderr);
+  assert.equal(one.stdout, '\n');
+  // A branch the list does not name is never the other one, whatever Steam lists.
+  const extra = await withApi({ [CLIENT]: { public: branch(101, 1010), beta_two: branch(120, 1200) }, [SERVER]: serverInfo }, (base) => runOther(base, 'public'));
+  assert.equal(extra.stdout, '\n');
+});
+
+test('--other-branch fails closed when the API does not answer, with nothing on stdout', { timeout: 60000 }, async () => {
+  const r = await withApi({}, (base) => runOther(base, 'public'));
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /could not read the live branches of StarRupture: HTTP 404/);
+});
+
+test('adding a branch to rig-branches.json is all it takes to rig it: the poll pairs it and puts it in the matrix, nothing else changes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pollsteam-list-'));
+  writeFileSync(join(dir, 'poll-steam.mjs'), readFileSync(SCRIPT, 'utf8'));
+  const list = JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'));
+  writeFileSync(join(dir, 'rig-branches.json'), JSON.stringify([...list, 'v.0.3.5_for_ds']));
+  const info = { [CLIENT]: { public: branch(101, 1010), 'v.0.3.5_for_ds': branch(130, 1300) }, [SERVER]: serverInfo };
+  // public_test_branch is not listed: the added branch is the other one of public.
+  const r = await withApi(info, (base) => runOther(base, 'public', dir));
+  assert.equal(r.stdout, 'v.0.3.5_for_ds 130\n');
+  assert.equal((await withApi(info, (base) => runOther(base, 'v.0.3.5_for_ds', dir))).stdout, 'public 101\n');
+});
