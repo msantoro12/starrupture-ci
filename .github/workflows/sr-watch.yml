@@ -219,7 +219,7 @@ jobs:
       # (actions: write sits on this whole job because a separate cancel job would need `needs` on the
       # chain jobs; "Re-run failed jobs" does not re-run the poll, so use a forced run to start a chain.)
       - name: Cancel planner data extract runs
-        if: steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && inputs.rehearsal != true && startsWith(steps.poll.outputs.client_matrix, '[{')
+        if: steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && startsWith(steps.poll.outputs.client_matrix, '[{')
         continue-on-error: true
         timeout-minutes: 6
         run: node ci/planner-extract.mjs cancel --repo "$GH_REPO" --wait-seconds 240

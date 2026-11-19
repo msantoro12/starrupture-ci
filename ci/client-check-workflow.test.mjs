@@ -4008,7 +4008,7 @@ test('rehearsal: the state, the PR, the alerts, the planner extract, the layout 
   for (const name of ['Seed the baseline on main', 'Open or update the game-update PR']) {
     assert.match(stepIf(step(poll, name)), /&& inputs\.rehearsal != true$/, name);
   }
-  assert.match(stepIf(step(poll, 'Cancel planner data extract runs')), /&& inputs\.rehearsal != true && /);
+  // The cancel step stays as it is: it frees the one Steam login for the chain, which a rehearsal starts like any other.
   // Every step of sr-watch that commits, pushes, or opens a PR or an issue sits behind one of those.
   for (const t of stepTexts(poll)) {
     const name = t.match(/^- name: (.*)\n/)[1];
