@@ -240,7 +240,7 @@ test('login failures leave a marker in the launch script and surface as login-fa
 });
 
 // Runs the "Outputs and result" step for a made-up state; returns its status output and exit code.
-function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', stage = '', cleanup = 'success', reasonFile = '', cleanupReasonFile = '', extractReasonFile = '' }) {
+function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', sdkUpload = 'success', stage = '', cleanup = 'success', reasonFile = '', cleanupReasonFile = '', extractReasonFile = '' }) {
   const dir = mkdtempSync(join(tmpdir(), 'sr-final-'));
   try {
     const temp = join(dir, 'tmp');
@@ -254,7 +254,7 @@ function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', st
     if (boot !== null) writeFileSync(join(work, 'out', 'boot.json'), JSON.stringify(boot));
     const outFile = join(dir, 'output.txt');
     writeFileSync(outFile, '');
-    const env = { ...process.env, RUNNER_TEMP: temp, GITHUB_OUTPUT: outFile, GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), BUILDID: '123', STAGE_STATUS: stage, CLEANUP: cleanup, USMAP_OK: usmapOk, UPLOAD: upload };
+    const env = { ...process.env, RUNNER_TEMP: temp, GITHUB_OUTPUT: outFile, GITHUB_STEP_SUMMARY: join(dir, 'summary.md'), BUILDID: '123', STAGE_STATUS: stage, CLEANUP: cleanup, USMAP_OK: usmapOk, UPLOAD: upload, SDK_UPLOAD: sdkUpload };
     const script = runBlock(stepOf(extractJob, 'Outputs and result'));
     writeFileSync(join(dir, 'step.ps1'), script);
     for (const exe of ['pwsh', 'powershell']) {
@@ -264,7 +264,7 @@ function finalStatus({ login = false, boot = null, usmapOk = '', upload = '', st
       const raw = readFileSync(outFile);
       const written = (raw[0] === 0xff && raw[1] === 0xfe ? raw.toString('utf16le') : raw.toString('utf8')).replace(/\r|﻿/g, '');
       const status = /^status=(.*)$/m.exec(written)?.[1];
-      return { code: r.status, status, out: r.stdout + r.stderr, written: readFileSync(outFile, 'utf8'), summary: existsSync(join(dir, 'summary.md')) ? readFileSync(join(dir, 'summary.md'), 'utf8') : '' };
+      return { code: r.status, status, out: r.stdout + r.stderr, written, summary: existsSync(join(dir, 'summary.md')) ? readFileSync(join(dir, 'summary.md'), 'utf8') : '' };
     }
     return null;
   } finally {
@@ -290,6 +290,13 @@ test('the status step: login-failed, usmap-failed, extract-failed, ok, and empty
   const ok = finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'success', stage: 'ok' });
   assert.equal(ok.status, 'ok');
   assert.equal(ok.code, 0);
+  assert.match(ok.written, /^sdk_artifact_name=sr-sdk--123$/m, 'the SDK artifact is named when it was uploaded');
+  // The usmap went up but the SDK did not (missing, empty, or its upload failed): the run fails, the usmap output stays.
+  const noSdk = finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'success', sdkUpload: 'skipped', stage: 'ok' });
+  assert.equal(noSdk.status, 'extract-failed');
+  assert.equal(noSdk.code, 1);
+  assert.match(noSdk.written, /^artifact_name=sr-data--123$/m, 'the usmap artifact is still reported');
+  assert.match(noSdk.written, /^sdk_artifact_name=$/m, 'no SDK artifact is reported');
   // The login could not be removed: the extractor never ran, whatever else happened.
   const cf = finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'success', stage: 'cleanup-failed', cleanup: 'failure' });
   assert.equal(cf.status, 'cleanup-failed');
@@ -317,7 +324,7 @@ test('the status step: login-failed, usmap-failed, extract-failed, ok, and empty
   assert.match(finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'success', stage: 'extract-failed', extractReasonFile: 'extractor text' }).out, /extractor text/);
   const upl = finalStatus({ boot: { process_found: true }, usmapOk: 'true', upload: 'failure', stage: 'ok', extractReasonFile: 'extractor text', reasonFile: 'launch text' });
   assert.ok(!/extractor text|launch text/.test(upl.out), 'an upload failure shows neither');
-  assert.match(upl.out, /the leak gate or the upload failed/);
+  assert.match(upl.out, /the SDK copy, the leak gate or an upload failed/);
 });
 
 // ---- S4: one cleanup and one leak gate, shared with the rig -------------------------------------
@@ -325,10 +332,10 @@ test('the status step: login-failed, usmap-failed, extract-failed, ok, and empty
 test('the rig and the data extract call the same cleanup and leak-gate scripts', () => {
   for (const [name, wfText] of [['rig', rig], ['extract', extract]]) {
     assert.match(wfText, /\.\/ci\/steam-cleanup\.ps1 -InstallDir \$env:INSTALL_DIR/, `${name}: cleanup script`);
-    assert.match(wfText, /\.\/ci\/leak-gate\.ps1 -Path (out -AllowMissing|stage -Strict)/, `${name}: leak-gate script`);
+    assert.match(wfText, /\.\/ci\/leak-gate\.ps1 -Path (out -AllowMissing|\$paths -Strict)/, `${name}: leak-gate script`);
     assert.ok(!/Stop-Service|HKCU:\\Software\\Valve|rig-gate-terms/.test(noComments(wfText)), `${name}: no inline copy of either`);
   }
-  assert.match(extract, /leak-gate\.ps1 -Path stage -Strict/, 'the extract uses the strict mode');
+  assert.match(extract, /leak-gate\.ps1 -Path \$paths -Strict/, 'the extract uses the strict mode');
   assert.ok(!/-Strict/.test(rig), 'the rig keeps its own matching');
   const pr = header.slice(header.indexOf('pull_request:'), header.indexOf('workflow_dispatch:'));
   assert.match(pr, /- ci\/steam-cleanup\.ps1/);
@@ -350,6 +357,49 @@ test('the artifact is sr-<branch>-<buildid>, the branch is validated first, and 
   }
   assert.match(stage, /run_id = \$env:GITHUB_RUN_ID/);
   assert.match(stage, /workflow_ref = \$env:GITHUB_WORKFLOW_REF/);
+});
+
+// ---- the CppSDK is kept beside the usmap ---------------------------------------------------------
+
+const dumpScript = read('ci', 'data', 'dump-usmap.ps1');
+
+test('the payload copies the CppSDK and build_cl.txt while the game is up, before the login is removed', () => {
+  assert.match(dumpScript, /Copy-CppSdk \$dump \(Join-Path \$OutDir 'sdk'\) \$cl/);
+  assert.match(dumpScript, /VersionInfo\.ProductVersion/);
+  assert.ok(dumpScript.includes("'CL-(\\d+)$'"), 'the CL is the number the ProductVersion ends in');
+  assert.match(dumpScript, /'build_cl\.txt'/);
+  // The usmap is copied first, so a failed SDK copy still leaves it.
+  assert.ok(dumpScript.indexOf('Copy-Item -LiteralPath $u.FullName') < dumpScript.indexOf('Copy-CppSdk $dump (Join-Path'), 'usmap copy comes first');
+  // A missing or empty CppSDK, and an unknown CL, throw.
+  for (const m of ['wrote no CppSDK folder', 'has no SDK.hpp', 'CppSDK folder is empty', 'changelist is unknown']) assert.ok(dumpScript.includes(m), m);
+  assert.ok(extractJob.indexOf('-PayloadScript ./ci/data/dump-usmap.ps1') < extractJob.indexOf('id: cleanup'), 'the payload runs in the launch step, ahead of the cleanup');
+});
+
+test('the SDK is its own artifact, the leak gate reads it, and the usmap artifact is unchanged', () => {
+  const find = stepOf(extractJob, 'Find the SDK');
+  assert.match(find, /out\/sdk\/build_cl\.txt/);
+  assert.match(find, /out\/sdk\/SDK\.hpp/);
+  const names = [...extractJob.matchAll(/\n {6}- name: (.*)\n/g)].map((m) => m[1]);
+  const order = ['Remove Steam and the login from the runner', 'Find the SDK', 'Leak gate', 'Upload the SDK', 'Remove the Steam folder'].map((n) => { assert.ok(names.includes(n), n); return names.indexOf(n); });
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'the SDK is found after the cleanup, gated, then uploaded');
+  const gate = stepOf(extractJob, 'Leak gate');
+  assert.match(gate, /\$paths = @\('stage'\)\n\s+if \(\$env:SDK_OK -eq 'true'\) \{ \$paths \+= 'out\/sdk' \}/, 'the gate scans stage and out/sdk');
+  assert.match(gate, /SDK_OK: \$\{\{ steps\.sdk\.outputs\.ok \}\}/);
+  const up = stepOf(extractJob, 'Upload the SDK');
+  assert.match(up, /name: sr-sdk-\$\{\{ env\.BRANCH \}\}-\$\{\{ env\.BUILDID \}\}\n/);
+  assert.match(up, /path: out\/sdk\n/);
+  assert.match(up, /retention-days: 30/);
+  assert.match(up, /overwrite: true/);
+  assert.match(up, /if-no-files-found: error/);
+  assert.match(up, /steps\.leak\.outcome == 'success'/, 'only after the leak gate passed');
+  // The usmap artifact keeps its name, its path and what goes in it; the SDK is not staged into it.
+  const usmapUp = stepOf(extractJob, 'Upload the usmap and the extract');
+  assert.match(usmapUp, /name: sr-data-\$\{\{ env\.BRANCH \}\}-\$\{\{ env\.BUILDID \}\}\n\s+path: stage\n/);
+  assert.ok(!/sdk/i.test(stepOf(extractJob, 'Assemble the artifact')), 'the SDK is not copied into stage');
+  // The existing outputs stay; the new one is passed on like artifact_name.
+  assert.match(header, /\n {6}artifact_name:\n {8}description: [^\n]*\n {8}value: \$\{\{ jobs\.extract\.outputs\.artifact_name \}\}/);
+  assert.match(header, /\n {6}sdk_artifact_name:\n {8}description: [^\n]*\n {8}value: \$\{\{ jobs\.extract\.outputs\.sdk_artifact_name \}\}/);
+  assert.match(extractJob, /sdk_artifact_name: \$\{\{ steps\.final\.outputs\.sdk_artifact_name \}\}/);
 });
 
 test('the comments do not call planner main reviewed', () => {

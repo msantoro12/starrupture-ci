@@ -5,7 +5,7 @@
 # in any file under -Path. It also fails, first of all, if the launch left RUNNER_TEMP/rig-hold.txt
 # (it could not tell the persona name, so the gate cannot cover it).
 #
-#   -Path          the folder that would be uploaded
+#   -Path          the folder (or folders, comma-separated) that would be uploaded
 #   -AllowMissing  a -Path that does not exist passes (the rig has no output folder when the
 #                  launch never got that far); without it a missing -Path fails
 #   -Strict        for output that may hold binary files (the data extract): also read every file
@@ -14,7 +14,7 @@
 #                  digits do not run on either side of it, so a long number in JSON is not a hit
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$Path,
+    [Parameter(Mandatory)][string[]]$Path,
     [switch]$AllowMissing,
     [switch]$Strict
 )
@@ -42,29 +42,31 @@ function Test-Term([string]$text, [string]$term) {
 
 $latin1 = [Text.Encoding]::GetEncoding(28591)
 $bad = 0; $n = 0
-if (Test-Path -LiteralPath $Path) {
-    foreach ($f in Get-ChildItem -LiteralPath $Path -Recurse -File) {
-        $n++
-        $hit = $false
-        if ($Strict) {
-            $bytes = [IO.File]::ReadAllBytes($f.FullName)
-            $texts = @($latin1.GetString($bytes), [Text.Encoding]::UTF8.GetString($bytes))
-            if ($f.Name -match '(?i)\.vdf$|^ssfn|^steam_appid\.txt$') { $hit = $true }
-        } else {
-            $texts = @([IO.File]::ReadAllText($f.FullName))
+foreach ($root in $Path) {
+    if (Test-Path -LiteralPath $root) {
+        foreach ($f in Get-ChildItem -LiteralPath $root -Recurse -File) {
+            $n++
+            $hit = $false
+            if ($Strict) {
+                $bytes = [IO.File]::ReadAllBytes($f.FullName)
+                $texts = @($latin1.GetString($bytes), [Text.Encoding]::UTF8.GetString($bytes))
+                if ($f.Name -match '(?i)\.vdf$|^ssfn|^steam_appid\.txt$') { $hit = $true }
+            } else {
+                $texts = @([IO.File]::ReadAllText($f.FullName))
+            }
+            foreach ($t in $texts) {
+                if ($t -match '7656119\d{10}|\[U:1:\d+\]') { $hit = $true }
+                foreach ($term in $terms) { if (Test-Term $t $term) { $hit = $true } }
+            }
+            if ($hit) {
+                Write-Host "::error::Account data found in $($f.Name)"
+                $bad++
+            }
         }
-        foreach ($t in $texts) {
-            if ($t -match '7656119\d{10}|\[U:1:\d+\]') { $hit = $true }
-            foreach ($term in $terms) { if (Test-Term $t $term) { $hit = $true } }
-        }
-        if ($hit) {
-            Write-Host "::error::Account data found in $($f.Name)"
-            $bad++
-        }
+    } elseif (-not $AllowMissing) {
+        Write-Host "::error::$root does not exist, so there is nothing to check"
+        exit 1
     }
-} elseif (-not $AllowMissing) {
-    Write-Host "::error::$Path does not exist, so there is nothing to check"
-    exit 1
 }
 if ($bad) { exit 1 }
-"No account data in $n file(s) under $Path."
+"No account data in $n file(s) under $($Path -join ', ')."

@@ -332,7 +332,7 @@ test('order: verdict before upload, leak gate before upload, upload only when th
   // The gate scans what would be uploaded, for the account name, the login values and the IDs.
   const gate = step('Leak gate');
   assert.match(gate, /\.\/ci\/leak-gate\.ps1 -Path out -AllowMissing\n\s+exit \$LASTEXITCODE$/);
-  assert.match(leakGate, /Get-ChildItem -LiteralPath \$Path -Recurse -File/);
+  assert.match(leakGate, /Get-ChildItem -LiteralPath \$root -Recurse -File/);
   assert.match(leakGate, /7656119\\d\{10\}\|\\\[U:1:\\d\+\\\]/);
   assert.match(leakGate, /rig-gate-terms\.txt/);
   assert.match(leakGate, /if \(\$bad\) \{ exit 1 \}/);
@@ -748,6 +748,34 @@ test('leak gate, -Strict (the data extract): bytes, login-file names, and digit-
   // The name and a clean file still behave as in the rig.
   assert.equal(runGate(['-Strict'], { files: { 'n.json': 'ACCT1' } }).status, 1);
   assert.equal(runGate(['-Strict'], { files: { 'n.json': '{"ok":true}' } }).status, 0);
+});
+
+// The data extract passes the gate an array of folders (stage and the SDK), as a workflow step does.
+test('leak gate, several folders (the data extract): every folder is read, and a missing one fails', (t) => {
+  const run = (files2, second = 'out2') => {
+    const dir = mkdtempSync(join(tmpdir(), 'rig-gate-'));
+    try {
+      const a = join(dir, 'out'); const b = join(dir, second);
+      mkdirSync(a); writeFileSync(join(a, 'x.json'), '{}');
+      if (files2) { mkdirSync(join(dir, 'out2')); for (const [n, c] of Object.entries(files2)) writeFileSync(join(dir, 'out2', n), c); }
+      const vdf = '"Accounts"\n{\n\t"acct1"\n\t{\n\t\t"Token"\t\t"LONGSECRETTOKEN1234567890"\n\t}\n}\n';
+      const env = { ...process.env, RUNNER_TEMP: dir, STEAM_USER: 'acct1', STEAM_CACHE: Buffer.from(vdf).toString('base64') };
+      const cmd = `& '${join(here, 'leak-gate.ps1')}' -Path @('${a}', '${b}') -Strict; exit $LASTEXITCODE`;
+      for (const exe of ['pwsh', 'powershell']) {
+        const r = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', cmd], { encoding: 'utf8', env, windowsHide: true });
+        if (!r.error) return r;
+      }
+      return null;
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  const clean = run({ 'SDK.hpp': '#pragma once' });
+  if (!clean) return t.skip('no PowerShell on this machine');
+  assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+  assert.match(clean.stdout, /No account data in 2 file\(s\) under /);
+  const leak = run({ 'SDK.hpp': '// signed in as ACCT1' });
+  assert.equal(leak.status, 1, 'a hit in the second folder fails the gate');
+  assert.match(leak.stdout, /::error::Account data found in SDK\.hpp/);
+  assert.equal(run(null).status, 1, 'a second folder that does not exist fails without -AllowMissing');
 });
 
 test('feed run: the rig seeds a TEST-signed feed only, checks it before the install, and writes it where the loader reads its cache', () => {
