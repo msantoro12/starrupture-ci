@@ -1013,7 +1013,7 @@ test('alert (leg C1): a HOLD whose only reason is "autopilot is disabled", every
   assert.equal(failing.outputs.alert, 'true');
   assert.equal(failing.ready, null);
   // The step that opens the issue runs only for an alert.
-  assert.match(step(job('alert'), 'Open or update the issue'), /\n {8}if: steps\.what\.outputs\.alert == 'true'\n/);
+  assert.match(step(job('alert'), 'Open or update the issue'), /\n {8}if: steps\.what\.outputs\.alert == 'true' && inputs\.rehearsal != true\n/);
 });
 
 test('alert (leg C1): a missing or failed push, a failed candidate build or test, and a rig that did not pass are lines with the cause', { skip: !bash }, () => {
@@ -1248,7 +1248,7 @@ test('other branch: map-mode finds the other branch\'s CL, hands it to decide, a
   const find = mm.indexOf(OTHER_STEP_FROM);
   const decideAt = mm.indexOf('node tool/ci/decide.mjs --repo');
   assert.ok(find > 0 && find < decideAt, 'the CL is found before decide runs');
-  assert.match(mm.slice(decideAt, decideAt + 500), /"\$\{test_flag\[@\]\}" "\$\{first_flag\[@\]\}" "\$\{other_flag\[@\]\}"/);
+  assert.match(mm.slice(decideAt, decideAt + 500), /"\$\{test_flag\[@\]\}" "\$\{first_flag\[@\]\}" "\$\{rehearsal_flag\[@\]\}" "\$\{other_flag\[@\]\}"/);
   const out = mm.indexOf('echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"');
   assert.ok(out > mm.indexOf('echo "expect_refused=$expect_refused"') && out < mm.indexOf('nothing exported or signed'), 'set ahead of the exit that ends a chain whose decision is not M');
   assert.ok(mm.includes("grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'"));
@@ -2404,6 +2404,7 @@ process.exit(code);
 printf 'gh %s\\n' "$*" >> calls.log
 case "$1 $2" in
   "api repos/"*) ${release ? `echo '${JSON.stringify({ assets: feedAsset ? [{ name: 'version-map-client.v1.txt' }, { name: 'vmap-history.json' }] : [{ name: 'vmap-history.json' }] })}'; exit 0` : 'echo "gh: Not Found (HTTP 404)" >&2; exit 1'} ;;
+  "release view") case "$*" in *isPrerelease*) echo true ;; esac ;;
   "release download") dest=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && dest="$2"; shift; done; mkdir -p "$dest"; if [ "$dest" = live ]; then echo LIVE > live/version-map-client.v1.txt; else cp version-map-client.v1.txt vmap-history.json "$dest"/; [ -n "$TAMPER" ] && echo x >> "$dest"/vmap-history.json; fi ;;
 esac
 exit 0
@@ -2411,7 +2412,12 @@ exit 0
   chmodSync(join(dir, 'bin', 'gh'), 0o755);
   return { dir, chainSeq };
 };
-const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, FIRST_PUBLISH: 'false', VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
+const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, FIRST_PUBLISH: 'false', REHEARSAL: 'false', VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
+// The live path: the signing step, then (when it passed) the step that uploads to the live release.
+const signAndPublish = (fx, env = {}) => {
+  const r = runPublishStep(fx, 'Sign with the release key and verify', env);
+  return r.status === 0 ? runPublishStep(fx, 'Publish to the live release', env) : r;
+};
 const callsOf = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
 
 test('publish job: the chain seq must still rise above the live seq, the plan must agree, and the feed must be the one the list allows now', { skip: !bash }, () => {
@@ -2460,7 +2466,7 @@ test('publish job: the chain seq must still rise above the live seq, the plan mu
 test('publish job: signs with the chain seq, records it in the history, uploads, then verifies the published copy (signature, seq, sha256)', { skip: !bash }, () => {
   const fx = publishFixture();
   writeFileSync(join(fx.dir, 'last-seq.txt'), '100\n');
-  let r = runPublishStep(fx, 'Sign with the release key, verify, publish');
+  let r = signAndPublish(fx);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const c = callsOf(fx.dir);
   assert.ok(c.includes('vmap-sign sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq 100 --seq 200'), c.join('\n'));
@@ -2474,7 +2480,7 @@ test('publish job: signs with the chain seq, records it in the history, uploads,
   // A missing release key stops before anything is signed.
   const nokey = publishFixture();
   writeFileSync(join(nokey.dir, 'last-seq.txt'), '100\n');
-  r = runPublishStep(nokey, 'Sign with the release key, verify, publish', { VMAP_SIGN_KEY: '' });
+  r = signAndPublish(nokey, { VMAP_SIGN_KEY: '' });
   assert.equal(r.status, 2);
   assert.deepEqual(callsOf(nokey.dir).filter((l) => l.startsWith('vmap-sign sign')), []);
   // The published copy is checked.
@@ -2486,14 +2492,14 @@ test('publish job: signs with the chain seq, records it in the history, uploads,
   assert.equal(runPublishStep(fx, 'Verify what was published', { TAMPER: '1' }).status, 2, 'a published file that differs from the signed one fails');
   const wrongKey = publishFixture({ publishedKey: 'k1' });
   writeFileSync(join(wrongKey.dir, 'last-seq.txt'), '100\n');
-  assert.equal(runPublishStep(wrongKey, 'Sign with the release key, verify, publish').status, 0);
+  assert.equal(signAndPublish(wrongKey).status, 0);
   r = runPublishStep(wrongKey, 'Verify what was published');
   assert.equal(r.status, 2);
   assert.match(r.stdout, /not seq 200 signed with the release key k2/);
   // A signer that wrote another seq than the chain's fails at the first verify, before anything is uploaded.
   const wrongSeq = publishFixture({ publishedSeq: 199 });
   writeFileSync(join(wrongSeq.dir, 'last-seq.txt'), '100\n');
-  assert.notEqual(runPublishStep(wrongSeq, 'Sign with the release key, verify, publish').status, 0);
+  assert.notEqual(signAndPublish(wrongSeq).status, 0);
   assert.ok(!callsOf(wrongSeq.dir).some((l) => l.startsWith('gh release upload')));
 });
 
@@ -2847,7 +2853,7 @@ test('proof_run: a dispatch input only; sr-watch cannot set it; it never publish
   assert.ok(mm.includes('put("g3.json", { ok: true, cl, previousCl, ...(process.env.PROOF === "true" ? { proof: true } : {}) , ...(process.env.FIRST_PUBLISH === "true" ? { firstPublish: true } : {}) });') || mm.includes('...(process.env.PROOF === "true" ? { proof: true } : {}), ...(process.env.FIRST_PUBLISH === "true" ? { firstPublish: true } : {}) });'));
   // The push: the run-suffixed name only.
   const push = job('push-loader');
-  assert.match(push, /\n {6}PROOF: \$\{\{ inputs\.proof_run == true \|\| needs\.map-mode\.outputs\.first_publish == 'true' \}\}\n/);
+  assert.match(push, /\n {6}PROOF: \$\{\{ inputs\.proof_run == true \|\| inputs\.rehearsal == true \|\| needs\.map-mode\.outputs\.first_publish == 'true' \}\}\n/);
   assert.ok(runOf(push, 'Commit the header and push the branch').includes('--run-attempt "$RUN_ATTEMPT" --proof "$PROOF" --first-publish "$FIRST_PUBLISH")'));
   // The rest of the chain runs for it as for the unattended chain: nothing else keys on proof_run.
   for (const name of ['push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'feed-plan', 'feed-loader', 'rig-feed', 'feed-gate', 'rig-gate']) assert.ok(!jobIf(name).includes('proof_run'), name);
@@ -3041,7 +3047,7 @@ test('first_publish: the feed is uploaded without --clobber, so a feed that is t
   const upload = (first) => {
     const fx = publishFixture();
     writeFileSync(join(fx.dir, 'last-seq.txt'), '0\n');
-    const r = runPublishStep(fx, 'Sign with the release key, verify, publish', { FIRST_PUBLISH: first });
+    const r = signAndPublish(fx, { FIRST_PUBLISH: first });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     return callsOf(fx.dir).filter((c) => c.startsWith('gh release upload vmap-feed version-map-client.v1.txt'));
   };
@@ -3825,8 +3831,8 @@ test('published base (publish job): the feed to sign is compared with the live f
   const names = stepsOf(pub);
   const checkRun = runOf(pub, 'Check the seq and the feed before signing');
   assert.ok(checkRun.indexOf('cmp -s chain/feed.txt feed.again.txt') < checkRun.indexOf('published-base.mjs preserve'), 'after the feed is proved to be the chain\'s');
-  assert.ok(names.indexOf('Check the seq and the feed before signing') < names.indexOf('Sign with the release key, verify, publish'));
-  assert.ok(!runOf(pub, 'Sign with the release key, verify, publish').includes('published-base'), 'the check happens in the step before the key is read');
+  assert.ok(names.indexOf('Check the seq and the feed before signing') < names.indexOf('Sign with the release key and verify'));
+  assert.ok(!runOf(pub, 'Sign with the release key and verify').includes('published-base'), 'the check happens in the step before the key is read');
   const stepName = 'Check the seq and the feed before signing';
   const ran = (env, exit) => {
     const fx = publishFixture();
@@ -3897,4 +3903,169 @@ test('SDK tables: the check job uploads them where the map-mode job reads them, 
   assert.match(chain, /--out res\/layout-stored\.json --published published-ref \\\n\s+--sdk-tables res\/sdk-tables --sdk-differences tool\/ci\/sdk-table-differences\.txt 2>&1\)"; then/);
   assert.match(chain, /--native-keys tool\/ci\/native-keys\.txt /, 'the native keys, which count as strict, come from the tool checkout');
   assert.ok(existsSync(join(here, 'sdk-table-differences.txt')), 'the list is in the tool checkout');
+});
+
+// ------------------------------------------------------------ rehearsal (sr-watch's hand-started run)
+// A rehearsal runs the whole chain on a build that is already released, signs in the publish job, and
+// uploads only to the vmap-feed-rehearsal prerelease. These tests pin that it can never touch the live
+// release, the state, the PR, the alerts or the loader, and that it skips only the two release limits.
+
+// Every step of a job, as written, in order.
+const stepTexts = (j) => j.split('\n      - ').slice(1).map((t) => '- ' + t);
+const stepIf = (t) => t.match(/\n {8}if: (.*)\n/)?.[1] ?? null;
+const REHEARSAL_ONLY = "${{ env.REHEARSAL == 'true' }}";
+const NOT_REHEARSAL = "${{ env.REHEARSAL != 'true' }}";
+
+test('rehearsal: a dispatch input of sr-watch only, off by default, passed down to the check as a plain boolean', () => {
+  const inputs = watch.slice(watch.indexOf('  workflow_dispatch:\n'), watch.indexOf('\npermissions:'));
+  assert.match(inputs, /\n {6}rehearsal:\n(?: {8}description: .*\n) {8}type: boolean\n {8}default: false\n/);
+  assert.ok(!watch.slice(0, watch.indexOf('  workflow_dispatch:\n')).includes('rehearsal:'), 'not a schedule input');
+  assert.equal(watch.match(/\n {6}rehearsal: /g)?.length, 1, 'the pass-down; the input is declared once above');
+  assert.deepEqual(mapOf(watchJob('client-check'), 'with').rehearsal, '${{ inputs.rehearsal == true }}');
+  // The called workflow takes it as a boolean that defaults to false; its own dispatch does not offer it.
+  assert.match(call, /\n {6}rehearsal:\n(?: {8}description: .*\n) {8}type: boolean\n {8}default: false\n/);
+  assert.ok(!dispatch.includes('rehearsal'), 'sr-client-check.yml cannot be started as a rehearsal by hand');
+  // The poll gets the flag only from the input.
+  const poll = step(watchJob('poll'), 'Poll Steam');
+  assert.match(poll, /\n {10}REHEARSAL: \$\{\{ inputs\.rehearsal \}\}\n/);
+  assert.match(poll, /if \[ "\$REHEARSAL" = "true" \]; then flags\+=\(--rehearsal\); fi/);
+  assert.equal(watch.match(/--rehearsal/g)?.length, 1);
+});
+
+test('rehearsal: the hold skip is conditioned on the input, on public, map mode and publish, and on a call from sr-watch', () => {
+  const mm = job('map-mode');
+  const env = mm.match(/\n {6}REHEARSAL: (\$\{\{ .* \}\})\n/)?.[1];
+  assert.ok(env, 'map-mode names the rehearsal once, from the input');
+  assert.equal(mm.match(/REHEARSAL: /g)?.length, 1);
+  const ctx = (over = {}, ref = SR_WATCH_REF) => ({ needs: {}, inputs: { ...okInputs(), rehearsal: true, ...over }, github: { workflow_ref: ref } });
+  assert.equal(evalExpr(env, ctx()), true);
+  // Anything else is an ordinary run, and the decision never gets the flag.
+  assert.equal(evalExpr(env, ctx({ rehearsal: false })), false);
+  assert.equal(evalExpr(env, ctx({ rehearsal: undefined })), false);
+  assert.equal(evalExpr(env, ctx({ branch: 'public_test_branch' })), false);
+  assert.equal(evalExpr(env, ctx({ map_mode: false })), false);
+  assert.equal(evalExpr(env, ctx({ publish: false })), false);
+  assert.equal(evalExpr(env, ctx({ test_autopilot: true })), false);
+  assert.equal(evalExpr(env, ctx({ proof_run: true })), false);
+  assert.equal(evalExpr(env, ctx({ first_publish: true })), false);
+  assert.equal(evalExpr(env, ctx({}, 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main')), false);
+  // The flag reaches decide.mjs only through that variable, and nothing else in the file skips the limits.
+  assert.ok(mm.includes('if [ "$REHEARSAL" = true ]; then rehearsal_flag=(--rehearsal); fi'));
+  assert.equal(wf.match(/--rehearsal/g)?.length, 1, 'the one flag line; the decide call takes it from there');
+  assert.ok(mm.includes('"${rehearsal_flag[@]}"'));
+  // A run that says rehearsal without being one stops at once, before anything is read.
+  const refuse = step(mm, 'Refuse a rehearsal that is not one');
+  assert.match(refuse, /\n {8}if: \$\{\{ inputs\.rehearsal == true \}\}\n/);
+  assert.ok(mm.indexOf('- name: Refuse a rehearsal that is not one') < mm.indexOf('decide.mjs --repo'));
+  // The publish job signs only the chain whose rehearsal mark agrees with its own run.
+  assert.ok(job('publish').includes('(d.rehearsal === true) !== (process.env.REHEARSAL === "true")'));
+  assert.match(job('publish'), /\n {6}REHEARSAL: \$\{\{ inputs\.rehearsal == true \}\}\n/);
+});
+
+test('rehearsal: no step of the publish job that is on for a rehearsal writes, creates, edits or deletes the live release', () => {
+  const pub = job('publish');
+  assert.match(pub, /\n {6}STAGING_RELEASE: vmap-feed-rehearsal\n/);
+  const live = /vmap-feed(?![\w-])/; // the live tag, not vmap-feed-rehearsal
+  const writes = /gh release (upload|create|edit|delete)|gh api[^\n]*(-X|--method|--input|-f |-F )|git push|gh pr |gh issue /;
+  for (const t of stepTexts(pub)) {
+    const name = t.match(/^- name: (.*)\n/)[1];
+    const cond = stepIf(t);
+    const run = (t.match(/\n {8}run: \|\n((?: {10}.*\n?|\n)+)/)?.[1] ?? '').replace(/\\\n\s*/g, ' ');
+    if (live.test(run) && writes.test(run)) {
+      // A step that writes to the live release is off for a rehearsal, and says so.
+      assert.equal(cond, NOT_REHEARSAL, `"${name}" writes the live release, so it must be off for a rehearsal`);
+    }
+    if (cond === REHEARSAL_ONLY) {
+      // A step that is on for a rehearsal reads the live release at most (a plain GET), and writes only the staging one.
+      for (const line of run.split('\n')) {
+        if (!writes.test(line)) continue;
+        assert.ok(!live.test(line), `"${name}": ${line}`);
+        assert.ok(line.includes('$STAGING_RELEASE'), `"${name}": ${line}`);
+      }
+    }
+  }
+  // The live writes are exactly the steps that are off for a rehearsal: the upload, and its check.
+  const liveWriters = stepTexts(pub).filter((t) => /gh release (upload|create) vmap-feed(?![\w-])/.test(t)).map((t) => t.match(/^- name: (.*)\n/)[1]);
+  assert.deepEqual(liveWriters, ['Publish to the live release']);
+  assert.equal(stepIf(step(pub, 'Publish to the live release')), NOT_REHEARSAL);
+  assert.equal(stepIf(step(pub, 'Verify what was published')), NOT_REHEARSAL);
+  // The staging steps are on only for a rehearsal.
+  for (const name of ['Upload to the staging prerelease', 'Verify what was staged', 'Check the live release did not move', 'Note the live release before staging']) {
+    assert.equal(stepIf(step(pub, name)), REHEARSAL_ONLY, name);
+  }
+  // The staging release is created as a prerelease that is not the Latest, and a run stops if it is not one.
+  const up = runOf(pub, 'Upload to the staging prerelease');
+  assert.match(up, /gh release create "\$STAGING_RELEASE" --prerelease --latest=false /);
+  assert.ok(up.includes('isPrerelease,isDraft'));
+  // The signing step runs for both, in the same job and with the same key, and the rehearsal reads no other key.
+  assert.equal(stepIf(step(pub, 'Sign with the release key and verify')), null);
+  assert.equal(pub.match(/VMAP_SIGN_KEY: /g)?.length, 1);
+  assert.match(pub, /\n {4}environment: vmap-sign\n/);
+});
+
+test('rehearsal: the state, the PR, the alerts, the planner extract, the layout store, the fork pushes and the loader release are off', () => {
+  const poll = watchJob('poll');
+  for (const name of ['Seed the baseline on main', 'Open or update the game-update PR']) {
+    assert.match(stepIf(step(poll, name)), /&& inputs\.rehearsal != true$/, name);
+  }
+  assert.match(stepIf(step(poll, 'Cancel planner data extract runs')), /&& inputs\.rehearsal != true && /);
+  // Every step of sr-watch that commits, pushes, or opens a PR or an issue sits behind one of those.
+  for (const t of stepTexts(poll)) {
+    const name = t.match(/^- name: (.*)\n/)[1];
+    if (!/git push|git commit|gh pr create|gh pr edit|gh issue|pipeline-alert\.mjs (raise|stale)/.test(t)) continue;
+    const gated = /inputs\.rehearsal != true/.test(stepIf(t) ?? '') || ['Alert on a stale game-update PR'].includes(name);
+    assert.ok(gated, `"${name}" writes and must be off for a rehearsal`);
+  }
+  // The stale-PR alert is on a PR that this run never opened: the PR step it reads is skipped, so it has nothing to say.
+  assert.equal(stepIf(step(poll, 'Alert on a stale game-update PR')), "steps.pr.outputs.skip == 'true'");
+  for (const name of ['build', 'alert', 'planner-extract']) assert.match(watchJob(name).match(/\n {4}if: (.*)\n/)[1], /inputs\.rehearsal != true/, name);
+  // The poll never writes state for it (see poll-steam.test.mjs); the seed step above is the only state commit.
+  assert.equal((watch.match(/git push origin HEAD:main/g) ?? []).length, 1);
+  // In the called workflow: no layout record, no alert issue, no push to a plugin fork, and the loader fork gets the run-suffixed branch only.
+  assert.match(jobIf('layout-store'), /&& inputs\.rehearsal != true \}\}$/);
+  assert.match(jobIf('auto-apply'), /&& inputs\.rehearsal != true && /);
+  assert.equal(stepIf(step(job('alert'), 'Open or update the issue')), "steps.what.outputs.alert == 'true' && inputs.rehearsal != true");
+  assert.match(job('push-loader'), /\n {6}PROOF: \$\{\{ inputs\.proof_run == true \|\| inputs\.rehearsal == true \|\| /);
+  // Nothing in either workflow tags or releases the loader, posts to Discord, or touches the loader's feed release.
+  for (const text of [wf, watch]) {
+    assert.ok(!/discord/i.test(text.replace(/\bdiscord-snowflake\b/g, '')), 'no Discord post in the chain');
+    assert.ok(!/gh release (create|edit|upload|delete)[^\n]*\$\{?(LOADER_REPO|PUSH_REPO)|git tag|git push[^\n]*--tags/.test(text), 'no loader release or tag');
+  }
+});
+
+test('rehearsal: the staging steps run against stubs: signed with the chain seq, uploaded to the prerelease only, checked, and the live release compared before and after', { skip: !bash }, () => {
+  const fx = publishFixture();
+  writeFileSync(join(fx.dir, 'last-seq.txt'), '100\n');
+  const env = { REHEARSAL: 'true', STAGING_RELEASE: 'vmap-feed-rehearsal' };
+  for (const name of ['Note the live release before staging', 'Sign with the release key and verify', 'Upload to the staging prerelease', 'Verify what was staged', 'Check the live release did not move']) {
+    const r = runPublishStep(fx, name, env);
+    assert.equal(r.status, 0, `${name}: ${r.stdout}${r.stderr}`);
+  }
+  const c = callsOf(fx.dir);
+  assert.ok(c.includes('vmap-sign sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq 100 --seq 200'), c.join('\n'));
+  // Every release write goes to the staging release, history first, and none names the live one.
+  const writes = c.filter((l) => /^gh release (upload|create|edit|delete)/.test(l));
+  assert.deepEqual(writes, ['gh release upload vmap-feed-rehearsal vmap-history.json --clobber', 'gh release upload vmap-feed-rehearsal version-map-client.v1.txt --clobber']);
+  assert.ok(!c.some((l) => /^gh release \w+ vmap-feed( |$)/.test(l) && /upload|create|edit|delete/.test(l)), c.join('\n'));
+  // The history written for staging names the CL and the chain seq.
+  const history = JSON.parse(readFileSync(join(fx.dir, 'vmap-history.json'), 'utf8'));
+  assert.deepEqual(history.releases.map((x) => [x.repo, x.cl, x.seq]), [['ModLoader', 129999, 200]]);
+  assert.match(readFileSync(join(fx.dir, 'summary.md'), 'utf8'), /Rehearsal: staged the feed on vmap-feed-rehearsal \(prerelease\): seq 200, release key k2, sha256 [0-9a-f]{64}\. The live release was not written\./);
+  // A staged copy that differs from what was signed fails.
+  assert.equal(runPublishStep(fx, 'Verify what was staged', { ...env, TAMPER: '1' }).status, 2);
+  // A staged release that is not a prerelease stops the upload before anything is written.
+  const notPre = publishFixture();
+  writeFileSync(join(notPre.dir, 'bin', 'gh'), readFileSync(join(notPre.dir, 'bin', 'gh'), 'utf8').replace('*isPrerelease*) echo true', '*isPrerelease*) echo false'));
+  writeFileSync(join(notPre.dir, 'last-seq.txt'), '100\n');
+  assert.equal(runPublishStep(notPre, 'Sign with the release key and verify', env).status, 0);
+  const bad = runPublishStep(notPre, 'Upload to the staging prerelease', env);
+  assert.equal(bad.status, 2);
+  assert.ok(!callsOf(notPre.dir).some((l) => l.startsWith('gh release upload')));
+  // A live release that moved between the two reads fails the run.
+  const moved = publishFixture();
+  runPublishStep(moved, 'Note the live release before staging', env);
+  writeFileSync(join(moved.dir, 'live-assets.before.json'), '[["version-map-client.v1.txt",1,"2026-01-01T00:00:00Z",10]]\n');
+  const m = runPublishStep(moved, 'Check the live release did not move', env);
+  assert.equal(m.status, 2);
+  assert.match(m.stdout + m.stderr, /the live release changed during a rehearsal/);
 });

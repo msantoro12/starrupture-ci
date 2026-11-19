@@ -236,3 +236,30 @@ test('adding a branch to rig-branches.json is all it takes to rig it: the poll p
   assert.equal(r.stdout, 'v.9.9.9_new 130\n');
   assert.equal((await withApi(info, (base) => runOther(base, 'v.9.9.9_new', dir))).stdout, 'public 101\n');
 });
+
+test('--rehearsal: the public build Steam lists now goes through unchanged, and the state file is never written', async () => {
+  const info = { [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) }, [SERVER]: serverInfo };
+  // Nothing changed: without the flag the poll is quiet, with it public goes through alone.
+  const quiet = await withApi(info, (base) => run(base, recorded));
+  assert.equal(quiet.outputs.changed, 'false');
+  assert.equal(quiet.outputs.client_matrix, '[]');
+  const r = await withApi(info, (base) => run(base, recorded, ['--rehearsal']));
+  assert.equal(r.code, 0, r.log);
+  assert.equal(r.outputs.changed, 'true');
+  assert.deepEqual(JSON.parse(r.outputs.client_matrix), [{ branch: 'public', buildid: '100', other_buildid: '110' }]);
+  assert.equal(r.outputs.dirty, 'false');
+  assert.deepEqual(r.state, recorded, 'the state file is what it was');
+  // A build that moved: the rehearsal takes the one listed now and still writes nothing.
+  const moved = await withApi({ [CLIENT]: { public: branch(101, 1010), public_test_branch: branch(111, 1110) }, [SERVER]: serverInfo }, (base) => run(base, recorded, ['--rehearsal']));
+  assert.deepEqual(JSON.parse(moved.outputs.client_matrix), [{ branch: 'public', buildid: '101', other_buildid: '111' }]);
+  assert.equal(moved.outputs.dirty, 'false');
+  assert.deepEqual(moved.state, recorded);
+});
+
+test('--rehearsal: Steam not listing public now means nothing goes through', async () => {
+  const info = { [CLIENT]: { public_test_branch: branch(110, 1100) }, [SERVER]: serverInfo };
+  const r = await withApi(info, (base) => run(base, recorded, ['--rehearsal']));
+  assert.equal(r.outputs.changed, 'false');
+  assert.equal(r.outputs.client_matrix, '[]');
+  assert.deepEqual(r.state, recorded);
+});

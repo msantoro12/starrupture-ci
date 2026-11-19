@@ -18,6 +18,12 @@ name: SR Steam watch
 # build that has none (ci/planner-extract.mjs). When a build change starts the chain it first cancels any
 # extract that is queued or going, so the extract never holds the chain.
 # No tags, no releases.
+#
+# Rehearsal (the rehearsal input, a hand-started run): the same chain on the public build Steam lists now,
+# even though it is already handled, ending in the same publish job (same environment, same release key)
+# but uploading only to the vmap-feed-rehearsal prerelease. A rehearsal writes no state on main, opens no
+# game-update PR, raises no alert issue, starts no planner extract and counts toward no release limit; the
+# once-per-CL and 24 h limits are the only gates it skips (ci/MAP-MODE.md, "Rehearsal").
 
 on:
   schedule:
@@ -26,6 +32,10 @@ on:
     inputs:
       force:
         description: 'Refresh the open update PR and run the build check even if no build id changed'
+        type: boolean
+        default: false
+      rehearsal:
+        description: 'Rehearsal: run the whole chain on the public build Steam lists now (already handled), signing included, and publish only to the vmap-feed-rehearsal prerelease; nothing live, no state, PR, alert or extract'
         type: boolean
         default: false
 
@@ -63,14 +73,16 @@ jobs:
         id: poll
         env:
           FORCE: ${{ inputs.force }}
+          REHEARSAL: ${{ inputs.rehearsal }}
         run: |
           flags=()
           if [ "$FORCE" = "true" ]; then flags+=(--force); fi
+          if [ "$REHEARSAL" = "true" ]; then flags+=(--rehearsal); fi
           node .github/sr-pipeline/poll-steam.mjs \
             --state state/steam.json --out-dir "$RUNNER_TEMP/sr" "${flags[@]}"
 
       - name: Seed the baseline on main
-        if: steps.poll.outputs.changed != 'true' && steps.poll.outputs.dirty == 'true'
+        if: steps.poll.outputs.changed != 'true' && steps.poll.outputs.dirty == 'true' && inputs.rehearsal != true
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -81,7 +93,7 @@ jobs:
 
       - name: Open or update the game-update PR
         id: pr
-        if: steps.poll.outputs.changed == 'true'
+        if: steps.poll.outputs.changed == 'true' && inputs.rehearsal != true
         env:
           FORCE: ${{ inputs.force }}
         run: |
@@ -207,7 +219,7 @@ jobs:
       # (actions: write sits on this whole job because a separate cancel job would need `needs` on the
       # chain jobs; "Re-run failed jobs" does not re-run the poll, so use a forced run to start a chain.)
       - name: Cancel planner data extract runs
-        if: steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && startsWith(steps.poll.outputs.client_matrix, '[{')
+        if: steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && inputs.rehearsal != true && startsWith(steps.poll.outputs.client_matrix, '[{')
         continue-on-error: true
         timeout-minutes: 6
         run: node ci/planner-extract.mjs cancel --repo "$GH_REPO" --wait-seconds 240
@@ -215,7 +227,7 @@ jobs:
   build:
     name: build-all
     needs: poll
-    if: needs.poll.outputs.changed == 'true' && needs.poll.outputs.skip != 'true'
+    if: needs.poll.outputs.changed == 'true' && needs.poll.outputs.skip != 'true' && inputs.rehearsal != true
     permissions:
       contents: read
       pull-requests: write
@@ -265,6 +277,7 @@ jobs:
       pr: ${{ needs.poll.outputs.pr }}
       map_mode: true
       publish: true
+      rehearsal: ${{ inputs.rehearsal == true }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}
@@ -291,7 +304,7 @@ jobs:
   alert:
     name: alert
     needs: [poll, build]
-    if: ${{ always() && (needs.poll.result == 'failure' || needs.build.result == 'failure') }}
+    if: ${{ always() && inputs.rehearsal != true && (needs.poll.result == 'failure' || needs.build.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -337,7 +350,7 @@ jobs:
   planner-extract:
     name: planner data extract
     needs: [poll, client-check]
-    if: ${{ !cancelled() && needs.poll.result == 'success' }}
+    if: ${{ !cancelled() && needs.poll.result == 'success' && inputs.rehearsal != true }}
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 10

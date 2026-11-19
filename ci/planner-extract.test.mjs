@@ -374,7 +374,7 @@ test('sr-watch.yml: the extract job is there and no job needs it', () => {
 test('sr-watch.yml: the extract job starts after the chain and cannot fail the run', () => {
   const j = watchJobs['planner-extract'];
   assert.match(j, /^    needs: \[poll, client-check\]$/m);
-  assert.match(j, /^    if: \$\{\{ !cancelled\(\) && needs\.poll\.result == 'success' \}\}$/m);
+  assert.match(j, /^    if: \$\{\{ !cancelled\(\) && needs\.poll\.result == 'success' && inputs\.rehearsal != true \}\}$/m);
   assert.match(j, /^    continue-on-error: true$/m);
   assert.match(j, /^    timeout-minutes: \d+$/m);
 });

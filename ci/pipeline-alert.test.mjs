@@ -102,7 +102,7 @@ test('raise: opens the issue labelled and assigned, or comments on the open one 
 test('sr-watch: a failed poll or compile check reaches the alert issue of each changed client branch, with its cause', () => {
   const a = watchWf.slice(watchWf.indexOf('\n  alert:\n'));
   assert.match(a, /needs: \[poll, build\]/);
-  assert.match(a, /if: \$\{\{ always\(\) && \(needs\.poll\.result == 'failure' \|\| needs\.build\.result == 'failure'\) \}\}/);
+  assert.match(a, /if: \$\{\{ always\(\) && inputs\.rehearsal != true && \(needs\.poll\.result == 'failure' \|\| needs\.build\.result == 'failure'\) \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write\n\s+actions: read.*\n\s+checks: read/);
   assert.ok(a.includes('node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl'));
   assert.ok(a.includes('node ci/pipeline-alert.mjs outside --causes failed-jobs.jsonl'));

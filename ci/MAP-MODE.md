@@ -414,7 +414,7 @@ a plugin uses or requests, as a UClass already did.
   CL), the loader turns that request off, and the report's `degraded` lists the plugin
   with the key: severity `high` for a required request, `low` for an optional one (a key
   list's `optional`, or a lazy lookup). A key no plugin requests or looks up is a note.
-- A key the loader itself reads (component `ModLoader`) holds the update, unless its
+- A key the loader itself reads (component `ModLoader`) holds the update, unless its
   `native-keys.txt` line says `optional`: every plugin depends on the loader.
   The loader's optional lines are the two heap members and the six image-library members
   (`UTexture::PrivateResource`, `FTexture::TextureRHI`, `FD3D12Texture::ResourceLocation`,
@@ -1099,6 +1099,33 @@ Offline replay (2026-11-01, run 41272795133, CL-128786, a throwaway key): the lo
 header pruned to CL-127004 gives 102 rows written, 557 field rows with 5 absent,
 decide M (autopilot copy enabled), a signed and verified feed, a staged
 `auto/update-128786` and a promote plan with a seq.
+
+### Rehearsal
+
+A hand-started run of the whole chain on a build that is already released, to prove the automated
+path from the poll to the signed feed. Start it with the `rehearsal` input of `sr-watch.yml`
+(`gh workflow run sr-watch.yml --ref main -f rehearsal=true`).
+
+- The poll takes the public build Steam lists now and sends it through, whether or not it changed
+  (`poll-steam.mjs --rehearsal`). It writes no state, so `state/steam.json` on main is untouched.
+- The chain runs as always: the check, the layout, the map mode agreement, the candidate loader, every
+  rig and the rig gate, `decide.mjs` and the preserve and verify checks. The only two reasons
+  `decide.mjs --rehearsal` skips are "already released for CL-n" and "n releases in the last 24 h". The
+  autopilot, the 30 minute gap and the attempts limit still hold, and the result carries
+  `"rehearsal": true`.
+- The publish job signs with the release key in the `vmap-sign` environment, on the live published
+  file as its base, with a seq above the live one, then uploads to the `vmap-feed-rehearsal` prerelease
+  (same asset names, never the Latest release) and verifies the staged copy. The steps that write the
+  `vmap-feed` release are off for it. It reads that release before and after and fails if it moved.
+  The loader never fetches `vmap-feed-rehearsal`: it reads `releases/latest/download/` of its own
+  repository, and `vmap-publish.yml` only copies the `vmap-feed` release.
+- Nothing else is written: no state commit, no game-update PR, no alert issue, no planner extract, no
+  layout store, no auto-fix push to a plugin fork, no entry in the release history that
+  `decide.mjs` counts. The loader fork gets one run-suffixed `auto/update-<CL>-<run>-<attempt>`
+  branch, the same as a proof run.
+- `sr-client-check.yml` refuses a `rehearsal` that is not one (not public, no map mode, no publish, or
+  not called from `sr-watch.yml`), and the publish job refuses a chain whose rehearsal mark and own
+  rehearsal flag disagree.
 
 ## Alerts
 

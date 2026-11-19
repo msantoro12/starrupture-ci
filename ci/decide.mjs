@@ -5,7 +5,7 @@
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json \
 //       [--fields field-rows.json] --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
 //       [--other-cl 129402 | --other-unmapped "public runs build 123"] [--rig-plugins rig-plugins.json]
-//       [--first-publish]
+//       [--first-publish] [--rehearsal]
 //
 //   node ci/decide.mjs hold --report published-base.json [--decision decision.json] [--repo ModLoader] [--cl 129402] [--out decision.json]
 //       (the published file could not be the base, or a published row was lost: the decision is HOLD with those
@@ -64,6 +64,10 @@
 // and G3 accepts a CL that is not newer than the header's (the header already maps it) when the G3 result says "firstPublish":
 // true as well. Neither half does anything alone. The file is never written. The result carries
 // `firstPublish`. Every other gate, the plugin verdicts and the rate limits apply as always.
+// --rehearsal (sr-watch's hand-started rehearsal, never with --test-autopilot or --first-publish): the
+// once-per-CL limit and the 24 h cap are not applied, so a build that is already released can go through
+// the whole chain; every other reason, the autopilot included, holds as always. The result carries
+// `rehearsal`, and the publish job signs it only for a run that is a rehearsal itself.
 //
 // Gate result shapes:
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
@@ -451,7 +455,10 @@ export function checkAutopilot(loaded) {
 // replaces a bad one); the one-per-CL limit does not apply, the others do.
 // proofRun: the owner's proof run re-runs a CL that is already released, so the same one reason is
 // skipped for it; it never publishes, and the cap, the gap and the attempts limit apply to it as ever.
-export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay, rollForward = false, proofRun = false }) {
+// rehearsal: a hand-started run on a build that is already released, which publishes only to the staging
+// release: the one-per-CL limit and the 24 h cap are skipped (it never counts toward either), and the
+// gap and the attempts limit apply as ever.
+export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay, rollForward = false, proofRun = false, rehearsal = false }) {
   const bad = checkEnvelope('history', historyLoaded);
   if (bad) return [bad];
   const h = historyLoaded.value;
@@ -466,10 +473,10 @@ export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDa
   }
   const reasons = [];
   const sameCl = mine.filter((r) => r.cl === cl).length;
-  if (!rollForward && !proofRun && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${repo} already released for CL-${cl}`);
+  if (!rollForward && !proofRun && !rehearsal && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${repo} already released for CL-${cl}`);
   // A release dated in the future counts as recent, never as old.
   const lastDay = mine.filter((r) => nowMs - r.at < DAY_MS).length;
-  if (lastDay >= maxPerDay) reasons.push(`rate limit: ${lastDay} ${repo} releases in the last 24 h (limit ${maxPerDay})`);
+  if (!rehearsal && lastDay >= maxPerDay) reasons.push(`rate limit: ${lastDay} ${repo} releases in the last 24 h (limit ${maxPerDay})`);
   const newest = mine.reduce((m, r) => Math.max(m, r.at), -Infinity);
   if (nowMs - newest < LIMITS.minGapMinutes * 60 * 1000) {
     reasons.push(`rate limit: last ${repo} release is less than ${LIMITS.minGapMinutes} minutes old`);
@@ -509,6 +516,10 @@ export function decide(inputs) {
       expectRefused: rigRows === null ? [] : expectedRefusals(rigRows, cl),
     };
     if (inputs.firstPublish) r.firstPublish = true;
+    if (inputs.rehearsal) {
+      r.rehearsal = true;
+      notes.push('rehearsal: the once-per-CL limit and the 24 h cap were not applied; the feed goes to the staging release only');
+    }
     // The other branch's build: the same rule on that CL (--other-cl). On the very CL this check
     // scanned, the scanned verdicts apply too, so the two lists are then the same.
     if (inputs.otherCl !== undefined && inputs.otherCl !== null) {
@@ -538,6 +549,7 @@ export function decide(inputs) {
 
   // The first publish stands in for the autopilot on this one run: path M only, the file not read.
   if (inputs.firstPublish && inputs.testAutopilot) fail('a first publish is never a test run');
+  if (inputs.rehearsal && (inputs.firstPublish || inputs.testAutopilot)) fail('a rehearsal is never a test run or a first publish');
   const ap = inputs.firstPublish ? { enabled: true, paths: ['M'], maxPerDay: LIMITS.maxReleasesPerDay } : checkAutopilot(inputs.autopilot);
   if (ap.error) fail(ap.error);
   else if (!ap.enabled && (inputs.testAutopilot || inputs.candidate)) disabled = true;
@@ -611,7 +623,7 @@ export function decide(inputs) {
 
   const limited = checkRateLimits({
     historyLoaded: inputs.history, repo: inputs.repo, cl: g3.cl, path, nowMs: inputs.now,
-    maxPerDay: ap.error ? 0 : ap.maxPerDay, proofRun: g3.proof === true,
+    maxPerDay: ap.error ? 0 : ap.maxPerDay, proofRun: g3.proof === true, rehearsal: inputs.rehearsal === true,
   });
   limited.forEach(fail);
 
@@ -674,22 +686,23 @@ function main() {
   let args;
   try {
     const argv = process.argv.slice(2);
-    args = parseArgs(argv.filter((a) => a !== '--test-autopilot' && a !== '--candidate' && a !== '--first-publish'));
+    args = parseArgs(argv.filter((a) => a !== '--test-autopilot' && a !== '--candidate' && a !== '--first-publish' && a !== '--rehearsal'));
     args.testAutopilot = argv.includes('--test-autopilot');
     args.candidate = argv.includes('--candidate');
     args.firstPublish = argv.includes('--first-publish');
+    args.rehearsal = argv.includes('--rehearsal');
     if (args['other-cl'] !== undefined) args.otherCl = otherClOf(args['other-cl']);
     if (args['other-unmapped'] !== undefined) args.otherUnmapped = otherUnmappedOf(args['other-unmapped']);
     if (args.otherCl !== undefined && args.otherUnmapped !== undefined) throw new Error('--other-cl and --other-unmapped exclude each other');
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate] [--first-publish]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate] [--first-publish] [--rehearsal]`);
     process.exit(2);
   }
   let result;
   try {
     const now = args.now === undefined ? Date.now() : Date.parse(args.now);
     result = decide({
-      repo: args.repo, now, testAutopilot: args.testAutopilot, candidate: args.candidate, firstPublish: args.firstPublish,
+      repo: args.repo, now, testAutopilot: args.testAutopilot, candidate: args.candidate, firstPublish: args.firstPublish, rehearsal: args.rehearsal,
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
       g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),

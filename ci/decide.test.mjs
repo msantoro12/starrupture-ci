@@ -403,6 +403,54 @@ test('rate limit: checkRateLimits skips the once-per-CL reason only with proofRu
   assert.deepEqual(checkRateLimits({ ...args, proofRun: true }), []);
 });
 
+test('rate limit: a rehearsal skips the once-per-CL reason and the 24 h cap, and no other', () => {
+  const g3 = ok({ ok: true, cl: '127999', previousCl: '127004' });
+  const published = (min = 60 * 30) => ok({ releases: [rel(min, 'ModLoader', '127999')], attempts: {} });
+  const capped = ok({ releases: [rel(60, 'ModLoader', '127999'), rel(120, 'ModLoader', '126000')], attempts: {} });
+  // The build is already released and the cap is full: without the flag both reasons hold; with it neither does.
+  holds(decide(base({ g3, history: capped })), /already released for CL-127999.*2 ModLoader releases in the last 24 h|2 ModLoader releases in the last 24 h.*already released/);
+  const r = decide(base({ g3, history: capped, rehearsal: true }));
+  assert.equal(r.decision, 'M');
+  assert.deepEqual(r.reasons, []);
+  assert.equal(r.rehearsal, true);
+  assert.match(r.notes.join(' | '), /rehearsal: the once-per-CL limit and the 24 h cap were not applied/);
+  // Only a rehearsal carries the mark; the same inputs without it never do.
+  assert.equal(decide(base({ g3, history: ok({ releases: [], attempts: {} }) })).rehearsal, undefined);
+  // Only the boolean flag counts.
+  for (const flag of ['true', 1, null, undefined]) holds(decide(base({ g3, history: published(), rehearsal: flag })), /already released for CL-127999/);
+  // The gap and the attempts limit apply to a rehearsal as ever, and so does every gate.
+  holds(decide(base({ g3, history: published(29), rehearsal: true })), /30 minutes/);
+  holds(decide(base({ g3, rehearsal: true, g4: ok(aob([aobRow('SpawnActor', 'MISSING')])), history: ok({ releases: [], attempts: { 127999: 2 } }) })), /2 auto-fix attempts/);
+  holds(decide(base({ g3, history: published(), rehearsal: true, g1: ok({ ok: false }) })), /./);
+  holds(decide(base({ g3, history: published(), rehearsal: true, g2: ok({ ok: false }) })), /./);
+  holds(decide(base({ g3, history: published(), rehearsal: true, autopilot: ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 }) })), /./);
+  // Never with a test run or a first publish.
+  holds(decide(base({ g3, history: published(), rehearsal: true, testAutopilot: true })), /never a test run or a first publish/);
+  holds(decide(base({ g3, history: published(), rehearsal: true, firstPublish: true })), /never a test run or a first publish/);
+});
+
+test('rate limit: checkRateLimits skips the cap and the once-per-CL reason only with rehearsal', () => {
+  const args = { historyLoaded: ok({ releases: [rel(60), rel(120)], attempts: {} }), repo: 'ModLoader', cl: '127004', path: 'M', nowMs: NOW, maxPerDay: 2 };
+  assert.equal(checkRateLimits(args).length, 2);
+  assert.equal(checkRateLimits({ ...args, rehearsal: false }).length, 2);
+  assert.deepEqual(checkRateLimits({ ...args, rehearsal: true }), []);
+  // the gap is not skipped
+  assert.match(checkRateLimits({ ...args, historyLoaded: ok({ releases: [rel(10)], attempts: {} }), rehearsal: true }).join(), /30 minutes/);
+});
+
+test('cli: --rehearsal decides M on an already-released build and writes the mark; without it the same files HOLD', () => {
+  const files = cliFiles({ history: { releases: [rel(60, 'ModLoader', '127999'), rel(120, 'ModLoader', '126000')], attempts: {} } });
+  const plain = runCli(files);
+  assert.equal(plain.status, 1);
+  assert.match(plain.out.reasons.join(' | '), /already released for CL-127999/);
+  const r = runCli(files, ['--rehearsal']);
+  assert.equal(r.status, 0, JSON.stringify(r.out));
+  assert.equal(r.out.decision, 'M');
+  assert.equal(r.out.rehearsal, true);
+  assert.notEqual(runCli(files, ['--rehearsal', '--test-autopilot']).status, 0);
+  assert.notEqual(runCli(files, ['--rehearsal', '--first-publish']).status, 0);
+});
+
 test('rate limit: at most 2 releases per repo in 24 h', () => {
   holds(decide(base({ history: ok({ releases: [rel(60), rel(120)], attempts: {} }) })), /2 ModLoader releases in the last 24 h/);
   assert.equal(decide(base({ history: ok({ releases: [rel(60), rel(60 * 25)], attempts: {} }) })).decision, 'M');
