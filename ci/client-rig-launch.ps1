@@ -15,10 +15,19 @@
 #   dll-hashes.json   sha256 before the first launch and after the last stop
 #   modloader.log, proxy.log, autoupdate.log   the loader's logs of the last attempt, scrubbed
 #
+#   attempt1\         only when attempt 1 ended on that dialog (below): the loader's logs of that
+#                     attempt, the Steam client log lines of its time window, the tail of the
+#                     game's own log, a listing of its log and crash folders, and dialog.txt (the
+#                     text of the Steam and game windows). Evidence only: the verdict never reads it.
+#
 # Relaunch: the first launch in a client session can end on Steam's "Application load
 # error" dialog, which holds the process open with no timeout. That one dialog, and only
 # that, kills the game and launches it again, at most -MaxRelaunch times; every attempt is
-# recorded in boot.json. Any other failure is left as it is for the verdict.
+# recorded in boot.json. Any other failure is left as it is for the verdict. Before the
+# relaunch clears the loader's logs and the crash folders, attempt 1's are copied (see
+# Save-AttemptEvidence); that is read-only on the dialog: windows are enumerated and their
+# text read, nothing is clicked, sent a key or message, or closed. A capture that fails is
+# one line in the job log and changes nothing else.
 #
 # -PayloadScript <ps1> (the data-extract workflow): launch a clean install with no loader and
 # no plugin, and run that script as a background job once the game process exists, with the
@@ -30,7 +39,8 @@
 #
 # The login arrives in STEAM_USER and STEAM_CACHE and is cleared from the environment
 # before the game starts. Everything printed or written goes through Scrub. Steam's own
-# logs and config files, the game's files and its engine logs never reach -OutDir.
+# config files and the game's files never reach -OutDir; the only parts of Steam's logs and
+# the game's engine log that do are the scrubbed lines in attempt1\ above.
 #
 # The persona name is read from what the Steam client wrote after the sign-in, once the game
 # is stopped and Steam has shut down. If that cannot be determined the scrub and the leak
@@ -184,6 +194,26 @@ function Get-Personas([string]$LoginUsers, [string]$Written, [string]$LocalConfi
     return [pscustomobject]@{ Names = @($names | Select-Object -Unique); Known = $known; Why = $why }
 }
 
+# The last $Max lines of a text.
+function Get-Tail([string]$Text, [int]$Max) {
+    @(($Text -split "`r?`n") | Select-Object -Last $Max)
+}
+
+# The lines of a Steam client log written at or after $Since (local time: the logs stamp a
+# line "[yyyy-MM-dd HH:mm:ss]"), the last $Max of them. A line with no stamp goes with the
+# stamped line above it.
+function Get-LogWindow([string]$Text, [datetime]$Since, [int]$Max = 400) {
+    $keep = [Collections.Generic.List[string]]::new()
+    $in = $false
+    foreach ($l in ($Text -split "`r?`n")) {
+        if ($l -match '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\]') {
+            $in = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) -ge $Since
+        }
+        if ($in) { $keep.Add($l) }
+    }
+    @($keep | Select-Object -Last $Max)
+}
+
 function Read-Shared([string]$path) {
     $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite,Delete')
     try { (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
@@ -260,6 +290,13 @@ if ($Check) {
         try { [void](Resolve-PayloadScript './ci/p.ps1' '' $ws) } catch { $refused = $true }
         if (-not $refused) { throw 'a payload path was accepted with no workspace' }
     } finally { Remove-Item -LiteralPath $ws, "$ws-other" -Recurse -Force -ErrorAction SilentlyContinue }
+    # The Steam log lines of an attempt's time window, and the tail of a log.
+    $steamLog = "[2026-11-20 12:00:00] before`n[2026-11-20 12:00:20] launch`r`ncontinued`n[2026-11-20 12:00:30] Application load error`n"
+    $win = Get-LogWindow $steamLog ([datetime]'2026-11-20 12:00:10')
+    if ($win.Count -ne 4 -or $win[0] -notmatch 'launch' -or $win[1] -ne 'continued' -or ($win -join '|') -match 'before') { throw 'the log window is wrong' }
+    if ((Get-LogWindow $steamLog ([datetime]'2026-11-20 13:00:00')) -match '\S') { throw 'a log window after the last line is not empty' }
+    if ((Get-LogWindow $steamLog ([datetime]'2026-11-20 11:00:00') 2).Count -ne 2) { throw 'the log window is not capped' }
+    if (((Get-Tail "a`nb`nc`nd" 2) -join ',') -ne 'c,d') { throw 'the tail is wrong' }
     'Check passed.'
     exit 0
 }
@@ -516,6 +553,121 @@ function Reset-GameState {
     foreach ($d in $script:crashDirs) { if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue } }
 }
 
+# ---- evidence of an attempt that ended on the Steam load error ---------------------------------
+# Held in memory as read, written scrubbed by Write-AttemptEvidence once the persona is known.
+# Read-only: files are read, windows are enumerated and their text read. Nothing is clicked,
+# typed or sent to a window, and no window is closed.
+$script:evidence = [ordered]@{}
+$evidenceProcRx = '^(steam|gameoverlayui|StarRupture|UnrealCEF|CrashReport|WerFault)'
+# The Steam client logs that can hold the load error. connection_log is left out.
+$steamEvidenceLogs = @('content_log.txt', 'console_log.txt', 'bootstrap_log.txt', 'compat_log.txt', 'gameprocess_log.txt')
+
+function Add-Evidence([string]$Name, [scriptblock]$Get) {
+    try { $script:evidence[($Name -replace '[^\w.-]', '_')] = ((& $Get) -join "`n") }
+    catch { Say "Attempt evidence: $Name not captured ($($_.Exception.Message))" }
+}
+
+function Get-DirListing([string]$Dir) {
+    if (-not (Test-Path -LiteralPath $Dir)) { return "$Dir : not there" }
+    $items = @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Force -ErrorAction SilentlyContinue)
+    "$Dir : $($items.Count) file(s)"
+    foreach ($f in $items) { "  {0}  {1} bytes  {2:o}" -f $f.FullName.Substring($Dir.Length).TrimStart('\'), $f.Length, $f.LastWriteTimeUtc }
+}
+
+# The visible windows of Steam and the game, as Win32 reports them, then the dialogs among
+# them as UI Automation reports them (names and values only). UI Automation is read by Windows
+# PowerShell in a child of a job, which is dropped if it takes more than 20 s: that one has the
+# UI Automation assemblies whichever PowerShell runs the rig.
+function Get-WindowReport {
+    $names = @{}
+    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { if ($p.ProcessName -match $evidenceProcRx) { $names[[int]$p.Id] = $p.ProcessName } }
+    'Visible windows of Steam and the game processes (EnumWindows, GetWindowText):'
+    foreach ($l in @([RigWin]::Snapshot())) {
+        if ($l -match '^pid=(\d+) visible=True ' -and $names.ContainsKey([int]$Matches[1])) {
+            $line = "proc=$($names[[int]$Matches[1]]) $l"
+            if ($line.Length -gt 2000) { $line.Substring(0, 2000) + '...' } else { $line }
+        }
+    }
+    ''
+    'Dialogs as UI Automation reads them (name, class, value):'
+    $uia = {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $all = [Windows.Automation.Condition]::TrueCondition
+        foreach ($w in [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children, $all)) {
+            $c = $w.Current
+            if ($Pids -notcontains $c.ProcessId -or $c.ClassName -like 'Chrome_*' -or $c.ClassName -like 'Cef*') { continue }
+            if ($c.ClassName -ne '#32770' -and $c.Name -notmatch '(?i)error|crash|fatal|exception') { continue }
+            "window pid=$($c.ProcessId) class=$($c.ClassName) name=[$($c.Name)]"
+            $n = 0
+            foreach ($e in $w.FindAll([Windows.Automation.TreeScope]::Descendants, $all)) {
+                if (++$n -gt 200) { '  ...'; break }
+                $value = ''
+                $pattern = $null
+                if ($e.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { $value = $pattern.Current.Value }
+                "  $($e.Current.ControlType.ProgrammaticName) class=$($e.Current.ClassName) name=[$($e.Current.Name)] value=[$value]"
+            }
+        }
+    }
+    $job = $null
+    try {
+        $uiaText = "`$Pids = [int[]]@($(@($names.Keys) -join ','))`n" + $uia.ToString()
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($uiaText))
+        $job = Start-Job -ArgumentList $encoded -ScriptBlock { param($e) & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -NonInteractive -EncodedCommand $e 2>&1 | ForEach-Object { "$_" } }
+        if (Wait-Job -Job $job -Timeout 20) { @(Receive-Job -Job $job) } else { 'UI Automation did not answer in 20 s' }
+    } catch { "UI Automation could not be read: $($_.Exception.Message)" }
+    finally { if ($job) { Stop-Job -Job $job -ErrorAction SilentlyContinue; Remove-Job -Job $job -Force -ErrorAction SilentlyContinue } }
+}
+
+# Called before the relaunch clears the loader's logs and the crash folders. Never throws.
+function Save-AttemptEvidence($Attempt) {
+    try {
+        $since = ([DateTimeOffset]::Parse($Attempt.started_utc)).LocalDateTime.AddSeconds(-15)
+        Add-Evidence 'dialog.txt' {
+            "Attempt $($Attempt.n) ended after $($Attempt.seconds) s: $($Attempt.end)"
+            "Dialog text as the rig read it: $($Attempt.dialog)"
+            ''
+            Get-WindowReport
+        }
+        if (Test-Path -LiteralPath $script:mlLogs) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $script:mlLogs -File)) {
+                Add-Evidence $f.Name.ToLower() { Get-Tail (Read-Shared $f.FullName) 3000 }
+            }
+        }
+        foreach ($name in $steamEvidenceLogs) {
+            $p = Join-Path $steamLogs $name
+            if (Test-Path -LiteralPath $p) {
+                Add-Evidence "steam-$name" {
+                    $lines = @(Get-LogWindow (Read-Shared $p) $since 400)
+                    if ($lines.Count) { $lines } else { "(no lines at or after $($since.ToString('yyyy-MM-dd HH:mm:ss')) local time)" }
+                }
+            }
+        }
+        foreach ($d in $script:gameLogDirs.GetEnumerator()) {
+            if (-not (Test-Path -LiteralPath $d.Value)) { continue }
+            $newest = Get-ChildItem -LiteralPath $d.Value -Filter *.log -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+            if ($newest) { Add-Evidence "$($d.Key)-$($newest.Name)" { Get-Tail (Read-Shared $newest.FullName) 400 } }
+        }
+        Add-Evidence 'game-files.txt' {
+            foreach ($d in $script:gameLogDirs.GetEnumerator()) { "$($d.Key):"; Get-DirListing $d.Value }
+            foreach ($d in $script:crashDirs) { 'crashes:'; Get-DirListing $d }
+        }
+        Say "Attempt $($Attempt.n) evidence kept in memory: $(@($script:evidence.Keys).Count) file(s)"
+    } catch { Say "Attempt evidence: not captured ($($_.Exception.Message))" }
+}
+
+# After the persona is known, so the scrub covers it. Never throws.
+function Write-AttemptEvidence([string]$Folder) {
+    if (-not $script:evidence.Count) { return }
+    try {
+        $dir = Join-Path $OutDir $Folder
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        foreach ($k in @($script:evidence.Keys)) {
+            [IO.File]::WriteAllText((Join-Path $dir $k), (Scrub $script:evidence[$k]), (New-Object Text.UTF8Encoding $false))
+        }
+        Say "Attempt evidence written: $($script:evidence.Count) file(s) in $Folder"
+    } catch { Say "Attempt evidence: not written ($($_.Exception.Message))" }
+}
+
 function Stop-Game {
     Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match $gameRx } | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 5
@@ -594,6 +746,7 @@ function Invoke-Launch {
     if ($PayloadScript) { $script:updater = $script:exe }
     $gameRoot = (Get-Item $script:bin).Parent.Parent.FullName
     $script:crashDirs = @((Join-Path $gameRoot 'Saved\Crashes'), (Join-Path $env:LOCALAPPDATA 'StarRupture\Saved\Crashes'))
+    $script:gameLogDirs = [ordered]@{ game = (Join-Path $gameRoot 'Saved\Logs'); localappdata = (Join-Path $env:LOCALAPPDATA 'StarRupture\Saved\Logs') }
     if (-not $PayloadScript -and -not (Test-Path -LiteralPath (Join-Path $script:bin 'dwmapi.dll'))) { throw 'The loader is not installed (no dwmapi.dll)' }
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     $OutDir = (Resolve-Path $OutDir).Path
@@ -637,6 +790,8 @@ function Invoke-Launch {
         $last = Invoke-Attempt $n
         $attempts += , $last
         if (-not $last.load_error -or $n -gt $MaxRelaunch) { break }
+        # The relaunch clears the loader's logs and the crash folders: keep attempt 1's first.
+        if ($n -eq 1 -and -not $PayloadScript) { Save-AttemptEvidence $last }
         Say "Steam Error (Application load error) on attempt ${n}: stopping the game and launching it again"
         Stop-Game
     }
@@ -666,6 +821,7 @@ function Invoke-Launch {
     }
     # The verdict judges a compatibility report by what it says, so it needs the file itself.
     foreach ($f in $compatFiles) { [IO.File]::WriteAllText((Join-Path $OutDir $f.Name), (Scrub (Read-Shared $f.FullName)), (New-Object Text.UTF8Encoding $false)) }
+    Write-AttemptEvidence 'attempt1'
     $boot = [ordered]@{
         label = 'client'; started_utc = $last.started_utc; launched_args = $GameArgs
         process_found = [bool]$last.process_found; process_found_s = $last.process_found_s

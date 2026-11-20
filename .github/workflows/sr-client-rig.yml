@@ -26,10 +26,14 @@ name: SR client rig
 # copied to the loader's feed cache. Released loaders trust k2 only, so this works with the
 # default released loader as well as with a candidate. The rig records the seq and sha256 of the
 # file it seeded. It never signs, holds no signing key and publishes nothing.
-# Game files, engine logs, dumps and Steam config files never leave the runner. Nothing
+# Game files, dumps and Steam config files never leave the runner. Nothing
 # taken from the logs reaches the console, the job summary or an upload before the leak
 # gate has passed: the verdict writes its text to files in out/, and the last step
 # publishes them. Only the scrubbed text logs and the verdict files are uploaded.
+# When attempt 1 ends on Steam's "Application load error" dialog and the game is launched
+# again, out/attempt1/ also holds what the launch kept of that attempt (the loader's logs,
+# the Steam client and game log lines of its time window, the dialog's text), scrubbed. It is
+# evidence only: the verdict does not read it. The leak gate reads it like everything under out/.
 
 on:
   workflow_dispatch:
@@ -444,6 +448,7 @@ jobs:
             out/set.json
             out/boot.json
             out/compat-report-*.json
+            out/attempt1/*
           retention-days: 3
           if-no-files-found: warn
 
