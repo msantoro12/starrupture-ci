@@ -28,7 +28,7 @@ himself, once. It follows the procedure the plugin forks use
    `starrupture-ci auto-apply`.
 3. Store the private half as the environment secret `SR_DEPLOYKEY_MODLOADER` in
    `fork-push` on msantoro12/starrupture-ci, from the file, and delete the key
-   from the machine. (The Bitwarden Secrets Manager copy, project `dev`, is by
+   from the machine. (The Bitwarden Secrets Manager copy, project `prod`, is by
    hand.)
 4. Add two rulesets to the loader fork, mirrored from a plugin fork:
    "auto-apply deploy keys: auto/** only" (a deploy key may write `auto/**`
