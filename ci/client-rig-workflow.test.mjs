@@ -328,9 +328,11 @@ test('order: verdict before upload, leak gate before upload, upload only when th
   assert.match(upload, /retention-days: [1-7]\n/);
   const files = [...upload.matchAll(/^\s+out\/([\w.-]+)$/gm)].map((m) => m[1]).sort();
   assert.deepEqual(files, ['autoupdate.log', 'boot.json', 'dll-hashes.json', 'modloader.log', 'proxy.log', 'set.json', 'verdict.json', 'verdict.txt']);
-  // Named files, and the one wildcard the compat reports need (their names carry the build).
+  // Named files, and the two wildcards: the compat reports (their names carry the build) and the
+  // attempt1 evidence folder (the files in it are named by the launch, and the leak gate reads them).
   assert.match(upload, /^\s+out\/compat-report-\*\.json$/m);
-  assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:')).replace('out/compat-report-*.json', '')), 'named files, no other wildcard');
+  assert.match(upload, /^\s+out\/attempt1\/\*$/m);
+  assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:')).replace('out/compat-report-*.json', '').replace('out/attempt1/*', '')), 'named files, no other wildcard');
   // The gate scans what would be uploaded, for the account name, the login values and the IDs.
   const gate = step('Leak gate');
   assert.match(gate, /\.\/ci\/leak-gate\.ps1 -Path out -AllowMissing\n\s+exit \$LASTEXITCODE$/);
@@ -725,7 +727,10 @@ function runGate(args, { files = null, hold = '', terms = '' } = {}) {
     const out = join(dir, 'out');
     if (files) {
       mkdirSync(out);
-      for (const [n, c] of Object.entries(files)) writeFileSync(join(out, n), c);
+      for (const [n, c] of Object.entries(files)) {
+        mkdirSync(dirname(join(out, n)), { recursive: true });
+        writeFileSync(join(out, n), c);
+      }
     }
     if (hold) writeFileSync(join(dir, 'rig-hold.txt'), hold);
     if (terms) writeFileSync(join(dir, 'rig-gate-terms.txt'), terms);
@@ -773,6 +778,107 @@ test('leak gate, the rig\'s call: a hold from the launch fails it before anythin
   assert.equal(r.status, 1);
   assert.match(r.stdout, /::error::The Steam persona name could not be determined\./);
   assert.ok(!/No account data/.test(r.stdout));
+});
+
+test('leak gate, the rig\'s call: a secret-shaped value in an attempt1 file fails it; a clean attempt1 folder passes', (t) => {
+  const clean = runGate(['-AllowMissing'], {
+    files: {
+      'boot.json': '{"process_found":true}',
+      'attempt1/dialog.txt': 'Static=Application load error 6:0000065432 | Button=OK',
+      'attempt1/steam-content_log.txt': '[2026-11-20 12:00:00] AppID 1631270 state changed : Fully Installed,',
+    },
+  });
+  if (!clean) return t.skip('no PowerShell on this machine');
+  assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+  assert.match(clean.stdout, /No account data in 3 file/, 'the gate reads the folder under out/');
+  for (const [what, name, content] of [
+    ['the account name in the dialog text', 'attempt1/dialog.txt', 'Steam Error: ACCT1 cannot start the game'],
+    ['a login value in a Steam log', 'attempt1/steam-console_log.txt', '[2026-11-20 12:00:01] token longsecrettoken1234567890'],
+    ['a SteamID64 in the game log', 'attempt1/game-StarRupture.log', 'LogOnline: user 76561198000000001'],
+    ['a SteamID3 in the loader log', 'attempt1/modloader.log', 'owner [U:1:39734273]'],
+  ]) {
+    const r = runGate(['-AllowMissing'], { files: { 'boot.json': '{}', [name]: content } });
+    assert.equal(r.status, 1, `${what} fails the gate`);
+    const leaf = name.split('/').pop().replace('.', '\\.');
+    assert.match(r.stdout, new RegExp(`::error::Account data found in ${leaf}`));
+    assert.ok(!/longsecrettoken1234567890|76561198000000001/i.test(r.stdout), 'the gate does not print the value');
+  }
+  const persona = runGate(['-AllowMissing'], { files: { 'attempt1/steam-content_log.txt': 'persona Gamer One here' }, terms: 'Gamer One\n' });
+  assert.equal(persona.status, 1, 'a persona the launch recorded fails the gate in attempt1');
+});
+
+test('attempt1 evidence: kept before the relaunch clears anything, only on the load error, never for the data extract', () => {
+  const loop = launch.slice(launch.indexOf('$attempts = @()'), launch.indexOf('# Facts first, then the stop'));
+  // The relaunch rule itself is unchanged.
+  assert.match(loop, /for \(\$n = 1; \$n -le \(1 \+ \$MaxRelaunch\); \$n\+\+\) \{\n {8}\$last = Invoke-Attempt \$n\n {8}\$attempts \+= , \$last\n {8}if \(-not \$last\.load_error -or \$n -gt \$MaxRelaunch\) \{ break \}\n/);
+  assert.match(launch, /\[int\]\$MaxRelaunch = 2/);
+  // The capture sits after that check and before Stop-Game (the relaunch's Reset-GameState clears the logs and crash folders).
+  const save = loop.indexOf('Save-AttemptEvidence $last');
+  assert.ok(save > loop.indexOf('$n -gt $MaxRelaunch) { break }'), 'only when a relaunch follows');
+  assert.ok(save < loop.indexOf('Stop-Game'), 'before the game is stopped');
+  assert.match(loop, /if \(\$n -eq 1 -and -not \$PayloadScript\) \{ Save-AttemptEvidence \$last \}/);
+  assert.equal(launch.match(/Save-AttemptEvidence \$last/g).length, 1);
+  const reset = launch.slice(launch.indexOf('function Reset-GameState'), launch.indexOf('# ---- evidence of an attempt'));
+  assert.match(reset, /Remove-Item/, 'the clearing the capture runs ahead of is still there');
+  // The files are written after the persona is known, so the scrub covers it, and through Scrub.
+  const write = launch.indexOf("Write-AttemptEvidence 'attempt1'");
+  assert.ok(write > launch.indexOf('$persona = Read-Personas') && write < launch.indexOf('$boot = [ordered]@{'));
+  assert.match(launch, /\(Scrub \$script:evidence\[\$k\]\)/);
+  // Nothing about the verdict moved: boot.json's attempts, and the verdict never reads the folder.
+  assert.match(launch, /attempts = @\(\$attempts \| ForEach-Object \{ \[ordered\]@\{ n = \$_\.n; seconds = \$_\.seconds; end = \$_\.end; steam_load_error = \$_\.load_error \} \}\)/);
+  assert.ok(!/attempt1|Save-AttemptEvidence/i.test(verdictPs), 'verdict.ps1 does not read the attempt1 folder');
+  assert.ok(!/Retry\s*=\s*1/.test(launch + setup), 'no retry setting');
+  // The data extract (a payload) makes none: its upload and gate do not read out/.
+  assert.ok(!/attempt1/.test(read('.github', 'workflows', 'sr-data-extract.yml').replace(/#.*$/gm, '')));
+});
+
+test('attempt1 evidence: a capture that fails is a log line, never a failed launch', () => {
+  const block = launch.slice(launch.indexOf('# ---- evidence of an attempt'), launch.indexOf('function Stop-Game'));
+  for (const fn of ['Save-AttemptEvidence', 'Write-AttemptEvidence']) {
+    const body = block.slice(block.indexOf(`function ${fn}`));
+    assert.match(body.slice(0, body.indexOf('\n}\n')), /\n {4}try \{[\s\S]*\} catch \{ Say "Attempt evidence: [^"]*" \}$/, `${fn} catches everything and says so`);
+  }
+  assert.match(block, /function Add-Evidence[^\n]*\n {4}try \{[^\n]*\n {4}catch \{ Say "Attempt evidence: /);
+  assert.ok(!/\bthrow\b|Stop-With|Set-Reason|Set-Hold|exit \d/.test(block), 'the capture cannot stop the rig or hold the logs');
+  assert.match(block, /Wait-Job -Job \$job -Timeout 20/, 'the UI Automation read is bounded');
+});
+
+test('attempt1 evidence: read-only on the dialog, no screenshot, only Steam and game processes', () => {
+  const block = launch.slice(launch.indexOf('# ---- evidence of an attempt'), launch.indexOf('function Stop-Game'));
+  const code = block.replace(/^\s*#.*$/gm, '');
+  assert.ok(!/SendMessage|PostMessage|SendInput|keybd_event|mouse_event|SetCursorPos|SendKeys|SetForegroundWindow|ShowWindow|EnableWindow|CloseWindow|DestroyWindow|CloseMainWindow|BM_CLICK|WM_/i.test(code), 'no message, key or mouse call');
+  assert.ok(!/InvokePattern|TogglePattern|SelectionItemPattern|ExpandCollapsePattern|WindowPattern|\.SetValue\(|\.Invoke\(|\.Select\(|\.Toggle\(|\.Close\(|SetFocus|DoDefaultAction/.test(code), 'only reading UI Automation patterns');
+  assert.ok(!/Stop-Process|\.Kill\(|Start-Process|Remove-Item|Set-Content|Out-File/.test(code.replace(/Remove-Job[^\n]*/g, '').replace(/Stop-Job[^\n]*/g, '')), 'nothing is stopped, started or deleted');
+  assert.ok(!/CopyFromScreen|PrintWindow|System\.Drawing|Screenshot|\.png|\.jpg|\.bmp/i.test(code), 'no screenshot');
+  // Win32 calls the rig can make: enumerate and read, nothing else.
+  const imports = [...launch.matchAll(/\[DllImport\("user32\.dll"[^\]]*\)\] static extern \w+ (\w+)\(/g)].map((m) => m[1]).sort();
+  assert.deepEqual(imports, ['EnumChildWindows', 'EnumWindows', 'GetClassNameW', 'GetWindowTextW', 'GetWindowThreadProcessId', 'IsWindowVisible']);
+  assert.match(code, /\$evidenceProcRx = '\^\(steam\|gameoverlayui\|StarRupture\|UnrealCEF\|CrashReport\|WerFault\)'/);
+  assert.match(code, /\$p\.ProcessName -match \$evidenceProcRx/);
+  // The Steam logs: an allowlist that leaves connection_log out.
+  assert.match(code, /\$steamEvidenceLogs = @\('content_log\.txt', 'console_log\.txt', 'bootstrap_log\.txt', 'compat_log\.txt', 'gameprocess_log\.txt'\)/);
+  assert.ok(!/connection_log/.test(code), 'the connection log is not kept');
+});
+
+test('attempt1 evidence: the helpers that cut the logs', (t) => {
+  const fns = ['Get-Tail', 'Get-LogWindow'].map((n) => launch.match(new RegExp(`^function ${n}\\b[\\s\\S]*?\\n}\\n`, 'm'))[0]).join('\n');
+  const script = `$ErrorActionPreference = 'Stop'\n${fns}\n` +
+    "$log = \"[2026-11-20 12:00:00] before`n[2026-11-20 12:00:20] launch`r`ncontinued`n[2026-11-20 12:00:30] Application load error\"\n" +
+    "'WIN=' + ((Get-LogWindow $log ([datetime]'2026-11-20 12:00:10')) -join '|')\n" +
+    "'NONE=' + @(Get-LogWindow $log ([datetime]'2026-11-20 13:00:00')).Count\n" +
+    "'CAP=' + @(Get-LogWindow $log ([datetime]'2026-11-20 11:00:00') 2).Count\n" +
+    "'TAIL=' + ((Get-Tail \"a`nb`nc`nd\" 2) -join ',')";
+  let r = null;
+  for (const exe of ['pwsh', 'powershell']) {
+    r = spawnSync(exe, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true });
+    if (!r.error) break;
+  }
+  if (!r || r.error) return t.skip('no PowerShell on this machine');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^WIN=\[2026-11-20 12:00:20\] launch\|continued\|\[2026-11-20 12:00:30\] Application load error$/m);
+  assert.match(r.stdout, /^NONE=0$/m);
+  assert.match(r.stdout, /^CAP=2$/m);
+  assert.match(r.stdout, /^TAIL=c,d$/m);
 });
 
 test('leak gate, -Strict (the data extract): bytes, login-file names, and digit-bounded numeric terms', (t) => {
