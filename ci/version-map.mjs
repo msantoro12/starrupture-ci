@@ -78,7 +78,9 @@ import { verifyFeed } from './vmap-sign.mjs';
 
 export const FORMAT_VERSION = 2;
 export const FEED_FORMAT = 1;
-export const FEED_MAX_BYTES = 512 * 1024;
+// Loaders from v1.23.0 accept a feed up to 1 MiB (1,048,576 bytes). The export stays under that with room for the
+// seq and sig lines the signer adds, so a feed at the cap still verifies.
+export const FEED_MAX_BYTES = 1040000;
 export const EXIT_OK = 0;
 export const EXIT_VIOLATION = 3;
 export const EXIT_ERROR = 2;
@@ -656,8 +658,13 @@ export function readPublished(bytes, { keys, allowTestKey = false, where = 'the 
     throw new SignatureRefused(`${where}: ${e.message}`);
   }
   if (r.test && !allowTestKey) throw new SignatureRefused(`${where}: signed with the TEST key ${r.keyId}`);
+  return parseSignedFeedRows(bytes, where);
+}
+
+// The rows of a signed feed file, with no signature check: for a file a step of the same run already
+// verified (vmap-sign.mjs verify). [format, seq, ...rows, sig, '']: the rows alone are what export-feed wrote.
+export function parseSignedFeedRows(bytes, where = 'the published feed') {
   const lines = (Buffer.isBuffer(bytes) ? bytes.toString('utf8') : bytes).split('\n');
-  // [format, seq, ...rows, sig, '']: the rows alone are what export-feed wrote.
   return parseFeed([lines[0], ...lines.slice(2, -2), ''].join('\n'), where);
 }
 

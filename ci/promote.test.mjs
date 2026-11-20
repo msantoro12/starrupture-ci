@@ -26,7 +26,7 @@ const build = (over = {}) => ({
 });
 const stagedIndex = (...builds) => builds.reduce((index, b) => stage(b, { index, effects: { pushBranch() {}, writeIndex() {} } }).index, {});
 
-const autopilot = { schema: 1, enabled: true, paths: ['M'], max_releases_per_day: 2 };
+const autopilot = { schema: 1, enabled: true, paths: ['M'] };
 const history = { releases: [] };
 const flip = (over = {}) => ({ buildid: '26271156', exeSha256: SHA, cl: 128786, ...over });
 const inputs = (over = {}) => ({ index: stagedIndex(build()), pub: flip(), autopilot, history, lastSeq: 41, now: NOW, verify: { ok: true }, ...over });
@@ -71,15 +71,14 @@ test('a superseded staged CL is listed and skipped, a newer CL stays staged', ()
   assert.equal(plan(inputs({ index, pub: flip({ cl: 128786 }) })).action, 'normal-flow', 'a superseded CL is never promoted');
 });
 
-test('the autopilot fails closed: missing, disabled, no path M, or over the cap prints a HOLD, never "would sign"', () => {
+test('the autopilot fails closed: missing, disabled, no path M, or already published prints a HOLD, never "would sign"', () => {
   for (const [name, over, re] of [
     ['missing file', { autopilot: null }, /autopilot/],
     ['disabled', { autopilot: { ...autopilot, enabled: false } }, /autopilot is disabled/],
     ['no path M', { autopilot: { ...autopilot, paths: ['B'] } }, /path M .* not enabled/],
-    ['malformed cap', { autopilot: { ...autopilot, max_releases_per_day: -1 } }, /max_releases_per_day/],
-    ['two this day', { history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T01:00:00Z' }, { repo: LOADER_REPO, cl: '2', at: '2026-11-05T05:00:00Z' }] } }, /2 StarRupture-ModLoader releases in the last 24 h/],
-    ['too soon', { history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T11:50:00Z' }] } }, /less than 30 minutes/],
+    ['malformed history', { history: { releases: [{ repo: LOADER_REPO, cl: 'x' }] } }, /malformed/],
     ['already published', { history: { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-10-01T00:00:00Z' }] } }, /already released for CL-128786/],
+    ['just published', { history: { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T11:59:59Z' }] } }, /already released for CL-128786/],
   ]) {
     const r = plan(inputs(over));
     assert.equal(r.action, 'hold', name);
@@ -111,22 +110,24 @@ test('no publish without a passing re-scan or re-verify on the public exe', () =
   }
 });
 
-test('an owner-dispatched roll-forward may re-publish a CL; the cap and the gap still apply', () => {
+test('an owner-dispatched roll-forward may re-publish a CL; it lifts the once-per-CL limit and no time rule exists', () => {
   const once = { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T09:00:00Z' }] };
   assert.equal(plan(inputs({ history: once })).action, 'hold');
   const r = plan(inputs({ history: once, rollForward: true }));
   assert.equal(r.action, 'promote');
   assert.ok(r.lines.some((l) => l.startsWith('roll-forward: an owner-dispatched re-publish of CL-128786')));
-  const soon = { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T11:50:00Z' }] };
-  assert.match(plan(inputs({ history: soon, rollForward: true })).hold.join('\n'), /less than 30 minutes/);
-  const two = { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T01:00:00Z' }, { repo: LOADER_REPO, cl: '128786', at: '2026-11-05T05:00:00Z' }] };
-  assert.match(plan(inputs({ history: two, rollForward: true })).hold.join('\n'), /2 StarRupture-ModLoader releases in the last 24 h/);
+  // right after the last release, and after several: nothing is held for how close they are
+  const soon = { releases: [{ repo: LOADER_REPO, cl: '128786', at: '2026-11-05T11:59:59Z' }] };
+  assert.equal(plan(inputs({ history: soon, rollForward: true })).action, 'promote');
+  const many = { releases: ['1', '2', '3', '128786'].map((cl) => ({ repo: LOADER_REPO, cl, at: '2026-11-05T11:59:00Z' })) };
+  assert.equal(plan(inputs({ history: many, rollForward: true })).action, 'promote');
 });
 
-test('the cap counts the loader repo only, and the file can only lower the limit', () => {
-  const other = { releases: [{ repo: 'StarRupture-Plugin-BetterCheats', cl: '1', at: '2026-11-04T20:00:00Z' }, { repo: 'StarRupture-Plugin-WAILA', cl: '1', at: '2026-11-04T21:00:00Z' }] };
+test('the once-per-CL limit counts the loader repo only', () => {
+  const other = { releases: [{ repo: 'StarRupture-Plugin-BetterCheats', cl: '128786', at: '2026-11-04T20:00:00Z' }, { repo: 'StarRupture-Plugin-WAILA', cl: '128786', at: '2026-11-04T21:00:00Z' }] };
   assert.equal(plan(inputs({ history: other })).action, 'promote');
-  assert.deepEqual(gate({ autopilot: { ...autopilot, max_releases_per_day: 99 }, history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-04T20:00:00Z' }, { repo: LOADER_REPO, cl: '2', at: '2026-11-05T08:00:00Z' }] }, cl: 3, now: NOW }).length, 1);
+  assert.deepEqual(gate({ autopilot: { ...autopilot }, history: { releases: [{ repo: LOADER_REPO, cl: '1', at: '2026-11-05T11:59:00Z' }, { repo: LOADER_REPO, cl: '2', at: '2026-11-05T11:59:30Z' }] }, cl: 3 }), []);
+  assert.equal(gate({ autopilot: { ...autopilot }, history: { releases: [{ repo: LOADER_REPO, cl: '3', at: '2026-11-05T11:59:00Z' }] }, cl: 3 }).length, 1);
 });
 
 test('dry run calls no effect, and a live run is refused', () => {

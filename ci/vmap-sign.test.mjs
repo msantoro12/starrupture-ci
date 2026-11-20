@@ -13,8 +13,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exportFeed, parse } from './version-map.mjs';
-import { PUBLIC_KEYS, nextSeq, signFeed, verifyFeed } from './vmap-sign.mjs';
+import { FEED_MAX_BYTES, exportFeed, parse } from './version-map.mjs';
+import { LOADER_CAP_BYTES, PUBLIC_KEYS, nextSeq, signFeed, verifyFeed } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, 'vmap-sign.mjs');
@@ -94,7 +94,22 @@ test('the signer refuses a feed that is already signed, has CR, or is not an exp
   assert.match(reasons(() => signFeed(unsigned().replace(/\n/g, '\r\n'), k.pem, { keyId: 'k1', now: NOW })), /expected an unsigned/);
   assert.match(reasons(() => signFeed('format\t1', k.pem, { keyId: 'k1', now: NOW })), /expected an unsigned/);
   assert.match(reasons(() => signFeed(unsigned(), k.pem, { keyId: 'k3', now: NOW })), /key ID/);
-  assert.match(reasons(() => signFeed(unsigned() + 'x'.repeat(512 * 1024), k.pem, { keyId: 'k1', now: NOW })), /over/);
+  assert.match(reasons(() => signFeed(unsigned() + 'x'.repeat(FEED_MAX_BYTES), k.pem, { keyId: 'k1', now: NOW })), /over/);
+});
+
+test('a feed at the size cap signs and verifies under the loader cap; one byte over fails closed', () => {
+  const k = pair();
+  const base = unsigned();
+  // A padding line stands in for rows: only the size checks are under test.
+  const pad = (n) => base + 'x'.repeat(n - Buffer.byteLength(base) - 1) + '\n';
+  assert.ok(FEED_MAX_BYTES < LOADER_CAP_BYTES);
+  assert.match(reasons(() => signFeed(pad(FEED_MAX_BYTES + 1), k.pem, { keyId: 'k1', now: NOW })), /over/);
+  // At the cap the signer takes it, and the signed file (with its seq and sig lines) is still under the loader's cap.
+  const { text } = signFeed(pad(FEED_MAX_BYTES), k.pem, { keyId: 'k1', now: NOW });
+  assert.ok(Buffer.byteLength(text) <= LOADER_CAP_BYTES, `${Buffer.byteLength(text)} must stay within ${LOADER_CAP_BYTES}`);
+  assert.equal(verifyFeed(text, { keys: KEYS(k.hex), now: NOW }).seq, NOW);
+  // An oversize signed file is refused by the verifier before anything else.
+  assert.match(reasons(() => verifyFeed(Buffer.alloc(LOADER_CAP_BYTES + 1, 0x41), { keys: KEYS(k.hex), now: NOW })), /over the loader/);
 });
 
 test('the verifier refuses a flipped byte, an unknown key, a truncation and an oversize file', () => {

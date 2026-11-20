@@ -23,7 +23,14 @@ name: SR Steam watch
 # even though it is already handled, ending in the same publish job (same environment, same release key)
 # but uploading only to the vmap-feed-rehearsal prerelease. A rehearsal writes no state on main, opens no
 # game-update PR, raises no alert issue, starts no planner extract and counts toward no release limit; the
-# once-per-CL and 24 h limits are the only gates it skips (ci/MAP-MODE.md, "Rehearsal").
+# already-released checks (once per CL, and the version identity checks) are the only gates it skips
+# (ci/MAP-MODE.md, "Rehearsal").
+#
+# Supersede (the supersede input, a hand dispatch only): a second release of a CL when our own release was bad.
+# It names the seq of the release being replaced. It lifts the already-released checks for that CL and nothing
+# else: the new version object map must still change what is served, and every other gate stands. It is never set
+# by the schedule, and it is not `force`: force is the routine retry of a check, and a retry must never be able to
+# release a CL twice (ci/MAP-MODE.md, "Supersede").
 
 on:
   schedule:
@@ -38,6 +45,10 @@ on:
         description: 'Rehearsal: run the whole chain on the public build Steam lists now (already handled), signing included, and publish only to the vmap-feed-rehearsal prerelease; nothing live, no state, PR, alert or extract'
         type: boolean
         default: false
+      supersede:
+        description: 'Supersede: the seq of our own release that was bad, for a second release of the same CL (runs the check on the public build as a forced run). Empty for every ordinary run'
+        type: string
+        default: ''
 
 concurrency:
   group: sr-watch
@@ -69,10 +80,32 @@ jobs:
         with:
           ref: main
 
+      # A supersede is a hand dispatch with a seq, and never with a rehearsal; anything else stops here, before the poll.
+      # The dispatching actor must hold admin or write permission on this repository (read again from the API, never
+      # taken from the input), and a permission that cannot be read refuses it. Dispatching a workflow needs write
+      # anyway, so this cannot tell an agent from the owner; the policy carries that: Agents dispatch supersede (or retry) only on the owner's OK: write access cannot tell an agent from the owner, so this policy carries it.
+      - name: Refuse a malformed supersede
+        if: ${{ inputs.supersede != '' }}
+        env:
+          SUPERSEDE: ${{ inputs.supersede }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          [ "$EVENT" = workflow_dispatch ] && [ "$REHEARSAL" != true ] && [[ "$SUPERSEDE" =~ ^[1-9][0-9]{0,15}$ ]] \
+            || { echo "::error::supersede is the seq of the release being replaced (digits), from a hand dispatch, and never with a rehearsal"; exit 2; }
+          perm="$(gh api "repos/$GH_REPO/collaborators/$ACTOR/permission" --jq .permission)" \
+            || { echo "::error::cannot read the permission of $ACTOR on $GH_REPO, so the supersede is refused"; exit 2; }
+          case "$perm" in
+            admin|write) echo "supersede: $ACTOR has $perm permission on $GH_REPO" ;;
+            *) echo "::error::a supersede needs admin or write permission on $GH_REPO; $ACTOR has '$perm'"; exit 2 ;;
+          esac
+
       - name: Poll Steam
         id: poll
         env:
-          FORCE: ${{ inputs.force }}
+          # A supersede runs the check on the public build Steam lists now, as a forced run does.
+          FORCE: ${{ inputs.force == true || inputs.supersede != '' }}
           REHEARSAL: ${{ inputs.rehearsal }}
         run: |
           flags=()
@@ -95,7 +128,7 @@ jobs:
         id: pr
         if: steps.poll.outputs.changed == 'true' && inputs.rehearsal != true
         env:
-          FORCE: ${{ inputs.force }}
+          FORCE: ${{ inputs.force == true || inputs.supersede != '' }}
         run: |
           gh label create game-update --color D93F0B \
             --description 'Steam reported a new StarRupture build' --force
@@ -308,6 +341,9 @@ jobs:
       map_mode: true
       publish: true
       rehearsal: ${{ inputs.rehearsal == true }}
+      # Only a hand dispatch can name a release to supersede, and only the public leg publishes; the schedule
+      # (and anything else) passes it empty.
+      supersede: ${{ github.event_name == 'workflow_dispatch' && matrix.branch == 'public' && inputs.supersede || '' }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}

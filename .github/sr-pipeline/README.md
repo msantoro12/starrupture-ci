@@ -35,7 +35,7 @@ Every public check saves the layout it scanned, as `layout-CL-<CL>.json` on the 
 
 `sr-layout-refresh.yml` fixes that. It runs at 04:47 UTC every day. It runs in the watcher's concurrency group, `sr-watch`, and skips the day if a run of `sr-client-check.yml`, `sr-client-rig.yml`, `sr-data-extract.yml` or `sr-symbol-lookup.yml` is going or waiting. Otherwise it calls `sr-client-check.yml` for the public build with `map_mode` and `refresh_layout` on: the same checks and the same keys as a normal public run, then the `store the public layout` job merges the new keys into the saved file for the same exe. The run goes red if a key source did not build or scan, since its keys would be missing.
 
-Every job after the store is off for a refresh, so it opens no alert, pushes no version map rows, builds no candidate loader, starts no test run, publishes nothing, does not count toward the once-per-build limit and changes nothing under `state/`. Because it shares the watcher's group (`sr-watch`, nothing is cancelled), it never signs in to Steam while a poll's run does: a refresh waits for a poll that is running, and a poll that starts during a refresh waits for it. A group holds one pending run and a newer one replaces it, so a waiting poll is replaced by the next poll, which then runs. A poll can therefore be late by up to the length of one refresh, once a day. The check job also keeps the group every public check uses (`sr-client-check-public`).
+Every job after the store is off for a refresh, so it opens no alert, pushes no version map rows, builds no candidate loader, starts no test run, publishes nothing, does not count toward the once-per-CL release limit and changes nothing under `state/`. Because it shares the watcher's group (`sr-watch`, nothing is cancelled), it never signs in to Steam while a poll's run does: a refresh waits for a poll that is running, and a poll that starts during a refresh waits for it. A group holds one pending run and a newer one replaces it, so a waiting poll is replaced by the next poll, which then runs. A poll can therefore be late by up to the length of one refresh, once a day. The check job also keeps the group every public check uses (`sr-client-check-public`).
 
 For a single refresh by hand: `gh workflow run sr-layout-refresh.yml --ref main` (with the idle look), or `gh workflow run sr-client-check.yml --ref main -f branch=public -f map_mode=true -f refresh_layout=true` (without it).
 
@@ -289,6 +289,16 @@ What it does not cover: `-nullrhi` and `[UI] Enabled=0` mean no rendering, so th
 2. Commit an older client public `buildid` into `state/steam.json` on main, then run the watcher again.
 3. Expect: a `game-update/...` PR with the checklist, a `build-all` run, and when it finishes a PR comment with one row per component.
 4. Merge the PR; main holds the current ids again.
+
+## Releases are stopped by version identity, not time
+
+Owner decision, 2026-11-19: time plays no part in whether a version object map release may go out. A loop is stopped by what was already released and what is served now, so the same CL can never be published twice by repeating a trigger, however fast:
+
+- A run that can publish is held when the released loader's header or the published version object map already holds its CL or Steam build (`ci/decide.mjs`, the single source; the publish job checks again on the file that is live then).
+- A publish has to change what is served against the published file. A candidate that changes nothing is a HOLD with that reason, and the seq does not move.
+- One release per CL and the attempts limit stay.
+
+When our own release was bad, the owner can release the same CL a second time with the `supersede` input of `sr-watch.yml`, set to the seq being replaced. Only a hand dispatch sets it (the schedule never does), it is not `force`, it lifts the already-released checks for that CL and nothing else (the published version object map and the loader header covering it, the once-per-CL history, and G3's "not newer" once the header's built CL is that CL; the attempts limit, the autopilot, every other gate and "the candidate must change what is served" still apply), it needs the actor to hold admin or write permission on the repository (dispatching needs write anyway, so it cannot tell an agent from the owner: Agents dispatch supersede (or retry) only on the owner's OK: write access cannot tell an agent from the owner, so this policy carries it.), and the alert issue records what it replaced, the run and the new seq. A manual `release.yml` dispatch stays outside these checks. Details: `ci/MAP-MODE.md`, "Version identity, not time".
 
 ## Limits
 

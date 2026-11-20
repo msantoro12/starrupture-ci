@@ -3,9 +3,15 @@
 //
 //   node ci/decide.mjs --repo ModLoader --autopilot state/autopilot.json \
 //       --g1 g1.json --g2 g2.json --g3 g3.json --g4 g4.json --g5 g5.json --plugins plugins.json \
-//       [--fields field-rows.json] --history history.json [--now 2026-10-29T12:00:00Z] [--out decision.json]
+//       [--fields field-rows.json] --history history.json [--out decision.json]
 //       [--other-cl 129402 | --other-unmapped "public runs build 123"] [--rig-plugins rig-plugins.json]
 //       [--first-publish] [--rehearsal]
+//       [--loader-header version_map.generated.h --published version-map-client.v1.txt [--buildid 123]] [--supersede <seq>]
+//
+//   node ci/decide.mjs identity --repo ModLoader --cl 129402 [--buildid 123] [--loader-header f] [--published f] [--feed f]
+//       [--supersede <seq> --history f] --report identity.json
+//       (the version identity check on its own: the chain runs it on the candidate feed, the publish job on the feed it is
+//       about to sign. Writes { ok, reasons }; exit 0 ok, 3 hold, 2 usage.)
 //
 //   node ci/decide.mjs hold --report published-base.json [--decision decision.json] [--repo ModLoader] [--cl 129402] [--out decision.json]
 //       (the published file could not be the base, or a published row was lost: the decision is HOLD with those
@@ -49,7 +55,16 @@
 //   everything clean                                     -> M, if autopilot.paths has M
 //   an SDK global moved (rva != sdkRva) on a path but M  -> HOLD (on M it is a note)
 //   chosen path not in autopilot.paths                   -> HOLD
-//   rate limit hit (section 8 of the design; a proof run skips the once-per-CL limit only) -> HOLD
+//   release limit hit (section 8 of the design; a proof run skips the once-per-CL limit only) -> HOLD
+//   --loader-header and --published given (a run that can publish): a CL or build that the released loader's
+//     header or the published version object map already holds is not released again -> HOLD. A proof run, a
+//     first publish, a rehearsal and a test run skip this. There is no clock in any of these checks: a release
+//     is stopped by what was released and what is served, never by how long ago it was (owner, 2026-11-19).
+//   --supersede <seq> (a hand dispatch of sr-watch only): a second release of an already released CL, when our own
+//     release was bad. The seq must be the one the published file serves now and the history must hold a
+//     release of this CL signed with it. It lifts the already-released reasons for that CL (the once-per-CL
+//     limit and the two checks above) and nothing else; the candidate must still change what is served
+//     (the `identity` subcommand), and every other gate and limit stands.
 //
 // --candidate (the unattended map-mode chain, which never publishes): a disabled
 // autopilot holds PUBLISHING only. The decision is still HOLD with the reason
@@ -63,9 +78,9 @@
 // that one run the autopilot is taken as on for path M and state/autopilot.json is not consulted,
 // and G3 accepts a CL that is not newer than the header's (the header already maps it) when the G3 result says "firstPublish":
 // true as well. Neither half does anything alone. The file is never written. The result carries
-// `firstPublish`. Every other gate, the plugin verdicts and the rate limits apply as always.
+// `firstPublish`. Every other gate, the plugin verdicts and the release limits apply as always.
 // --rehearsal (sr-watch's hand-started rehearsal, never with --test-autopilot or --first-publish): the
-// once-per-CL limit and the 24 h cap are not applied, so a build that is already released can go through
+// already-released checks are not applied, so a build that is already released can go through
 // the whole chain; every other reason, the autopilot included, holds as always. The result carries
 // `rehearsal`, and the publish job signs it only for a run that is a rehearsal itself.
 //
@@ -73,7 +88,7 @@
 //   G1, G2: { "ok": true }                         ("error": "..." or ok != true means HOLD)
 //   G3:     { "ok": true, "cl": "127999", "previousCl": "127004" }   previousCl = the CL the source requires today
 //           ("proof": true, an owner's proof run only: it re-runs a CL the header already maps, which the
-//           client check verified, so any CL passes, and the once-per-CL rate limit is skipped for it, no other
+//           client check verified, so any CL passes, and the once-per-CL limit is skipped for it, no other
 //           limit; "firstPublish": true counts only together with
 //           --first-publish: the header already maps the CL this run publishes, so it is not newer)
 //   G4:     the raw `sr-aobscan --json` output of the CLIENT exe (target "client"). The
@@ -98,23 +113,22 @@
 //           "problems": [] }. When it was written with no problems and covers every class G5
 //           lists, the moved layouts ship as map rows (or absent rows for keys marked
 //           optional, which the plugins fall back on) and the path stays M.
-// History (rate limits):
-//   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>" }],
+// History (what was released):
+//   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>", "seq": 1792000000 }],
 //     "attempts": { "<cl>": <Claude attempts so far> } }
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { buildIdOf, feedDelta, parse, parseFeed, parseSignedFeedRows } from './version-map.mjs';
 
-// Section 8 limits. The autopilot file can only lower the daily cap.
+// Section 8 limits. None of them reads a clock: a release is stopped by what was released and what is served
+// (the version identity), never by how long ago it was (owner, 2026-11-19).
 export const LIMITS = Object.freeze({
-  maxReleasesPerDay: 2,
-  minGapMinutes: 30,
   maxAttemptsPerCl: 2,
   maxReleasesPerClPerRepo: 1,
 });
 const VALID_PATHS = ['M', 'B', 'C'];
 export const SDK_GLOBALS = Object.freeze(['GObjects', 'GNames', 'AppendString', 'GWorld']);
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isCl = (v) => typeof v === 'string' && /^[1-9][0-9]{0,8}$/.test(v);
@@ -147,7 +161,10 @@ function checkSimpleGate(name, loaded) {
   return {};
 }
 
-function checkG3(loaded, { firstPublish = false } = {}) {
+// supersede: the run carries a supersede input. G3 then does not hold a CL that equals previousCl (the loader's
+// header already maps it, which is how a CL stands once the loader's change for it has merged): it is returned as
+// notNewer, and decide() holds it unless the supersede passes its own checks. A CL older than previousCl holds as ever.
+function checkG3(loaded, { firstPublish = false, supersede = false } = {}) {
   const bad = checkEnvelope('G3', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
@@ -156,7 +173,9 @@ function checkG3(loaded, { firstPublish = false } = {}) {
   if (!isCl(v.previousCl)) return { error: 'G3: previousCl is missing or not a plain number' };
   const bypass = v.proof === true || (firstPublish && v.firstPublish === true);
   if (!bypass && Number(v.cl) <= Number(v.previousCl)) {
-    return { error: `G3: CL-${v.cl} is not newer than CL-${v.previousCl}` };
+    const why = `G3: CL-${v.cl} is not newer than CL-${v.previousCl}`;
+    if (supersede && Number(v.cl) === Number(v.previousCl)) return { cl: v.cl, proof: false, notNewer: why };
+    return { error: why };
   }
   return { cl: v.cl, proof: v.proof === true };
 }
@@ -363,7 +382,7 @@ function checkPlugins(loaded, rowKeys = new Set(), cl = null) {
         e.heldAlone = true;
         e.reasons.push(`crashed in the check, stays on its last release: ${why(p)}`);
       } else if (plannedStop(p) && (unsettled.length > 0 || !listed)) {
-        // The probe's planned stop is a pass; what is left is the candidate's gap, or a FAIL
+        // The probe's planned stop is a pass; what is left is a shortfall of the candidate, or a FAIL
         // nothing explains. Either way the loader refuses the plugin, so it is held alone.
         e.status = 'held';
         e.heldAlone = true;
@@ -444,53 +463,126 @@ export function checkAutopilot(loaded) {
   if (!Array.isArray(v.paths) || v.paths.some((p) => !VALID_PATHS.includes(p))) {
     return { error: 'autopilot: paths must be a list drawn from M, B, C' };
   }
-  if (!Number.isInteger(v.max_releases_per_day) || v.max_releases_per_day < 0) {
-    return { error: 'autopilot: max_releases_per_day is not a non-negative integer' };
-  }
-  return { enabled: v.enabled, paths: v.paths, maxPerDay: Math.min(v.max_releases_per_day, LIMITS.maxReleasesPerDay) };
+  return { enabled: v.enabled, paths: v.paths };
 }
 
-// Returns a list of reasons the rate limits forbid a release now.
-// rollForward: an owner-dispatched re-publish of a CL's feed (a newer seq that
-// replaces a bad one); the one-per-CL limit does not apply, the others do.
-// proofRun: the owner's proof run re-runs a CL that is already released, so the same one reason is
-// skipped for it; it never publishes, and the cap, the gap and the attempts limit apply to it as ever.
-// rehearsal: a hand-started run on a build that is already released, which publishes only to the staging
-// release: the one-per-CL limit and the 24 h cap are skipped (it never counts toward either), and the
-// gap and the attempts limit apply as ever.
-export function checkRateLimits({ historyLoaded, repo, cl, path, nowMs, maxPerDay, rollForward = false, proofRun = false, rehearsal = false }) {
+// The history's releases of one repo, or a reason. A release carries its repo, its CL and, from the first
+// publish on, the seq it was signed with; the time it is stamped with is a record and never read here.
+function releasesOf(historyLoaded, repo) {
   const bad = checkEnvelope('history', historyLoaded);
-  if (bad) return [bad];
+  if (bad) return { error: bad };
   const h = historyLoaded.value;
-  if (!Array.isArray(h.releases) || !isObj(h.attempts ?? {})) return ['history: malformed (need releases[] and attempts{})'];
+  if (!Array.isArray(h.releases) || !isObj(h.attempts ?? {})) return { error: 'history: malformed (need releases[] and attempts{})' };
   const mine = [];
   for (const r of h.releases) {
-    const at = isObj(r) && typeof r.at === 'string' ? Date.parse(r.at) : NaN;
-    if (!isObj(r) || typeof r.repo !== 'string' || !isCl(r.cl) || Number.isNaN(at)) {
-      return ['history: malformed release entry'];
+    if (!isObj(r) || typeof r.repo !== 'string' || !isCl(r.cl) || (r.seq !== undefined && !(Number.isSafeInteger(r.seq) && r.seq > 0))) {
+      return { error: 'history: malformed release entry' };
     }
-    if (r.repo === repo) mine.push({ cl: r.cl, at });
+    if (r.repo === repo) mine.push({ cl: r.cl, seq: r.seq });
   }
+  return { mine, attempts: h.attempts ?? {} };
+}
+
+// The owner's explicit way to a second release of a CL when our own release was bad (sr-watch's supersede
+// input, a hand dispatch only). It names the release being replaced by its seq, and the name must be true:
+// that seq is the one the live published version object map carries, and the history holds a release of
+// this CL signed with it. It lifts the already-released hold for that CL and nothing else; the candidate must
+// still change what is served (checkCandidateChange), and every other limit and gate stands.
+// Returns { ok: true, seq } or { error }.
+export function checkSupersede({ historyLoaded, repo, cl, supersede, liveSeq }) {
+  const named = typeof supersede === 'string' ? supersede : String(supersede);
+  if (!/^[1-9][0-9]{0,15}$/.test(named)) return { error: `supersede: ${JSON.stringify(supersede)} is not a seq` };
+  const seq = Number(named);
+  const live = liveSeq === undefined || liveSeq === null ? NaN : Number(liveSeq);
+  if (!Number.isSafeInteger(live)) return { error: 'supersede: the seq of the live published version object map was not given' };
+  if (live !== seq) return { error: `supersede names seq ${seq}, but the live published version object map is seq ${live}: only the release that is served now can be replaced` };
+  const got = releasesOf(historyLoaded, repo);
+  if (got.error) return { error: got.error };
+  if (!got.mine.some((r) => r.cl === cl && r.seq === seq)) return { error: `supersede names seq ${seq}, which is not a ${repo} release of CL-${cl} in the release history` };
+  return { ok: true, seq };
+}
+
+// Returns a list of reasons the release limits forbid a release of this CL.
+// secondRelease: a release of a CL that is already released is allowed (checkSupersede passed, or promote's
+// owner-dispatched roll-forward): only the one-release-per-CL limit is lifted, the others stand.
+// proofRun: the owner's proof run re-runs a CL that is already released, so the same one reason is
+// skipped for it; it never publishes, and the attempts limit applies to it as ever.
+// rehearsal: a hand-started run on a build that is already released, which publishes only to the staging
+// release: the one-per-CL limit is skipped (it counts toward nothing), and the attempts limit applies as ever.
+export function checkReleaseLimits({ historyLoaded, repo, cl, path, secondRelease = false, proofRun = false, rehearsal = false }) {
+  const got = releasesOf(historyLoaded, repo);
+  if (got.error) return [got.error];
   const reasons = [];
-  const sameCl = mine.filter((r) => r.cl === cl).length;
-  if (!rollForward && !proofRun && !rehearsal && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`rate limit: ${repo} already released for CL-${cl}`);
-  // A release dated in the future counts as recent, never as old.
-  const lastDay = mine.filter((r) => nowMs - r.at < DAY_MS).length;
-  if (!rehearsal && lastDay >= maxPerDay) reasons.push(`rate limit: ${lastDay} ${repo} releases in the last 24 h (limit ${maxPerDay})`);
-  const newest = mine.reduce((m, r) => Math.max(m, r.at), -Infinity);
-  if (nowMs - newest < LIMITS.minGapMinutes * 60 * 1000) {
-    reasons.push(`rate limit: last ${repo} release is less than ${LIMITS.minGapMinutes} minutes old`);
-  }
+  const sameCl = got.mine.filter((r) => r.cl === cl).length;
+  if (!secondRelease && !proofRun && !rehearsal && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`${repo} already released for CL-${cl}`);
   if (path === 'B') {
-    const n = (h.attempts ?? {})[cl];
+    const n = got.attempts[cl];
     if (n !== undefined && (!Number.isInteger(n) || n < 0)) return ['history: attempts entry is malformed'];
-    if ((n ?? 0) >= LIMITS.maxAttemptsPerCl) reasons.push(`rate limit: ${n} auto-fix attempts already used for CL-${cl} (limit ${LIMITS.maxAttemptsPerCl})`);
+    if ((n ?? 0) >= LIMITS.maxAttemptsPerCl) reasons.push(`${n} auto-fix attempts already used for CL-${cl} (limit ${LIMITS.maxAttemptsPerCl})`);
   }
   return reasons;
 }
 
-// inputs: { repo, now (ms), autopilot, g1, g2, g3, g4, g5, plugins, fields?, rigPlugins?, history }, each a loadJson()
-// result, testAutopilot (a dispatched test run: the decision is still HOLD while autopilot is disabled,
+// What a version object map (the loader's header, or the published file) already holds for a CL or for the
+// Steam build that carries it.
+const holdsBuild = (map, cl, buildid) => (map.builds ?? []).some((b) => b.cl === Number(cl) || (buildid !== undefined && buildid !== null && buildid !== '' && buildIdOf(b.source) === String(buildid)));
+
+// Version identity, before anything is built: a CL (or build) that the released loader's version object map or
+// the published one already holds is not released again. "The released loader" is the header at loader_ref
+// (default AlienX's main), read at the commit the run scanned: what the loader's main holds, not a release tag.
+// Rows merged into main ahead of the feed publish therefore hold that CL's publish until a supersede or a later CL.
+// loaderMap and publishedMap are version-map.mjs's parse and parseFeed output, null when that map is not to be judged (a run that cannot publish, a first
+// publish) or { error } when it could not be read, which holds. secondRelease (checkSupersede passed) lifts
+// this "already released" reason for both maps, and only this one.
+export function checkCovered({ cl, buildid, loaderMap = null, publishedMap = null, secondRelease = false }) {
+  const reasons = [];
+  for (const [what, map] of [['the released loader', loaderMap], ['the published', publishedMap]]) {
+    if (map === null || map === undefined) continue;
+    if (map.error) reasons.push(`${what} version object map could not be read: ${map.error}`);
+    else if (!secondRelease && holdsBuild(map, cl, buildid)) reasons.push(`${what} version object map already holds CL-${cl}${buildid ? ` (build ${buildid})` : ''}`);
+  }
+  return reasons;
+}
+
+// What a candidate feed changes for one CL against the published file. Both are parseFeed's shape. Differs
+// when the candidate has a build line or a row for the CL that the published one lacks or holds other
+// content for, or lacks a row the published one holds for it (one ci/retired-rows.txt lets go).
+export function servedDifference(candidate, published, cl) {
+  const n = Number(cl);
+  const { added, changed } = feedDelta(candidate, published, n);
+  const removed = feedDelta(published, candidate, n).added;
+  return { differs: added.length + changed.length + removed.length > 0, added, changed, removed };
+}
+
+// A publish has to change what is served for its CL: an identical candidate is a hold, not a release.
+export function checkCandidateChange({ candidate, published, cl }) {
+  if (candidate === null || candidate === undefined || published === null || published === undefined) return [];
+  if (candidate.error || published.error) return [`the candidate or the published version object map could not be read: ${candidate.error ?? published.error}`];
+  if (servedDifference(candidate, published, cl).differs) return [];
+  return [`the candidate version object map changes nothing served for CL-${cl} (no new build line, no new or changed row, none dropped), so there is nothing to publish`];
+}
+
+// The version identity of one release, whole: what the released loader and the published file already hold,
+// and what the candidate feed changes against the published file. The one function the decision (before the
+// build: no candidate yet) and the publish job (after it: with the candidate) both call. supersede
+// ({ seq, liveSeq }, a hand dispatch's input) is judged here too, so a second release of a CL is allowed only
+// when it names the release that is live. Returns { reasons, supersedes } (supersedes: the seq replaced, or null).
+export function checkIdentity({ repo, cl, buildid, loaderMap = null, publishedMap = null, candidate = null, supersede, historyLoaded }) {
+  const reasons = [];
+  let supersedes = null;
+  if (supersede !== undefined && supersede !== null && supersede !== '') {
+    const s = checkSupersede({ historyLoaded, repo, cl: String(cl), supersede: supersede.seq, liveSeq: supersede.liveSeq });
+    if (s.error) reasons.push(s.error);
+    else supersedes = s.seq;
+  }
+  reasons.push(...checkCovered({ cl, buildid, loaderMap, publishedMap, secondRelease: supersedes !== null }));
+  reasons.push(...checkCandidateChange({ candidate, published: publishedMap, cl }));
+  return { reasons, supersedes };
+}
+
+// inputs: { repo, autopilot, g1, g2, g3, g4, g5, plugins, fields?, rigPlugins?, history }, each a loadJson()
+// result, coverage? ({ buildid, loaderMap, publishedMap }: the version object maps a release must not already be in),
+// supersede? ({ seq, liveSeq }: a second release of a CL, see checkSupersede), testAutopilot (a dispatched test run: the decision is still HOLD while autopilot is disabled,
 // and `wouldBe` says what it would be with autopilot on) and candidate (the unattended chain: the same,
 // without the `test` mark).
 export function decide(inputs) {
@@ -498,6 +590,7 @@ export function decide(inputs) {
   const notes = [];
   let disabled = false;
   let perPlugin = [];
+  let supersedes = null;
   const fail = (msg) => reasons.push(msg);
   // The facts of the DLLs the rig will run. Anything but a list of rows means none were read.
   const rigRows = inputs.rigPlugins?.ok === true && Array.isArray(inputs.rigPlugins.value?.plugins) ? inputs.rigPlugins.value.plugins : null;
@@ -518,7 +611,11 @@ export function decide(inputs) {
     if (inputs.firstPublish) r.firstPublish = true;
     if (inputs.rehearsal) {
       r.rehearsal = true;
-      notes.push('rehearsal: the once-per-CL limit and the 24 h cap were not applied; the feed goes to the staging release only');
+      notes.push('rehearsal: the already-released checks were not applied; the version object map goes to the staging release only');
+    }
+    if (supersedes !== null) {
+      r.supersedes = supersedes;
+      notes.push(`supersede: a second release of CL-${cl}, replacing the release served now (seq ${supersedes}); only the already-released checks were lifted`);
     }
     // The other branch's build: the same rule on that CL (--other-cl). On the very CL this check
     // scanned, the scanned verdicts apply too, so the two lists are then the same.
@@ -545,19 +642,20 @@ export function decide(inputs) {
   };
 
   if (typeof inputs.repo !== 'string' || inputs.repo === '') fail('repo name missing');
-  if (!Number.isFinite(inputs.now)) fail('clock value invalid');
 
   // The first publish stands in for the autopilot on this one run: path M only, the file not read.
   if (inputs.firstPublish && inputs.testAutopilot) fail('a first publish is never a test run');
   if (inputs.rehearsal && (inputs.firstPublish || inputs.testAutopilot)) fail('a rehearsal is never a test run or a first publish');
-  const ap = inputs.firstPublish ? { enabled: true, paths: ['M'], maxPerDay: LIMITS.maxReleasesPerDay } : checkAutopilot(inputs.autopilot);
+  const supersedeGiven = inputs.supersede !== undefined && inputs.supersede !== null;
+  if (supersedeGiven && (inputs.testAutopilot || inputs.firstPublish || inputs.rehearsal)) fail('a supersede is only for an ordinary publishing run, never a test run, a first publish or a rehearsal');
+  const ap = inputs.firstPublish ? { enabled: true, paths: ['M'] } : checkAutopilot(inputs.autopilot);
   if (ap.error) fail(ap.error);
   else if (!ap.enabled && (inputs.testAutopilot || inputs.candidate)) disabled = true;
   else if (!ap.enabled) fail('autopilot is disabled (enabled is not true)');
 
   const g1 = checkSimpleGate('G1 compile', inputs.g1);
   const g2 = checkSimpleGate('G2 interface', inputs.g2);
-  const g3 = checkG3(inputs.g3, { firstPublish: inputs.firstPublish === true });
+  const g3 = checkG3(inputs.g3, { firstPublish: inputs.firstPublish === true, supersede: supersedeGiven });
   const g4 = checkG4(inputs.g4);
   const g5 = checkG5(inputs.g5);
   const plugins = checkPlugins(inputs.plugins, new Set(Array.isArray(inputs.fields?.value?.rows) ? inputs.fields.value.rows : []), g3.cl);
@@ -621,11 +719,24 @@ export function decide(inputs) {
   if (path === 'C') return out('HOLD', 'C', g3.cl);
   if (!ap.error && !ap.paths.includes(path)) fail(`path ${path} is not enabled in autopilot.paths`);
 
-  const limited = checkRateLimits({
-    historyLoaded: inputs.history, repo: inputs.repo, cl: g3.cl, path, nowMs: inputs.now,
-    maxPerDay: ap.error ? 0 : ap.maxPerDay, proofRun: g3.proof === true, rehearsal: inputs.rehearsal === true,
-  });
-  limited.forEach(fail);
+  // A second release of an already released CL: only with a supersede that names the release served now.
+  if (supersedeGiven) {
+    const s = checkSupersede({ historyLoaded: inputs.history, repo: inputs.repo, cl: g3.cl, supersede: inputs.supersede.seq, liveSeq: inputs.supersede.liveSeq });
+    if (s.error) fail(s.error);
+    else supersedes = s.seq;
+  }
+  // G3's own already-released hold (the loader's header maps this CL) is lifted by the same supersede and by nothing else.
+  if (g3.notNewer !== undefined && supersedes === null) fail(g3.notNewer);
+  checkReleaseLimits({
+    historyLoaded: inputs.history, repo: inputs.repo, cl: g3.cl, path, secondRelease: supersedes !== null,
+    proofRun: g3.proof === true, rehearsal: inputs.rehearsal === true,
+  }).forEach(fail);
+  // Version identity: a CL or build that the released loader or the published version object map already holds is
+  // not released again. Given for a run that can publish only; a proof run, a rehearsal, a first publish and a test
+  // run re-run a CL that is already covered, and none of them publishes to players.
+  if (inputs.coverage !== undefined && g3.proof !== true && !inputs.rehearsal && !inputs.firstPublish && !inputs.testAutopilot) {
+    checkCovered({ cl: g3.cl, buildid: inputs.coverage.buildid, loaderMap: inputs.coverage.loaderMap, publishedMap: inputs.coverage.publishedMap, secondRelease: supersedes !== null }).forEach(fail);
+  }
 
   if (reasons.length > 0) return out('HOLD', path, g3.cl);
   return out(path, path, g3.cl);
@@ -681,8 +792,72 @@ function otherUnmappedOf(text) {
   return String(text);
 }
 
+// The seq of a signed feed file (its second line), or null.
+function seqOf(bytes) {
+  const m = /^seq\t([1-9][0-9]*)$/.exec(bytes.toString('utf8').split('\n')[1] ?? '');
+  return m ? m[1] : null;
+}
+
+// The version object maps the identity check reads, from files: --loader-header (the released loader's header),
+// --published (the signed published file: its rows, and its seq for a supersede) and --feed (the candidate feed
+// export-feed wrote). A file that cannot be read or parsed is { error }, which holds; an option not given is null.
+// The published file's signature is verified by published-base.mjs in the same run before this reads it.
+function readMaps(a) {
+  const attempt = (fn) => { try { return fn(); } catch (e) { return { error: String(e.message).replace(/\s+/g, ' ').slice(0, 240) }; } };
+  const published = a.published === undefined ? null : attempt(() => readFileSync(a.published));
+  return {
+    loaderMap: a['loader-header'] === undefined ? null : attempt(() => parse(readFileSync(a['loader-header'], 'utf8'), 'the released loader header')),
+    publishedMap: published === null ? null : published.error ? published : attempt(() => parseSignedFeedRows(published, 'the published version object map')),
+    candidate: a.feed === undefined ? null : attempt(() => parseFeed(readFileSync(a.feed, 'utf8'), 'the candidate feed')),
+    liveSeq: published === null || published.error ? null : seqOf(published),
+  };
+}
+
+// --supersede <seq> (empty: none) with the live seq the published file carries.
+function supersedeOf(a, maps) {
+  if (a.supersede === undefined || a.supersede === '') return undefined;
+  return { seq: a.supersede, liveSeq: maps.liveSeq };
+}
+
+// --buildid is optional, but when it is given it must be a build id: an empty one is a usage error (the run has no build
+// id, and a check that skipped the build match for it would hold less than the caller thinks), for both commands.
+function checkBuildId(a) {
+  if (a.buildid === undefined) return;
+  if (a.buildid === '') throw new Error('--buildid is empty: the run has no build id, so the build cannot be matched against what is served');
+  if (!/^[0-9]+$/.test(a.buildid)) throw new Error(`--buildid is not a build id: ${a.buildid}`);
+}
+
+// decide.mjs identity --repo R --cl N [--buildid B] [--loader-header f] [--published f] [--feed f]
+//     [--supersede S --history f] --report f
+// The version identity check on its own (the publish job's re-check, and the chain's check of the candidate feed):
+// writes { ok, step: 'identity', reasons }, the report `decide.mjs hold --report` turns into a decision. Exit 0 ok,
+// 3 hold, 2 usage.
+function identityMain(argv) {
+  try {
+    const a = parseArgs(argv);
+    if (!a.repo || !/^[1-9][0-9]{0,8}$/.test(a.cl ?? '') || !a.report) throw new Error('missing --repo, --cl or --report');
+    checkBuildId(a);
+    const maps = readMaps(a);
+    const supersede = supersedeOf(a, maps);
+    if (supersede !== undefined && a.history === undefined) throw new Error('--supersede needs --history');
+    const { reasons, supersedes } = checkIdentity({
+      repo: a.repo, cl: a.cl, buildid: a.buildid, loaderMap: maps.loaderMap, publishedMap: maps.publishedMap, candidate: maps.candidate,
+      supersede, historyLoaded: a.history === undefined ? undefined : loadJson(a.history),
+    });
+    const report = reasons.length ? { ok: false, step: 'identity', reasons } : { ok: true, step: 'identity', note: `CL-${a.cl} is not yet served and the candidate changes what is served${supersedes === null ? '' : ` (supersedes seq ${supersedes})`}`, supersedes };
+    writeFileSync(a.report, `${JSON.stringify(report, null, 2)}\n`);
+    for (const r of reasons) process.stderr.write(`${r}\n`);
+    if (report.ok) process.stdout.write(`identity: ${report.note}\n`);
+    process.exit(report.ok ? 0 : 3);
+  } catch (e) {
+    console.error(`${e.message}\nusage: decide.mjs identity --repo <name> --cl <n> [--buildid <id>] [--loader-header f] [--published f] [--feed f] [--supersede <seq> --history f] --report f`);
+    process.exit(2);
+  }
+}
+
 function main() {
   if (process.argv[2] === 'hold') holdMain(process.argv.slice(3));
+  if (process.argv[2] === 'identity') identityMain(process.argv.slice(3));
   let args;
   try {
     const argv = process.argv.slice(2);
@@ -693,16 +868,20 @@ function main() {
     args.rehearsal = argv.includes('--rehearsal');
     if (args['other-cl'] !== undefined) args.otherCl = otherClOf(args['other-cl']);
     if (args['other-unmapped'] !== undefined) args.otherUnmapped = otherUnmappedOf(args['other-unmapped']);
+    checkBuildId(args);
     if (args.otherCl !== undefined && args.otherUnmapped !== undefined) throw new Error('--other-cl and --other-unmapped exclude each other');
   } catch (e) {
-    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--now iso] [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate] [--first-publish] [--rehearsal]`);
+    console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate] [--first-publish] [--rehearsal] [--loader-header f --published f [--buildid id]] [--supersede seq]`);
     process.exit(2);
   }
   let result;
   try {
-    const now = args.now === undefined ? Date.now() : Date.parse(args.now);
+    const maps = args['loader-header'] === undefined && args.published === undefined ? null : readMaps(args);
+    const supersede = supersedeOf(args, maps ?? readMaps(args));
     result = decide({
-      repo: args.repo, now, testAutopilot: args.testAutopilot, candidate: args.candidate, firstPublish: args.firstPublish, rehearsal: args.rehearsal,
+      repo: args.repo, testAutopilot: args.testAutopilot, candidate: args.candidate, firstPublish: args.firstPublish, rehearsal: args.rehearsal,
+      ...(maps === null ? {} : { coverage: { buildid: args.buildid, loaderMap: maps.loaderMap, publishedMap: maps.publishedMap } }),
+      ...(supersede === undefined ? {} : { supersede }),
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
       g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),
