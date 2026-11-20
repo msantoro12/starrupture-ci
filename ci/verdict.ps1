@@ -68,6 +68,8 @@
 #                                       log it applied, with that seq, before the game version gate;
 #                                       must log no fetch, no refusal and no cache fault; and the
 #                                       build it reports must be that CL
+#                                       { "seq": 1795109742, "sha256": "<64 hex>", "live": true } is the live
+#                                       feed (release key k2, no CL): the line must name key k2, not TEST KEY
 #     }
 #   boot.json        process facts for the client (the shipping exe). Same fields as
 #                    boot-server.ps1 writes, plus two:
@@ -485,6 +487,11 @@ function Set-ClientResult($set, [string]$loaderExpect, [string]$logLoader, $rows
     $md = New-Object System.Collections.Generic.List[string]
     $md.Add("Branch $(Get-Prop $set 'branch' 'n/a'), build $(Get-Prop $set 'buildId' 'n/a'). $reason")
     foreach ($n in $script:Notes) { $md.Add(''); $md.Add("Note: $n") }
+    # The live feed the run seeded: the seq and the sha256 of the cache file the install wrote (set.json).
+    $liveFeed = Get-Prop $set 'feed' $null
+    if ($liveFeed -and [bool](Get-Prop $liveFeed 'live' $false)) {
+        $md.Add(''); $md.Add("Live feed seeded: seq $(& $cell (Get-Prop $liveFeed 'seq' 'n/a')), sha256 $(& $cell (Get-Prop $liveFeed 'sha256' 'n/a')), checked with the release key k2 before the install.")
+    }
     $md.Add('')
     $md.Add('| Plugin | Expected | In log | State | Note |')
     $md.Add('|---|---|---|---|---|')
@@ -678,25 +685,33 @@ function Invoke-ClientVerdict {
     # on the CL the feed was made for. Fetching, a refused feed and a cache fault all fail; a run
     # that touched the network is not a test of the cache.
     $feedSpec = Get-Prop $set 'feed' $null
+    # A live feed (set.json feed.live, with the sha256 of the file seeded and no CL) is the one players get:
+    # signed with the release key, so the loader's line names key k2 and no TEST KEY, and it is read before the
+    # gate. It names no CL (the loader takes the rows the feed has for the running build), and a build the loader
+    # already knows may take 0 rows from it, so the count is evidence, not a condition.
     if ($feedSpec) {
+        $fLive = [bool](Get-Prop $feedSpec 'live' $false)
         $fSeq = [string](Get-Prop $feedSpec 'seq' '')
         $fCl = [string](Get-Prop $feedSpec 'cl' '')
-        $fSpecOk = ($fSeq -cmatch '^[1-9][0-9]{0,14}$') -and ($fCl -cmatch '^[1-9][0-9]{0,8}$')
-        Add-Check 'feed_record' $fSpecOk $(if ($fSpecOk) { "set.json feed: seq $fSeq, CL $fCl" } else { '' })
+        $fSha = [string](Get-Prop $feedSpec 'sha256' '')
+        $fSpecOk = ($fSeq -cmatch '^[1-9][0-9]{0,14}$') -and $(if ($fLive) { ($fSha -cmatch '^[0-9a-f]{64}$') -and $fCl -eq '' } else { $fCl -cmatch '^[1-9][0-9]{0,8}$' })
+        Add-Check 'feed_record' $fSpecOk $(if ($fSpecOk -and $fLive) { "set.json live feed: seq $fSeq, sha256 $fSha" } elseif ($fSpecOk) { "set.json feed: seq $fSeq, CL $fCl" } else { '' })
+        $fKeyRe = if ($fLive) { 'key k2\)' } else { 'key [^,)]+, TEST KEY\)' }
         $fApplied = $null; $fRows = 0; $fAt = -1; $gvAt = -1
         if ($fSpecOk -and $ml) {
             for ($i = 0; $i -lt $ml.Count; $i++) {
-                if ($null -eq $fApplied -and $ml[$i] -cmatch "\[VersionFeed\] Feed seq $fSeq \(key [^,)]+, TEST KEY\): (\d+) rows from the feed") {
+                if ($null -eq $fApplied -and $ml[$i] -cmatch "\[VersionFeed\] Feed seq $fSeq \($fKeyRe`: (\d+) rows from the feed") {
                     $fApplied = $ml[$i]; $fRows = [int]$Matches[1]; $fAt = $i
                 }
                 if ($gvAt -lt 0 -and $ml[$i] -cmatch '\[ModLoader\] Game version OK:') { $gvAt = $i }
             }
         }
-        Add-Check 'feed_applied' ($null -ne $fApplied -and $fRows -gt 0) $fApplied
+        Add-Check 'feed_applied' ($null -ne $fApplied -and ($fLive -or $fRows -gt 0)) $fApplied
         $gvCl = ''
         if ($gv -and $gv -cmatch 'Game version OK: .*-CL-(\d+)') { $gvCl = $Matches[1] }
-        Add-Check 'feed_rows_used' ($fSpecOk -and $null -ne $fApplied -and $fAt -ge 0 -and $gvAt -gt $fAt -and $gvCl -ceq $fCl) $(
-            if ($gv) { "$gv  (CL $fCl expected; feed line at log line $($fAt + 1), version gate at $($gvAt + 1))" } else { '' })
+        Add-Check 'feed_rows_used' ($fSpecOk -and $null -ne $fApplied -and $fAt -ge 0 -and $gvAt -gt $fAt -and ($fLive -or $gvCl -ceq $fCl)) $(
+            if ($gv -and $fLive) { "$gv  (feed line at log line $($fAt + 1), version gate at $($gvAt + 1))" }
+            elseif ($gv) { "$gv  (CL $fCl expected; feed line at log line $($fAt + 1), version gate at $($gvAt + 1))" } else { '' })
         $fBad = First-Match $ml '\[VersionFeed\].*(feed cache is not usable|feed cache .* could not be read|from the feed is refused|fetched feed is refused|feed could not be fetched)'
         Add-Check 'feed_not_refused' ($haveLog -and $null -eq $fBad) $(if ($fBad) { "FOUND: $fBad" } elseif ($haveLog) { 'no refusal or cache fault line' } else { '' })
         $fFetch = First-Match $ml '\[VersionFeed\] (Fetching the feed|Feed seq \d+ stored for the next launch|The fetched feed is not stored)'
