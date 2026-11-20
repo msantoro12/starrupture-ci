@@ -116,12 +116,21 @@ jobs:
             # Forced run with nothing to propose: no PR, the build still runs.
             exit 0
           fi
-          if [ -n "$number" ] && [ "$branch" = "$want" ] && [ "$FORCE" != "true" ]; then
-            # Same build already proposed: do not re-alert or rebuild. A failed
-            # check is run again by a dispatch with force (see the README).
-            echo "Update PR #$number already covers this build."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          # The recorded ids on main only move when a PR is merged, so while an update PR is open every
+          # poll reports the same change. The PR covers it when its head's state/steam.json holds every
+          # build id this poll found (ci/pr-covers.mjs), whatever its branch is called: the name comes
+          # from the first change only and goes stale as soon as Steam lists the branches differently.
+          if [ -n "$number" ] && [ "$FORCE" != "true" ]; then
+            git show HEAD:state/steam.json > "$sr/baseline-steam.json"
+            if git fetch --depth 1 origin "$branch" \
+              && git show FETCH_HEAD:state/steam.json > "$sr/pr-head-steam.json" \
+              && node ci/pr-covers.mjs --baseline "$sr/baseline-steam.json" --polled state/steam.json --pr-head "$sr/pr-head-steam.json"; then
+              # Same build already proposed: do not re-alert or rebuild. A failed
+              # check is run again by a dispatch with force (see the README).
+              echo "Update PR #$number already covers this build."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           if [ -n "$want" ]; then
             git checkout -B "$branch"
@@ -148,8 +157,8 @@ jobs:
       # changed client branch (the alert job of sr-client-check.yml labels the PR
       # chain-passed-<branch> after a run with no alert line), the branch's alert issue
       # ("SR map mode: <branch> needs attention", the one that job uses) gets a comment,
-      # or is opened, at most once per STALE_HOURS: a marker in the issue body or a
-      # comment says when it was last raised. The issue is labelled pipeline-alert and
+      # or is opened, once per PR and build: a marker line (the PR number and the branch's build id) in
+      # the issue body or a comment says it was raised, and that marker is never raised again. The issue is labelled pipeline-alert and
       # assigned to the owner, so GitHub notifies him. A PR with no client branch has
       # no chain to pass and is not stale. NOW_EPOCH is for tests; unset here.
       - name: Alert on a stale game-update PR
@@ -172,32 +181,36 @@ jobs:
             try { branches = JSON.parse(e.MATRIX).map((x) => x.branch); } catch {}
             const have = new Set(pr.labels.map((l) => l.name));
             const missing = branches.filter((b) => /^[A-Za-z0-9_.]+$/.test(b) && !have.has("chain-passed-" + b));
-            if (hours >= Number(e.STALE_HOURS) && missing.length) console.log(pr.number + " " + Math.floor(hours) + " " + missing.join(","));
+            let ids = {};
+            try { ids = Object.fromEntries(JSON.parse(e.MATRIX).map((x) => [x.branch, x.buildid])); } catch {}
+            const pairs = missing.map((b) => b + "=" + (/^[0-9]+$/.test(String(ids[b])) ? ids[b] : "unknown"));
+            if (hours >= Number(e.STALE_HOURS) && missing.length) console.log(pr.number + " " + Math.floor(hours) + " " + pairs.join(","));
           ')"
           [ -n "$stale" ] || { echo "No stale update PR."; exit 0; }
-          read -r number hours missing <<< "$stale"
+          read -r number hours missing <<< "$stale"   # missing: branch=buildid,...
           title="$(gh pr view "$number" --json title --jq .title)"
           gh label create pipeline-alert --color B60205 --description 'A pipeline run or a game-update PR needs the owner' --force
-          export MARKER="<!-- sr-stale-pr:$number -->"
-          for b in ${missing//,/ }; do
+          for pair in ${missing//,/ }; do
+            b="${pair%%=*}"
+            export MARKER="<!-- sr-stale-pr:$number:${pair#*=} -->"
             export TITLE="SR map mode: $b needs attention"
             issue="$(gh issue list --state open --search "$TITLE in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
-            last=""
+            seen=""
             if [ -n "$issue" ]; then
-              last="$({
-                gh api "repos/$GH_REPO/issues/$issue" --jq 'select((.body // "") | contains(env.MARKER)) | .created_at'
-                gh api "repos/$GH_REPO/issues/$issue/comments" --paginate --jq '.[] | select((.body // "") | contains(env.MARKER)) | .created_at'
-              } | sort | tail -n 1)"
+              seen="$({
+                gh api "repos/$GH_REPO/issues/$issue" --jq '.body // ""'
+                gh api "repos/$GH_REPO/issues/$issue/comments" --paginate --jq '.[].body'
+              } | grep -F -- "$MARKER" || true)"
             fi
-            if [ -n "$last" ] && [ $(( now - $(date -u -d "$last" +%s) )) -lt $(( STALE_HOURS * 3600 )) ]; then
-              echo "Already raised for $b at $last; next in $STALE_HOURS hours."
+            if [ -n "$seen" ]; then
+              echo "Already raised for $b (PR #$number, build ${pair#*=}); not again."
               continue
             fi
             cat > "$RUNNER_TEMP/stale.md" <<EOF
           $MARKER
           @$OWNER game-update PR #$number ($title) has been open $hours hours and the client chain has not passed for \`$b\`: the PR has no \`chain-passed-$b\` label. It was last checked when the PR opened or was last forced, so the cause is in the earlier alerts on this issue, the PR's "Client build check" comment, or the latest runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-watch.yml
           PR: $GITHUB_SERVER_URL/$GH_REPO/pull/$number
-          Once the cause is fixed: \`gh workflow run sr-watch.yml --ref main -f force=true\`. This is raised at most once every $STALE_HOURS hours while the PR is stale.
+          Once the cause is fixed: \`gh workflow run sr-watch.yml --ref main -f force=true\`. This is raised once for this PR and build; a new build on the PR raises it again.
           EOF
             if [ -n "$issue" ]; then
               gh issue comment "$issue" --body-file "$RUNNER_TEMP/stale.md"

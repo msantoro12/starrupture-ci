@@ -144,5 +144,5 @@ test('map mode: runs only on a successful check, and names the cause when there 
 test('sr-watch: an already proposed build is skipped, and the force dispatch that checks it again is named', () => {
   const wf = workflows['sr-watch.yml'];
   assert.match(wf, /# Same build already proposed: do not re-alert or rebuild\. A failed\n\s+# check is run again by a dispatch with force/);
-  assert.match(wf, /if \[ -n "\$number" \] && \[ "\$branch" = "\$want" \] && \[ "\$FORCE" != "true" \]; then/);
+  assert.match(wf, /if \[ -n "\$number" \] && \[ "\$FORCE" != "true" \]; then[\s\S]*node ci\/pr-covers\.mjs/);
 });
