@@ -70,7 +70,7 @@ if (-not $PlanPath) { $PlanPath = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNE
 # (MiniMap and PersistentIdFix are their author's, LetMeInside; the other nine take -Owner). StripV: the plugin logs its
 # version without the release tag's leading v (MiniMap prints 1.2.0 for v1.2.0, PersistentIdFix 1.3.1 for v1.3.1), so that is what
 # the log must show. LoggedVersion, when present, is the exact version that plugin's DLL logs where that differs
-# from its tag (the MiniMap v1.3.0 DLL still logs 1.2.0); the rig then expects that string, and LoggedVersionNote says why.
+# from its tag; the rig then expects that string, and LoggedVersionNote says why.
 # Remove both once the plugin logs its real version. Pin = { Tag, Digest } is the one reviewed release of a plugin whose owner is
 # neither msantoro12 nor AlienXAXS: such a plugin runs beside the live Steam login only at that tag,
 # and only when the release API's digest for its client DLL is that sha256. A plugin of a third
