@@ -691,6 +691,34 @@ foreach ($k in $fbCases.Keys) {
     'fallback {0,-34} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
 }
 
+# ---- client mode, an unmapped Steam build id whose exe the loader knows ----------------------
+# A second client branch can serve a known CL's exe under a build id the candidate map has no row for: the set says
+# expectDecline, but the loader accepts the build ("Game version OK" for a CL in knownCls). That is judged as a boot.
+function Use-KnownExe($c, $cls) {
+    $c.set | Add-Member -NotePropertyName expectDecline -NotePropertyValue $true -Force
+    $c.set | Add-Member -NotePropertyName knownCls -NotePropertyValue $cls -Force
+}
+$knownCases = [ordered]@{
+ 'known exe boots'             = @{ Mut = { param($c) Use-KnownExe $c @(127004, 129402) } }
+ 'known exe, CL not listed'    = @{ Mut = { param($c) Use-KnownExe $c @(127004) };                                                  Fail = 'loader_declined' }
+ 'known exe, no list'          = @{ Mut = { param($c) $c.set | Add-Member -NotePropertyName expectDecline -NotePropertyValue $true -Force }; Fail = 'loader_declined' }
+ 'known exe, no version line'  = @{ Mut = { param($c) Use-KnownExe $c @(129402); Drop $c 'Game version OK' };                          Fail = 'loader_declined' }
+ 'known exe, plugin refused'   = @{ Mut = { param($c) Use-KnownExe $c @(129402); foreach ($p in $c.set.plugins) { $p.expectRefused = $false } }; Fail = 'plugin_loaded_MiniMap' }
+}
+foreach ($k in $knownCases.Keys) {
+    $r = New-RigCase "known-$k" 'test-branch' $knownCases[$k].Mut
+    $mustFail = $knownCases[$k].Fail
+    $want = if ($mustFail) { 1 } else { 0 }
+    $failed = ($r.Out -split "`n" | Where-Object { $_ -match ' FAIL\s*$' -and $_ -notmatch '^VERDICT' } | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
+    $problems = @()
+    if ($r.Exit -ne $want) { $problems += "exit $($r.Exit), want $want" }
+    if ($mustFail -and (($failed -split ',') -notcontains $mustFail)) { $problems += "check $mustFail did not fail" }
+    if (-not $mustFail -and $failed) { $problems += "unexpected failures: $failed" }
+    if (-not $mustFail -and ($r.Out -notmatch 'game_version_ok\s+PASS' -or $r.Out -match '(?m)^loader_declined\s')) { $problems += 'not judged as a known-build boot' }
+    if ($problems.Count -gt 0) { $bad++ }
+    'known {0,-30} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), $failed, $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
+}
+
 # Client mode keeps the logs' text off the console and out of GITHUB_STEP_SUMMARY: the
 # evidence goes to files in the output folder, which the workflow publishes after its leak
 # gate. Server mode still appends to the summary.

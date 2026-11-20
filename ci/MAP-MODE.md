@@ -129,6 +129,9 @@ Policy (owner), in plain words:
   values and log "Trying the newest known build's values"; the rig then judges a boot (no crash, hooks installed, boot
   finished, no preload plugin, each plugin loaded at its expected version or refused by the loader) and notes that the
   build ran on checked values. `[UnknownBuild] Enabled=0` keeps the decline. A CL in the map is judged as before.
+  A Steam build id with no build row can still be the exe of a CL the map holds (a second client branch serves the same
+  exe under its own build id). Map mode passes the map's build CLs as `known_cls`; when the loader logs Game version OK for
+  one of them, the rig is judged as a boot (nothing expected refused), not as a decline.
 - Plugins of other authors are pinned. A rig plugin whose owner is neither msantoro12 nor
   AlienXAXS (MiniMap, PersistentIdFix) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
   in the client check as well as in the rig: the check's `plugin-plan` reads the same Pin,

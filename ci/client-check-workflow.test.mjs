@@ -584,7 +584,7 @@ test('rig gate: the candidate, the run id and the expect come from candidate-loa
   const a = mapOf(job('rig-branch'), 'with');
   const b = mapOf(job('rig-other'), 'with');
   assert.deepEqual(Object.keys(a).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused', 'tags']);
-  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused', 'tags']);
+  assert.deepEqual(Object.keys(b).sort(), ['branch', 'candidate_artifact', 'candidate_run_id', 'expect', 'expect_refused', 'known_cls', 'tags']);
   for (const w of [a, b]) {
     assert.equal(w.candidate_run_id, '${{ github.run_id }}');
     assert.equal(w.candidate_artifact, '${{ needs.candidate-loader.outputs.artifact }}');
@@ -612,6 +612,9 @@ test('rig gate: the first rig runs on the branch of this check, the second on th
 test('rig gate: each rig declares the refusals the loader rule predicts for the build ITS branch runs, and the rule is written down', () => {
   assert.equal(mapOf(job('rig-branch'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused }}');
   assert.equal(mapOf(job('rig-other'), 'with').expect_refused, '${{ needs.map-mode.outputs.expect_refused_other }}');
+  // The Steam build id of the other branch may have no build row while its exe is a known one: the rig is told the CLs the candidate map holds.
+  assert.equal(mapOf(job('rig-other'), 'with').known_cls, '${{ needs.map-mode.outputs.known_cls }}');
+  assert.equal(mapOf(job('rig-branch'), 'with').known_cls, undefined, 'the rig of the public branch has no decline to soften');
   const comment = wf.slice(wf.indexOf('  # ---- Client rig: the candidate loader'), wf.indexOf('\n  rig-branch:\n')).replace(/\n\s*#\s*/g, ' ');
   assert.match(comment, /rig-other\s+the other Steam branch[\s\S]*?the refusals the loader's own rule predicts for THAT branch's current build/);
   assert.match(comment, /any refusal it does not predict is a fail/);
@@ -1324,6 +1327,23 @@ test('other branch: the branch and its CL come from what Steam lists now, throug
   }
   // The id recorded on main (state/steam.json) is never the source: it names the build of the last merged update PR.
   assert.ok(!/steam\.json/.test(otherStep()), 'the recorded state is not read');
+});
+
+test('other branch: map-mode hands the other rig the CLs the candidate map has a build row for', { skip: !bash }, () => {
+  const mm = job('map-mode');
+  const start = mm.indexOf('          known_cls="$(node');
+  const endMark = 'echo "known_cls=$known_cls" >> "$GITHUB_OUTPUT"';
+  const end = mm.indexOf(endMark, start) + endMark.length;
+  assert.ok(start > 0 && end > start);
+  const m = emptyMap('loader', 127004);
+  addBuild(m, { cl: 127004, stamp: 1, size: 2, source: 'public 25646882' });
+  addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'steam_build 26271156' });
+  const dir = mkdtempSync(join(tmpdir(), 'known-cls-'));
+  cpSync(here, join(dir, 'tool', 'ci'), { recursive: true, filter: (src) => !/[\/]fixtures([\/]|$)/.test(src) });
+  writeFileSync(join(dir, 'version_map.generated.h'), emit(m));
+  const r = spawnSync(bash, ['-c', `set -euo pipefail\nheader=version_map.generated.h\n${mm.slice(start, end).replace(/^ {10}/gm, '')}`], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, GITHUB_OUTPUT: join(dir, 'out.txt') } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readFileSync(join(dir, 'out.txt'), 'utf8'), 'known_cls=127004 129402\n');
 });
 
 test('other branch: the step turns decision.json into the other rig\'s input, and refuses a name outside the rig\'s grammar', { skip: !bash }, () => {

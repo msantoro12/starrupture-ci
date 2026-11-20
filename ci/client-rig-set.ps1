@@ -17,6 +17,9 @@
 #   -ExpectDecline true                      the build is one the loader's map has no row for: the rig passes
 #                                            if the loader declines cleanly and loads nothing, or boots on checked values
 #                                            from the newest known build (not with -ExpectRefused)
+#   -KnownCls "127004 128786"                with -ExpectDecline: the CLs of the candidate map's build rows. The Steam
+#                                            build id may be new while the exe is a known one; if the loader then logs
+#                                            Game version OK for one of these CLs, the rig expects a boot, not a decline
 #   -RemovePlugins "Codex"                   dropped from the install but still expected
 # Names are the loader, or a plugin by repo name, log name or asset name, in any case.
 # A name in -Expect that is not one of the eleven is an extra plugin to expect.
@@ -42,6 +45,7 @@ param(
     [string]$Expect = '',
     [string]$ExpectRefused = '',
     [string]$ExpectDecline = '',
+    [string]$KnownCls = '',
     [string]$RemovePlugins = '',
     [string]$CandidateDir = '',
     [string]$FeedFile = '',
@@ -215,6 +219,10 @@ function Resolve-Plan {
     if ($ExpectDecline -cnotin '', 'true', 'false') { throw "expect_decline is '$ExpectDecline', not true or false" }
     $decline = $ExpectDecline -ceq 'true'
     if ($decline -and $ExpectRefused.Trim()) { throw 'expect_decline and expect_refused exclude each other: a loader that declines the build refuses nothing, it loads nothing' }
+    $knownList = @()
+    foreach ($n in (Read-Names $KnownCls)) { $knownList += $n }
+    foreach ($k in $knownList) { if ($k -cnotmatch '^[1-9]\d{0,9}$') { throw "known_cls names '$k', which is not a CL number" } }
+    if ($knownList.Count -gt 0 -and -not $decline) { throw 'known_cls only goes with expect_decline' }
     $refused = @{}
     foreach ($n in (Read-Names $ExpectRefused)) { $c = Find-Entry $n; $refused[$(if ($c) { $c } else { $n })] = $true }
     $removed = @{}
@@ -336,7 +344,7 @@ function Resolve-Plan {
     $ids = @($downloads | ForEach-Object { "$($_.repo)@$($_.tag)/$($_.name)#$($_.id):$(if ($_.digest) { $_.digest } else { $_.updated })" } | Sort-Object)
     $key = (([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($ids -join ',')) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16)
 
-    [ordered]@{ branch = $Branch; expectDecline = $decline; owner = $Owner; loader = $loader; plugins = @($entries); downloads = @($downloads); cacheKey = $key; review = @($review); feed = $feed } |
+    [ordered]@{ branch = $Branch; expectDecline = $decline; knownCls = @($knownList | ForEach-Object { [int]$_ }); owner = $Owner; loader = $loader; plugins = @($entries); downloads = @($downloads); cacheKey = $key; review = @($review); feed = $feed } |
         ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $PlanPath -Encoding utf8
 
     Write-Host "Loader $($loader.tag) (expect $($loader.expect))$(if ($overLoader) { ', replaced in part by the candidate' })"
@@ -456,7 +464,10 @@ function Install-Set {
             $row
         })
     }
-    if ($plan.PSObject.Properties['expectDecline'] -and $plan.expectDecline) { $set.expectDecline = $true }
+    if ($plan.PSObject.Properties['expectDecline'] -and $plan.expectDecline) {
+        $set.expectDecline = $true
+        if ($plan.PSObject.Properties['knownCls'] -and @($plan.knownCls).Count -gt 0) { $set.knownCls = @($plan.knownCls | ForEach-Object { [int]$_ }) }
+    }
     if ($plan.feed) { $set.feed = [ordered]@{ seq = [int64]$plan.feed.seq; cl = [int]$plan.feed.cl } }
     [IO.File]::WriteAllText((Join-Path $OutDir 'set.json'), ($set | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
     Write-Host "Installed on branch $($plan.branch), build ${build}:"
