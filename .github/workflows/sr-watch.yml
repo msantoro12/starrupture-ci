@@ -152,15 +152,19 @@ jobs:
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
-      # The build was skipped because its game-update PR is open. If that PR has been
-      # open longer than STALE_HOURS and the client chain has not passed for every
-      # changed client branch (the alert job of sr-client-check.yml labels the PR
-      # chain-passed-<branch> after a run with no alert line), the branch's alert issue
-      # ("SR map mode: <branch> needs attention", the one that job uses) gets a comment,
-      # or is opened, once per PR and build: a marker line (the PR number and the branch's build id) in
-      # the issue body or a comment says it was raised, and that marker is never raised again. The issue is labelled pipeline-alert and
-      # assigned to the owner, so GitHub notifies him. A PR with no client branch has
-      # no chain to pass and is not stale. NOW_EPOCH is for tests; unset here.
+      # The build was skipped because its game-update PR is open. If that PR's head
+      # has been the same build for longer than STALE_HOURS (its last commit: the PR
+      # step makes a new one at every refresh) and the client chain has not passed
+      # for every changed client branch (the alert job of sr-client-check.yml labels
+      # the PR chain-passed-<branch> after a run with no alert line), the branch's
+      # alert issue ("SR map mode: <branch> needs attention", the one that job uses)
+      # gets a comment, or is opened, once per PR and build. A marker line (the PR
+      # number and the branch's build id) in the body or a comment of any issue with
+      # that title, open or closed, says it was raised, and it is not raised again.
+      # If the issues cannot be read, nothing is posted. The issue is labelled
+      # pipeline-alert and assigned to the owner, so GitHub notifies him. A PR with
+      # no client branch has no chain to pass and is not stale. NOW_EPOCH is for
+      # tests; unset here.
       - name: Alert on a stale game-update PR
         if: steps.pr.outputs.skip == 'true'
         env:
@@ -170,13 +174,15 @@ jobs:
         run: |
           set -euo pipefail
           now="${NOW_EPOCH:-$(date -u +%s)}"
-          pr="$(gh pr list --state open --limit 100 --json number,headRefName,title,createdAt,labels \
+          pr="$(gh pr list --state open --limit 100 --json number,headRefName,title,createdAt,commits,labels \
             --jq '[.[] | select(.headRefName | startswith("game-update/"))][0] // empty')"
           [ -n "$pr" ] || exit 0
           stale="$(PR="$pr" NOW="$now" node -e '
             const e = process.env;
             const pr = JSON.parse(e.PR);
-            const hours = (Number(e.NOW) * 1000 - Date.parse(pr.createdAt)) / 3600000;
+            // The PR step pushes one fresh commit per refresh, so the last commit is when this build arrived.
+            const since = Date.parse((pr.commits || []).slice(-1)[0]?.committedDate) || Date.parse(pr.createdAt);
+            const hours = (Number(e.NOW) * 1000 - since) / 3600000;
             let branches = [];
             try { branches = JSON.parse(e.MATRIX).map((x) => x.branch); } catch {}
             const have = new Set(pr.labels.map((l) => l.name));
@@ -194,21 +200,32 @@ jobs:
             b="${pair%%=*}"
             export MARKER="<!-- sr-stale-pr:$number:${pair#*=} -->"
             export TITLE="SR map mode: $b needs attention"
-            issue="$(gh issue list --state open --search "$TITLE in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
-            seen=""
-            if [ -n "$issue" ]; then
-              seen="$({
-                gh api "repos/$GH_REPO/issues/$issue" --jq '.body // ""'
-                gh api "repos/$GH_REPO/issues/$issue/comments" --paginate --jq '.[].body'
-              } | grep -F -- "$MARKER" || true)"
+            # Every issue with this title counts, closed ones too: closing the alert must not
+            # bring the same alert back at the next poll. The comment goes to the open one.
+            if ! found="$(gh issue list --state all --limit 100 --search "$TITLE in:title" --json number,title,state \
+              --jq '.[] | select(.title == env.TITLE) | "\(.number) \(.state)"')"; then
+              echo "::warning::Could not list the '$TITLE' issues; nothing posted for PR #$number."
+              exit 0
             fi
+            issue=""
+            seen=""
+            while read -r n state; do
+              [ -n "$n" ] || continue
+              if [ "$state" = OPEN ] && [ -z "$issue" ]; then issue="$n"; fi
+              if ! text="$(gh api "repos/$GH_REPO/issues/$n" --jq '.body // ""' \
+                && gh api "repos/$GH_REPO/issues/$n/comments" --paginate --jq '.[].body')"; then
+                echo "::warning::Could not read issue #$n; nothing posted for PR #$number."
+                exit 0
+              fi
+              if grep -qF -- "$MARKER" <<< "$text"; then seen=1; fi
+            done <<< "$found"
             if [ -n "$seen" ]; then
               echo "Already raised for $b (PR #$number, build ${pair#*=}); not again."
               continue
             fi
             cat > "$RUNNER_TEMP/stale.md" <<EOF
           $MARKER
-          @$OWNER game-update PR #$number ($title) has been open $hours hours and the client chain has not passed for \`$b\`: the PR has no \`chain-passed-$b\` label. It was last checked when the PR opened or was last forced, so the cause is in the earlier alerts on this issue, the PR's "Client build check" comment, or the latest runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-watch.yml
+          @$OWNER game-update PR #$number ($title) has held its current build for $hours hours and the client chain has not passed for \`$b\`: the PR has no \`chain-passed-$b\` label. The chain last ran when the PR was opened, refreshed by a new build, or forced, so the cause is in the earlier alerts on this issue, the PR's "Client build check" comment, or the latest runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-watch.yml
           PR: $GITHUB_SERVER_URL/$GH_REPO/pull/$number
           Once the cause is fixed: \`gh workflow run sr-watch.yml --ref main -f force=true\`. This is raised once for this PR and build; a new build on the PR raises it again.
           EOF

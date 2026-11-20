@@ -890,11 +890,15 @@ const HOLD_ONLY_AUTOPILOT = { decision: 'HOLD', cl: 129402, candidate: true, wou
 // A fake `gh`: logs every call, answers from files in its own directory. Nothing leaves the temp directory.
 const FAKE_GH = `#!/bin/bash
 printf '%s\\n' "$*" >> "$FAKE_DIR/calls.log"
+[ -n "$FAKE_FAIL" ] && case "$*" in *"$FAKE_FAIL"*) exit 1 ;; esac
 reply() { [ -f "$FAKE_DIR/$1" ] && cat "$FAKE_DIR/$1"; return 0; }
 case "$1 $2" in
   "pr list") reply pr.json ;;
   "pr view") case "$*" in *title*) echo "Game build 26461198 on public_test_branch" ;; *) reply pr-chain-labels.txt ;; esac ;;
-  "issue list") reply issue-number.txt ;;
+  "issue list") if [ -f "$FAKE_DIR/issue-number.txt" ]; then
+      if [ ! -f "$FAKE_DIR/issue-closed.txt" ]; then sed 's/$/ OPEN/' "$FAKE_DIR/issue-number.txt"
+      else case "$*" in *"--state all"*) sed 's/$/ CLOSED/' "$FAKE_DIR/issue-number.txt" ;; esac; fi
+    fi ;;
   "api repos/"*) case "$*" in *'.[].body'*) reply comment-bodies.txt ;; *'.body // '*) reply issue-body.txt ;; *) case "$2" in */comments) reply comment-times.txt ;; esac ;; esac ;;
 esac
 exit 0
@@ -1121,16 +1125,20 @@ const step = (j, name) => {
 
 const NOW = Date.parse('2026-11-07T20:00:00Z') / 1000;
 const hoursAgo = (h) => new Date((NOW - h * 3600) * 1000).toISOString().replace('.000Z', 'Z');
-const staleRun = ({ ageH, labels = [], matrix = '[{"branch":"public","buildid":"1"},{"branch":"public_test_branch","buildid":"2"}]', issue, issueBody, commentBodies, noPr = false }) => {
+// ageH: hours since the PR head's last commit (the last refresh); createdH: hours since the PR opened (default: the same).
+// closed: the issue is closed (only a lookup with --state all sees it); fail: a gh call whose arguments contain this text exits 1.
+const staleRun = ({ ageH, createdH = ageH, labels = [], matrix = '[{"branch":"public","buildid":"1"},{"branch":"public_test_branch","buildid":"2"}]', issue, issueBody, commentBodies, noPr = false, closed = false, fail = '', noCommits = false }) => {
   const dir = mkdtempSync(join(tmpdir(), 'stale-'));
-  const pr = { number: 26, headRefName: 'game-update/client-public_test_branch-26461198', title: 'Game build 26461198 on public_test_branch', createdAt: hoursAgo(ageH), labels: ['game-update', ...labels].map((name) => ({ name })) };
+  const pr = { number: 26, headRefName: 'game-update/client-public_test_branch-26461198', title: 'Game build 26461198 on public_test_branch', createdAt: hoursAgo(createdH), labels: ['game-update', ...labels].map((name) => ({ name })) };
+  if (!noCommits) pr.commits = [{ committedDate: hoursAgo(createdH) }, { committedDate: hoursAgo(ageH) }];
   const files = {};
   if (!noPr) files['pr.json'] = JSON.stringify(pr);
   if (issue) files['issue-number.txt'] = `${issue}\n`;
+  if (closed) files['issue-closed.txt'] = '\n';
   if (issueBody) files['issue-body.txt'] = `${issueBody}\n`;
   if (commentBodies) files['comment-bodies.txt'] = commentBodies.join('\n') + '\n';
   const script = runOf(poll, 'Alert on a stale game-update PR');
-  const r = runBash(script, { cwd: dir, env: { MATRIX: matrix, STALE_HOURS: '6', OWNER: 'msantoro12', GH_REPO: 'o/r', NOW_EPOCH: String(NOW), GITHUB_SERVER_URL: 'https://github.com' }, files });
+  const r = runBash(script, { cwd: dir, env: { MATRIX: matrix, STALE_HOURS: '6', OWNER: 'msantoro12', GH_REPO: 'o/r', NOW_EPOCH: String(NOW), GITHUB_SERVER_URL: 'https://github.com', FAKE_FAIL: fail }, files });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const c = calls(dir);
   const body = existsSync(join(dir, 'stale.md')) ? readFileSync(join(dir, 'stale.md'), 'utf8') : null;
@@ -1161,7 +1169,7 @@ test('stale PR (leg C1): a game-update PR open over 6 hours without the chain-pa
   assert.ok(r.creates.includes('issue create --title SR map mode: public needs attention --body-file ' + r.calls.find((l) => l.startsWith('issue create')).split('--body-file ')[1].split(' --label')[0] + ' --label pipeline-alert --assignee msantoro12'), r.creates.join('\n'));
   assert.ok(r.creates.some((l) => l.startsWith('issue create --title SR map mode: public_test_branch needs attention')));
   assert.ok(r.calls.some((l) => l.startsWith('label create pipeline-alert ')));
-  assert.match(r.body, /^<!-- sr-stale-pr:26:2 -->\n@msantoro12 game-update PR #26 \(Game build 26461198 on public_test_branch\) has been open 7 hours and the client chain has not passed for `public_test_branch`: the PR has no `chain-passed-public_test_branch` label\./);
+  assert.match(r.body, /^<!-- sr-stale-pr:26:2 -->\n@msantoro12 game-update PR #26 \(Game build 26461198 on public_test_branch\) has held its current build for 7 hours and the client chain has not passed for `public_test_branch`: the PR has no `chain-passed-public_test_branch` label\./);
   assert.match(r.body, /gh workflow run sr-watch\.yml --ref main -f force=true/);
 });
 
@@ -1207,6 +1215,43 @@ test('stale PR: once per PR and build, by the marker line in the issue body or a
   const first = staleRun({ ageH: 30, matrix: one, issue: 40 });
   const marked = first.body.split('\n')[0];
   assert.equal(staleRun({ ageH: 31, matrix: one, issue: 40, commentBodies: ['older', marked] }).comments.length, 0);
+});
+
+test('stale PR: a closed alert issue that holds the marker is not raised again, and the lookup covers closed issues', { skip: !bash }, () => {
+  const one = '[{"branch":"public","buildid":"1"}]';
+  const marker = '<!-- sr-stale-pr:26:1 -->';
+  const r = staleRun({ ageH: 30, matrix: one, issue: 40, closed: true, commentBodies: [marker + '\n@msantoro12'] });
+  assert.equal(r.creates.length, 0, r.calls.join('\n'));
+  assert.equal(r.comments.length, 0);
+  assert.match(r.out, /Already raised for public \(PR #26, build 1\)/);
+  assert.ok(r.calls.some((l) => /^issue list --state all /.test(l)), r.calls.join('\n'));
+  // A closed issue without the marker (an older build) is not reopened: a new issue carries the alert.
+  const other = staleRun({ ageH: 30, matrix: one, issue: 40, closed: true, commentBodies: ['<!-- sr-stale-pr:26:0 -->'] });
+  assert.equal(other.comments.length, 0);
+  assert.equal(other.creates.length, 1);
+});
+
+test('stale PR: when the issues cannot be read, nothing is posted and the step passes with a warning', { skip: !bash }, () => {
+  const one = '[{"branch":"public","buildid":"1"}]';
+  const list = staleRun({ ageH: 30, matrix: one, issue: 40, fail: 'issue list' });
+  assert.equal(list.creates.length + list.comments.length, 0, list.calls.join('\n'));
+  assert.match(list.out, /::warning::Could not list the 'SR map mode: public needs attention' issues; nothing posted for PR #26/);
+  const api = staleRun({ ageH: 30, matrix: one, issue: 40, fail: '/comments' });
+  assert.equal(api.creates.length + api.comments.length, 0, api.calls.join('\n'));
+  assert.match(api.out, /::warning::Could not read issue #40; nothing posted for PR #26/);
+});
+
+test('stale PR: the age counts from the last refresh (the head commit), not from when the PR opened', { skip: !bash }, () => {
+  // Opened 100 hours ago, refreshed with a new build 2 hours ago: the chain is still running, no alert.
+  const young = staleRun({ ageH: 2, createdH: 100 });
+  assert.equal(young.creates.length + young.comments.length, 0, young.calls.join('\n'));
+  // Refreshed 7 hours ago: alert, counted from the refresh.
+  const old = staleRun({ ageH: 7, createdH: 100 });
+  assert.equal(old.creates.length, 2);
+  assert.match(old.body, /has held its current build for 7 hours/);
+  // Without commit dates in the answer, the opening time stands in.
+  assert.equal(staleRun({ ageH: 30, noCommits: true }).creates.length, 2);
+  assert.equal(staleRun({ ageH: 3, noCommits: true }).creates.length, 0);
 });
 
 // ---- sr-watch: an open update PR that already holds the polled build ids stops repeats
