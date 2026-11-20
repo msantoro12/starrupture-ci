@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkCandidateChange, checkCovered, checkIdentity, checkReleaseLimits, decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS, servedDifference } from './decide.mjs';
+import { checkAutopilot, checkAutopilotSwitch, checkCandidateChange, checkCovered, checkIdentity, checkReleaseLimits, decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS, servedDifference } from './decide.mjs';
 import { addBuild, emit, emptyMap, exportFeed, parse, parseSignedFeedRows } from './version-map.mjs';
 import { nextSeq } from './vmap-sign.mjs';
 
@@ -877,6 +877,51 @@ test('release limits: at most 2 Claude attempts per CL, B only', () => {
   assert.equal(decide(base({ history: ok({ releases: [], attempts: { 127999: 9 } }) })).decision, 'M');
 });
 
+test('release limits: a run that died before a decision (infra) is not an attempt', () => {
+  const missB = ok(aob([aobRow('SpawnActor', 'MISSING')]));
+  const run = (records) => decide(base({ g4: missB, history: ok({ releases: {}, attempts: { 127999: records } }) }));
+  const rejected = (n) => ({ run: String(n), outcome: 'rejected' });
+  const infra = (n) => ({ run: String(n), outcome: 'infra' });
+  // cancelled, lost-runner and download-failure runs are recorded and never counted, however many there are
+  assert.equal(run([infra(1), infra(2), infra(3), infra(4)]).decision, 'B');
+  // one rejected run and any number of infra runs: one attempt used, one left
+  assert.equal(run([rejected(1), infra(2), infra(3)]).decision, 'B');
+  // two rejected runs stop it, with infra runs between them or not
+  holds(run([rejected(1), rejected(2)]), /2 auto-fix attempts already used for CL-127999 \(limit 2\)/);
+  holds(run([rejected(1), infra(2), rejected(3), infra(4)]), /2 auto-fix attempts already used for CL-127999 \(limit 2\)/);
+  // the old shape, a bare number, still counts as that many rejected attempts
+  holds(decide(base({ g4: missB, history: ok({ releases: [], attempts: { 127999: 2 } }) })), /2 auto-fix attempts/);
+  // a record that is neither is malformed
+  holds(run([{ run: '1', outcome: 'cancelled' }]), /attempts entry is malformed/);
+});
+
+test('release limits: a retry reset starts the count again for its CL, and only for it', () => {
+  const missB = ok(aob([aobRow('SpawnActor', 'MISSING')]));
+  const rejected = (n) => ({ run: String(n), outcome: 'rejected' });
+  const reset = { reset: true, actor: 'owner', run: '9', cleared: 2 };
+  const run = (attempts) => decide(base({ g4: missB, history: ok({ releases: {}, attempts }) }));
+  // two rejected, then the reset: the full allowance is back
+  assert.equal(run({ 127999: [rejected(1), rejected(2), reset] }).decision, 'B');
+  // what is rejected after the reset counts again
+  assert.equal(run({ 127999: [rejected(1), rejected(2), reset, rejected(3)] }).decision, 'B');
+  holds(run({ 127999: [rejected(1), rejected(2), reset, rejected(3), rejected(4)] }), /2 auto-fix attempts already used for CL-127999/);
+  // a reset recorded for another CL leaves this one held
+  holds(run({ 127999: [rejected(1), rejected(2)], 120000: [reset] }), /2 auto-fix attempts already used for CL-127999/);
+});
+
+test('history: the keyed shape and the old array shape read the same, and a repeated identity is refused', () => {
+  const entry = { repo: 'ModLoader', cl: '127999', at: AT, seq: 1761900001 };
+  const keyed = ok({ releases: { 'ModLoader:127999': entry }, attempts: {} });
+  holds(decide(base({ history: keyed })), /already released for CL-127999/);
+  holds(decide(base({ history: ok({ releases: [entry], attempts: {} }) })), /already released for CL-127999/);
+  // another repo's entry for the same CL is another identity
+  assert.equal(decide(base({ history: ok({ releases: { 'WAILA:127999': { ...entry, repo: 'WAILA' } }, attempts: {} }) })).decision, 'M');
+  // one identity twice in the old shape (the 2026-11-19 duplicate of CL-130045): refused, never read as one of them
+  holds(decide(base({ history: ok({ releases: [entry, { ...entry, seq: 1761900002 }], attempts: {} }) })), /ModLoader CL-127999 is listed twice/);
+  // a key that does not name its entry
+  holds(decide(base({ history: ok({ releases: { 'ModLoader:127000': entry }, attempts: {} }) })), /does not match its entry/);
+});
+
 test('fail closed: malformed history', () => {
   holds(decide(base({ history: ok({}) })), /malformed/);
   holds(decide(base({ history: ok({ releases: 'none', attempts: {} }) })), /malformed/);
@@ -1671,4 +1716,30 @@ test('decide.mjs hold: writes the HOLD decision from a published-base report, ex
   assert.match(r.stderr, /holds no reason to hold/);
   r = spawnSync(process.execPath, [cli, 'hold', '--report', join(dir, 'nope.json')], { encoding: 'utf8', windowsHide: true });
   assert.equal(r.status, 2);
+});
+
+// ------------------------------------------------------------ the publish job's read of the switch
+
+// The publish job runs this commit's code against state/autopilot.json as main has it at that moment (rehearsal run 44658336245 stopped on a
+// field a later change had removed). It reads the switch only, so a field added or removed since cannot stop a release the switch allows.
+test('the switch read right before signing ignores every field but the switch', () => {
+  // the shape this commit writes, an older one that still carries a removed field, and a newer one with a field this code never heard of
+  for (const extra of [{}, { max_releases_per_day: 3 }, { max_releases_per_day: 'many', schema: 7, notes: ['x'] }, { somethingNew: { nested: true } }]) {
+    assert.deepEqual(checkAutopilotSwitch(ok({ enabled: true, paths: ['M'], ...extra })), { enabled: true, pathM: true }, JSON.stringify(extra));
+  }
+  // checkAutopilot, the chain's own strict read of the same file, still takes only the shape it knows
+  assert.equal(checkAutopilot(ok({ enabled: true, paths: ['M'], max_releases_per_day: 3 })).error, undefined);
+  // a paths list that is absent or carries a path this code does not know: the switch alone decides, M must be in a list that is there
+  assert.deepEqual(checkAutopilotSwitch(ok({ enabled: true })), { enabled: true, pathM: true });
+  assert.deepEqual(checkAutopilotSwitch(ok({ enabled: true, paths: ['M', 'Z'] })), { enabled: true, pathM: true });
+  assert.deepEqual(checkAutopilotSwitch(ok({ enabled: true, paths: ['B'] })), { enabled: true, pathM: false });
+  assert.deepEqual(checkAutopilotSwitch(ok({ enabled: true, paths: [] })), { enabled: true, pathM: false });
+  assert.deepEqual(checkAutopilotSwitch(ok({ enabled: false, paths: ['M'] })), { enabled: false, pathM: true });
+  // fail closed on what it does read
+  for (const bad of [{}, { enabled: 'true' }, { enabled: 1 }, { enabled: null }, { paths: ['M'] }, { enabled: true, paths: 'M' }, { enabled: true, paths: { M: true } }]) {
+    assert.match(checkAutopilotSwitch(ok(bad)).error ?? '', /^autopilot: /, JSON.stringify(bad));
+  }
+  for (const bad of [null, [], 'x', 3]) assert.match(checkAutopilotSwitch(ok(bad)).error ?? '', /^autopilot: /);
+  assert.match(checkAutopilotSwitch({ ok: false, error: 'cannot read' }).error, /^autopilot: cannot read/);
+  assert.match(checkAutopilotSwitch(undefined).error, /^autopilot: /);
 });

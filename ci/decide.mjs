@@ -113,13 +113,17 @@
 //           "problems": [] }. When it was written with no problems and covers every class G5
 //           lists, the moved layouts ship as map rows (or absent rows for keys marked
 //           optional, which the plugins fall back on) and the path stays M.
-// History (what was released):
-//   { "releases": [{ "repo": "ModLoader", "cl": "127004", "at": "<ISO time>", "seq": 1792000000 }],
-//     "attempts": { "<cl>": <Claude attempts so far> } }
+// History (what was released), keyed by version identity, one entry per repo and CL (ci/vmap-history.mjs
+// holds the shape, the writers and the tolerant read of the old array shape):
+//   { "releases": { "ModLoader:127004": { "repo": "ModLoader", "cl": "127004", "at": "<ISO time>", "seq": 1792000000 } },
+//     "attempts": { "<cl>": [{ "run": "<id>", "outcome": "rejected" | "infra" }, { "reset": true, ... }] } }
+// Only "rejected" attempts count toward maxAttemptsPerCl, and a reset record starts the count again. A history
+// that names one identity twice, or one JSON key twice, is refused.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { buildIdOf, feedDelta, parse, parseFeed, parseSignedFeedRows } from './version-map.mjs';
+import { countedAttempts, loadHistory, readHistory } from './vmap-history.mjs';
 
 // Section 8 limits. None of them reads a clock: a release is stopped by what was released and what is served
 // (the version identity), never by how long ago it was (owner, 2026-11-19).
@@ -466,21 +470,31 @@ export function checkAutopilot(loaded) {
   return { enabled: v.enabled, paths: v.paths };
 }
 
+// The switch alone, read by the publish job right before it signs. That job runs the workflow code of the commit
+// it was dispatched from but reads state/autopilot.json from main as it is at that moment, so the file can be a
+// newer or older shape than the code expects (a field added or removed since: rehearsal run 44658336245 stopped
+// on a field a later change had removed). Only what the switch means is read: `enabled` must be exactly true, and a
+// `paths` list, when the file has one, must be a list that includes M. Every other field, known or not, is ignored.
+// Fail closed on what it does read: no boolean, or a paths list that is not a list or lacks M, stops the job.
+export function checkAutopilotSwitch(loaded) {
+  const bad = checkEnvelope('autopilot', loaded);
+  if (bad) return { error: bad };
+  const v = loaded.value;
+  if (typeof v.enabled !== 'boolean') return { error: 'autopilot: enabled is not a boolean' };
+  if (v.paths !== undefined && !Array.isArray(v.paths)) return { error: 'autopilot: paths is not a list' };
+  return { enabled: v.enabled, pathM: v.paths === undefined || v.paths.includes('M') };
+}
+
 // The history's releases of one repo, or a reason. A release carries its repo, its CL and, from the first
 // publish on, the seq it was signed with; the time it is stamped with is a record and never read here.
+// Fail closed on a history that lists one version identity twice (readHistory refuses it); the old array shape is read as well.
 function releasesOf(historyLoaded, repo) {
   const bad = checkEnvelope('history', historyLoaded);
   if (bad) return { error: bad };
-  const h = historyLoaded.value;
-  if (!Array.isArray(h.releases) || !isObj(h.attempts ?? {})) return { error: 'history: malformed (need releases[] and attempts{})' };
-  const mine = [];
-  for (const r of h.releases) {
-    if (!isObj(r) || typeof r.repo !== 'string' || !isCl(r.cl) || (r.seq !== undefined && !(Number.isSafeInteger(r.seq) && r.seq > 0))) {
-      return { error: 'history: malformed release entry' };
-    }
-    if (r.repo === repo) mine.push({ cl: r.cl, seq: r.seq });
-  }
-  return { mine, attempts: h.attempts ?? {} };
+  const got = readHistory(historyLoaded.value);
+  if (!got.ok) return { error: got.error };
+  const mine = Object.values(got.history.releases).filter((r) => r.repo === repo).map((r) => ({ cl: r.cl, seq: r.seq }));
+  return { mine, history: got.history };
 }
 
 // The owner's explicit way to a second release of a CL when our own release was bad (sr-watch's supersede
@@ -516,9 +530,9 @@ export function checkReleaseLimits({ historyLoaded, repo, cl, path, secondReleas
   const sameCl = got.mine.filter((r) => r.cl === cl).length;
   if (!secondRelease && !proofRun && !rehearsal && sameCl >= LIMITS.maxReleasesPerClPerRepo) reasons.push(`${repo} already released for CL-${cl}`);
   if (path === 'B') {
-    const n = got.attempts[cl];
-    if (n !== undefined && (!Number.isInteger(n) || n < 0)) return ['history: attempts entry is malformed'];
-    if ((n ?? 0) >= LIMITS.maxAttemptsPerCl) reasons.push(`${n} auto-fix attempts already used for CL-${cl} (limit ${LIMITS.maxAttemptsPerCl})`);
+    // Only what the chain itself rejected counts; a run that died before a decision (infra) and anything before the owner's reset does not.
+    const n = countedAttempts(got.history, cl);
+    if (n >= LIMITS.maxAttemptsPerCl) reasons.push(`${n} auto-fix attempts already used for CL-${cl} (limit ${LIMITS.maxAttemptsPerCl})`);
   }
   return reasons;
 }
@@ -842,7 +856,7 @@ function identityMain(argv) {
     if (supersede !== undefined && a.history === undefined) throw new Error('--supersede needs --history');
     const { reasons, supersedes } = checkIdentity({
       repo: a.repo, cl: a.cl, buildid: a.buildid, loaderMap: maps.loaderMap, publishedMap: maps.publishedMap, candidate: maps.candidate,
-      supersede, historyLoaded: a.history === undefined ? undefined : loadJson(a.history),
+      supersede, historyLoaded: a.history === undefined ? undefined : loadHistory(a.history),
     });
     const report = reasons.length ? { ok: false, step: 'identity', reasons } : { ok: true, step: 'identity', note: `CL-${a.cl} is not yet served and the candidate changes what is served${supersedes === null ? '' : ` (supersedes seq ${supersedes})`}`, supersedes };
     writeFileSync(a.report, `${JSON.stringify(report, null, 2)}\n`);
@@ -884,7 +898,7 @@ function main() {
       ...(supersede === undefined ? {} : { supersede }),
       autopilot: loadJson(args.autopilot),
       g1: loadJson(args.g1), g2: loadJson(args.g2), g3: loadJson(args.g3),
-      g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadJson(args.history),
+      g4: loadJson(args.g4), g5: loadJson(args.g5), plugins: loadJson(args.plugins), history: loadHistory(args.history),
       ...(args.fields === undefined ? {} : { fields: loadJson(args.fields) }),
       ...(args['rig-plugins'] === undefined ? {} : { rigPlugins: loadJson(args['rig-plugins']) }),
       ...(args.otherCl === undefined ? {} : { otherCl: args.otherCl }),
