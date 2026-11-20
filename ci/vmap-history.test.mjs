@@ -188,3 +188,15 @@ test('the retry command resets one CL, writes the line for the alert issue and l
   assert.equal(cli(['retry', '--history', file, '--actor', 'owner', '--run', '55', '--out', file]).status, 2);
   assert.equal(cli(['retry', '--history', file, '--cl', '0', '--actor', 'owner', '--run', '55', '--out', file]).status, 2);
 });
+
+test('check: the command line refuses a history that lists one version twice, in an array or as a repeated key, and accepts a keyed one', () => {
+  const d = dir();
+  const write = (name, text) => { writeFileSync(join(d, name), text); return join(d, name); };
+  assert.equal(cli(['check', '--history', write('ok.json', serializeHistory(upsertRelease(empty(), entry('130045', 1795109742))))]).status, 0);
+  assert.equal(cli(['check', '--history', write('old.json', JSON.stringify({ releases: [{ repo: 'ModLoader', cl: '130045', seq: 1 }], attempts: {} }))]).status, 0, 'the old array shape reads');
+  const arr = cli(['check', '--history', write('arr.json', JSON.stringify({ releases: [{ repo: 'ModLoader', cl: '130045', seq: 1795109176 }, { repo: 'ModLoader', cl: '130045', seq: 1795109742 }], attempts: {} }))]);
+  assert.equal(arr.status, 2);
+  const key = cli(['check', '--history', write('key.json', '{"releases":{"ModLoader:130045":{"repo":"ModLoader","cl":"130045","seq":1},"ModLoader:130045":{"repo":"ModLoader","cl":"130045","seq":2}},"attempts":{}}')]);
+  assert.equal(key.status, 2);
+  assert.equal(cli(['check', '--history', join(d, 'missing.json')]).status, 2, 'unreadable refuses');
+});

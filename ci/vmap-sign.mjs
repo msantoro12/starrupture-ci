@@ -10,6 +10,7 @@
 //   node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2
 //        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>]
 //   node ci/vmap-sign.mjs next-seq [--last-seq <n>] [--now <unix seconds>]
+//   node ci/vmap-sign.mjs unique <feed>     (exit 2 when a build or a row is listed twice)
 //   node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>]
 //        [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>]
 //
@@ -186,6 +187,14 @@ export function main(argv) {
     const { opt, rest } = options(args, ['last-seq', 'now']);
     need(rest.length === 0, USAGE);
     process.stdout.write(`${nextSeq(opt['last-seq'] === undefined ? 0 : int(opt['last-seq'], '--last-seq'), opt.now === undefined ? undefined : int(opt.now, '--now'))}\n`);
+    return EXIT_OK;
+  }
+  if (cmd === 'unique') {
+    // A signed or unsigned feed that lists a build or a row twice is refused before any upload.
+    const { rest } = options(args, []);
+    need(rest.length === 1, USAGE);
+    noDuplicateRows(readFileSync(rest[0], 'latin1').split('\n'));
+    process.stdout.write('no row is listed twice\n');
     return EXIT_OK;
   }
   if (cmd === 'verify') {

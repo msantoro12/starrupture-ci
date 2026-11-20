@@ -3712,19 +3712,9 @@ jobs:
           last_seq="$(cat last-seq.txt)"
           node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq" --seq "$CHAIN_SEQ"
           node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq" --expect-seq "$CHAIN_SEQ"
-          # The history entry, built from the live history read again above and keyed by version identity: one entry per
-          # repo and CL, so a CL released a second time replaces its entry (and names the seq it replaced), never adds a
-          # second one. A retry_cl reset is written first, to the live history, for that one CL.
-          hist=live/vmap-history.json
-          if [ -n "$RETRY_CL" ]; then
-            node tool/ci/vmap-history.mjs retry --history "$hist" --cl "$RETRY_CL" --actor "$ACTOR" --run "$RUN_ID" --out history.retried.json
-            hist=history.retried.json
-          fi
-          cl="$(node -p "JSON.parse(require('fs').readFileSync('chain/decision.json','utf8')).cl")"
-          replaced="$(node -p "JSON.parse(require('fs').readFileSync('chain/decision.json','utf8')).supersedes ?? ''")"
-          sup_flag=()
-          if [ -n "$replaced" ]; then sup_flag=(--supersedes "$replaced"); fi
-          node tool/ci/vmap-history.mjs record --history "$hist" --repo ModLoader --cl "$cl" --seq "$CHAIN_SEQ" --out vmap-history.json "${sup_flag[@]}"
+          # The history entry is the shared routine's: the live history read again above, a retry_cl reset for that one CL,
+          # then this release upserted by its key (one entry per CL, the newest seq, supersedes kept on that entry).
+          bash tool/ci/vmap-publish.sh entry
 
       # The feed first, the history last. The feed is what players read and what the version identity check judges
       # (a CL the published file holds is not released again). Three states, each with its own recovery:
@@ -3740,86 +3730,28 @@ jobs:
       - name: Publish the feed to the live release
         if: ${{ env.REHEARSAL != 'true' }}
         run: |
-          set -euo pipefail
-          # The one command that writes this release's history entry, for the case where the feed goes live and the
-          # history does not follow (state b above). The history is carried inside it
-          # (base64: no quoting to get wrong), so it works from any shell that is logged in to gh.
-          {
-            echo "If the feed (seq $CHAIN_SEQ) is live and the history entry for it is not written, nothing can release this CL again: a re-run is held (the live feed covers it) and a supersede is refused (the history lacks seq $CHAIN_SEQ). One command writes the entry:"
-            echo
-            echo "echo $(base64 -w0 vmap-history.json) | base64 -d > vmap-history.json && gh release upload vmap-feed vmap-history.json --clobber --repo $GH_REPO"
-          } > history-recovery.txt
-          { echo "### If this job stops after the feed upload and before the history is written"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"
-          gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
-          clobber=(--clobber); if [ "$FIRST_PUBLISH" = true ]; then clobber=(); fi
-          gh release upload vmap-feed version-map-client.v1.txt "${clobber[@]}" \
-            || { echo "::error::the feed (seq $CHAIN_SEQ) did not upload; the history was not written and the once-per-CL record is as it was, so a re-run can sign again"; exit 2; }
+          bash tool/ci/vmap-publish.sh feed vmap-feed live
 
       - name: Verify the published feed
         if: ${{ env.REHEARSAL != 'true' }}
         run: |
-          set -euo pipefail
-          # From here the feed is live: any stop below leaves it live with no history entry (state b above).
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "::error::the feed (seq $CHAIN_SEQ) is on the live release but this run did not confirm it, and the history entry is not written: a re-run is held and a supersede is refused until it is"; { echo "### The feed is live and the history entry is not written"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi' EXIT
-          # Download the feed as the loader will, and check it against what was signed here.
-          gh release download vmap-feed --pattern version-map-client.v1.txt --dir published --clobber
-          out="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
-          echo "$out"
-          case "$out" in "ok seq=$CHAIN_SEQ key=k2") ;; *) echo "::error::the published feed is not seq $CHAIN_SEQ signed with the release key k2: $out"; exit 2 ;; esac
-          want="$(sha256sum version-map-client.v1.txt | cut -d' ' -f1)"
-          got="$(sha256sum published/version-map-client.v1.txt | cut -d' ' -f1)"
-          [ "$want" = "$got" ] || { echo "::error::the published version-map-client.v1.txt has sha256 $got, not the $want that was signed and uploaded; the history was not written"; exit 2; }
-          echo "version-map-client.v1.txt sha256 $got"
+          bash tool/ci/vmap-publish.sh verify vmap-feed live
 
       - name: Publish the history to the live release
         if: ${{ env.REHEARSAL != 'true' }}
         run: |
-          set -euo pipefail
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then { echo "### The feed is live and the history entry is not confirmed"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi' EXIT
-          up=1
-          for try in 1 2 3; do
-            if gh release upload vmap-feed vmap-history.json --clobber; then up=0; break; fi
-            echo "the history upload failed (try $try of 3)"
-          done
-          if [ "$up" -ne 0 ]; then
-            echo "::error::the feed (seq $CHAIN_SEQ) is live but vmap-history.json did not upload; a re-run is held and a supersede is refused until the history holds its entry: the one command that writes it is in the job summary and below"
-            exit 2
-          fi
-          gh release download vmap-feed --pattern vmap-history.json --dir published --clobber
-          want="$(sha256sum vmap-history.json | cut -d' ' -f1)"
-          got="$(sha256sum published/vmap-history.json | cut -d' ' -f1)"
-          [ "$want" = "$got" ] || { echo "::error::the published vmap-history.json has sha256 $got, not the $want that was uploaded; the feed (seq $CHAIN_SEQ) is live and the history is not confirmed: the one command that writes it is in the job summary and below"; exit 2; }
-          echo "vmap-history.json sha256 $got"
-          echo "### Published the feed: seq $CHAIN_SEQ, release key k2, sha256 $(sha256sum published/version-map-client.v1.txt | cut -d' ' -f1); history written after it" >> "$GITHUB_STEP_SUMMARY"
+          bash tool/ci/vmap-publish.sh history vmap-feed live
 
-      # A rehearsal's only write: the prerelease named in STAGING_RELEASE, with the same asset names. Not the Latest
-      # release, and no step here names the live release: it is neither created, edited nor uploaded to.
+      # A rehearsal's only write: the prerelease named in STAGING_RELEASE, with the same asset names, through the same routine as
+      # the live release (feed, verify, history last, restore command printed first). Not the Latest release, and no step here
+      # names the live release: it is neither created, edited nor uploaded to.
       - name: Upload to the staging prerelease
         if: ${{ env.REHEARSAL == 'true' }}
         run: |
           set -euo pipefail
-          gh release view "$STAGING_RELEASE" > /dev/null 2>&1 || gh release create "$STAGING_RELEASE" --prerelease --latest=false --title "Version map feed rehearsal" --notes "Signed feeds of rehearsal runs (sr-watch, rehearsal input). Not read by the loader or by vmap-publish; never the live feed."
-          [ "$(gh release view "$STAGING_RELEASE" --json isPrerelease,isDraft --jq '.isPrerelease and (.isDraft | not)')" = true ] \
-            || { echo "::error::$STAGING_RELEASE is not a published prerelease; nothing was uploaded to it"; exit 2; }
-          gh release upload "$STAGING_RELEASE" vmap-history.json --clobber
-          gh release upload "$STAGING_RELEASE" version-map-client.v1.txt --clobber
-
-      - name: Verify what was staged
-        if: ${{ env.REHEARSAL == 'true' }}
-        run: |
-          set -euo pipefail
-          gh release download "$STAGING_RELEASE" --pattern version-map-client.v1.txt --pattern vmap-history.json --dir staged --clobber
-          out="$(node tool/ci/vmap-sign.mjs verify staged/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
-          echo "$out"
-          case "$out" in "ok seq=$CHAIN_SEQ key=k2") ;; *) echo "::error::the staged feed is not seq $CHAIN_SEQ signed with the release key k2: $out"; exit 2 ;; esac
-          for f in version-map-client.v1.txt vmap-history.json; do
-            want="$(sha256sum "$f" | cut -d' ' -f1)"
-            got="$(sha256sum "staged/$f" | cut -d' ' -f1)"
-            [ "$want" = "$got" ] || { echo "::error::the staged $f has sha256 $got, not the $want that was signed and uploaded"; exit 2; }
-            echo "$f sha256 $got"
-          done
-          [ "$(gh release view "$STAGING_RELEASE" --json isPrerelease --jq .isPrerelease)" = true ] || { echo "::error::$STAGING_RELEASE is not a prerelease"; exit 2; }
-          echo "### Rehearsal: staged the feed on $STAGING_RELEASE (prerelease): seq $CHAIN_SEQ, release key k2, sha256 $(sha256sum staged/version-map-client.v1.txt | cut -d' ' -f1). The live release was not written." >> "$GITHUB_STEP_SUMMARY"
+          bash tool/ci/vmap-publish.sh feed "$STAGING_RELEASE" staging
+          bash tool/ci/vmap-publish.sh verify "$STAGING_RELEASE" staging
+          bash tool/ci/vmap-publish.sh history "$STAGING_RELEASE" staging
 
       # A rehearsal only: read the live release again; it must be what it was before the staging upload.
       - name: Check the live release did not move

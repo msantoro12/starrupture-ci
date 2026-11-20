@@ -1157,6 +1157,18 @@ stays: one release per CL (`maxReleasesPerClPerRepo`), the attempts limit (`maxA
   the record. Only "not found" starts from nothing, and only where that is legitimate: a first publish (no release or
   no assets yet) or a run that cannot publish (it writes no history). A run that publishes and finds no release or no
   history asset stops.
+- **The history is keyed.** `releases` is an object keyed by version identity (`ModLoader:<CL>`), and every writer
+  upserts: a CL released a second time replaces its entry (newest seq, `supersedes` naming the one it replaced), so
+  the file never lists a CL twice. The old array shape is still read and is written back keyed. A history that
+  lists one version twice (an array with a repeat, or a JSON key written twice) is refused by the readers, and the
+  signer and the verifier refuse a feed that lists a build or a row twice, because the loader refuses such a file
+  and falls back to its built-in version object map. Tool: `ci/vmap-history.mjs`.
+- **Attempts count rejections only.** `attempts[<CL>]` holds what the chain itself rejected. A run that died before it
+  decided (cancelled, a lost runner, a failed download) is an `infra` record at most and does not count toward
+  `maxAttemptsPerCl`. Nothing writes rejected attempts yet (path B is off), so the limit is dormant.
+- **The publish job writes into the live history.** It downloads `vmap-history.json` again just before it signs and
+  writes the new entry into that copy, not into the copy the chain made when it started. A history that does not
+  download stops the job; only a first publish may start from an empty one.
 - **Loop paths closed.** A same-CL trigger right after a publish; a trigger after a failed publish (see "A history
   that did not upload" below: the feed goes first and the history last, so a failed feed upload leaves the history
   untouched, and a failed history write is covered by the published file); a history that could not be downloaded
@@ -1166,7 +1178,9 @@ stays: one release per CL (`maxReleasesPerClPerRepo`), the attempts limit (`maxA
 #### A history that did not upload
 
 The publish job uploads the feed first, downloads it again and checks its signature, seq and sha256, and only then
-writes the history (three tries, then a check of the uploaded copy). There are two states to recover from.
+writes the history (three tries, then a check of the uploaded copy). The live release and a rehearsal's staging
+prerelease go through the same script (`ci/vmap-publish.sh`, only the target release differs), which first refuses a
+history or a feed that lists one version twice, so nothing is uploaded for it. There are two states to recover from.
 
 - **The feed did not upload.** The history is untouched and the live release is as it was, so a re-run is allowed
   and signs again. Nothing to restore.
@@ -1213,6 +1227,19 @@ It is not `force`: force is the routine retry of a check and must never release 
   tell an agent from the owner. Agents dispatch supersede (or retry) only on the owner's OK: write access cannot tell an agent from the owner, so this policy carries it. The alert line names the actor.
 - **The history has to hold the release.** The named seq must be a release of that CL in `vmap-history.json`, so after
   a history write that failed (see "A history that did not upload") restore the history first, with the command printed there.
+
+#### Retry: start one CL's attempts again
+
+After the owner has looked at why a CL's auto-fix attempts were rejected, dispatch `sr-watch.yml` with the
+`retry_cl` input set to that one CL number. It runs the check on the public build as a forced run does, and it
+resets the count of rejected attempts for that CL only. It lifts no other check.
+
+- Only a hand dispatch sets it: the schedule never does, and it is refused with a rehearsal. The actor rule is the
+  supersede rule: admin or write permission, read from the API, and a permission that cannot be read refuses it.
+- The reset is a record in the history (who started it, the run, how many attempts it cleared) and a line in the alert
+  issue. The chain uses the reset for its own decision; the publish job writes it to the live history when that run
+  publishes. A run that does not publish leaves the live history as it was.
+- Agents never dispatch it except on the owner's OK.
 
 A manual `release.yml` dispatch (a loader release, not a version object map publish) stays outside the pipeline's
 checks: nothing here judges it.

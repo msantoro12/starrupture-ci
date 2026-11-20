@@ -18,6 +18,7 @@
 //   node ci/vmap-history.mjs record --history f --repo ModLoader --cl 130045 --seq 1795109742 --out f
 //        [--at <ISO time>] [--supersedes <seq>]
 //   node ci/vmap-history.mjs retry --history f --cl 130045 --actor <login> --run <id> --out f [--note f]
+//   node ci/vmap-history.mjs check --history f      (exit 2 when one version is listed twice)
 //
 // Both read the history strictly (a duplicate JSON key, or an entry under the wrong key, stops them) and write
 // it keyed. Exit 0 ok, 2 refused or a usage error.
@@ -210,10 +211,20 @@ const readOrThrow = (file) => {
 };
 
 export function main(argv) {
-  const usage = 'usage: vmap-history.mjs record --history f --repo R --cl N --seq S --out f [--at ISO] [--supersedes S] | retry --history f --cl N --actor <login> --run <id> --out f [--note f]';
+  const usage = 'usage: vmap-history.mjs record --history f --repo R --cl N --seq S --out f [--at ISO] [--supersedes S] | retry --history f --cl N --actor <login> --run <id> --out f [--note f] | check --history f';
   try {
     const [cmd, ...rest] = argv;
     const a = parseArgs(rest);
+    if (cmd === 'check') {
+      // Strict read, no folding: a history that lists one version twice is refused (the shared publish routine runs this before any upload).
+      if (!a.history) throw new Error(usage);
+      const loaded = loadHistory(a.history);
+      if (!loaded.ok) throw new Error(loaded.error);
+      const got = readHistory(loaded.value);
+      if (!got.ok) throw new Error(got.error);
+      process.stdout.write(`${Object.keys(got.history.releases).length} release(s), none listed twice\n`);
+      return 0;
+    }
     if (!a.history || !a.out || !isCl(a.cl ?? '')) throw new Error(usage);
     const history = readOrThrow(a.history);
     if (cmd === 'record') {

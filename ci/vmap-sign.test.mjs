@@ -253,3 +253,15 @@ test('the command line refuses to sign a feed with a duplicate key', () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /lists build .* twice/);
 });
+
+test('unique: the command line refuses a feed that lists a build twice and accepts one that does not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vmap-unique-'));
+  const lines = unsigned().split('\n');
+  writeFileSync(join(dir, 'ok.txt'), unsigned());
+  writeFileSync(join(dir, 'dup.txt'), [...lines.slice(0, -1), lines.find((l) => l.startsWith('build\t')), ''].join('\n'));
+  const run = (f) => spawnSync(process.execPath, [TOOL, 'unique', join(dir, f)], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run('ok.txt').status, 0);
+  const bad = run('dup.txt');
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /lists build .* twice/);
+});
