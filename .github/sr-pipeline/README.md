@@ -298,7 +298,7 @@ Owner decision, 2026-11-19: time plays no part in whether a version object map r
 - A publish has to change what is served against the published file. A candidate that changes nothing is a HOLD with that reason, and the seq does not move.
 - One release per CL and the attempts limit stay.
 
-When our own release was bad, the owner can release the same CL a second time with the `supersede` input of `sr-watch.yml`, set to the seq being replaced. Only a hand dispatch sets it (the schedule never does), it is not `force`, it lifts the already-released checks for that CL and nothing else, and the alert issue records what it replaced, the run and the new seq. A manual `release.yml` dispatch stays outside these checks. Details: `ci/MAP-MODE.md`, "Version identity, not time".
+When our own release was bad, the owner can release the same CL a second time with the `supersede` input of `sr-watch.yml`, set to the seq being replaced. Only a hand dispatch sets it (the schedule never does), it is not `force`, it lifts the already-released checks for that CL and nothing else (the published version object map and the loader header covering it, the once-per-CL history, and G3's "not newer" once the header's built CL is that CL; the attempts limit, the autopilot, every other gate and "the candidate must change what is served" still apply), it needs the actor to hold admin or write permission on the repository, and the alert issue records what it replaced, the run and the new seq. A manual `release.yml` dispatch stays outside these checks. Details: `ci/MAP-MODE.md`, "Version identity, not time".
 
 ## Limits
 

@@ -161,7 +161,10 @@ function checkSimpleGate(name, loaded) {
   return {};
 }
 
-function checkG3(loaded, { firstPublish = false } = {}) {
+// supersede: the run carries a supersede input. G3 then does not hold a CL that equals previousCl (the loader's
+// header already maps it, which is how a CL stands once the loader's change for it has merged): it is returned as
+// notNewer, and decide() holds it unless the supersede passes its own checks. A CL older than previousCl holds as ever.
+function checkG3(loaded, { firstPublish = false, supersede = false } = {}) {
   const bad = checkEnvelope('G3', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
@@ -170,7 +173,9 @@ function checkG3(loaded, { firstPublish = false } = {}) {
   if (!isCl(v.previousCl)) return { error: 'G3: previousCl is missing or not a plain number' };
   const bypass = v.proof === true || (firstPublish && v.firstPublish === true);
   if (!bypass && Number(v.cl) <= Number(v.previousCl)) {
-    return { error: `G3: CL-${v.cl} is not newer than CL-${v.previousCl}` };
+    const why = `G3: CL-${v.cl} is not newer than CL-${v.previousCl}`;
+    if (supersede && Number(v.cl) === Number(v.previousCl)) return { cl: v.cl, proof: false, notNewer: why };
+    return { error: why };
   }
   return { cl: v.cl, proof: v.proof === true };
 }
@@ -523,8 +528,10 @@ export function checkReleaseLimits({ historyLoaded, repo, cl, path, secondReleas
 const holdsBuild = (map, cl, buildid) => (map.builds ?? []).some((b) => b.cl === Number(cl) || (buildid !== undefined && buildid !== null && buildid !== '' && buildIdOf(b.source) === String(buildid)));
 
 // Version identity, before anything is built: a CL (or build) that the released loader's version object map or
-// the published one already holds is not released again. loaderMap and publishedMap are version-map.mjs's
-// parse and parseFeed output, null when that map is not to be judged (a run that cannot publish, a first
+// the published one already holds is not released again. "The released loader" is the header at loader_ref
+// (default AlienX's main), read at the commit the run scanned: what the loader's main holds, not a release tag.
+// Rows merged into main ahead of the feed publish therefore hold that CL's publish until a supersede or a later CL.
+// loaderMap and publishedMap are version-map.mjs's parse and parseFeed output, null when that map is not to be judged (a run that cannot publish, a first
 // publish) or { error } when it could not be read, which holds. secondRelease (checkSupersede passed) lifts
 // this "already released" reason for both maps, and only this one.
 export function checkCovered({ cl, buildid, loaderMap = null, publishedMap = null, secondRelease = false }) {
@@ -648,7 +655,7 @@ export function decide(inputs) {
 
   const g1 = checkSimpleGate('G1 compile', inputs.g1);
   const g2 = checkSimpleGate('G2 interface', inputs.g2);
-  const g3 = checkG3(inputs.g3, { firstPublish: inputs.firstPublish === true });
+  const g3 = checkG3(inputs.g3, { firstPublish: inputs.firstPublish === true, supersede: supersedeGiven });
   const g4 = checkG4(inputs.g4);
   const g5 = checkG5(inputs.g5);
   const plugins = checkPlugins(inputs.plugins, new Set(Array.isArray(inputs.fields?.value?.rows) ? inputs.fields.value.rows : []), g3.cl);
@@ -718,6 +725,8 @@ export function decide(inputs) {
     if (s.error) fail(s.error);
     else supersedes = s.seq;
   }
+  // G3's own already-released hold (the loader's header maps this CL) is lifted by the same supersede and by nothing else.
+  if (g3.notNewer !== undefined && supersedes === null) fail(g3.notNewer);
   checkReleaseLimits({
     historyLoaded: inputs.history, repo: inputs.repo, cl: g3.cl, path, secondRelease: supersedes !== null,
     proofRun: g3.proof === true, rehearsal: inputs.rehearsal === true,
@@ -810,6 +819,14 @@ function supersedeOf(a, maps) {
   return { seq: a.supersede, liveSeq: maps.liveSeq };
 }
 
+// --buildid is optional, but when it is given it must be a build id: an empty one is a usage error (the run has no build
+// id, and a check that skipped the build match for it would hold less than the caller thinks), for both commands.
+function checkBuildId(a) {
+  if (a.buildid === undefined) return;
+  if (a.buildid === '') throw new Error('--buildid is empty: the run has no build id, so the build cannot be matched against what is served');
+  if (!/^[0-9]+$/.test(a.buildid)) throw new Error(`--buildid is not a build id: ${a.buildid}`);
+}
+
 // decide.mjs identity --repo R --cl N [--buildid B] [--loader-header f] [--published f] [--feed f]
 //     [--supersede S --history f] --report f
 // The version identity check on its own (the publish job's re-check, and the chain's check of the candidate feed):
@@ -819,7 +836,7 @@ function identityMain(argv) {
   try {
     const a = parseArgs(argv);
     if (!a.repo || !/^[1-9][0-9]{0,8}$/.test(a.cl ?? '') || !a.report) throw new Error('missing --repo, --cl or --report');
-    if (a.buildid !== undefined && !/^[0-9]+$/.test(a.buildid)) throw new Error(`--buildid is not a build id: ${a.buildid}`);
+    checkBuildId(a);
     const maps = readMaps(a);
     const supersede = supersedeOf(a, maps);
     if (supersede !== undefined && a.history === undefined) throw new Error('--supersede needs --history');
@@ -851,6 +868,7 @@ function main() {
     args.rehearsal = argv.includes('--rehearsal');
     if (args['other-cl'] !== undefined) args.otherCl = otherClOf(args['other-cl']);
     if (args['other-unmapped'] !== undefined) args.otherUnmapped = otherUnmappedOf(args['other-unmapped']);
+    checkBuildId(args);
     if (args.otherCl !== undefined && args.otherUnmapped !== undefined) throw new Error('--other-cl and --other-unmapped exclude each other');
   } catch (e) {
     console.error(`${e.message}\nusage: decide.mjs --repo <name> --autopilot f --g1 f --g2 f --g3 f --g4 f --g5 f --plugins f [--fields f] --history f [--out f] [--other-cl n | --other-unmapped label] [--rig-plugins f] [--test-autopilot | --candidate] [--first-publish] [--rehearsal] [--loader-header f --published f [--buildid id]] [--supersede seq]`);

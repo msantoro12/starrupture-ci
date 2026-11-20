@@ -81,15 +81,24 @@ jobs:
           ref: main
 
       # A supersede is a hand dispatch with a seq, and never with a rehearsal; anything else stops here, before the poll.
+      # It is also the owner's way round: the dispatching actor must hold admin or write permission on this repository
+      # (read again from the API, never taken from the input), and a permission that cannot be read refuses it.
       - name: Refuse a malformed supersede
         if: ${{ inputs.supersede != '' }}
         env:
           SUPERSEDE: ${{ inputs.supersede }}
           REHEARSAL: ${{ inputs.rehearsal }}
           EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
         run: |
           [ "$EVENT" = workflow_dispatch ] && [ "$REHEARSAL" != true ] && [[ "$SUPERSEDE" =~ ^[1-9][0-9]{0,15}$ ]] \
             || { echo "::error::supersede is the seq of the release being replaced (digits), from a hand dispatch, and never with a rehearsal"; exit 2; }
+          perm="$(gh api "repos/$GH_REPO/collaborators/$ACTOR/permission" --jq .permission)" \
+            || { echo "::error::cannot read the permission of $ACTOR on $GH_REPO, so the supersede is refused"; exit 2; }
+          case "$perm" in
+            admin|write) echo "supersede: $ACTOR has $perm permission on $GH_REPO" ;;
+            *) echo "::error::a supersede needs admin or write permission on $GH_REPO; $ACTOR has '$perm'"; exit 2 ;;
+          esac
 
       - name: Poll Steam
         id: poll

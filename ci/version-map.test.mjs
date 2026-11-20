@@ -271,7 +271,7 @@ test('export-feed refuses a feed over its size cap', () => {
   assert.ok(Buffer.byteLength(exportFeed(map)) <= FEED_MAX_BYTES);
   map.functions.push(row(fits + 1));
   assert.throws(() => exportFeed(map), MapError);
-  // The cap is under the 1 MiB every loader accepts, and the refusal names the size.
+  // The cap (1,040,000 bytes) is under the loader's own cap of 1,048,576, and the refusal names the size.
   assert.equal(FEED_MAX_BYTES, 1040000);
   assert.ok(FEED_MAX_BYTES < 1048576, 'the cap is under the loader cap, with room for the seq and sig lines');
   assert.throws(() => exportFeed(map), (e) => e instanceof MapError && /the feed is \d+ bytes, over the \d+ the export allows/.test(e.message));

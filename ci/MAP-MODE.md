@@ -1140,7 +1140,9 @@ no release-count knob. A release is stopped by what was released and what is ser
 stays: one release per CL (`maxReleasesPerClPerRepo`), the attempts limit (`maxAttemptsPerCl`) and every gate.
 
 - **Covered.** A run that can publish is held when the released loader's header or the published version object
-  map already holds the CL or the Steam build. The loader's header is read at the commit the run scanned.
+  map already holds the CL or the Steam build. "The released loader" means what the loader's main holds: the header
+  is read at `loader_ref` (default AlienXAXS `main`), at the commit the run scanned, not at a release tag. Rows
+  merged into main ahead of the feed publish hold that CL's publish too (G3 already held the header's built CL).
 - **A publish has to change what is served.** The candidate is compared with the published file
   (`decide.mjs identity`): no new build line, no new or changed row and none dropped means HOLD with that
   reason, so nothing is signed, staged or published and the seq does not move. A publish that does change
@@ -1149,11 +1151,34 @@ stays: one release per CL (`maxReleasesPerClPerRepo`), the attempts limit (`maxA
   published-base check; the publish job runs it again on the file that is live then, before the key is used.
   A rehearsal, a proof run, a test run and a first publish are not judged (a rehearsal and a proof re-run a served CL
   on purpose; a first publish has no live file).
-- **Loop paths closed.** A same-CL trigger right after a publish; a trigger after a failed publish (a feed
-  uploaded with a failed history write is covered by the published file, a history written with a failed upload is
-  held by the once-per-CL limit); a history that could not be downloaded (the published file still covers it); a
-  re-run or hand dispatch while the poll baseline has not moved; the loader pull request merged, so the header holds the CL;
-  a second Steam build serving the same CL.
+- **The history is the once-per-CL record, and it fails closed.** The chain downloads `vmap-history.json` from the
+  `vmap-feed` release, and the publish job writes it back whole. A download that fails, or any error other than
+  "not found", stops the chain with the cause; it is never read as an empty history, so a flaky download cannot wipe
+  the record. Only "not found" starts from nothing, and only where that is legitimate: a first publish (no release or
+  no assets yet) or a run that cannot publish (it writes no history). A run that publishes and finds no release or no
+  history asset stops.
+- **Loop paths closed.** A same-CL trigger right after a publish; a trigger after a failed publish (see "A history
+  that did not upload" below: the feed goes first and the history last, so a failed feed upload leaves the history
+  untouched, and a failed history write is covered by the published file); a history that could not be downloaded
+  (the chain stops, see above); a re-run or hand dispatch while the poll baseline has not moved; the loader pull
+  request merged, so the header holds the CL; a second Steam build serving the same CL.
+
+#### A history that did not upload
+
+The publish job uploads the feed first, downloads it again and checks its signature, seq and sha256, and only then
+writes the history (three tries, then a check of the uploaded copy). So a feed upload that fails or does not verify
+leaves the history exactly as it was, and a re-run signs again. If the last write fails, the feed is live and covers
+the CL (nothing can release it again), but the once-per-CL record lacks its entry and a supersede is refused until the
+history holds it. The job fails; its first error line says so and the log prints the history it was writing. To
+restore it, save that JSON as `vmap-history.json` and run one command:
+
+```
+gh release upload vmap-feed vmap-history.json --clobber
+```
+
+The chain's error "the vmap-feed release has no vmap-history.json" is the same state seen from the next run (the
+asset is missing, for example after an upload that deleted the old copy and then failed): restore it the same way,
+from the last published history.
 
 #### Supersede: a second release of a CL
 
@@ -1168,6 +1193,16 @@ It is not `force`: force is the routine retry of a check and must never release 
   release of that CL with it, and the publish job checks all of it again.
 - The alert issue gets a line: what the run replaced, who started it, the run id and the new seq. The history entry
   of the new release carries `supersedes`.
+- **What it lifts.** The already-released or already-covered holds, and no others: the published version object map
+  covering the CL (or build), the loader header covering it, the once-per-CL history, and G3's "not newer" when the
+  CL equals the header's built CL (`kBuiltCL`, which is the case once the loader's change for the CL has merged; a
+  CL older than the header's stays held). `maxAttemptsPerCl`, the autopilot, every other gate, an unreadable map
+  and "the candidate must change what is served for that CL" all still apply.
+- **Who.** The `sr-watch` step that checks the input also reads the dispatching actor's permission on the
+  repository (`gh api repos/<repo>/collaborators/<actor>/permission`) and refuses unless it is admin or write; a
+  permission that cannot be read refuses it too. The alert line still names the actor.
+- **The history has to hold the release.** The named seq must be a release of that CL in `vmap-history.json`, so after
+  a history write that failed (see "A history that did not upload") restore the history first.
 
 A manual `release.yml` dispatch (a loader release, not a version object map publish) stays outside the pipeline's
 checks: nothing here judges it.

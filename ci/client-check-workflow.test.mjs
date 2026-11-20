@@ -2431,7 +2431,8 @@ printf 'gh %s\\n' "$*" >> calls.log
 case "$1 $2" in
   "api repos/"*) ${release ? `echo '${JSON.stringify({ assets: feedAsset ? [{ name: 'version-map-client.v1.txt' }, { name: 'vmap-history.json' }] : [{ name: 'vmap-history.json' }] })}'; exit 0` : 'echo "gh: Not Found (HTTP 404)" >&2; exit 1'} ;;
   "release view") case "$*" in *isPrerelease*) echo true ;; esac ;;
-  "release download") dest=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && dest="$2"; shift; done; mkdir -p "$dest"; if [ "$dest" = live ]; then echo LIVE > live/version-map-client.v1.txt; else cp version-map-client.v1.txt vmap-history.json "$dest"/; [ -n "$TAMPER" ] && echo x >> "$dest"/vmap-history.json; fi ;;
+  "release upload") if [ -n "$UPLOAD_FAIL" ] && [[ "$*" == *"$UPLOAD_FAIL"* ]]; then echo "upload failed" >&2; exit 1; fi ;;
+  "release download") dest=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && dest="$2"; shift; done; mkdir -p "$dest"; if [ "$dest" = live ]; then echo LIVE > live/version-map-client.v1.txt; else cp version-map-client.v1.txt vmap-history.json "$dest"/; [ "$TAMPER" = history ] && echo x >> "$dest"/vmap-history.json; [ "$TAMPER" = feed ] && echo x >> "$dest"/version-map-client.v1.txt; fi ;;
 esac
 exit 0
 `);
@@ -2447,10 +2448,14 @@ process.exit(code);
   return { dir, chainSeq };
 };
 const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, FIRST_PUBLISH: 'false', REHEARSAL: 'false', SUPERSEDE: '', VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
-// The live path: the signing step, then (when it passed) the step that uploads to the live release.
+// The live path: the signing step, the feed upload and its check, then the history last; it stops at the first step that fails.
 const signAndPublish = (fx, env = {}) => {
-  const r = runPublishStep(fx, 'Sign with the release key and verify', env);
-  return r.status === 0 ? runPublishStep(fx, 'Publish to the live release', env) : r;
+  let r;
+  for (const name of ['Sign with the release key and verify', 'Publish the feed to the live release', 'Verify the published feed', 'Publish the history to the live release']) {
+    r = runPublishStep(fx, name, env);
+    if (r.status !== 0) return r;
+  }
+  return r;
 };
 const callsOf = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
 
@@ -2505,10 +2510,11 @@ test('publish job: signs with the chain seq, records it in the history, uploads,
   const c = callsOf(fx.dir);
   assert.ok(c.includes('vmap-sign sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq 100 --seq 200'), c.join('\n'));
   assert.ok(c.includes('vmap-sign verify version-map-client.v1.txt --last-seq 100 --expect-seq 200'));
-  // History first: if the second upload fails, the history is not short of a feed that is live.
+  // The feed first, the history last and only after the feed was downloaded and verified: a feed that fails to upload leaves the history as it was.
   const upHist = c.indexOf('gh release upload vmap-feed vmap-history.json --clobber');
   const upFeed = c.indexOf('gh release upload vmap-feed version-map-client.v1.txt --clobber');
-  assert.ok(upHist >= 0 && upFeed > upHist, c.join('\n'));
+  const verifyFeed = c.indexOf('vmap-sign verify published/version-map-client.v1.txt --expect-seq 200');
+  assert.ok(upFeed >= 0 && verifyFeed > upFeed && upHist > verifyFeed, c.join('\n'));
   const history = JSON.parse(readFileSync(join(fx.dir, 'vmap-history.json'), 'utf8'));
   assert.deepEqual(history.releases.map((x) => [x.repo, x.cl, x.seq]), [['ModLoader', 129999, 200]]);
   // A missing release key stops before anything is signed.
@@ -2518,18 +2524,22 @@ test('publish job: signs with the chain seq, records it in the history, uploads,
   assert.equal(r.status, 2);
   assert.deepEqual(callsOf(nokey.dir).filter((l) => l.startsWith('vmap-sign sign')), []);
   // The published copy is checked.
-  r = runPublishStep(fx, 'Verify what was published');
+  r = runPublishStep(fx, 'Verify the published feed');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /ok seq=200 key=k2/);
   assert.match(r.stdout, /version-map-client\.v1\.txt sha256 [0-9a-f]{64}/);
+  r = runPublishStep(fx, 'Publish the history to the live release');
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /vmap-history\.json sha256 [0-9a-f]{64}/);
   assert.match(readFileSync(join(fx.dir, 'summary.md'), 'utf8'), /Published the feed: seq 200, release key k2, sha256 [0-9a-f]{64}/);
-  assert.equal(runPublishStep(fx, 'Verify what was published', { TAMPER: '1' }).status, 2, 'a published file that differs from the signed one fails');
+  assert.equal(runPublishStep(fx, 'Verify the published feed', { TAMPER: 'feed' }).status, 2, 'a published feed that differs from the signed one fails');
+  assert.equal(runPublishStep(fx, 'Publish the history to the live release', { TAMPER: 'history' }).status, 2, 'a published history that differs from the uploaded one fails');
   const wrongKey = publishFixture({ publishedKey: 'k1' });
   writeFileSync(join(wrongKey.dir, 'last-seq.txt'), '100\n');
-  assert.equal(signAndPublish(wrongKey).status, 0);
-  r = runPublishStep(wrongKey, 'Verify what was published');
+  r = signAndPublish(wrongKey);
   assert.equal(r.status, 2);
   assert.match(r.stdout, /not seq 200 signed with the release key k2/);
+  assert.ok(!callsOf(wrongKey.dir).some((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber'), 'a feed that does not verify leaves the history unwritten');
   // A signer that wrote another seq than the chain's fails at the first verify, before anything is uploaded.
   const wrongSeq = publishFixture({ publishedSeq: 199 });
   writeFileSync(join(wrongSeq.dir, 'last-seq.txt'), '100\n');
@@ -4020,9 +4030,8 @@ test('rehearsal: no step of the publish job that is on for a rehearsal writes, c
   }
   // The live writes are exactly the steps that are off for a rehearsal: the upload, and its check.
   const liveWriters = stepTexts(pub).filter((t) => /gh release (upload|create) vmap-feed(?![\w-])/.test(t)).map((t) => t.match(/^- name: (.*)\n/)[1]);
-  assert.deepEqual(liveWriters, ['Publish to the live release']);
-  assert.equal(stepIf(step(pub, 'Publish to the live release')), NOT_REHEARSAL);
-  assert.equal(stepIf(step(pub, 'Verify what was published')), NOT_REHEARSAL);
+  assert.deepEqual(liveWriters, ['Publish the feed to the live release', 'Publish the history to the live release']);
+  for (const name of ['Publish the feed to the live release', 'Verify the published feed', 'Publish the history to the live release']) assert.equal(stepIf(step(pub, name)), NOT_REHEARSAL, name);
   // The staging steps are on only for a rehearsal.
   for (const name of ['Upload to the staging prerelease', 'Verify what was staged', 'Check the live release did not move', 'Note the live release before staging']) {
     assert.equal(stepIf(step(pub, name)), REHEARSAL_ONLY, name);
@@ -4086,7 +4095,7 @@ test('rehearsal: the staging steps run against stubs: signed with the chain seq,
   assert.deepEqual(history.releases.map((x) => [x.repo, x.cl, x.seq]), [['ModLoader', 129999, 200]]);
   assert.match(readFileSync(join(fx.dir, 'summary.md'), 'utf8'), /Rehearsal: staged the feed on vmap-feed-rehearsal \(prerelease\): seq 200, release key k2, sha256 [0-9a-f]{64}\. The live release was not written\./);
   // A staged copy that differs from what was signed fails.
-  assert.equal(runPublishStep(fx, 'Verify what was staged', { ...env, TAMPER: '1' }).status, 2);
+  assert.equal(runPublishStep(fx, 'Verify what was staged', { ...env, TAMPER: 'history' }).status, 2);
   // A staged release that is not a prerelease stops the upload before anything is written.
   const notPre = publishFixture();
   writeFileSync(join(notPre.dir, 'bin', 'gh'), readFileSync(join(notPre.dir, 'bin', 'gh'), 'utf8').replace('*isPrerelease*) echo true', '*isPrerelease*) echo false'));
@@ -4130,7 +4139,7 @@ test('supersede (wiring): no watch code path sets it; only the dispatch input re
   // Every use of the word in sr-watch is the input declaration, a read of inputs.supersede, or the step that refuses a bad one.
   for (const line of nonComment(watch)) {
     if (!/supersede/i.test(line)) continue;
-    assert.ok(/^\s*supersede:\s*$/.test(line) || /^\s*description: 'Supersede:/.test(line) || /inputs\.supersede/.test(line) || /name: Refuse a malformed supersede/.test(line) || /\$SUPERSEDE|seq of the release being replaced/.test(line), `unexpected use: ${line.trim()}`);
+    assert.ok(/^\s*supersede:\s*$/.test(line) || /^\s*description: 'Supersede:/.test(line) || /inputs\.supersede/.test(line) || /name: Refuse a malformed supersede/.test(line) || /\$SUPERSEDE|seq of the release being replaced/.test(line) || /\$ACTOR/.test(line), `unexpected use: ${line.trim()}`);
   }
   assert.ok(!nonComment(watch).some((l) => /supersede/i.test(l) && />>\s*"?\$\{?GITHUB_(OUTPUT|ENV)/.test(l)), 'no step writes it as an output or environment value');
   // The scripts the watcher runs know nothing of it, so no output of the poll can carry one.
@@ -4272,4 +4281,153 @@ test('supersede (alert): a second release is a line in the alert issue with what
   assert.match(s, /\n {8}if: \$\{\{ needs\.publish\.result == 'success' \}\}\n/);
   assert.match(job('alert'), /"chain\/supersede\.json"/, 'the alert reads the line');
   assert.match(job('alert'), /\n {6}ACTOR: \$\{\{ github\.actor \}\}\n/);
+});
+
+// ------------------------------------------------------------ the history record: fail closed, feed first, owner only
+
+// The chain's read of the vmap-feed release, run against a stand-in for gh: the release answers as MODE says (ok, 404 or another error),
+// lists the assets named in ASSETS, and a download fails when DL_FAIL names its pattern.
+const readReleaseRun = ({ mode = 'ok', assets = ['version-map-client.v1.txt', 'vmap-history.json'], dlFail = '', first = false, publish = true }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'chain-history-'));
+  mkdirSync(join(dir, 'bin'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  writeFileSync(join(dir, 'tool', 'ci', 'vmap-sign.mjs'), 'console.log("ok seq=7 key=k2");\n');
+  writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash
+printf 'gh %s\\n' "$*" >> calls.log
+case "$1 $2" in
+  "api repos/"*)
+    case "$MODE" in
+      ok) echo '{"assets":[${assets.map((a) => `{"name":"${a}"}`).join(',')}]}' ;;
+      404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      *) echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1 ;;
+    esac ;;
+  "release download")
+    dest=""; pat=""; while [ $# -gt 0 ]; do [ "$1" = "--dir" ] && dest="$2"; [ "$1" = "--pattern" ] && pat="$2"; shift; done
+    if [ -n "$DL_FAIL" ] && [ "$DL_FAIL" = "$pat" ]; then echo "gh: download failed" >&2; exit 1; fi
+    mkdir -p "$dest"
+    if [ "$pat" = vmap-history.json ]; then echo '{"releases":[{"repo":"ModLoader","cl":"130000","seq":7}],"attempts":{}}' > "$dest/$pat"; else echo FEED > "$dest/$pat"; fi ;;
+esac
+exit 0
+`);
+  chmodSync(join(dir, 'bin', 'gh'), 0o755);
+  const block = chainBlock('if gh api "repos/$GH_REPO/releases/tags/vmap-feed"', 'last_seq=0\n');
+  const r = sh(`set -euo pipefail\n${block}\necho reached-the-end`, dir, {
+    PATH: join(dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', MODE: mode, DL_FAIL: dlFail,
+    FIRST_PUBLISH: first ? 'true' : 'false', PUBLISH_RUN: publish && !first ? 'true' : 'false',
+  });
+  const history = existsSync(join(dir, 'history.json')) ? readFileSync(join(dir, 'history.json'), 'utf8').trim() : null;
+  return { r, history, dir };
+};
+const EMPTY_HISTORY = '{"releases":[],"attempts":{}}';
+
+test('history download (chain): a flaky download stops the chain and is never read as an empty history', { skip: !bash }, () => {
+  // success: the downloaded history is the one the chain judges and the publish job writes back
+  const good = readReleaseRun({});
+  assert.equal(good.r.status, 0, good.r.stdout + good.r.stderr);
+  assert.match(good.history, /"cl":"130000"/);
+  // another error on the download of the history that the release lists: the chain stops, with the cause, and no history is built
+  const flaky = readReleaseRun({ dlFail: 'vmap-history.json' });
+  assert.equal(flaky.r.status, 2, flaky.r.stdout + flaky.r.stderr);
+  assert.match(flaky.r.stdout, /::error::cannot download vmap-history\.json from the vmap-feed release; the history is never rebuilt from nothing/);
+  assert.ok(!flaky.r.stdout.includes('reached-the-end'));
+  assert.equal(flaky.history, null, 'no empty history was written for a failed download');
+  // the same for the feed itself (the step's own set -e: gh's exit code ends it)
+  assert.notEqual(readReleaseRun({ dlFail: 'version-map-client.v1.txt' }).r.status, 0);
+  // not found: the release is not there. A run that publishes without being a first publish stops; a first publish and a run that cannot publish start empty.
+  const gone = readReleaseRun({ mode: '404' });
+  assert.equal(gone.r.status, 2);
+  assert.match(gone.r.stdout, /no vmap-feed release exists and this run publishes/);
+  assert.equal(readReleaseRun({ mode: '404', first: true }).history, EMPTY_HISTORY, 'a first publish starts from nothing');
+  assert.equal(readReleaseRun({ mode: '404', publish: false }).history, EMPTY_HISTORY, 'a run that cannot publish writes no history, so it may judge from nothing');
+  // not found: the release is there but lists no history asset
+  const noAsset = readReleaseRun({ assets: ['version-map-client.v1.txt'] });
+  assert.equal(noAsset.r.status, 2);
+  assert.match(noAsset.r.stdout, /has no vmap-history\.json and this run publishes/);
+  assert.equal(readReleaseRun({ assets: [], first: true }).history, EMPTY_HISTORY, 'a first publish on a release with no assets');
+  assert.equal(readReleaseRun({ assets: ['version-map-client.v1.txt'], publish: false }).history, EMPTY_HISTORY);
+  // any other error on the release itself stops, whatever the run
+  for (const flags of [{}, { first: true }, { publish: false }]) {
+    const bad = readReleaseRun({ mode: 'err', ...flags });
+    assert.equal(bad.r.status, 2, JSON.stringify(flags));
+    assert.match(bad.r.stdout, /::error::cannot read the vmap-feed release/);
+  }
+});
+
+test('history upload (publish job): the feed goes first and is verified, the history last; a failed feed leaves the history alone, a failed history says how to restore it', { skip: !bash }, () => {
+  // the feed upload fails: nothing else is written
+  const feedFail = publishFixture();
+  writeFileSync(join(feedFail.dir, 'last-seq.txt'), '100\n');
+  const f = signAndPublish(feedFail, { UPLOAD_FAIL: 'version-map-client' });
+  assert.notEqual(f.status, 0);
+  assert.deepEqual(callsOf(feedFail.dir).filter((l) => /^gh release upload/.test(l)), ['gh release upload vmap-feed version-map-client.v1.txt --clobber'], 'the history upload never started');
+  // the feed is up but does not verify: the history is not written either
+  const feedBad = publishFixture();
+  writeFileSync(join(feedBad.dir, 'last-seq.txt'), '100\n');
+  assert.notEqual(signAndPublish(feedBad, { TAMPER: 'feed' }).status, 0);
+  assert.ok(!callsOf(feedBad.dir).some((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber'));
+  // the history upload fails after the feed is live: three tries, then the job stops with the recovery command and the history to restore
+  const histFail = publishFixture();
+  writeFileSync(join(histFail.dir, 'last-seq.txt'), '100\n');
+  const h = signAndPublish(histFail, { UPLOAD_FAIL: 'vmap-history' });
+  assert.equal(h.status, 2);
+  assert.equal(callsOf(histFail.dir).filter((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber').length, 3);
+  assert.match(h.stdout, /::error::the feed \(seq 200\) is live but vmap-history\.json did not upload; nothing can release this CL again, a supersede is refused until the history holds its entry: .*gh release upload vmap-feed vmap-history\.json --clobber/);
+  assert.match(h.stdout, /"seq": 200/, 'the history to restore is printed');
+  // a history that fails once and lands on the retry passes
+  const retry = publishFixture();
+  writeFileSync(join(retry.dir, 'last-seq.txt'), '100\n');
+  const flaky = join(retry.dir, 'bin', 'gh');
+  writeFileSync(flaky, readFileSync(flaky, 'utf8').replace('"release upload") if', '"release upload") if [[ "$*" == *vmap-history* && ! -f tried-once ]]; then touch tried-once; echo "upload failed" >&2; exit 1; fi; if'));
+  const ok = signAndPublish(retry);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.equal(callsOf(retry.dir).filter((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber').length, 2);
+});
+
+test('supersede (watch): the dispatching actor needs admin or write permission on the repository, read from the API; anything else refuses it', { skip: !bash }, () => {
+  const stepName = 'Refuse a malformed supersede';
+  assert.match(step(poll, stepName), /\n {10}ACTOR: \$\{\{ github\.actor \}\}\n/);
+  const run = (perm, env = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'watch-actor-'));
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash
+printf 'gh %s\\n' "$*" >> calls.log
+[ "$PERM" = unreadable ] && { echo "gh: Resource not accessible (HTTP 403)" >&2; exit 1; }
+echo "$PERM"
+`);
+    chmodSync(join(dir, 'bin', 'gh'), 0o755);
+    const r = sh(runOf(poll, stepName), dir, { PATH: join(dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', ACTOR: 'someone', PERM: perm, SUPERSEDE: '1763500000', REHEARSAL: 'false', EVENT: 'workflow_dispatch', ...env });
+    return { r, calls: existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8') : '' };
+  };
+  for (const perm of ['admin', 'write']) {
+    const ok = run(perm);
+    assert.equal(ok.r.status, 0, ok.r.stdout + ok.r.stderr);
+    assert.equal(ok.calls, 'gh api repos/o/r/collaborators/someone/permission --jq .permission\n');
+  }
+  for (const perm of ['read', 'none', '']) {
+    const no = run(perm);
+    assert.equal(no.r.status, 2, perm);
+    assert.match(no.r.stdout, /::error::a supersede needs admin or write permission on o\/r; someone has '/);
+  }
+  const unreadable = run('unreadable');
+  assert.equal(unreadable.r.status, 2);
+  assert.match(unreadable.r.stdout, /::error::cannot read the permission of someone on o\/r, so the supersede is refused/);
+  // the shape checks still come first, and never reach the API
+  const bad = run('admin', { SUPERSEDE: 'latest' });
+  assert.equal(bad.r.status, 2);
+  assert.equal(bad.calls, '');
+});
+
+test('version identity (chain): a run that can publish and has no build id stops with the cause, as decide.mjs identity does', { skip: !bash }, () => {
+  const block = chainBlock('buildid="$(node -p "JSON.parse(require(\'fs\').readFileSync(\'res/result.json\'', 'git -C loader show');
+  const exec = (result, env) => {
+    const dir = mkdtempSync(join(tmpdir(), 'chain-buildid-'));
+    mkdirSync(join(dir, 'res'));
+    writeFileSync(join(dir, 'res', 'result.json'), JSON.stringify(result));
+    return sh(`set -euo pipefail\n${block}\necho "buildid=$buildid"`, dir, env);
+  };
+  const none = exec({}, { BUILDID: '' });
+  assert.equal(none.status, 2);
+  assert.match(none.stdout, /::error::no build id: neither the download nor the buildid input names one, so the version identity check cannot match the build/);
+  assert.equal(exec({}, { BUILDID: '777' }).stdout.trim(), 'buildid=777', 'the input is the fallback');
+  assert.equal(exec({ download: { buildid: '888' } }, { BUILDID: '777' }).stdout.trim(), 'buildid=888', 'the build Steam installed wins');
 });

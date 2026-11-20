@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCandidateChange, checkCovered, checkIdentity, checkReleaseLimits, decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS, servedDifference } from './decide.mjs';
-import { exportFeed, parseSignedFeedRows } from './version-map.mjs';
+import { addBuild, emit, emptyMap, exportFeed, parse, parseSignedFeedRows } from './version-map.mjs';
 import { nextSeq } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -578,9 +578,9 @@ test('identity: checkIdentity gives the reasons for a candidate and the seq a su
 // the build, with the maps the release must not already be in) and the identity check of the candidate feed (after
 // it). Nothing here has a time: the history entries carry one and no check reads it.
 const AT = '2026-10-29T12:00:00Z';
-function chain(state, cl, { supersede, rva = 0x5500, over = {} } = {}) {
+function chain(state, cl, { supersede, rva = 0x5500, over = {}, previousCl = '127004' } = {}) {
   const buildid = `${cl}00`;
-  const d = decide(base({ g3: ok({ ok: true, cl: String(cl), previousCl: '127004' }), history: ok(state.history), coverage: { buildid, loaderMap: state.loader, publishedMap: state.published }, ...(supersede ? { supersede } : {}), ...over }));
+  const d = decide(base({ g3: ok({ ok: true, cl: String(cl), previousCl }), history: ok(state.history), coverage: { buildid, loaderMap: state.loader, publishedMap: state.published }, ...(supersede ? { supersede } : {}), ...over }));
   const candidate = vmap({
     builds: [...state.published.builds.filter((b) => b.cl !== cl), bld(cl)],
     functions: [...state.published.functions.filter((r) => r.cl !== cl), frow('Test::MapOnly', cl, rva)],
@@ -677,6 +677,47 @@ test('supersede: accepted with the input and a changed candidate, rejected witho
   assert.equal(state.history.releases.at(-1).seq, 1761900002);
 });
 
+// A loader header as the loader writes it, and what the workflow reads from it for G3: kBuiltCL (the client check's
+// "previous_cl" step parses it). Once the loader's change for a CL has merged, the header's built CL is that CL.
+const headerBuiltFor = (cl) => {
+  const map = emptyMap('loader', cl);
+  addBuild(map, bld(cl));
+  const parsed = parse(emit(map));
+  return { loader: parsed, previousCl: String(parsed.builtCL) };
+};
+
+test('supersede: G3 lets it through once the loader header already holds the CL (its kBuiltCL), and only with a changed candidate', () => {
+  const state = freshState();
+  publish(state, 130000, chain(state, 130000).candidate, 1761900001);
+  const header = headerBuiltFor(130000);
+  assert.equal(header.previousCl, '130000');
+  state.loader = header.loader; // the loader's change for CL-130000 has merged: its header is built for the CL
+  const sup = { seq: '1761900001', liveSeq: '1761900001' };
+  // without a supersede: held by G3 (the header's built CL is the CL)
+  const plain = chain(state, 130000, { previousCl: header.previousCl, rva: 0x6600 });
+  holds(plain.d, /G3: CL-130000 is not newer than CL-130000/);
+  assert.equal(plain.d.supersedes, undefined);
+  // with a supersede and a changed candidate: accepted, and the notes say what was lifted
+  const sup2 = chain(state, 130000, { previousCl: header.previousCl, supersede: sup, rva: 0x6600 });
+  assert.equal(sup2.d.decision, 'M', sup2.d.reasons.join(' | '));
+  assert.equal(sup2.d.supersedes, 1761900001);
+  assert.deepEqual(sup2.id, { reasons: [], supersedes: 1761900001 });
+  // with a supersede and an identical candidate: the decision cannot see the candidate, the identity check after the build rejects it
+  const same = chain(state, 130000, { previousCl: header.previousCl, supersede: sup });
+  assert.match(same.id.reasons.join(' | '), /the candidate version object map changes nothing served for CL-130000/);
+  // a supersede that names a seq that is not live is no way around G3 either
+  holds(chain(state, 130000, { previousCl: header.previousCl, supersede: { seq: '1761900000', liveSeq: '1761900001' }, rva: 0x6600 }).d, /G3: CL-130000 is not newer than CL-130000/);
+  holds(chain(state, 130000, { previousCl: header.previousCl, supersede: { seq: '1761900001', liveSeq: '1761900001' }, rva: 0x6600, over: { history: ok({ releases: [], attempts: {} }) } }).d, /G3: CL-130000 is not newer than CL-130000/);
+  // it lifts the already-released holds only: the attempts limit, a failed gate and a disabled autopilot still hold, and so does a CL older than the header's
+  state.history.attempts = { 130000: 2 };
+  const missB = { g4: ok(aob([aobRow('SpawnActor', 'MISSING')])) };
+  holds(chain(state, 130000, { previousCl: header.previousCl, supersede: sup, rva: 0x6600, over: missB }).d, /2 auto-fix attempts already used for CL-130000/);
+  state.history.attempts = {};
+  holds(chain(state, 130000, { previousCl: header.previousCl, supersede: sup, rva: 0x6600, over: { g1: ok({ ok: false }) } }).d, /G1/);
+  holds(chain(state, 130000, { previousCl: header.previousCl, supersede: sup, rva: 0x6600, over: { autopilot: ok({ schema: 1, enabled: false, paths: ['M'] }) } }).d, /disabled/);
+  holds(chain(state, 130000, { previousCl: '130001', supersede: sup, rva: 0x6600 }).d, /G3: CL-130000 is not newer than CL-130001/);
+});
+
 test('supersede: decide refuses it when the seq is wrong, not released, or the run is not an ordinary publish', () => {
   const history = hist(rel('127999', 'ModLoader', 1761900001));
   const served = vmap({ builds: [bld(127999)] });
@@ -724,6 +765,18 @@ test('cli: --supersede is read from the flags and the live seq from the publishe
   const noLive = runCli(files, ['--loader-header', s.w('loader.h', LOADER_LF), '--supersede', '1761900000']);
   assert.equal(noLive.status, 1);
   assert.match(noLive.out.reasons.join(' | '), /seq of the live published version object map was not given/);
+});
+
+test('cli: an empty --buildid is a usage error for both commands, never a build match that was skipped', () => {
+  const s = idScratch();
+  const published = s.w('published.txt', K1_LF);
+  const files = cliFiles();
+  const r = runCli(files, ['--published', published, '--buildid', '']);
+  assert.equal(r.status, 2, 'decide');
+  const id = runIdentity(s, ['--cl', '140000', '--buildid', '', '--published', published]);
+  assert.equal(id.status, 2, 'identity');
+  assert.match(id.stderr, /--buildid is empty: the run has no build id/);
+  assert.equal(runIdentity(s, ['--cl', '140000', '--buildid', 'abc', '--published', published]).status, 2, 'not a number');
 });
 
 test('cli: a --now is not read', () => {
