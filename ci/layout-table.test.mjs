@@ -297,6 +297,24 @@ test('buildTable with headers: the reflected base classes of a listed class are 
   assert.deepEqual(buildTable(layout, ['UCrBlueprintWidget_C'], { cl: 1 }).classes.map((c) => c.name), ['UCrBlueprintWidget_C'], 'no headers, no base links');
 });
 
+test('header parser: a class with interface bases walks the first base only; a single or templated base is unchanged', () => {
+  const dir = tmp();
+  writeFileSync(join(dir, 'Chimera_classes.hpp'), [
+    '// Class Chimera.CrPlain', 'class UCrPlain : public UObject', '{', '};',
+    '// Class Chimera.CrTemplated', 'class UCrTemplated : public TSubclassOf<UCrPlain>', '{', '};',
+    '// Class Chimera.CrTwo', 'class ACrTwo : public AModularCharacter, public ICrIface', '{', '};',
+    '// Class Chimera.CrThree', 'class ACrThree final : public ACrTwo, public ICrIfaceA, public ICrIfaceB', '{', '};',
+    '// Class Chimera.CrNone', 'class UCrNone', '{', '};',
+    '',
+  ].join('\n'));
+  const classes = parseSdkHeaders(dir);
+  assert.equal(classes.get('UCrPlain').base, 'UObject');
+  assert.equal(classes.get('UCrTemplated').base, 'TSubclassOf<UCrPlain>');
+  assert.equal(classes.get('ACrTwo').base, 'AModularCharacter');
+  assert.equal(classes.get('ACrThree').base, 'ACrTwo');
+  assert.equal(classes.get('UCrNone').base, null);
+});
+
 test('buildTable with headers: a wrong or empty --sdk directory is an error, not an empty table', () => {
   const layout = parseAssertions(inl(WIDGET), 'test');
   const empty = parseSdkHeaders(tmp());

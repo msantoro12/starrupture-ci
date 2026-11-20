@@ -45,6 +45,9 @@ export const ALIGN = '@align';
 const RE_ALIGN = /^static_assert\(alignof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong alignment on .*"\);( \\)?$/;
 const RE_SIZE = /^static_assert\(sizeof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong size on .*"\);( \\)?$/;
 const RE_OFFSET = /^static_assert\(offsetof\((.+), ([A-Za-z0-9_]+)\) == 0x([0-9A-Fa-f]+), "Member '.*' has a wrong offset!"\);( \\)?$/;
+// Dumper-7 asserts where each interface's vtable sits inside a class. It is not a member and
+// reflection has no property for it, so a layout has nothing to keep: the line is read and dropped.
+const RE_INTERFACE = /^static_assert\(GetInterfaceOffset<.+, .+>\(\) == 0x[0-9A-Fa-f]+, "Wrong interface VFT offset for '.*'"\);( \\)?$/;
 const RE_IGNORED = /^(\/\/|\/\*|\*|#pragma|SDK_NAMESPACE_START|#define DUMPER7_ASSERTS_\S+ \\$)/;
 
 // A layout is a Map<class, Map<member, number>>; @size and @align are members.
@@ -71,6 +74,7 @@ export function parseAssertions(text, label = 'input') {
       if ((m = RE_OFFSET.exec(line))) setValue(layout, m[1], m[2], parseInt(m[3], 16), where);
       else if ((m = RE_SIZE.exec(line))) setValue(layout, m[1], SIZE, parseInt(m[2], 16), where);
       else if ((m = RE_ALIGN.exec(line))) setValue(layout, m[1], ALIGN, parseInt(m[2], 16), where);
+      else if (RE_INTERFACE.test(line)) continue;
       else throw new ParseError(`${where}: unrecognised static_assert: ${line.slice(0, 120)}`);
     } else if (line === 'SDK_NAMESPACE_END') {
       sawEnd = true;

@@ -72,6 +72,14 @@ test('parse errors: unknown assertion, truncated file, empty, conflicting duplic
   assert.throws(() => parseAssertions(nosize, 't'), /no sizeof/);
 });
 
+test('a Dumper-7 interface vtable offset assertion is read and dropped; a malformed one is still an error', () => {
+  const iface = 'static_assert(GetInterfaceOffset<AFoo, IBar>() == 0x0028, "Wrong interface VFT offset for \'AFoo\'"); \\';
+  const text = inl({ AFoo: A }).replace('SDK_NAMESPACE_END', iface + '\nSDK_NAMESPACE_END');
+  assert.deepEqual(parseAssertions(text, 't'), parse({ AFoo: A }));
+  assert.deepEqual(parseAssertions(text.replace(' \\\nSDK', '\nSDK'), 't'), parse({ AFoo: A }));
+  assert.throws(() => parseAssertions(text.replace('== 0x0028', '!= 0x0028'), 't'), /unrecognised static_assert/);
+});
+
 test('an identical duplicate assertion is accepted', () => {
   const text = inl({ AFoo: A }).replace('SDK_NAMESPACE_END', `static_assert(sizeof(AFoo) == 0x000040, "Wrong size on AFoo");\nSDK_NAMESPACE_END`);
   assert.equal(parseAssertions(text, 't').get('AFoo').get('@size'), 0x40);

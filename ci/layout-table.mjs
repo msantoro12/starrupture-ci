@@ -77,7 +77,7 @@ const hex = (n) => '0x' + n.toString(16).toUpperCase();
 
 // ---- Dumper-7 headers: member sizes and bool masks --------------------------
 
-const RE_DECL = /^(?:class|struct) (?:(?:SDK_ALIGN|alignas)\(\w+\) )?([A-Za-z0-9_:]+)(?: final)?(?: : public (.+))?$/;
+const RE_DECL = /^(?:class|struct) (?:(?:SDK_ALIGN|alignas)\(\w+\) )?([A-Za-z0-9_:]+)(?: final)?(?: : public (.+?)(?:, public [A-Za-z0-9_:]+)*)?$/;
 // `<type> <name>[N]... [: bits];  // 0xOFFSET(0xSIZE)(...`; the type may hold spaces.
 const RE_MEMBER = /^\t(.*?)\s+(\w+)((?:\[[^\]]*\])*)( : \d+)?;\s+\/\/ 0x([0-9A-Fa-f]+)\(0x([0-9A-Fa-f]+)\)\((.*)$/;
 // The comment above every declaration: `// Class Engine.Actor`, `// Function Engine.Foo.Bar`, ...
