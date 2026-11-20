@@ -553,12 +553,12 @@ test('a known CL is the same build when only the label differs', () => {
   assert.ok(!mapMode(header(), known).problems.some((p) => /already in the build table/.test(p)));
 });
 
-test('a known CL with another build id, stamp or size holds; an unparseable label holds with a message', () => {
+test('a known CL with another stamp or size holds, another build id alone does not; an unparseable label holds with a message', () => {
   const known = base();
   known.cl = 128786;
   const same = { stamp: '0x6A1B2C3D', size: '0x0A412000' };
   known.build = { ...same, source: 'steam_build 26271157' };
-  assert.match(mapMode(header(), known).problems[0], /Steam build id 26271156 in the table, 26271157 measured/);
+  assert.ok(!mapMode(header(), known).problems.some((p) => /already in the build table/.test(p)));
   known.build = { stamp: '0x6A1B2C3E', size: same.size, source: 'steam_build 26271156' };
   assert.match(mapMode(header(), known).problems[0], /another image stamp or size/);
   known.build = { stamp: same.stamp, size: '0x0A412001', source: 'steam_build 26271156' };

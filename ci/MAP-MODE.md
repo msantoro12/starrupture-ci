@@ -462,7 +462,7 @@ built for as well as the new one.
   store, because that build cannot be fetched again once `public` moves.
 - When `public` moves, field rows read the file for the CL the header was built for.
   `ci/layout-store.mjs reference` accepts it only if all of these hold: it is for that CL;
-  its Steam build id, image stamp and image size are the header's build row for that CL;
+  its image stamp and image size are the header's build row for that CL (another Steam build id of the same exe is the same build);
   the release says the Actions bot uploaded it (a hand upload does not count); it has
   an entry for the reflected keys now listed, apart from a few (see below); and, for a re-run of the same CL, the exe
   hash is the same. "Uploaded by the Actions bot" means an Actions job of this repository:
@@ -994,7 +994,10 @@ no plugin code, no game file.
 1. `map-mode.mjs assemble` (with the check's `carry.json`), `write` and then `complete`
    put the observations in the header and fail the job if a key with an earlier row is
    left with none (above). The build
-   row is named `<branch> <buildid>`. The build id is the one Steam installed
+   row is named `<branch> <buildid>`. A CL already in the table is the same build when the exe's image
+   stamp and size are the table row's, whatever Steam build id the label carries (two client branches can
+   serve one exe): the row stays as it is; another stamp or size under that CL is refused. The build row
+   holds no exe hash, so stamp and size are what identify the exe. The build id is the one Steam installed
    (`result.json` `download.buildid`), else the `buildid` input (a manual dispatch
    can give it; the poller always does), else the job stops. A plugin is tracked
    when its repo is in the built `plugins` list.

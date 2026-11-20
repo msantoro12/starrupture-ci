@@ -139,8 +139,10 @@ test('reference: refuses a record for an older or a newer CL than the header was
   }
 });
 
-test('reference: refuses a record that is not the header build (build id, stamp, size)', () => {
-  for (const [field, value, re] of [['buildid', '1', /Steam build id 25646882 in the table, 1 measured/], ['imageStamp', 5, /another image stamp or size/], ['imageSize', 7, /another image stamp or size/]]) {
+test('reference: refuses a record that is not the header build (stamp, size); another Steam build id of the same exe is accepted', () => {
+  const same = JSON.stringify({ ...make(), buildid: '1' });
+  assert.equal(ref({ recordText: same, release: releaseFor(same) }).cl, 127004);
+  for (const [field, value, re] of [['imageStamp', 5, /another image stamp or size/], ['imageSize', 7, /another image stamp or size/]]) {
     const text = JSON.stringify({ ...make(), [field]: value });
     refuses({ recordText: text, release: releaseFor(text) }, re);
   }
