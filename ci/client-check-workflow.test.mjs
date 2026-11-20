@@ -4599,7 +4599,7 @@ test('history upload (publish job): the feed goes first and is verified, the his
   assert.notEqual(bad.status, 0);
   assert.ok(!callsOf(feedBad.dir).some((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber'));
   // state b (the feed is live, the history is not): the failure says a re-run is held and a supersede refused, and prints the one command
-  assert.match(bad.stdout, /::error::the feed \(seq 200\) is on the live release but this run did not confirm it, and the history entry is not written: a re-run is held and a supersede is refused until it is/);
+  assert.match(bad.stdout, /::error::the feed \(seq 200\) is on the live release but this run did not confirm it, and the history entry is not written; a re-run is held and a supersede is refused until the history holds its entry/);
   assert.ok(restoreCommand(bad.stdout), 'the command is printed');
   assert.ok(restoreCommand(readFileSync(join(feedBad.dir, 'summary.md'), 'utf8')), 'and written to the job summary');
   // the history upload fails after the feed is live: three tries, then the job stops with the recovery command and the history to restore
@@ -4608,7 +4608,7 @@ test('history upload (publish job): the feed goes first and is verified, the his
   const h = signAndPublish(histFail, { UPLOAD_FAIL: 'vmap-history' });
   assert.equal(h.status, 2);
   assert.equal(callsOf(histFail.dir).filter((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber').length, 3);
-  assert.match(h.stdout, /::error::the feed \(seq 200\) is live but vmap-history\.json did not upload; a re-run is held and a supersede is refused until the history holds its entry: the one command that writes it is in the job summary and below/);
+  assert.match(h.stdout, /::error::the feed \(seq 200\) is on the live release but vmap-history\.json did not upload; a re-run is held and a supersede is refused until the history holds its entry: the one command that writes it is in the job summary and below/);
   assert.ok(restoreCommand(h.stdout), 'the command is printed after the failure');
   assert.ok(restoreCommand(readFileSync(join(histFail.dir, 'summary.md'), 'utf8')), 'and written to the job summary');
   // the command, run as printed from another directory, writes the history entry of this release
@@ -4789,7 +4789,7 @@ test('retry (chain): a retry resets the one named CL in the history the chain ju
   assert.equal(last.cleared, 2);
   const note = JSON.parse(readFileSync(join(retried.dir, 'retry-note.json'), 'utf8'));
   assert.equal(note.alerts.length, 1);
-  assert.match(note.alerts[0], /attempts reset for CL-130045\*\* \(retry_cl, started by owner\): 2 counted attempt\(s\) cleared; run 555\. Only CL-130045 was reset/);
+  assert.match(note.alerts[0], /attempts reset for CL-130045\*\* \(retry_cl, started by owner\): 2 counted attempt\(s\) cleared for this run's decision; run 555\. The live history records the reset only if this run publishes\. Only CL-130045 was reset/);
 });
 
 test('history (publish job): the entry is written into the live history read again now, keyed, and a history that cannot be read stops the job before anything is signed', { skip: !bash }, () => {
@@ -4812,11 +4812,20 @@ test('history (publish job): the entry is written into the live history read aga
   const h2 = JSON.parse(readFileSync(join(again.dir, 'vmap-history.json'), 'utf8'));
   assert.equal(Object.keys(h2.releases).filter((k) => k === 'ModLoader:129999').length, 1);
   assert.equal(h2.releases['ModLoader:129999'].seq, 300);
-  // a live history that lists one version twice is not written into
-  const dup = publishFixture({ liveHistory: [{ repo: 'ModLoader', cl: '129999', seq: 5 }, { repo: 'ModLoader', cl: '129999', seq: 6 }] });
+  // a live history (old array shape) that lists one version twice is folded by the entry phase: one entry, the chain seq
+  const dup = publishFixture({ liveHistory: { releases: [{ repo: 'ModLoader', cl: '129999', seq: 5 }, { repo: 'ModLoader', cl: '129999', seq: 150 }], attempts: {} } });
   writeFileSync(join(dup.dir, 'last-seq.txt'), '100\n');
-  assert.notEqual(runPublishStep(dup, 'Sign with the release key and verify').status, 0);
-  assert.ok(!existsSync(join(dup.dir, 'vmap-history.json')), 'no history is written from a duplicate');
+  const folded = runPublishStep(dup, 'Sign with the release key and verify');
+  assert.equal(folded.status, 0, folded.stdout + folded.stderr);
+  const hd = JSON.parse(readFileSync(join(dup.dir, 'vmap-history.json'), 'utf8'));
+  assert.deepEqual(Object.keys(hd.releases), ['ModLoader:129999']);
+  assert.equal(hd.releases['ModLoader:129999'].seq, 200, 'the duplicate is folded to one entry, with the seq this run signed');
+  // a live history whose stored seq is above the new one is not written over: the entry phase stops
+  const above = publishFixture({ liveHistory: { releases: { 'ModLoader:129999': { repo: 'ModLoader', cl: '129999', at: '2026-11-01T00:00:00Z', seq: 400 } }, attempts: {} } });
+  writeFileSync(join(above.dir, 'last-seq.txt'), '100\n');
+  const refused = runPublishStep(above, 'Sign with the release key and verify');
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stdout + refused.stderr, /already recorded at seq 400, above the new seq/);
   // a download of the live history that fails stops the check before signing, and is never read as nothing released
   const failed = publishFixture({ seedLive: false });
   const stop = runPublishStep(failed, 'Check the seq and the feed before signing', { LIVE_HISTORY_FAIL: '1' });
@@ -4888,6 +4897,23 @@ test('shared routine (workflow text): the live and the rehearsal steps call ONE 
 });
 
 const stagingEnv = { REHEARSAL: 'true', STAGING_RELEASE: 'vmap-feed-rehearsal' };
+
+test('rehearsal (messages): a failure on the staging path names the staging release and never says live or held', { skip: !bash }, () => {
+  const feedBad = publishFixture();
+  writeFileSync(join(feedBad.dir, 'last-seq.txt'), '100\n');
+  assert.equal(runPublishStep(feedBad, 'Sign with the release key and verify', stagingEnv).status, 0);
+  const bad = runPublishStep(feedBad, 'Upload to the staging prerelease', { ...stagingEnv, TAMPER: 'feed' });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stdout, /::error::the feed \(seq 200\) is on the staging release vmap-feed-rehearsal but this run did not confirm it, and the history entry is not written$/m);
+  const histFail = publishFixture();
+  writeFileSync(join(histFail.dir, 'last-seq.txt'), '100\n');
+  assert.equal(runPublishStep(histFail, 'Sign with the release key and verify', stagingEnv).status, 0);
+  const h = runPublishStep(histFail, 'Upload to the staging prerelease', { ...stagingEnv, UPLOAD_FAIL: 'vmap-history' });
+  assert.equal(h.status, 2);
+  assert.match(h.stdout, /::error::the feed \(seq 200\) is on the staging release vmap-feed-rehearsal but vmap-history\.json did not upload: the one command/);
+  const errors = (bad.stdout + h.stdout).split('\n').filter((l) => l.startsWith('::error::'));
+  assert.ok(errors.length >= 2 && errors.every((l) => !/\blive\b|re-run is held|supersede/.test(l)), errors.join('\n'));
+});
 // One CL published twice through the routine's entry phase, to the live target and to the rehearsal target.
 for (const [label, name, env] of [['live', 'Publish the feed to the live release', {}], ['rehearsal', 'Upload to the staging prerelease', stagingEnv]]) {
   test(`history (${label} target): re-publishing a CL replaces its entry with the newest seq and keeps supersedes on that one entry`, { skip: !bash }, () => {

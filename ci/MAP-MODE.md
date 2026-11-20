@@ -1237,8 +1237,9 @@ resets the count of rejected attempts for that CL only. It lifts no other check.
 - Only a hand dispatch sets it: the schedule never does, and it is refused with a rehearsal. The actor rule is the
   supersede rule: admin or write permission, read from the API, and a permission that cannot be read refuses it.
 - The reset is a record in the history (who started it, the run, how many attempts it cleared) and a line in the alert
-  issue. The chain uses the reset for its own decision; the publish job writes it to the live history when that run
-  publishes. A run that does not publish leaves the live history as it was.
+  issue. The chain applies the reset to its own decision; the live history records it only if that run publishes
+  (the publish job writes it). A run that does not publish, such as a CL on the auto-fix path, leaves the live history
+  as it was: the count stands there until a run that publishes, and the alert line says so.
 - Agents never dispatch it except on the owner's OK.
 
 A manual `release.yml` dispatch (a loader release, not a version object map publish) stays outside the pipeline's

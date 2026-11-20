@@ -45,7 +45,7 @@ if [ "$phase" = entry ]; then
 fi
 
 [ -n "$target" ] && { [ "$kind" = live ] || [ "$kind" = staging ]; } || { echo "usage: vmap-publish.sh entry | feed|verify|history <target release> live|staging" >&2; exit 2; }
-if [ "$kind" = live ]; then place="the live release"; else place="the staging release $target"; fi
+if [ "$kind" = live ]; then place="the live release"; held="; a re-run is held and a supersede is refused until the history holds its entry"; else place="the staging release $target"; held=""; fi
 
 case "$phase" in
   feed)
@@ -82,7 +82,7 @@ case "$phase" in
     ;;
   verify)
     # From here the feed is up: any stop below leaves it there with no history entry.
-    trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "::error::the feed (seq $CHAIN_SEQ) is on $place but this run did not confirm it, and the history entry is not written: a re-run is held and a supersede is refused until it is"; { echo "### The feed is up and the history entry is not written"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi' EXIT
+    trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "::error::the feed (seq $CHAIN_SEQ) is on $place but this run did not confirm it, and the history entry is not written$held"; { echo "### The feed is up and the history entry is not written"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi' EXIT
     # Download the feed as the loader will, and check it against what was signed here.
     gh release download "$target" --pattern version-map-client.v1.txt --dir published --clobber
     out="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
@@ -101,13 +101,13 @@ case "$phase" in
       echo "the history upload failed (try $try of 3)"
     done
     if [ "$up" -ne 0 ]; then
-      echo "::error::the feed (seq $CHAIN_SEQ) is live but vmap-history.json did not upload; a re-run is held and a supersede is refused until the history holds its entry: the one command that writes it is in the job summary and below"
+      echo "::error::the feed (seq $CHAIN_SEQ) is on $place but vmap-history.json did not upload$held: the one command that writes it is in the job summary and below"
       exit 2
     fi
     gh release download "$target" --pattern vmap-history.json --dir published --clobber
     want="$(sha256sum vmap-history.json | cut -d' ' -f1)"
     got="$(sha256sum published/vmap-history.json | cut -d' ' -f1)"
-    [ "$want" = "$got" ] || { echo "::error::the published vmap-history.json has sha256 $got, not the $want that was uploaded; the feed (seq $CHAIN_SEQ) is live and the history is not confirmed: the one command that writes it is in the job summary and below"; exit 2; }
+    [ "$want" = "$got" ] || { echo "::error::the published vmap-history.json has sha256 $got, not the $want that was uploaded; the feed (seq $CHAIN_SEQ) is on $place and the history is not confirmed: the one command that writes it is in the job summary and below"; exit 2; }
     echo "vmap-history.json sha256 $got"
     feedsum="$(sha256sum published/version-map-client.v1.txt | cut -d' ' -f1)"
     if [ "$kind" = live ]; then

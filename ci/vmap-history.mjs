@@ -202,10 +202,11 @@ function parseArgs(argv) {
   return a;
 }
 
-const readOrThrow = (file) => {
+// collapse: the writer that records a release folds a repeat to the newest seq; the others read strictly.
+const readOrThrow = (file, collapse) => {
   const loaded = loadHistory(file);
   if (!loaded.ok) throw new Error(loaded.error);
-  const got = readHistory(loaded.value, { collapse: true });
+  const got = readHistory(loaded.value, { collapse });
   if (!got.ok) throw new Error(got.error);
   return got.history;
 };
@@ -226,10 +227,12 @@ export function main(argv) {
       return 0;
     }
     if (!a.history || !a.out || !isCl(a.cl ?? '')) throw new Error(usage);
-    const history = readOrThrow(a.history);
+    const history = readOrThrow(a.history, cmd === 'record');
     if (cmd === 'record') {
       if (!a.repo || !/^[1-9][0-9]{0,15}$/.test(a.seq ?? '')) throw new Error(usage);
       if (a.supersedes !== undefined && !/^[1-9][0-9]{0,15}$/.test(a.supersedes)) throw new Error(usage);
+      const stored = history.releases[historyKey(a.repo, a.cl)];
+      if (stored && Number(a.seq) < stored.seq) throw new Error(`history: ${a.repo} CL-${a.cl} is already recorded at seq ${stored.seq}, above the new seq ${a.seq}; not written`);
       const next = upsertRelease(history, { repo: a.repo, cl: a.cl, at: a.at ?? new Date().toISOString(), seq: Number(a.seq), ...(a.supersedes ? { supersedes: Number(a.supersedes) } : {}) });
       writeFileSync(a.out, serializeHistory(next));
       process.stdout.write(`recorded ${a.repo} CL-${a.cl} at seq ${a.seq}; ${Object.keys(next.releases).length} release(s) in the history\n`);
@@ -239,7 +242,7 @@ export function main(argv) {
       if (!a.actor || !a.run) throw new Error(usage);
       const { history: next, cleared } = retryCl(history, a.cl, { actor: a.actor, run: a.run, at: new Date().toISOString() });
       writeFileSync(a.out, serializeHistory(next));
-      const line = `**attempts reset for CL-${a.cl}** (retry_cl, started by ${a.actor}): ${cleared} counted attempt(s) cleared; run ${a.run}. Only CL-${a.cl} was reset`;
+      const line = `**attempts reset for CL-${a.cl}** (retry_cl, started by ${a.actor}): ${cleared} counted attempt(s) cleared for this run's decision; run ${a.run}. The live history records the reset only if this run publishes. Only CL-${a.cl} was reset`;
       if (a.note) writeFileSync(a.note, `${JSON.stringify({ alerts: [`- ${line}`] }, null, 2)}\n`);
       process.stdout.write(`${line.replace(/\*\*/g, '')}\n`);
       return 0;

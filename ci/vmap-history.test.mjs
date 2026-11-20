@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -172,6 +172,32 @@ test('the command line refuses what it cannot read, and a history with a repeate
   assert.equal(r.status, 2);
 });
 
+test('retry reads strictly: an old array history that lists one version twice is refused, not folded', () => {
+  const d = dir();
+  const file = join(d, 'h.json');
+  writeFileSync(file, JSON.stringify({ releases: [entry('130045', 1795109176), entry('130045', 1795109742)], attempts: { 130045: 2 } }));
+  const r = cli(['retry', '--history', file, '--cl', '130045', '--actor', 'owner', '--run', '9', '--out', join(d, 'o.json')]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /CL-130045 is listed twice/);
+  assert.ok(!existsSync(join(d, 'o.json')), 'nothing is written');
+  // record still folds the same file (the repair path)
+  const ok = cli(['record', '--history', file, '--repo', 'ModLoader', '--cl', '130046', '--seq', '1795200000', '--out', join(d, 'o.json')]);
+  assert.equal(ok.status, 0, ok.stderr);
+});
+
+test('record refuses a seq below the one already stored for that version, and writes nothing', () => {
+  const d = dir();
+  const file = join(d, 'h.json');
+  writeFileSync(file, JSON.stringify({ releases: { 'ModLoader:130045': entry('130045', 1795109742) }, attempts: {} }));
+  let r = cli(['record', '--history', file, '--repo', 'ModLoader', '--cl', '130045', '--seq', '1795109176', '--out', join(d, 'o.json')]);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /already recorded at seq 1795109742, above the new seq 1795109176/);
+  assert.ok(!existsSync(join(d, 'o.json')));
+  // the same seq or a higher one is written
+  r = cli(['record', '--history', file, '--repo', 'ModLoader', '--cl', '130045', '--seq', '1795109742', '--out', join(d, 'o.json')]);
+  assert.equal(r.status, 0, r.stderr);
+});
+
 test('the retry command resets one CL, writes the line for the alert issue and leaves the other CLs alone', () => {
   const d = dir();
   const file = join(d, 'h.json');
@@ -183,7 +209,7 @@ test('the retry command resets one CL, writes the line for the alert issue and l
   assert.equal(countedAttempts(h, '128000'), 2);
   const note = JSON.parse(readFileSync(join(d, 'note.json'), 'utf8'));
   assert.equal(note.alerts.length, 1);
-  assert.match(note.alerts[0], /attempts reset for CL-127999.*started by owner.*2 counted attempt\(s\) cleared.*run 55.*Only CL-127999 was reset/);
+  assert.match(note.alerts[0], /attempts reset for CL-127999.*started by owner.*2 counted attempt\(s\) cleared for this run's decision.*run 55.*records the reset only if this run publishes.*Only CL-127999 was reset/);
   // no CL named, or one that is not a CL: refused, the file is not written
   assert.equal(cli(['retry', '--history', file, '--actor', 'owner', '--run', '55', '--out', file]).status, 2);
   assert.equal(cli(['retry', '--history', file, '--cl', '0', '--actor', 'owner', '--run', '55', '--out', file]).status, 2);
