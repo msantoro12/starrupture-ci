@@ -1425,7 +1425,7 @@ const PIN_DIGEST = MINIMAP.Pin.Digest;
 const MINIMAP_REPO = 'LetMeInside/StarRupture-Plugin-MiniMap';
 // latest: the tag the API names as MiniMap's newest release. pinDigest: the digest its assets carry at the pinned tag.
 // pinAssets: 'client' (the client DLL beside a zip), 'zip' (no DLL) or 'two' (two client DLLs).
-const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.3.0', pinDigest = PIN_DIGEST, pinAssets = 'client' }) => {
+const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = PIN_DIGEST, pinAssets = 'client' }) => {
   const dir = mkdtempSync(join(tmpdir(), 'plan-'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   writeFileSync(join(dir, 'tool', 'ci', 'plugin-names.json'), JSON.stringify(names));
@@ -1478,7 +1478,7 @@ test('B1 plan: a plugin of another author is the reviewed release (tag and diges
   const p = planRun({ plugins: PLAN_PLUGINS });
   assert.equal(p.r.status, 0, p.text);
   const m = planEntry(p, 'MiniMap');
-  assert.equal(m.release, PIN_TAG, 'scanned at the Pin, not at the newest release (v1.3.0)');
+  assert.equal(m.release, PIN_TAG, 'scanned at the Pin, not at the newest release (v1.4.0)');
   assert.equal(m.ref, PIN_TAG);
   assert.equal(m.source, 'release');
   assert.equal(m.error, '');
@@ -1486,7 +1486,7 @@ test('B1 plan: a plugin of another author is the reviewed release (tag and diges
   assert.equal(m.asset, `https://github.com/${MINIMAP_REPO}/releases/download/${PIN_TAG}/MiniMap-Client.dll`);
   assert.equal(m.assetSha256, PIN_DIGEST.slice('sha256:'.length), 'the reviewed digest is the one the download is compared with');
   assert.ok(p.uris.includes(`https://api.github.com/repos/${MINIMAP_REPO}/releases/tags/${PIN_TAG}`), p.uris.join('\n'));
-  assert.equal(p.outputs.review, 'MiniMap=v1.3.0');
+  assert.equal(p.outputs.review, 'MiniMap=v1.4.0');
   // The plugins of the trusted owners still follow their latest release.
   const w = planEntry(p, 'WAILA');
   assert.equal(w.release, 'v2.0.0');

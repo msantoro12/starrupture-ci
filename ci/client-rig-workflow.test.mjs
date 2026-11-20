@@ -407,8 +407,8 @@ test('the rig is in the node test line', () => {
 
 const names = JSON.parse(read('ci', 'plugin-names.json'));
 // Leg C2: MiniMap is another author's plugin, so the rig runs it only at this reviewed release.
-const PIN_TAG = 'v1.2.0';
-const PIN_HEX = '7d1ec9264b763e13519fa211c9409ff9655c8fd40357cdf285e2a7614e0d43e1';
+const PIN_TAG = 'v1.3.0';
+const PIN_HEX = '18aa40ab4ed16f81636dab791678bf7e626517104743dcf0e903ce3e382fa85a';
 const PID_TAG = 'v1.3.1';
 const PID_HEX = 'f916120794660282f275a512aaea3f030998ddf7f8d4234d67482f6a3ced0126';
 const THIRD_PARTY = ['MiniMap', 'PersistentIdFix'];
@@ -417,12 +417,12 @@ test('rig set: eleven plugins, MiniMap and PersistentIdFix from their author wit
   assert.equal(names.length, 11);
   assert.deepEqual(names.map((p) => p.Name).sort(), ['BetterCheats', 'BetterDrone', 'CameraControls', 'Codex', 'Compass', 'MiniMap', 'PersistentIdFix', 'ProductionViewer', 'RuptureTimer', 'WAILA', 'WaveOptimiser']);
   const m = names.find((p) => p.Name === 'MiniMap');
-  assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'MiniMap: atlas texture interface initialization failed', Pin: { Tag: PIN_TAG, Digest: `sha256:${PIN_HEX}` } });
+  assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true, LoggedVersion: '1.2.0', LoggedVersionNote: 'The v1.3.0 DLL still logs 1.2.0; drop LoggedVersion and this note when MiniMap logs its real version.', UiOffInitFailure: 'MiniMap: atlas texture interface initialization failed', Pin: { Tag: PIN_TAG, Digest: `sha256:${PIN_HEX}` } });
   const pid = names.find((p) => p.Name === 'PersistentIdFix');
   assert.deepEqual(pid, { Name: 'PersistentIdFix', Repo: 'StarRupture-Plugin-PersistentIdFix', LogName: 'PersistentIdFix', Asset: 'PersistentIdFix', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'PersistentIdFix: failed to initialize statistics UI', Pin: { Tag: PID_TAG, Digest: `sha256:${PID_HEX}` } });
   // The other nine keep the rig's owner and Latest: no owner, no pin.
   for (const p of names.filter((x) => !THIRD_PARTY.includes(x.Name))) {
-    assert.ok(!('Owner' in p) && !('StripV' in p) && !('Pin' in p) && !('UiOffInitFailure' in p), `${p.Name}: unchanged`);
+    assert.ok(!('Owner' in p) && !('StripV' in p) && !('LoggedVersion' in p) && !('Pin' in p) && !('UiOffInitFailure' in p), `${p.Name}: unchanged`);
   }
   // Every plugin whose owner is neither the rig's nor the loader's author has a pin.
   for (const p of names.filter((x) => x.Owner && !['msantoro12', 'AlienXAXS'].includes(x.Owner))) assert.ok(p.Pin?.Tag && /^sha256:[0-9a-f]{64}$/.test(p.Pin.Digest), `${p.Name} is pinned`);
@@ -514,7 +514,7 @@ test('rig set: Resolve gives eleven plugins, MiniMap and PersistentIdFix from Le
   assert.equal(out.plan.downloads.find((d) => d.repo === 'StarRupture-Plugin-PersistentIdFix').digest, PID_HEX);
   const m = out.plan.plugins.find((p) => p.name === 'MiniMap');
   assert.equal(m.tag, PIN_TAG);
-  assert.equal(m.expect, '1.2.0', 'the log prints 1.2.0 for the tag v1.2.0');
+  assert.equal(m.expect, '1.2.0', 'the v1.3.0 DLL logs 1.2.0 (LoggedVersion), not the tag minus v');
   assert.equal(m.logName, 'MiniMap');
   assert.equal(m.dll, 'MiniMap.dll');
   assert.equal(m.expectRefused, false, 'refused on public is a fail');
@@ -538,8 +538,35 @@ test('rig set: Resolve gives eleven plugins, MiniMap and PersistentIdFix from Le
   assert.match(out.outputs, /^review=$/m);
 });
 
+test('rig set: LoggedVersion, when a plugin names one, is the version the log must show; without it the tag minus v (StripV) or the tag stands', (t) => {
+  const edit = (fn) => names.map((p) => fn(p));
+  const find = (out, n) => out.plan.plugins.find((p) => p.name === n);
+  // (a) The override is used when present, on a plugin that has StripV and on one that has not.
+  const withOverride = resolveWithMock('-Branch public', { plugins: edit((p) => (p.Name === 'PersistentIdFix' ? { ...p, LoggedVersion: '1.3.0' } : p.Name === 'Codex' ? { ...p, LoggedVersion: '9.9.9' } : p)) });
+  if (!withOverride) return t.skip('no PowerShell on this machine');
+  assert.equal(withOverride.r.status, 0, withOverride.text);
+  assert.equal(find(withOverride, 'PersistentIdFix').expect, '1.3.0', 'LoggedVersion beats the tag minus v');
+  assert.equal(find(withOverride, 'PersistentIdFix').tag, PID_TAG, 'the tag fetched is unchanged');
+  assert.equal(find(withOverride, 'Codex').expect, '9.9.9', 'LoggedVersion beats the plain tag');
+  // The rig's own expect input still outranks it.
+  const input = resolveWithMock("-Branch public -Expect 'Codex=v7.7.7'", { plugins: edit((p) => (p.Name === 'Codex' ? { ...p, LoggedVersion: '9.9.9' } : p)) });
+  assert.equal(input.r.status, 0, input.text);
+  assert.equal(find(input, 'Codex').expect, 'v7.7.7');
+  // (b) Without LoggedVersion nothing changes: StripV drops the v, no StripV keeps the tag.
+  const without = resolveWithMock('-Branch public', { plugins: edit(({ LoggedVersion, LoggedVersionNote, ...rest }) => rest) });
+  assert.equal(without.r.status, 0, without.text);
+  assert.equal(find(without, 'MiniMap').expect, '1.3.0');
+  assert.equal(find(without, 'PersistentIdFix').expect, '1.3.1');
+  assert.equal(find(without, 'Codex').expect, 'v1.0.0');
+  // (c) The repository's names file: MiniMap's pinned v1.3.0 DLL logs 1.2.0, so that is the one string expected.
+  const real = resolveWithMock('-Branch public');
+  assert.equal(find(real, 'MiniMap').tag, PIN_TAG);
+  assert.equal(find(real, 'MiniMap').expect, '1.2.0');
+  assert.deepEqual(real.plan.plugins.filter((p) => p.name !== 'MiniMap' && names.find((n) => n.Name === p.name).LoggedVersion), [], 'only MiniMap has an override');
+});
+
 test('rig set: a newer MiniMap release is reported for review and never run, and the other plugins are unaffected', (t) => {
-  const out = resolveWithMock('-Branch public', { minimapLatest: 'v1.3.0', minimapDigest: PIN_HEX });
+  const out = resolveWithMock('-Branch public', { minimapLatest: 'v1.4.0', minimapDigest: PIN_HEX });
   if (!out) return t.skip('no PowerShell on this machine');
   assert.equal(out.r.status, 0, out.text);
   // Still the pinned release: same tag, same digest, same asset, fetched by its tag.
@@ -549,9 +576,9 @@ test('rig set: a newer MiniMap release is reported for review and never run, and
   assert.equal(out.plan.downloads.find((d) => d.repo === 'StarRupture-Plugin-MiniMap').digest, PIN_HEX);
   assert.ok(out.uris.includes(MINIMAP_PIN_URL) && out.uris.includes(MINIMAP_LATEST_URL), out.uris.join('\n'));
   // The newer tag is the review item: in the plan, the step output and a loud workflow line.
-  assert.deepEqual(out.plan.review, ['MiniMap=v1.3.0']);
-  assert.match(out.outputs, /^review=MiniMap=v1\.3\.0$/m);
-  assert.match(out.text, /::warning title=New release waiting for review::new MiniMap release v1\.3\.0 waiting for review/);
+  assert.deepEqual(out.plan.review, ['MiniMap=v1.4.0']);
+  assert.match(out.outputs, /^review=MiniMap=v1.4.0$/m);
+  assert.match(out.text, /::warning title=New release waiting for review::new MiniMap release v1.4.0 waiting for review/);
   // The run is not blocked and the cache key does not move with the unreviewed release.
   const same = resolveWithMock('-Branch public');
   assert.equal(out.plan.cacheKey, same.plan.cacheKey);
@@ -562,7 +589,7 @@ test('rig set: the pinned tag with another digest fails, and says why', (t) => {
   const out = resolveWithMock('-Branch public', { minimapDigest: 'b'.repeat(64) });
   if (!out) return t.skip('no PowerShell on this machine');
   assert.notEqual(out.r.status, 0, 'a swapped asset is a failed run, not a warning');
-  assert.match(out.text, /MiniMap v1\.2\.0: the release's MiniMap-Client\.dll has the digest sha256:b{64}, not the reviewed sha256:7d1ec9264b763e13519fa211c9409ff9655c8fd40357cdf285e2a7614e0d43e1/);
+  assert.match(out.text, /MiniMap v1.3.0: the release's MiniMap-Client\.dll has the digest sha256:b{64}, not the reviewed sha256:18aa40ab4ed16f81636dab791678bf7e626517104743dcf0e903ce3e382fa85a/);
   assert.equal(out.plan, null, 'no plan is written, so nothing runs');
 });
 
@@ -573,9 +600,9 @@ test('rig set: a plugin of another author without a reviewed pin, or with a malf
   assert.notEqual(without.r.status, 0);
   assert.match(without.text, /MiniMap is another author's plugin \(LetMeInside\), and the rig runs it only at a reviewed release: add a Pin/);
   assert.ok(!without.uris.some((u) => /StarRupture-Plugin-MiniMap/.test(u)), 'refused before any release is read');
-  const badTag = resolveWithMock('-Branch public', { plugins: withMiniMap((p) => ({ ...p, Pin: { ...p.Pin, Tag: 'v1.2.0; calc' } })) });
+  const badTag = resolveWithMock('-Branch public', { plugins: withMiniMap((p) => ({ ...p, Pin: { ...p.Pin, Tag: 'v1.3.0; calc' } })) });
   assert.notEqual(badTag.r.status, 0);
-  assert.match(badTag.text, /the Pin tag 'v1\.2\.0; calc' is not a release tag/);
+  assert.match(badTag.text, /the Pin tag 'v1.3.0; calc' is not a release tag/);
   for (const digest of ['sha256:abc', `sha256:${PIN_HEX.toUpperCase()}`, PIN_HEX, 'sha1:' + PIN_HEX]) {
     const bad = resolveWithMock('-Branch public', { plugins: withMiniMap((p) => ({ ...p, Pin: { ...p.Pin, Digest: digest } })) });
     assert.notEqual(bad.r.status, 0, digest);
@@ -597,7 +624,7 @@ test('rig set: expect_refused MiniMap is accepted for the branch that runs CL-12
   // Another tag for a third-party plugin is an error, however it is asked for.
   const other = resolveWithMock("-Branch public -Tags 'MiniMap=v1.1.0'");
   assert.notEqual(other.r.status, 0);
-  assert.match(other.text, /tags names MiniMap=v1\.1\.0, but MiniMap is another author's plugin: the rig runs only its reviewed release v1\.2\.0/);
+  assert.match(other.text, /tags names MiniMap=v1\.1\.0, but MiniMap is another author's plugin: the rig runs only its reviewed release v1.3.0/);
   assert.ok(!other.uris.some((u) => /MiniMap\/releases\/tags\/v1\.1\.0/.test(u)), 'the unreviewed tag is never fetched');
   // A tag for a plugin of the rig's owners still works.
   const codex = resolveWithMock("-Branch public -Tags 'Codex=v0.9.0'");
