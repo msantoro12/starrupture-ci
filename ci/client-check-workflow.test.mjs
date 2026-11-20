@@ -890,12 +890,19 @@ const HOLD_ONLY_AUTOPILOT = { decision: 'HOLD', cl: 129402, candidate: true, wou
 // A fake `gh`: logs every call, answers from files in its own directory. Nothing leaves the temp directory.
 const FAKE_GH = `#!/bin/bash
 printf '%s\\n' "$*" >> "$FAKE_DIR/calls.log"
+[ -n "$FAKE_FAIL" ] && case "$*" in *"$FAKE_FAIL"*) exit 1 ;; esac
 reply() { [ -f "$FAKE_DIR/$1" ] && cat "$FAKE_DIR/$1"; return 0; }
 case "$1 $2" in
   "pr list") reply pr.json ;;
   "pr view") case "$*" in *title*) echo "Game build 26461198 on public_test_branch" ;; *) reply pr-chain-labels.txt ;; esac ;;
-  "issue list") reply issue-number.txt ;;
-  "api repos/"*) case "$2" in */comments) reply comment-times.txt ;; *) reply issue-body-time.txt ;; esac ;;
+  "issue list") if [ -f "$FAKE_DIR/issue-number.txt" ]; then
+      # The stale-PR step asks for "<number> <state>" lines (--json ...,state); the alert job asks for the number.
+      case "$*" in *"number,title,state"*) st=OPEN; [ -f "$FAKE_DIR/issue-closed.txt" ] && st=CLOSED
+        # A closed issue is listed only when the lookup says --state all.
+        if [ "$st" = OPEN ]; then sed "s/$/ OPEN/" "$FAKE_DIR/issue-number.txt"; else case "$*" in *"--state all"*) sed "s/$/ CLOSED/" "$FAKE_DIR/issue-number.txt" ;; esac; fi ;;
+        *) reply issue-number.txt ;; esac
+    fi ;;
+  "api repos/"*) case "$*" in *'.[].body'*) reply comment-bodies.txt ;; *'.body // '*) reply issue-body.txt ;; *) case "$2" in */comments) reply comment-times.txt ;; esac ;; esac ;;
 esac
 exit 0
 `;
@@ -1121,16 +1128,20 @@ const step = (j, name) => {
 
 const NOW = Date.parse('2026-11-07T20:00:00Z') / 1000;
 const hoursAgo = (h) => new Date((NOW - h * 3600) * 1000).toISOString().replace('.000Z', 'Z');
-const staleRun = ({ ageH, labels = [], matrix = '[{"branch":"public","buildid":"1"},{"branch":"public_test_branch","buildid":"2"}]', issue, issueBodyTime, commentTimes, noPr = false }) => {
+// ageH: hours since the PR head's last commit (the last refresh); createdH: hours since the PR opened (default: the same).
+// closed: the issue is closed (only a lookup with --state all sees it); fail: a gh call whose arguments contain this text exits 1.
+const staleRun = ({ ageH, createdH = ageH, labels = [], matrix = '[{"branch":"public","buildid":"1"},{"branch":"public_test_branch","buildid":"2"}]', issue, issueBody, commentBodies, noPr = false, closed = false, fail = '', noCommits = false }) => {
   const dir = mkdtempSync(join(tmpdir(), 'stale-'));
-  const pr = { number: 26, headRefName: 'game-update/client-public_test_branch-26461198', title: 'Game build 26461198 on public_test_branch', createdAt: hoursAgo(ageH), labels: ['game-update', ...labels].map((name) => ({ name })) };
+  const pr = { number: 26, headRefName: 'game-update/client-public_test_branch-26461198', title: 'Game build 26461198 on public_test_branch', createdAt: hoursAgo(createdH), labels: ['game-update', ...labels].map((name) => ({ name })) };
+  if (!noCommits) pr.commits = [{ committedDate: hoursAgo(createdH) }, { committedDate: hoursAgo(ageH) }];
   const files = {};
   if (!noPr) files['pr.json'] = JSON.stringify(pr);
   if (issue) files['issue-number.txt'] = `${issue}\n`;
-  if (issueBodyTime) files['issue-body-time.txt'] = `${issueBodyTime}\n`;
-  if (commentTimes) files['comment-times.txt'] = commentTimes.join('\n') + '\n';
+  if (closed) files['issue-closed.txt'] = '\n';
+  if (issueBody) files['issue-body.txt'] = `${issueBody}\n`;
+  if (commentBodies) files['comment-bodies.txt'] = commentBodies.join('\n') + '\n';
   const script = runOf(poll, 'Alert on a stale game-update PR');
-  const r = runBash(script, { cwd: dir, env: { MATRIX: matrix, STALE_HOURS: '6', OWNER: 'msantoro12', GH_REPO: 'o/r', NOW_EPOCH: String(NOW), GITHUB_SERVER_URL: 'https://github.com' }, files });
+  const r = runBash(script, { cwd: dir, env: { MATRIX: matrix, STALE_HOURS: '6', OWNER: 'msantoro12', GH_REPO: 'o/r', NOW_EPOCH: String(NOW), GITHUB_SERVER_URL: 'https://github.com', FAKE_FAIL: fail }, files });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   const c = calls(dir);
   const body = existsSync(join(dir, 'stale.md')) ? readFileSync(join(dir, 'stale.md'), 'utf8') : null;
@@ -1161,7 +1172,7 @@ test('stale PR (leg C1): a game-update PR open over 6 hours without the chain-pa
   assert.ok(r.creates.includes('issue create --title SR map mode: public needs attention --body-file ' + r.calls.find((l) => l.startsWith('issue create')).split('--body-file ')[1].split(' --label')[0] + ' --label pipeline-alert --assignee msantoro12'), r.creates.join('\n'));
   assert.ok(r.creates.some((l) => l.startsWith('issue create --title SR map mode: public_test_branch needs attention')));
   assert.ok(r.calls.some((l) => l.startsWith('label create pipeline-alert ')));
-  assert.match(r.body, /^<!-- sr-stale-pr:26 -->\n@msantoro12 game-update PR #26 \(Game build 26461198 on public_test_branch\) has been open 7 hours and the client chain has not passed for `public_test_branch`: the PR has no `chain-passed-public_test_branch` label\./);
+  assert.match(r.body, /^<!-- sr-stale-pr:26:2 -->\n@msantoro12 game-update PR #26 \(Game build 26461198 on public_test_branch\) has held its current build for 7 hours and the client chain has not passed for `public_test_branch`: the PR has no `chain-passed-public_test_branch` label\./);
   assert.match(r.body, /gh workflow run sr-watch\.yml --ref main -f force=true/);
 });
 
@@ -1182,26 +1193,190 @@ test('stale PR (leg C1): only the branch that has not passed is raised', { skip:
   assert.match(r.creates[0], /SR map mode: public_test_branch needs attention/);
 });
 
-test('stale PR (leg C1): at most once per 6 hours, by the marker in the issue body or a comment', { skip: !bash }, () => {
-  // Raised 2 hours ago (a comment): nothing now.
-  const recent = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(20), hoursAgo(2)] });
-  assert.equal(recent.comments.length, 0, recent.calls.join('\n'));
-  assert.equal(recent.creates.length, 0);
-  assert.match(recent.out, /Already raised for public/);
-  // Raised 7 hours ago: a new comment on the same issue, labelled and assigned again.
-  const old = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(7)] });
-  assert.equal(old.comments.length, 1);
-  assert.match(old.comments[0], /^issue comment 40 --body-file /);
-  assert.deepEqual(old.edits, ['issue edit 40 --add-label pipeline-alert --add-assignee msantoro12']);
-  assert.equal(old.creates.length, 0);
-  // The issue this step opened (marker in the body) counts as the last raise.
-  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, issueBodyTime: hoursAgo(1) }).comments.length, 0);
-  // An open issue with no marker anywhere (the alert job's own) gets a comment right away.
-  const plain = staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40 });
-  assert.equal(plain.comments.length, 1);
-  // Just inside and just outside the window.
-  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(5.9)] }).comments.length, 0);
-  assert.equal(staleRun({ ageH: 30, matrix: '[{"branch":"public","buildid":"1"}]', issue: 40, commentTimes: [hoursAgo(6.1)] }).comments.length, 1);
+test('stale PR: once per PR and build, by the marker line in the issue body or a comment', { skip: !bash }, () => {
+  const one = '[{"branch":"public","buildid":"1"}]';
+  const marker = (pr, id) => `<!-- sr-stale-pr:${pr}:${id} -->`;
+  // The marker for this PR and build in a comment, however old: nothing now, and not again later.
+  const seen = staleRun({ ageH: 30, matrix: one, issue: 40, commentBodies: ['first', marker(26, 1) + '\n@msantoro12 game-update PR #26'] });
+  assert.equal(seen.comments.length, 0, seen.calls.join('\n'));
+  assert.equal(seen.creates.length, 0);
+  assert.match(seen.out, /Already raised for public \(PR #26, build 1\)/);
+  assert.equal(staleRun({ ageH: 300, matrix: one, issue: 40, commentBodies: [marker(26, 1)] }).comments.length, 0);
+  // The issue this step opened (marker in the body) counts too.
+  assert.equal(staleRun({ ageH: 30, matrix: one, issue: 40, issueBody: marker(26, 1) + '\n@msantoro12' }).comments.length, 0);
+  // A marker for another build of the same PR, or for another PR, does not count: one new comment.
+  const newBuild = staleRun({ ageH: 30, matrix: one, issue: 40, commentBodies: [marker(26, 0)] });
+  assert.equal(newBuild.comments.length, 1);
+  assert.match(newBuild.comments[0], /^issue comment 40 --body-file /);
+  assert.deepEqual(newBuild.edits, ['issue edit 40 --add-label pipeline-alert --add-assignee msantoro12']);
+  assert.equal(newBuild.creates.length, 0);
+  assert.match(newBuild.body, /^<!-- sr-stale-pr:26:1 -->\n/);
+  assert.equal(staleRun({ ageH: 30, matrix: one, issue: 40, commentBodies: [marker(25, 1)] }).comments.length, 1);
+  // An open issue with no marker anywhere (the alert job's own) gets one comment right away.
+  assert.equal(staleRun({ ageH: 30, matrix: one, issue: 40 }).comments.length, 1);
+  // Repeated polls: with that comment in place, the next poll adds none.
+  const first = staleRun({ ageH: 30, matrix: one, issue: 40 });
+  const marked = first.body.split('\n')[0];
+  assert.equal(staleRun({ ageH: 31, matrix: one, issue: 40, commentBodies: ['older', marked] }).comments.length, 0);
+});
+
+test('stale PR: a closed alert issue that holds the marker is not raised again, and the lookup covers closed issues', { skip: !bash }, () => {
+  const one = '[{"branch":"public","buildid":"1"}]';
+  const marker = '<!-- sr-stale-pr:26:1 -->';
+  const r = staleRun({ ageH: 30, matrix: one, issue: 40, closed: true, commentBodies: [marker + '\n@msantoro12'] });
+  assert.equal(r.creates.length, 0, r.calls.join('\n'));
+  assert.equal(r.comments.length, 0);
+  assert.match(r.out, /Already raised for public \(PR #26, build 1\)/);
+  assert.ok(r.calls.some((l) => /^issue list --state all /.test(l)), r.calls.join('\n'));
+  // A closed issue without the marker (an older build) is not reopened: a new issue carries the alert.
+  const other = staleRun({ ageH: 30, matrix: one, issue: 40, closed: true, commentBodies: ['<!-- sr-stale-pr:26:0 -->'] });
+  assert.equal(other.comments.length, 0);
+  assert.equal(other.creates.length, 1);
+});
+
+test('stale PR: when the issues cannot be read, nothing is posted and the step passes with a warning', { skip: !bash }, () => {
+  const one = '[{"branch":"public","buildid":"1"}]';
+  const list = staleRun({ ageH: 30, matrix: one, issue: 40, fail: 'issue list' });
+  assert.equal(list.creates.length + list.comments.length, 0, list.calls.join('\n'));
+  assert.match(list.out, /::warning::Could not list the 'SR map mode: public needs attention' issues; nothing posted for PR #26/);
+  const api = staleRun({ ageH: 30, matrix: one, issue: 40, fail: '/comments' });
+  assert.equal(api.creates.length + api.comments.length, 0, api.calls.join('\n'));
+  assert.match(api.out, /::warning::Could not read issue #40; nothing posted for PR #26/);
+});
+
+test('stale PR: the age counts from the last refresh (the head commit), not from when the PR opened', { skip: !bash }, () => {
+  // Opened 100 hours ago, refreshed with a new build 2 hours ago: the chain is still running, no alert.
+  const young = staleRun({ ageH: 2, createdH: 100 });
+  assert.equal(young.creates.length + young.comments.length, 0, young.calls.join('\n'));
+  // Refreshed 7 hours ago: alert, counted from the refresh.
+  const old = staleRun({ ageH: 7, createdH: 100 });
+  assert.equal(old.creates.length, 2);
+  assert.match(old.body, /has held its current build for 7 hours/);
+  // Without commit dates in the answer, the opening time stands in.
+  assert.equal(staleRun({ ageH: 30, noCommits: true }).creates.length, 2);
+  assert.equal(staleRun({ ageH: 3, noCommits: true }).creates.length, 0);
+});
+
+// ---- sr-watch: an open update PR that already holds the polled build ids stops repeats
+
+// Runs the "Open or update the game-update PR" step in a real git clone whose origin is a local bare repo.
+// main holds baseline state; the poll left polled state uncommitted in the workspace (as poll-steam.mjs does);
+// the PR branch holds prHeadState. prNumber null = no open update PR.
+const gitIn = (cwd, ...args) => {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
+};
+const stateFile = (client) => JSON.stringify({ schema: 1, apps: { 1631270: { name: 'StarRupture', branches: Object.fromEntries(Object.entries(client).map(([b, [id, t]]) => [b, { buildid: String(id), timeupdated: t }])) } } }, null, 2) + '\n';
+const prStepRun = ({ baseline, polled, prHeadState, prBranch = 'game-update/client-public_test_branch-26461198', want = 'game-update/client-public-26750759', force = false, noPr = false, missingBranch = false }) => {
+  const root = mkdtempSync(join(tmpdir(), 'prstep-'));
+  const origin = join(root, 'origin.git');
+  const work = join(root, 'work');
+  gitIn(root, 'init', '--bare', '-b', 'main', origin);
+  gitIn(root, 'clone', origin, work);
+  gitIn(work, 'config', 'user.name', 't');
+  gitIn(work, 'config', 'user.email', 't@example.invalid');
+  mkdirSync(join(work, 'state'), { recursive: true });
+  writeFileSync(join(work, 'state', 'steam.json'), stateFile(baseline));
+  gitIn(work, 'add', '.');
+  gitIn(work, 'commit', '-m', 'baseline');
+  gitIn(work, 'push', 'origin', 'HEAD:main');
+  if (!noPr && !missingBranch) {
+    gitIn(work, 'checkout', '-b', prBranch);
+    writeFileSync(join(work, 'state', 'steam.json'), stateFile(prHeadState));
+    gitIn(work, 'commit', '-am', 'Game build update');
+    gitIn(work, 'push', 'origin', `HEAD:refs/heads/${prBranch}`);
+    gitIn(work, 'checkout', 'main');
+  }
+  writeFileSync(join(work, 'state', 'steam.json'), stateFile(polled)); // the poll's uncommitted write
+  const sr = join(work, 'sr');
+  mkdirSync(sr, { recursive: true });
+  writeFileSync(join(sr, 'pr-title.txt'), 'Game build 26750759 on public');
+  writeFileSync(join(sr, 'pr-branch.txt'), want);
+  writeFileSync(join(sr, 'pr-body.md'), 'body\n');
+  mkdirSync(join(work, 'ci'), { recursive: true });
+  copyFileSync(join(here, 'pr-covers.mjs'), join(work, 'ci', 'pr-covers.mjs'));
+  const files = noPr ? {} : { 'pr.json': { number: 38, headRefName: prBranch } };
+  // The step reads `jq -r .field`; use a stand-in where the machine has no jq (Linux runners have it).
+  if (spawnSync('jq', ['--version'], { windowsHide: true }).error) {
+    mkdirSync(join(work, 'bin'), { recursive: true });
+    writeFileSync(join(work, 'bin', 'jq'), `#!/bin/bash\nexec node -e 'const f = process.argv[1].replace(/^\\./, ""); let d = ""; process.stdin.on("data", (c) => { d += c; }).on("end", () => console.log(JSON.parse(d)[f]));' "$2"\n`);
+    chmodSync(join(work, 'bin', 'jq'), 0o755);
+  }
+  const out = join(work, 'github-output.txt');
+  writeFileSync(out, '');
+  const r = runBash(runOf(poll, 'Open or update the game-update PR'), { cwd: work, env: { FORCE: force ? 'true' : 'false', GITHUB_OUTPUT: out }, files });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const outputs = readFileSync(out, 'utf8');
+  return {
+    skipped: /^skip=true$/m.test(outputs),
+    outputs,
+    out: r.stdout,
+    calls: calls(work),
+    pushed: spawnSync('git', ['branch', '--list', '--format=%(refname:short)'], { cwd: origin, encoding: 'utf8', windowsHide: true }).stdout.split('\n').filter(Boolean),
+    work,
+  };
+};
+const BASE = { public: [25646882, 1], public_test_branch: [26271156, 2] };
+// The PR head: what the 11-19 poll refreshed it to. Another poll an hour later finds the same ids with other stamps.
+const HELD = { public: [26750759, 10], public_test_branch: [26271156, 2], other: [26781824, 11] };
+const SAME_LATER = { public: [26750759, 90], public_test_branch: [26271156, 2], other: [26781824, 91] };
+
+test('open PR, same changed build ids, branch name differs from the one built now: skip, no refresh, no PR edit', { skip: !bash }, () => {
+  const r = prStepRun({ baseline: BASE, polled: SAME_LATER, prHeadState: HELD });
+  assert.ok(r.skipped, r.out + r.outputs);
+  assert.match(r.out, /Update PR #38 already covers this build/);
+  assert.ok(!r.calls.some((l) => l.startsWith('pr edit') || l.startsWith('pr create') || l.startsWith('pr comment')), r.calls.join('\n'));
+  assert.ok(!r.pushed.includes('game-update/client-public-26750759'));
+  // The same name too (the first-detection name): still a skip.
+  const same = prStepRun({ baseline: BASE, polled: SAME_LATER, prHeadState: HELD, prBranch: 'game-update/client-public-26750759' });
+  assert.ok(same.skipped, same.out);
+});
+
+test('open PR, a build id the PR does not hold: refreshed once and not skipped, so the chain runs once', { skip: !bash }, () => {
+  const r = prStepRun({ baseline: BASE, polled: { ...SAME_LATER, public: [26800000, 100] }, prHeadState: HELD });
+  assert.ok(!r.skipped, r.out + r.outputs);
+  assert.ok(r.calls.some((l) => l.startsWith('pr edit 38 --title')), r.calls.join('\n'));
+  assert.match(r.outputs, /^number=38$/m);
+  assert.ok(r.pushed.includes('game-update/client-public_test_branch-26461198'));
+  // The next poll finds the same ids: the refreshed PR head holds them, so it skips (one run per build).
+  gitIn(r.work, 'fetch', '--depth', '1', 'origin', 'game-update/client-public_test_branch-26461198');
+  const refreshed = JSON.parse(gitIn(r.work, 'show', 'FETCH_HEAD:state/steam.json'));
+  assert.equal(refreshed.apps['1631270'].branches.public.buildid, '26800000');
+});
+
+test('force bypasses the cover check and refreshes the PR', { skip: !bash }, () => {
+  const r = prStepRun({ baseline: BASE, polled: SAME_LATER, prHeadState: HELD, force: true });
+  assert.ok(!r.skipped, r.out + r.outputs);
+  assert.ok(r.calls.some((l) => l.startsWith('pr edit 38 ')), r.calls.join('\n'));
+});
+
+test('no open update PR (first detection, or the last one was closed without merge): opens one and runs the chain; then the next poll skips', { skip: !bash }, () => {
+  const r = prStepRun({ baseline: BASE, polled: SAME_LATER, prHeadState: HELD, noPr: true });
+  assert.ok(!r.skipped, r.out + r.outputs);
+  assert.ok(r.calls.some((l) => l.startsWith('pr create --base main --head game-update/client-public-26750759 ')), r.calls.join('\n'));
+  assert.ok(r.pushed.includes('game-update/client-public-26750759'));
+  // The poll after it: the new PR is open and its head holds these ids.
+  const next = prStepRun({ baseline: BASE, polled: SAME_LATER, prHeadState: SAME_LATER, prBranch: 'game-update/client-public-26750759' });
+  assert.ok(next.skipped, next.out);
+});
+
+test('an open PR whose head cannot be read counts as not covered (one refresh)', { skip: !bash }, () => {
+  const r = prStepRun({ baseline: BASE, polled: SAME_LATER, prHeadState: HELD, missingBranch: true });
+  assert.ok(!r.skipped, r.out + r.outputs);
+  assert.ok(r.calls.some((l) => l.startsWith('pr edit 38 ')), r.calls.join('\n'));
+});
+
+test('the PR step: skip comes only from the cover check with force off; rehearsal never reaches the step; the chain jobs stay gated on skip', () => {
+  const s = step(poll, 'Open or update the game-update PR');
+  assert.match(s, /\n {8}if: steps\.poll\.outputs\.changed == 'true' && inputs\.rehearsal != true\n/);
+  // The only place skip=true is written sits inside the force-off, cover-checked branch.
+  assert.equal(s.match(/skip=true/g).length, 1);
+  assert.match(s, /if \[ -n "\$number" \] && \[ "\$FORCE" != "true" \]; then[\s\S]*node ci\/pr-covers\.mjs[^\n]*; then[\s\S]*skip=true/);
+  assert.ok(!/"\$branch" = "\$want"/.test(s), 'the branch name no longer decides');
+  assert.match(watch, /\n {2}build:\n[\s\S]*?if: needs\.poll\.outputs\.changed == 'true' && needs\.poll\.outputs\.skip != 'true' && inputs\.rehearsal != true\n/);
+  assert.match(watchJob('client-check'), /if: needs\.poll\.outputs\.changed == 'true' && needs\.poll\.outputs\.skip != 'true' && startsWith\(/);
+  assert.match(step(poll, 'Cancel planner data extract runs'), /steps\.pr\.outputs\.skip != 'true'/);
 });
 
 // ---- the plugin fork deploy keys

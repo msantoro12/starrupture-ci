@@ -1156,7 +1156,9 @@ A HOLD whose only reason is "autopilot is disabled" with everything else passing
 normal waiting state, not an alert: the PR gets one "Ready, publish held (autopilot off)"
 comment (edited in place) and no issue is opened. A run with no alert line labels the PR
 `chain-passed-<branch>`. `sr-watch.yml`, when it skips a build because its game-update PR
-is open, checks that PR: open over 6 hours and no `chain-passed-<branch>` label for a changed
-client branch means the branch's alert issue gets a comment (or is opened), at most once per
-6 hours (a `<!-- sr-stale-pr:N -->` marker in the issue or its comments dates the last one).
+is open, checks that PR: its current build (the last commit) is over 6 hours old and it has no
+`chain-passed-<branch>` label for a changed client branch means the branch's alert issue gets a comment (or is opened), once per PR and
+build (a `<!-- sr-stale-pr:N:BUILDID -->` marker in the issue or its comments says it was
+raised; a marker already there, in an open or a closed issue, is never raised again; if the
+issues cannot be read, nothing is posted).
 A PR refreshed by a new build loses its labels.
