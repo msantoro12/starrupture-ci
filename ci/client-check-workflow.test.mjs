@@ -229,7 +229,7 @@ test('new build: the PR comment and the alert name it "new build, measured by ma
   assert.ok(report.includes("else { '**MISMATCH**' }"), 'with map mode off the mismatch is still shown');
   const alert = job('alert');
   assert.ok(alert.includes('r?.status === "new-build"'));
-  assert.ok(alert.includes('measured by map mode: the loader does not run on it yet'));
+  assert.ok(alert.includes('measured by map mode: it is not in the build table of the loader that was scanned'));
   assert.ok(alert.includes('this is not a failure'));
 });
 
@@ -986,7 +986,7 @@ test('alert (leg C1): a new build is information in an alert, never an alert by 
   const result = { status: 'new-build', checks: { exe: { cl: 129402, productVersion: '1.0.0.129402', requiredCl: 'no row' } } };
   assert.deepEqual(alertRun({ result, decision: goodDecision }).outputs, { alert: 'false', passed: 'true', ready: 'false' });
   const withFault = alertRun({ result, decision: goodDecision, env: { PUBLISH_RESULT: 'failure' } });
-  assert.match(withFault.md, /New build \*\*CL-129402\*\* \(1\.0\.0\.129402\), measured by map mode: the loader does not run on it yet \(no row\); this is not a failure\./);
+  assert.match(withFault.md, /New build \*\*CL-129402\*\* \(1\.0\.0\.129402\), measured by map mode: it is not in the build table of the loader that was scanned \(no row\); this is not a failure\./);
 });
 
 test('alert (leg C1): a HOLD is a line with its reasons, except "nothing new" and the autopilot switch alone', { skip: !bash }, () => {
