@@ -1,0 +1,118 @@
+name: SR watch timer
+
+# GitHub throttles scheduled runs: sr-watch.yml asks for every 30 minutes and gets a few runs a day.
+# This workflow is a timer that does not depend on the schedule. Each run waits about 25 minutes,
+# starts the watcher (sr-watch.yml, no inputs, from main), then starts the next timer run, so the
+# watcher is polled about every 25 minutes. It uses only the job's GITHUB_TOKEN: a workflow_dispatch
+# made with that token is allowed to start a run, so no personal token is needed.
+#
+# The schedule below only revives the chain (every 3 hours) if it ever stops, for example after a
+# failed dispatch or a cancelled run. A run exits at once when another timer run is going or waiting,
+# so a revive never makes a second chain, and the watcher is started only when no watcher run is
+# going or waiting, so Steam is never used twice at once. It never sets an input of the watcher
+# (not force, not rehearsal, not the release-replacing one).
+#
+# This is the fallback. An external cron (a Worker) that dispatches sr-watch.yml is preferred; this chain
+# covers the case where that is not running. The schedule above is itself throttled by GitHub, so a
+# revive can lag 6 to 9 hours: a dead chain is not restarted quickly. To say so, the first step of every
+# run opens one tracking issue when no sr-watch run has started for over an hour, and closes it with a
+# comment when the watcher runs again. Nothing is commented twice for one outage.
+#
+# State: gh run list --workflow sr-watch-timer.yml
+
+on:
+  schedule:
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: sr-watch-timer
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  tick:
+    name: tick
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      actions: write   # start sr-watch.yml and this workflow again
+      contents: read
+      issues: write    # the one tracking issue for a watcher that has not started
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Report a watcher that has not started
+        continue-on-error: true
+        run: |
+          title='SR watch is not running'
+          last=$(gh api "repos/$GH_REPO/actions/workflows/sr-watch.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at // empty')
+          [ -n "$last" ] || exit 0
+          age=$(( $(date -u +%s) - $(date -u -d "$last" +%s) ))
+          export TITLE="$title"
+          open=$(gh issue list --state open --label pipeline-alert --search "$title in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')
+          if [ "$age" -gt 3600 ]; then
+            if [ -z "$open" ]; then
+              gh label create pipeline-alert --color B60205 --description 'A pipeline run or a game-update PR needs the owner' --force
+              gh issue create --title "$title" --label pipeline-alert --assignee msantoro12 \
+                --body "No sr-watch run has started since $last ($((age / 60)) minutes ago), so the timer chain (sr-watch-timer.yml) or the schedule is not delivering. This run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID. The issue closes itself when the watcher runs again."
+            fi
+          elif [ -n "$open" ]; then
+            gh issue comment "$open" --body "sr-watch started again at $last. Closing."
+            gh issue close "$open"
+          fi
+
+      - name: Stop if another timer run is going or waiting
+        id: guard
+        run: |
+          others=$(gh api "repos/$GH_REPO/actions/workflows/sr-watch-timer.yml/runs?per_page=50" \
+            | jq --argjson me "$GITHUB_RUN_ID" \
+              '[.workflow_runs[] | select(.id != $me and (.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "pending"))] | length')
+          if [ "$others" -gt 0 ]; then
+            echo "::notice::Another timer run is going or waiting ($others). This run stops; that chain continues."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait for the next poll time
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          echo "::notice::Next sr-watch poll due $(date -u -d '+25 minutes' '+%Y-%m-%d %H:%M') UTC"
+          sleep 1500
+
+      - name: Start the watcher
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          busy=$(gh api "repos/$GH_REPO/actions/workflows/sr-watch.yml/runs?per_page=50" \
+            | jq '[.workflow_runs[] | select(.status == "in_progress" or .status == "queued" or .status == "waiting" or .status == "pending")] | length')
+          if [ "$busy" -gt 0 ]; then
+            echo "::notice::sr-watch is already going or waiting ($busy run); not starting another."
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            if gh workflow run sr-watch.yml --ref main; then
+              echo "::notice::Started sr-watch.yml at $(date -u '+%Y-%m-%d %H:%M') UTC"
+              exit 0
+            fi
+            echo "::warning::Starting sr-watch.yml failed (attempt $attempt of 3)"
+            sleep 15
+          done
+          echo "::error::Could not start sr-watch.yml after 3 attempts. The next revive restarts the timer."
+          exit 1
+
+      - name: Start the next timer run
+        if: steps.guard.outputs.proceed == 'true'
+        run: |
+          for attempt in 1 2 3; do
+            if gh workflow run sr-watch-timer.yml --ref main; then
+              echo "::notice::Next timer run started; its poll is due about $(date -u -d '+25 minutes' '+%Y-%m-%d %H:%M') UTC"
+              exit 0
+            fi
+            echo "::warning::Starting sr-watch-timer.yml failed (attempt $attempt of 3)"
+            sleep 15
+          done
+          echo "::error::Could not start the next timer run after 3 attempts. The next revive restarts the timer."
+          exit 1
