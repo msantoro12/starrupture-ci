@@ -338,6 +338,50 @@ test('buildTable with headers: the reflected base classes of a listed class are 
   assert.deepEqual(buildTable(layout, ['UCrBlueprintWidget_C'], { cl: 1 }).classes.map((c) => c.name), ['UCrBlueprintWidget_C'], 'no headers, no base links');
 });
 
+// A class that implements interfaces: the newer Dumper-7 lists them after the base class, and `MIPad::Pad<..>` padding too.
+const INTERFACE_HPP = `// Class Chimera.CrIfaceWidget
+// 0x0008 (0x0078 - 0x0070)
+class UCrIfaceWidget : public UCrWidget, public ICrThing
+{
+public:
+	float                                         Speed;    // 0x0070(0x0004)(Edit, ZeroConstructor, IsPlainOldData, NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic)
+};
+
+// Class Chimera.CrPaddedWidget
+// 0x0008 (0x0078 - 0x0070)
+class UCrPaddedWidget final : public UCrWidget, public ICrThing, public MIPad::Pad<0x8, 0x70>, public ICrOther
+{
+public:
+	float                                         Speed;    // 0x0070(0x0004)(Edit, ZeroConstructor, IsPlainOldData, NoDestructor, HasGetValueTypeHash, NativeAccessSpecifierPublic)
+};
+`;
+
+function writeInterfaceSdk(extra = INTERFACE_HPP) {
+  const dir = writeSdk();
+  writeFileSync(join(dir, 'Chimera_interfaces_classes.hpp'), extra);
+  return dir;
+}
+
+test('header parser: the base class is the first base; interfaces and padding after it are not bases', () => {
+  const sdk = parseSdkHeaders(writeInterfaceSdk());
+  assert.equal(sdk.get('UCrIfaceWidget').base, 'UCrWidget');
+  assert.equal(sdk.get('UCrPaddedWidget').base, 'UCrWidget');
+  assert.equal(sdk.get('UCrWidget').base, 'UObject', 'a single base reads as before');
+  assert.equal(sdk.get('FCrThing').base, null);
+  assert.equal(sdk.get('UCrIfaceWidget').members.get('Speed').offset, 0x70, 'the members still belong to the class');
+});
+
+test('header parser: a base list it cannot read is an error, not a class without a base', () => {
+  assert.throws(() => parseSdkHeaders(writeInterfaceSdk('class UCrOdd : public TFoo<int>, public ICrThing\n{\n};\n')), /UCrOdd: cannot read the base class/);
+});
+
+test('buildTable with headers: the base chain of a class that implements interfaces is listed, as for a plain class', () => {
+  const layout = parseAssertions(inl({ ...WIDGET, UCrIfaceWidget: { size: 0x78, members: { Speed: 0x70 } }, UCrPaddedWidget: { size: 0x78, members: { Speed: 0x70 } } }), 'test');
+  const names = (cls) => buildTable(layout, [cls], { cl: 1, sdk: parseSdkHeaders(writeInterfaceSdk()) }).classes.map((c) => c.name);
+  assert.deepEqual(names('UCrIfaceWidget'), ['UCrIfaceWidget', 'UCrWidget']);
+  assert.deepEqual(names('UCrPaddedWidget'), ['UCrPaddedWidget', 'UCrWidget']);
+});
+
 test('buildTable with headers: a wrong or empty --sdk directory is an error, not an empty table', () => {
   const layout = parseAssertions(inl(WIDGET), 'test');
   const empty = parseSdkHeaders(tmp());

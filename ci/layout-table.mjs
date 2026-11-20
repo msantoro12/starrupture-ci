@@ -63,7 +63,12 @@ const hex = (n) => '0x' + n.toString(16).toUpperCase();
 
 // ---- Dumper-7 headers: member sizes and bool masks --------------------------
 
+// A declaration lists its bases after the colon: the base class first, then the interfaces the class
+// implements and Dumper-7's `MIPad::Pad<..>` padding (`class UFoo : public UBar, public IBaz`).
+// Only the first is a base class for the layout; the interfaces' vtable offsets are in the
+// GetInterfaceOffset asserts, which layout-diff.mjs reads and drops.
 const RE_DECL = /^(?:class|struct) (?:(?:SDK_ALIGN|alignas)\(\w+\) )?([A-Za-z0-9_:]+)(?: final)?(?: : public (.+))?$/;
+const RE_BASE = /^[A-Za-z0-9_:]+$/;
 // `<type> <name>[N]... [: bits];  // 0xOFFSET(0xSIZE)(...`; the type may hold spaces.
 const RE_MEMBER = /^\t(.*?)\s+(\w+)((?:\[[^\]]*\])*)( : \d+)?;\s+\/\/ 0x([0-9A-Fa-f]+)\(0x([0-9A-Fa-f]+)\)\((.*)$/;
 // The comment above every declaration: `// Class Engine.Actor`, `// Function Engine.Foo.Bar`, ...
@@ -97,8 +102,11 @@ export function parseSdkHeaders(dir) {
       if ((d = RE_KIND.exec(line))) {
         origin = { kind: kindOf(d[1]), path: d[2] };
       } else if ((d = RE_DECL.exec(line))) {
+        const base = d[2]?.split(', public ')[0] ?? null;
+        // A base list this parser cannot read would end the base walk in buildTable and drop the classes above it.
+        if (base !== null && !RE_BASE.test(base)) throw new Error(`${file}: ${d[1]}: cannot read the base class in '${d[2]}'`);
         members = new Map();
-        classes.set(d[1], { kind: origin?.kind ?? KIND.unknown, path: origin?.path ?? '', base: d[2] ?? null, members });
+        classes.set(d[1], { kind: origin?.kind ?? KIND.unknown, path: origin?.path ?? '', base, members });
         origin = null;
       } else if (line.startsWith('};')) {
         members = null;
