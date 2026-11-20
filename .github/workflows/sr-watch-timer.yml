@@ -9,8 +9,8 @@ name: SR watch timer
 # The schedule below only revives the chain (every 3 hours) if it ever stops, for example after a
 # failed dispatch or a cancelled run. A run exits at once when another timer run is going or waiting,
 # so a revive never makes a second chain, and the watcher is started only when no watcher run is
-# going or waiting, so Steam is never used twice at once. It never sets force, rehearsal, supersede
-# or any other input of the watcher.
+# going or waiting, so Steam is never used twice at once. It never sets an input of the watcher
+# (not force, not rehearsal, not the release-replacing one).
 #
 # This is the fallback. An external cron (a Worker) that dispatches sr-watch.yml is preferred; this chain
 # covers the case where that is not running. The schedule above is itself throttled by GitHub, so a
