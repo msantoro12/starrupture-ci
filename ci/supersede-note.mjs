@@ -11,13 +11,14 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { listReleases } from './vmap-history.mjs';
 
 const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch { return null; } };
 
 // The line, or null when the decision is not a second release.
 export function supersedeNote({ decision, history, actor, run, seq }) {
   if (decision === null || typeof decision !== 'object' || !Number.isSafeInteger(decision.supersedes)) return null;
-  const was = (Array.isArray(history?.releases) ? history.releases : []).find((r) => r?.seq === decision.supersedes && r?.cl === decision.cl);
+  const was = listReleases(history).find((r) => r?.seq === decision.supersedes && r?.cl === decision.cl);
   return `**second release of CL-${decision.cl}** (supersede, started by ${actor}): it replaces seq ${decision.supersedes}${was?.at ? `, our release of ${was.at}` : ''}; run ${run}, new seq ${seq}`;
 }
 

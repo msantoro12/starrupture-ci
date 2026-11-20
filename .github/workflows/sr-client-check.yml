@@ -137,6 +137,10 @@ on:
         description: 'Supersede (only sr-watch passes it, from its hand-dispatched supersede input; empty otherwise): the seq of our own release being replaced by a second release of the same CL. Lifts the already-released checks only; the new version object map must still change what is served (needs public, map_mode and publish)'
         type: string
         default: ''
+      retry_cl:
+        description: 'Retry (only sr-watch passes it, from its hand-dispatched retry_cl input; empty otherwise): one CL whose count of rejected auto-fix attempts starts again from zero. Lifts no other check (needs public, map_mode and publish)'
+        type: string
+        default: ''
     # A called job sees an environment secret only when the caller passes it
     # by name (the calling job cannot set an environment; the value comes from
     # the environment of the called job that reads it). Unpassed, it reads as
@@ -2771,6 +2775,11 @@ jobs:
       # other run, whatever the input says: only a call from sr-watch.yml is read, and the refusal step below stops any other.
       SUPERSEDE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-watch.yml@') && inputs.supersede || '' }}
       INPUT_SUPERSEDE: ${{ inputs.supersede }}
+      # The CL whose attempt count restarts (sr-watch's retry_cl input, from a hand dispatch only): read like SUPERSEDE, and the
+      # refusal step below stops any other call. ACTOR is who started the run, for the line that records it.
+      RETRY_CL: ${{ contains(github.workflow_ref, '/.github/workflows/sr-watch.yml@') && inputs.retry_cl || '' }}
+      INPUT_RETRY_CL: ${{ inputs.retry_cl }}
+      ACTOR: ${{ github.actor }}
     steps:
       # A supersede that is not one (a call from anywhere but sr-watch, a run that cannot publish, a value that is not a seq) stops here:
       # it is never run as an ordinary release.
@@ -2779,6 +2788,13 @@ jobs:
         run: |
           [ "$SUPERSEDE" = "$INPUT_SUPERSEDE" ] && [ "$PUBLISH_RUN" = true ] && [[ "$SUPERSEDE" =~ ^[1-9][0-9]{0,15}$ ]] \
             || { echo "::error::a supersede needs a call from sr-watch, branch public, map_mode and publish on (no test, proof, rehearsal or first publish), and the seq of the release it replaces"; exit 2; }
+
+      # A retry that is not one (a call from anywhere but sr-watch, a run that cannot publish, a value that is not a CL) stops here.
+      - name: Refuse a retry that is not one
+        if: ${{ inputs.retry_cl != '' }}
+        run: |
+          [ "$RETRY_CL" = "$INPUT_RETRY_CL" ] && [ "$PUBLISH_RUN" = true ] && [[ "$RETRY_CL" =~ ^[1-9][0-9]{0,8}$ ]] \
+            || { echo "::error::a retry needs a call from sr-watch, branch public, map_mode and publish on (no test, proof, rehearsal or first publish), and one CL number"; exit 2; }
 
       # A rehearsal that is not one (another branch, no map mode or publish, a call from anywhere but sr-watch) stops here: it is never run as an ordinary one.
       - name: Refuse a rehearsal that is not one
@@ -3170,7 +3186,13 @@ jobs:
           else
             cat release.err; echo "::error::cannot read the vmap-feed release"; exit 2
           fi
-          if [ -f published/vmap-history.json ]; then cp published/vmap-history.json history.json; else echo '{"releases":[],"attempts":{}}' > history.json; fi
+          if [ -f published/vmap-history.json ]; then cp published/vmap-history.json history.json; else echo '{"releases":{},"attempts":{}}' > history.json; fi
+          # retry_cl (sr-watch's hand-dispatched input): the count of rejected attempts for that one CL starts again, for this
+          # run's decision below. No other CL is touched. The reset is a record in the history (it names who and the run) and a
+          # line in the alert issue (retry-note.json); the publish job writes it to the live history when this run releases.
+          if [ -n "$RETRY_CL" ]; then
+            node tool/ci/vmap-history.mjs retry --history history.json --cl "$RETRY_CL" --actor "$ACTOR" --run "$RUN_ID" --out history.json --note retry-note.json
+          fi
           last_seq=0
           if [ -f published/version-map-client.v1.txt ]; then
             last_seq="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
@@ -3447,6 +3469,7 @@ jobs:
             history.json
             decision.json
             identity.json
+            retry-note.json
             feed.txt
             feed.test-signed.txt
             build.json
@@ -3517,6 +3540,10 @@ jobs:
       REHEARSAL: ${{ inputs.rehearsal == true }}
       # The seq a second release replaces (see map-mode's SUPERSEDE): only a call from sr-watch.yml is read; the chain's decision must carry the same one.
       SUPERSEDE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-watch.yml@') && inputs.supersede || '' }}
+      # The CL whose attempt count restarted for this run (see map-mode's RETRY_CL): written to the live history with the release.
+      RETRY_CL: ${{ contains(github.workflow_ref, '/.github/workflows/sr-watch.yml@') && inputs.retry_cl || '' }}
+      ACTOR: ${{ github.actor }}
+      RUN_ID: ${{ github.run_id }}
       STAGING_RELEASE: vmap-feed-rehearsal
     steps:
       - name: Check out the sign tool
@@ -3591,10 +3618,23 @@ jobs:
             else
               echo "the vmap-feed release has no feed asset yet"
             fi
+            # The history the new entry is written into is the live one, read again now (not the copy the chain made when it
+            # started, which another write may have changed since). Only a first publish may start without one; for any other run
+            # a history that does not download stops the job: the history is never started again from nothing.
+            has_history="$(node -p "String((JSON.parse(require('fs').readFileSync('live-release.json','utf8')).assets ?? []).some((a) => a.name === 'vmap-history.json'))")"
+            if [ "$has_history" = true ] && { [ "$has_feed" = true ] || [ "$FIRST_PUBLISH" != true ]; }; then
+              gh release download vmap-feed --pattern vmap-history.json --dir live \
+                || { echo "::error::cannot download vmap-history.json from the vmap-feed release; the history is never rebuilt from nothing, so nothing was signed (ci/MAP-MODE.md, \"A history that did not upload\")"; exit 2; }
+            fi
           elif grep -q 'HTTP 404' live-release.err; then
             echo "no vmap-feed release yet"
           else
             cat live-release.err; echo "::error::cannot read the vmap-feed release"; exit 2
+          fi
+          if [ ! -f live/vmap-history.json ]; then
+            [ "$FIRST_PUBLISH" = true ] || { echo "::error::the vmap-feed release has no vmap-history.json and this run is not a first publish; the history is never started again from nothing, so nothing was signed (ci/MAP-MODE.md, \"A history that did not upload\")"; exit 2; }
+            mkdir -p live
+            echo '{"releases":{},"attempts":{}}' > live/vmap-history.json
           fi
           echo "$last_seq" > last-seq.txt
           if [ "$CHAIN_SEQ" -le "$last_seq" ]; then
@@ -3624,7 +3664,7 @@ jobs:
               sup_flag=()
               if [ -n "$SUPERSEDE" ]; then sup_flag=(--supersede "$SUPERSEDE"); fi
               node tool/ci/decide.mjs identity --repo ModLoader --cl "$(node -p "JSON.parse(require('fs').readFileSync('chain/decision.json','utf8')).cl")" --published live/version-map-client.v1.txt \
-                --feed chain/feed.txt --history chain/history.json "${sup_flag[@]}" --report identity.json || ident=$?
+                --feed chain/feed.txt --history live/vmap-history.json "${sup_flag[@]}" --report identity.json || ident=$?
               if [ "$ident" -ne 0 ]; then
                 node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("identity.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
                 echo "::error::the version identity check did not pass for the feed to sign (identity exit $ident); nothing was signed or uploaded"; exit 2
@@ -3634,7 +3674,10 @@ jobs:
 
       # The switch as it is on main now, read right before the key is used. The chain read it when it
       # started, hours ago: turning the autopilot off must stop a chain that is already running.
-      # Fails closed: a file that cannot be read, is malformed, is not enabled or does not allow path M stops the job.
+      # Fails closed: a file that cannot be read, is not JSON, has no boolean enabled, is not enabled, or has a paths list
+      # without M stops the job. This job runs this commit's code against the file as main has it now, so it reads
+      # the switch only (checkAutopilotSwitch) and ignores every other field: a field added or removed on main since
+      # this commit cannot stop a release that the switch allows.
       - name: Check the autopilot is still on
         if: ${{ env.FIRST_PUBLISH != 'true' }}
         run: |
@@ -3642,13 +3685,13 @@ jobs:
           gh api -H "Accept: application/vnd.github.raw+json" "repos/$GH_REPO/contents/state/autopilot.json?ref=main" > autopilot.main.json             || { echo "::error::cannot read state/autopilot.json on main; nothing was signed"; exit 2; }
           node --input-type=module -e '
             import { readFileSync } from "node:fs";
-            import { checkAutopilot } from "./tool/ci/decide.mjs";
+            import { checkAutopilotSwitch } from "./tool/ci/decide.mjs";
             let value;
             try { value = JSON.parse(readFileSync("autopilot.main.json", "utf8")); } catch { console.error("::error::state/autopilot.json on main is not JSON; nothing was signed"); process.exit(2); }
-            const ap = checkAutopilot({ ok: true, value });
+            const ap = checkAutopilotSwitch({ ok: true, value });
             if (ap.error) { console.error("::error::" + ap.error + "; nothing was signed"); process.exit(2); }
             if (!ap.enabled) { console.error("::error::the autopilot was turned off on main while this chain ran; nothing was signed"); process.exit(2); }
-            if (!ap.paths.includes("M")) { console.error("::error::path M is no longer enabled in the autopilot on main; nothing was signed"); process.exit(2); }
+            if (!ap.pathM) { console.error("::error::path M is no longer enabled in the autopilot on main; nothing was signed"); process.exit(2); }
             console.log("The autopilot is on for path M on main.");
           '
 
@@ -3669,14 +3712,9 @@ jobs:
           last_seq="$(cat last-seq.txt)"
           node tool/ci/vmap-sign.mjs sign chain/feed.txt --out version-map-client.v1.txt --key-id k2 --last-seq "$last_seq" --seq "$CHAIN_SEQ"
           node tool/ci/vmap-sign.mjs verify version-map-client.v1.txt --last-seq "$last_seq" --expect-seq "$CHAIN_SEQ"
-          node -e '
-            const fs = require("fs");
-            const h = JSON.parse(fs.readFileSync("chain/history.json", "utf8"));
-            const d = JSON.parse(fs.readFileSync("chain/decision.json", "utf8"));
-            // A second release of a CL names the seq it replaced.
-            h.releases.push({ repo: "ModLoader", cl: d.cl, at: new Date().toISOString(), seq: Number(process.env.CHAIN_SEQ), ...(d.supersedes ? { supersedes: d.supersedes } : {}) });
-            fs.writeFileSync("vmap-history.json", JSON.stringify(h, null, 1) + "\n");
-          '
+          # The history entry is the shared routine's: the live history read again above, a retry_cl reset for that one CL,
+          # then this release upserted by its key (one entry per CL, the newest seq, supersedes kept on that entry).
+          bash tool/ci/vmap-publish.sh entry
 
       # The feed first, the history last. The feed is what players read and what the version identity check judges
       # (a CL the published file holds is not released again). Three states, each with its own recovery:
@@ -3692,86 +3730,28 @@ jobs:
       - name: Publish the feed to the live release
         if: ${{ env.REHEARSAL != 'true' }}
         run: |
-          set -euo pipefail
-          # The one command that writes this release's history entry, for the case where the feed goes live and the
-          # history does not follow (state b above). The history is carried inside it
-          # (base64: no quoting to get wrong), so it works from any shell that is logged in to gh.
-          {
-            echo "If the feed (seq $CHAIN_SEQ) is live and the history entry for it is not written, nothing can release this CL again: a re-run is held (the live feed covers it) and a supersede is refused (the history lacks seq $CHAIN_SEQ). One command writes the entry:"
-            echo
-            echo "echo $(base64 -w0 vmap-history.json) | base64 -d > vmap-history.json && gh release upload vmap-feed vmap-history.json --clobber --repo $GH_REPO"
-          } > history-recovery.txt
-          { echo "### If this job stops after the feed upload and before the history is written"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"
-          gh release view vmap-feed > /dev/null 2>&1 || gh release create vmap-feed --title "Version map feed" --notes "The signed version map feed the loader fetches."
-          clobber=(--clobber); if [ "$FIRST_PUBLISH" = true ]; then clobber=(); fi
-          gh release upload vmap-feed version-map-client.v1.txt "${clobber[@]}" \
-            || { echo "::error::the feed (seq $CHAIN_SEQ) did not upload; the history was not written and the once-per-CL record is as it was, so a re-run can sign again"; exit 2; }
+          bash tool/ci/vmap-publish.sh feed vmap-feed live
 
       - name: Verify the published feed
         if: ${{ env.REHEARSAL != 'true' }}
         run: |
-          set -euo pipefail
-          # From here the feed is live: any stop below leaves it live with no history entry (state b above).
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "::error::the feed (seq $CHAIN_SEQ) is on the live release but this run did not confirm it, and the history entry is not written: a re-run is held and a supersede is refused until it is"; { echo "### The feed is live and the history entry is not written"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi' EXIT
-          # Download the feed as the loader will, and check it against what was signed here.
-          gh release download vmap-feed --pattern version-map-client.v1.txt --dir published --clobber
-          out="$(node tool/ci/vmap-sign.mjs verify published/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
-          echo "$out"
-          case "$out" in "ok seq=$CHAIN_SEQ key=k2") ;; *) echo "::error::the published feed is not seq $CHAIN_SEQ signed with the release key k2: $out"; exit 2 ;; esac
-          want="$(sha256sum version-map-client.v1.txt | cut -d' ' -f1)"
-          got="$(sha256sum published/version-map-client.v1.txt | cut -d' ' -f1)"
-          [ "$want" = "$got" ] || { echo "::error::the published version-map-client.v1.txt has sha256 $got, not the $want that was signed and uploaded; the history was not written"; exit 2; }
-          echo "version-map-client.v1.txt sha256 $got"
+          bash tool/ci/vmap-publish.sh verify vmap-feed live
 
       - name: Publish the history to the live release
         if: ${{ env.REHEARSAL != 'true' }}
         run: |
-          set -euo pipefail
-          trap 'rc=$?; if [ "$rc" -ne 0 ]; then { echo "### The feed is live and the history entry is not confirmed"; echo; cat history-recovery.txt; } | tee -a "$GITHUB_STEP_SUMMARY"; fi' EXIT
-          up=1
-          for try in 1 2 3; do
-            if gh release upload vmap-feed vmap-history.json --clobber; then up=0; break; fi
-            echo "the history upload failed (try $try of 3)"
-          done
-          if [ "$up" -ne 0 ]; then
-            echo "::error::the feed (seq $CHAIN_SEQ) is live but vmap-history.json did not upload; a re-run is held and a supersede is refused until the history holds its entry: the one command that writes it is in the job summary and below"
-            exit 2
-          fi
-          gh release download vmap-feed --pattern vmap-history.json --dir published --clobber
-          want="$(sha256sum vmap-history.json | cut -d' ' -f1)"
-          got="$(sha256sum published/vmap-history.json | cut -d' ' -f1)"
-          [ "$want" = "$got" ] || { echo "::error::the published vmap-history.json has sha256 $got, not the $want that was uploaded; the feed (seq $CHAIN_SEQ) is live and the history is not confirmed: the one command that writes it is in the job summary and below"; exit 2; }
-          echo "vmap-history.json sha256 $got"
-          echo "### Published the feed: seq $CHAIN_SEQ, release key k2, sha256 $(sha256sum published/version-map-client.v1.txt | cut -d' ' -f1); history written after it" >> "$GITHUB_STEP_SUMMARY"
+          bash tool/ci/vmap-publish.sh history vmap-feed live
 
-      # A rehearsal's only write: the prerelease named in STAGING_RELEASE, with the same asset names. Not the Latest
-      # release, and no step here names the live release: it is neither created, edited nor uploaded to.
+      # A rehearsal's only write: the prerelease named in STAGING_RELEASE, with the same asset names, through the same routine as
+      # the live release (feed, verify, history last, restore command printed first). Not the Latest release, and no step here
+      # names the live release: it is neither created, edited nor uploaded to.
       - name: Upload to the staging prerelease
         if: ${{ env.REHEARSAL == 'true' }}
         run: |
           set -euo pipefail
-          gh release view "$STAGING_RELEASE" > /dev/null 2>&1 || gh release create "$STAGING_RELEASE" --prerelease --latest=false --title "Version map feed rehearsal" --notes "Signed feeds of rehearsal runs (sr-watch, rehearsal input). Not read by the loader or by vmap-publish; never the live feed."
-          [ "$(gh release view "$STAGING_RELEASE" --json isPrerelease,isDraft --jq '.isPrerelease and (.isDraft | not)')" = true ] \
-            || { echo "::error::$STAGING_RELEASE is not a published prerelease; nothing was uploaded to it"; exit 2; }
-          gh release upload "$STAGING_RELEASE" vmap-history.json --clobber
-          gh release upload "$STAGING_RELEASE" version-map-client.v1.txt --clobber
-
-      - name: Verify what was staged
-        if: ${{ env.REHEARSAL == 'true' }}
-        run: |
-          set -euo pipefail
-          gh release download "$STAGING_RELEASE" --pattern version-map-client.v1.txt --pattern vmap-history.json --dir staged --clobber
-          out="$(node tool/ci/vmap-sign.mjs verify staged/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ")"
-          echo "$out"
-          case "$out" in "ok seq=$CHAIN_SEQ key=k2") ;; *) echo "::error::the staged feed is not seq $CHAIN_SEQ signed with the release key k2: $out"; exit 2 ;; esac
-          for f in version-map-client.v1.txt vmap-history.json; do
-            want="$(sha256sum "$f" | cut -d' ' -f1)"
-            got="$(sha256sum "staged/$f" | cut -d' ' -f1)"
-            [ "$want" = "$got" ] || { echo "::error::the staged $f has sha256 $got, not the $want that was signed and uploaded"; exit 2; }
-            echo "$f sha256 $got"
-          done
-          [ "$(gh release view "$STAGING_RELEASE" --json isPrerelease --jq .isPrerelease)" = true ] || { echo "::error::$STAGING_RELEASE is not a prerelease"; exit 2; }
-          echo "### Rehearsal: staged the feed on $STAGING_RELEASE (prerelease): seq $CHAIN_SEQ, release key k2, sha256 $(sha256sum staged/version-map-client.v1.txt | cut -d' ' -f1). The live release was not written." >> "$GITHUB_STEP_SUMMARY"
+          bash tool/ci/vmap-publish.sh feed "$STAGING_RELEASE" staging
+          bash tool/ci/vmap-publish.sh verify "$STAGING_RELEASE" staging
+          bash tool/ci/vmap-publish.sh history "$STAGING_RELEASE" staging
 
       # A rehearsal only: read the live release again; it must be what it was before the staging upload.
       - name: Check the live release did not move
@@ -4787,7 +4767,7 @@ jobs:
               .map((t) => "- new " + t.split("=")[0] + " release " + t.split("=")[1] + " waiting for review: the rig still runs the reviewed release; review the new one, then update its Pin in `ci/plugin-names.json`");
             // Lines the map writers left in their reports (alerts): a stale fork branch, a fork build that compiles a changed
             // size. Loud like the review lines, and for the same reason they block nothing.
-            for (const f of ["chain/map-mode-report.json", "chain/field-rows.json", "chain/alerts.json", "chain/supersede.json"]) {
+            for (const f of ["chain/map-mode-report.json", "chain/field-rows.json", "chain/alerts.json", "chain/supersede.json", "chain/retry-note.json"]) {
               for (const x of [].concat(readJson(f)?.alerts ?? [])) if (typeof x === "string" && x) review.push("- " + clip(x, 400));
             }
 

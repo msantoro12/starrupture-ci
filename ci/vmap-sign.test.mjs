@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FEED_MAX_BYTES, exportFeed, parse } from './version-map.mjs';
-import { LOADER_CAP_BYTES, PUBLIC_KEYS, nextSeq, signFeed, verifyFeed } from './vmap-sign.mjs';
+import { LOADER_CAP_BYTES, PUBLIC_KEYS, findDuplicateFeedRows, nextSeq, signFeed, verifyFeed } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, 'vmap-sign.mjs');
@@ -217,4 +217,51 @@ test('the command line passes one seq through next-seq, sign --seq and verify --
   const stale = run(['sign', src, '--out', join(dir, 'x.txt'), '--key-id', 'k1', '--last-seq', String(NOW + 10), '--seq', seq], { VMAP_SIGN_KEY: k.pem });
   assert.equal(stale.status, 2);
   assert.match(stale.stderr, /does not rise above/);
+});
+
+// A feed that names one build, function, absent or field row twice is refused by the loader's ParseFeed, which then falls back to its
+// compiled-in version object map for every player: it must never be signed and never verify. (The 2026-11-19 history listed CL-130045 twice.)
+test('a feed with a duplicate key cannot be signed or verified', () => {
+  const k = pair();
+  const lines = unsigned().split('\n');
+  const first = (kind) => lines.find((l) => l.startsWith(`${kind}\t`));
+  const doubled = (kind) => { const row = first(kind); assert.ok(row, `the fixture has a ${kind} row`); return [...lines.slice(0, -1), row, ''].join('\n'); };
+  for (const kind of ['build', 'function', 'field']) {
+    const dup = doubled(kind);
+    assert.match(reasons(() => signFeed(dup, k.pem, { keyId: 'k1', now: NOW })), /lists .* twice/, kind);
+    // a signature over the duplicate (made past the signer's check) does not make it verify
+    const body = dup.split('\n');
+    const signed = [body[0], `seq\t${NOW}`, ...body.slice(1)].join('\n');
+    const sig = edSign(null, Buffer.from(signed), createPrivateKey(k.pem)).toString('base64');
+    assert.match(reasons(() => verifyFeed(`${signed}sig\tk1\t${sig}\n`, { keys: KEYS(k.hex), now: NOW })), /lists .* twice/, kind);
+  }
+  assert.equal(findDuplicateFeedRows(unsigned().split('\n')).length, 0);
+  // an absent row and a function row of one key, fp and CL are one identity
+  const fn = first('function').split('\t');
+  const absent = ['absent', fn[1], fn[2], fn[3], fn[4], fn[5], fn[6], '-'].join('\t');
+  assert.deepEqual(findDuplicateFeedRows([first('function'), absent]), [['function', fn[1], fn[2], fn[3]].join(' ')]);
+  // a row of another fp or CL is another identity
+  assert.deepEqual(findDuplicateFeedRows([first('function'), [...fn.slice(0, 3), String(Number(fn[3]) + 1), ...fn.slice(4)].join('\t')]), []);
+});
+
+test('the command line refuses to sign a feed with a duplicate key', () => {
+  const k = pair();
+  const dir = mkdtempSync(join(tmpdir(), 'vmap-dup-'));
+  const lines = unsigned().split('\n');
+  writeFileSync(join(dir, 'dup.txt'), [...lines.slice(0, -1), lines.find((l) => l.startsWith('build\t')), ''].join('\n'));
+  const r = spawnSync(process.execPath, [TOOL, 'sign', join(dir, 'dup.txt'), '--out', join(dir, 'out.txt'), '--key-id', 'k1'], { encoding: 'utf8', windowsHide: true, env: { ...process.env, VMAP_SIGN_KEY: k.pem } });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /lists build .* twice/);
+});
+
+test('unique: the command line refuses a feed that lists a build twice and accepts one that does not', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'vmap-unique-'));
+  const lines = unsigned().split('\n');
+  writeFileSync(join(dir, 'ok.txt'), unsigned());
+  writeFileSync(join(dir, 'dup.txt'), [...lines.slice(0, -1), lines.find((l) => l.startsWith('build\t')), ''].join('\n'));
+  const run = (f) => spawnSync(process.execPath, [TOOL, 'unique', join(dir, f)], { encoding: 'utf8', windowsHide: true });
+  assert.equal(run('ok.txt').status, 0);
+  const bad = run('dup.txt');
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /lists build .* twice/);
 });

@@ -10,6 +10,7 @@
 //   node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2
 //        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>]
 //   node ci/vmap-sign.mjs next-seq [--last-seq <n>] [--now <unix seconds>]
+//   node ci/vmap-sign.mjs unique <feed>     (exit 2 when a build or a row is listed twice)
 //   node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>]
 //        [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>]
 //
@@ -62,6 +63,31 @@ function publicKeyFromHex(hex) {
 
 const SEQ_LINE = /^seq\t([1-9][0-9]*)$/;
 
+// The rows of a feed that name one key twice: a build by its CL, a function or absent row by key, fp and CL, a field
+// row by key and CL (the identity version-map.mjs validate holds the model to). The loader's ParseFeed refuses a feed
+// with such a row and falls back to its compiled-in version object map, so a signed feed that has one switches the
+// feed off for every player: it is never signed and never verifies. lines: the rows, any format or seq line included.
+export function findDuplicateFeedRows(lines) {
+  const seen = new Set();
+  const dups = [];
+  for (const line of lines) {
+    const f = line.split('\t');
+    let id = null;
+    if (f[0] === 'build') id = ['build', f[1]];
+    else if (f[0] === 'function' || f[0] === 'absent') id = ['function', f[1], f[2], f[3]];
+    else if (f[0] === 'field') id = ['field', f[1], f[2]];
+    if (id === null) continue;
+    const key = id.join('\t');
+    if (seen.has(key)) dups.push(id.join(' '));
+    seen.add(key);
+  }
+  return dups;
+}
+const noDuplicateRows = (lines) => {
+  const dups = findDuplicateFeedRows(lines);
+  need(dups.length === 0, `the feed lists ${dups[0]} twice (${dups.length} duplicate row${dups.length === 1 ? '' : 's'}); the loader refuses such a feed`);
+};
+
 // The seq to sign now: the UTC second, raised to last + 1 when the clock has not passed the last seq.
 export function nextSeq(lastSeq = 0, now = Math.floor(Date.now() / 1000)) {
   need(Number.isSafeInteger(lastSeq) && lastSeq >= 0, 'the last seq is a non-negative integer');
@@ -79,6 +105,7 @@ export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Ma
   const lines = unsigned.split('\n');
   need(lines[0] === `format\t${FEED_FORMAT}` && lines[lines.length - 1] === '', `expected an unsigned format ${FEED_FORMAT} feed from export-feed`);
   need(!lines.some((l) => l.startsWith('seq\t') || l.startsWith('sig\t') || l.includes('\r')), 'the feed already has a seq or sig line, or a CR');
+  noDuplicateRows(lines);
   let seq;
   if (given === undefined) seq = nextSeq(lastSeq, now);
   else {
@@ -115,6 +142,7 @@ export function verifyFeed(signed, { keys = PUBLIC_KEYS, lastSeq = null, now = M
   need(Number.isSafeInteger(seq), 'seq is too large');
   need(seq <= now + MAX_SEQ_AHEAD, `seq ${seq} is more than a day ahead of the clock (${now})`);
   if (lastSeq !== null) need(seq > lastSeq, `seq ${seq} does not rise above ${lastSeq}`);
+  noDuplicateRows(lines);
   return { keyId: m[1], seq, test: !!key.test };
 }
 
@@ -159,6 +187,14 @@ export function main(argv) {
     const { opt, rest } = options(args, ['last-seq', 'now']);
     need(rest.length === 0, USAGE);
     process.stdout.write(`${nextSeq(opt['last-seq'] === undefined ? 0 : int(opt['last-seq'], '--last-seq'), opt.now === undefined ? undefined : int(opt.now, '--now'))}\n`);
+    return EXIT_OK;
+  }
+  if (cmd === 'unique') {
+    // A signed or unsigned feed that lists a build or a row twice is refused before any upload.
+    const { rest } = options(args, []);
+    need(rest.length === 1, USAGE);
+    noDuplicateRows(readFileSync(rest[0], 'latin1').split('\n'));
+    process.stdout.write('no row is listed twice\n');
     return EXIT_OK;
   }
   if (cmd === 'verify') {

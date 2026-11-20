@@ -31,6 +31,11 @@ name: SR Steam watch
 # else: the new version object map must still change what is served, and every other gate stands. It is never set
 # by the schedule, and it is not `force`: force is the routine retry of a check, and a retry must never be able to
 # release a CL twice (ci/MAP-MODE.md, "Supersede").
+#
+# Retry (the retry_cl input, a hand dispatch only): one CL number whose count of rejected auto-fix attempts starts again
+# from zero, after the owner has looked at why they were rejected. It resets that one CL and nothing else, lifts no other
+# check, and is recorded in the history and in the alert issue. It is never set by the schedule. Agents dispatch it only
+# on the owner's OK (.github/sr-pipeline/README.md).
 
 on:
   schedule:
@@ -47,6 +52,10 @@ on:
         default: false
       supersede:
         description: 'Supersede: the seq of our own release that was bad, for a second release of the same CL (runs the check on the public build as a forced run). Empty for every ordinary run'
+        type: string
+        default: ''
+      retry_cl:
+        description: 'Retry: one CL number whose count of rejected auto-fix attempts starts again from zero (runs the check on the public build as a forced run). Only on the owner''s OK. Empty for every ordinary run'
         type: string
         default: ''
 
@@ -101,11 +110,31 @@ jobs:
             *) echo "::error::a supersede needs admin or write permission on $GH_REPO; $ACTOR has '$perm'"; exit 2 ;;
           esac
 
+      # A retry is a hand dispatch with one CL number, and never with a rehearsal; anything else stops here, before the poll.
+      # Same actor rule as a supersede: admin or write permission, read again from the API, and a permission that cannot be read refuses it.
+      # It resets the count of rejected attempts for that one CL, and lifts no other check.
+      - name: Refuse a malformed retry
+        if: ${{ inputs.retry_cl != '' }}
+        env:
+          RETRY_CL: ${{ inputs.retry_cl }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          [ "$EVENT" = workflow_dispatch ] && [ "$REHEARSAL" != true ] && [[ "$RETRY_CL" =~ ^[1-9][0-9]{0,8}$ ]] \
+            || { echo "::error::retry_cl is one CL number (digits), from a hand dispatch, and never with a rehearsal"; exit 2; }
+          perm="$(gh api "repos/$GH_REPO/collaborators/$ACTOR/permission" --jq .permission)" \
+            || { echo "::error::cannot read the permission of $ACTOR on $GH_REPO, so the retry is refused"; exit 2; }
+          case "$perm" in
+            admin|write) echo "retry: $ACTOR has $perm permission on $GH_REPO" ;;
+            *) echo "::error::a retry needs admin or write permission on $GH_REPO; $ACTOR has '$perm'"; exit 2 ;;
+          esac
+
       - name: Poll Steam
         id: poll
         env:
-          # A supersede runs the check on the public build Steam lists now, as a forced run does.
-          FORCE: ${{ inputs.force == true || inputs.supersede != '' }}
+          # A supersede or a retry runs the check on the public build Steam lists now, as a forced run does.
+          FORCE: ${{ inputs.force == true || inputs.supersede != '' || inputs.retry_cl != '' }}
           REHEARSAL: ${{ inputs.rehearsal }}
         run: |
           flags=()
@@ -128,7 +157,7 @@ jobs:
         id: pr
         if: steps.poll.outputs.changed == 'true' && inputs.rehearsal != true
         env:
-          FORCE: ${{ inputs.force == true || inputs.supersede != '' }}
+          FORCE: ${{ inputs.force == true || inputs.supersede != '' || inputs.retry_cl != '' }}
         run: |
           gh label create game-update --color D93F0B \
             --description 'Steam reported a new StarRupture build' --force
@@ -344,6 +373,8 @@ jobs:
       # Only a hand dispatch can name a release to supersede, and only the public leg publishes; the schedule
       # (and anything else) passes it empty.
       supersede: ${{ github.event_name == 'workflow_dispatch' && matrix.branch == 'public' && inputs.supersede || '' }}
+      # The same for a retry: only a hand dispatch can name the CL, and only the public leg publishes.
+      retry_cl: ${{ github.event_name == 'workflow_dispatch' && matrix.branch == 'public' && inputs.retry_cl || '' }}
     secrets:
       STEAM_CI_USERNAME: ${{ secrets.STEAM_CI_USERNAME }}
       STEAM_CI_LOGIN_CACHE: ${{ secrets.STEAM_CI_LOGIN_CACHE }}

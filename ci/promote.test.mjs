@@ -160,6 +160,13 @@ test('the command line prints the plan, writes the report, and refuses --live', 
   const live = spawnSync(process.execPath, [TOOL, ...args, '--live'], { encoding: 'utf8', windowsHide: true });
   assert.equal(live.status, 3);
   assert.match(live.stderr, /live promotion is not built/);
+  // a history that names one key twice is not read as a history: nothing is promoted on it
+  const dupKey = join(dir, 'dup.json');
+  writeFileSync(dupKey, '{"releases":{"ModLoader:1":{"repo":"ModLoader","cl":"1","seq":5},"ModLoader:1":{"repo":"ModLoader","cl":"1","seq":6}},"attempts":{}}');
+  const dup = spawnSync(process.execPath, [TOOL, ...args.map((a) => (a.endsWith('h.json') ? dupKey : a))], { encoding: 'utf8', windowsHide: true });
+  assert.equal(dup.status, 0);
+  assert.match(dup.stdout, /HOLD: /);
+  assert.doesNotMatch(dup.stdout, /would sign and publish/);
   const noAp = spawnSync(process.execPath, [TOOL, ...args.map((a) => (a.endsWith('a.json') ? join(dir, 'missing.json') : a))], { encoding: 'utf8', windowsHide: true });
   assert.equal(noAp.status, 0);
   assert.match(noAp.stdout, /HOLD: autopilot: /);

@@ -46,6 +46,7 @@ import { pathToFileURL } from 'node:url';
 import { checkAutopilot, checkReleaseLimits } from './decide.mjs';
 import { LOADER_REPO } from './staging.mjs';
 import { MAX_SEQ_AHEAD } from './vmap-sign.mjs';
+import { loadHistory } from './vmap-history.mjs';
 
 export class PromoteError extends Error {}
 
@@ -172,8 +173,10 @@ export function main(argv) {
   try {
     const now = Date.parse(o.now);
     const loadOr = (p) => { try { return readJson(p); } catch { return null; } };
+    // The history is read with the repeated-key check, as decide reads it.
+    const loadHistoryOr = (p) => { try { const got = loadHistory(p); return got.ok ? got.value : null; } catch { return null; } };
     const result = promote({
-      index: readJson(o.index), pub: readJson(o.public), autopilot: loadOr(o.autopilot), history: loadOr(o.history),
+      index: readJson(o.index), pub: readJson(o.public), autopilot: loadOr(o.autopilot), history: loadHistoryOr(o.history),
       lastSeq: /^\d+$/.test(o['last-seq']) ? Number(o['last-seq']) : NaN, now,
       verify: o.verify ? loadOr(o.verify) : null,
       seq: o.seq === undefined ? undefined : (/^[1-9][0-9]*$/.test(o.seq) ? Number(o.seq) : NaN), rollForward: o['roll-forward'] === true, test: o['test-autopilot'] === true,
