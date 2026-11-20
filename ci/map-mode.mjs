@@ -138,7 +138,7 @@ export function readObservations(input) {
           symbolRva: r.symbolRva === undefined || r.symbolRva === null ? null : numberOf(r.symbolRva, `${where}: symbolRva`),
           owners: Array.isArray(r.owners) ? r.owners : null, proposal: proposalOf(r), reason: typeof r.reason === 'string' ? r.reason : null,
         };
-        if (row.ok && (row.rva === null || row.pattern === null)) throw new MapError(`${where}: CL-${cl} reports the row OK but gives no ${row.pattern === null ? 'pattern' : 'rva'}${row.pattern === null && row.rva === null ? ' and no rva' : ''}; the scanner found the address without a signature, so the map cannot carry it and the whole write is refused`);
+        if (row.ok && (row.rva === null || row.pattern === null)) throw new MapError(`${where}: CL-${cl} reports the row OK but gives no ${row.pattern === null ? 'pattern' : 'rva'}${row.pattern === null && row.rva === null ? ' and no rva' : ''}; the scanner found the address without a signature${row.pattern === null && r.candidatesNote ? ` (${r.candidatesNote})` : ''}, so the map cannot carry it and the whole write is refused`);
         if (!row.tracked) { if (!row.ok) patches.push({ owner: c.owner, tag: rel.tag, key: r.key, result: r.result }); continue; }
         rows.push(row);
       }
@@ -360,6 +360,15 @@ function harnessRow(r, owner) {
   const row = { key: r.key, kind: r.kind, result: r.result, required: owner === 'ModLoader' && r.required === true };
   for (const f of ['fp', 'rva', 'symbolRva', 'pattern', 'resultOffset', 'followRel32At', 'followRipDispAt', 'siteArithmetic', 'suggest']) {
     if (r[f] !== undefined) row[f] = r[f];
+  }
+  // A request that gave several patterns (its own and the candidates of other builds)
+  // prints them as `candidates` with no top-level pattern. The row's pattern is the one
+  // string every matching candidate (matches === 1) agrees on; if they differ, or none
+  // matches once, the row stays without one and the OK check refuses it.
+  if (row.pattern === undefined && Array.isArray(r.candidates)) {
+    const matching = new Set(r.candidates.filter((c) => c && c.matches === 1 && typeof c.pattern === 'string' && c.pattern).map((c) => c.pattern));
+    if (matching.size === 1) row.pattern = [...matching][0];
+    else row.candidatesNote = 'its candidates were not a single distinct match';
   }
   return row;
 }
