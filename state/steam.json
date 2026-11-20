@@ -5,12 +5,16 @@
       "name": "StarRupture",
       "branches": {
         "public": {
-          "buildid": "25646882",
-          "timeupdated": 1791183280
+          "buildid": "26750759",
+          "timeupdated": 1795080048
         },
         "public_test_branch": {
           "buildid": "26271156",
           "timeupdated": 1793261368
+        },
+        "v.0.3.5_for_ds": {
+          "buildid": "26781824",
+          "timeupdated": 1795083991
         }
       }
     },
