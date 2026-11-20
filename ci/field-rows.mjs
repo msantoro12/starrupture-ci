@@ -368,6 +368,15 @@ export function fieldRows(headerText, { cl, keys, next, base, uses = null, sourc
   return { text: problems.length ? null : emit(out), added, rows: plan.rows.map((r) => r.key), problems, absent: plan.absent, covered: plan.covered, notes: plan.notes, alerts: plan.alerts, degraded: plan.degraded };
 }
 
+// The plain key list the check's layout step writes. That step does not fail the check, so a missing list is
+// said once, with its cause, instead of as a bare ENOENT.
+export function readLayoutKeys(path) {
+  try { return readFileSync(path, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+    throw new MapError(`layout step produced no layout-keys.txt (${path} is missing); see the 'Read the used layouts from the PDBs' step`);
+  }
+}
+
 // The key list as the client check has it: ci/native-keys.txt (each plugin's
 // native members, with built values and `optional` where a line gives them) and
 // the plain list of keys the layout reports were read with. A key in both is
@@ -431,7 +440,7 @@ export function main(argv) {
   }
   try {
     const keys = fromCheck
-      ? keysFromCheck(readFileSync(o['native-keys'], 'utf8'), readFileSync(o['layout-keys'], 'utf8'))
+      ? keysFromCheck(readFileSync(o['native-keys'], 'utf8'), readLayoutKeys(o['layout-keys']))
       : unionKeys(o.keys.map((p) => parseKeys(readFileSync(p, 'utf8'), p)));
     const uses = o.uses ? parseUses(readFileSync(o.uses, 'utf8'), o.uses) : null;
     const next = parseLayoutReport(readFileSync(o.next, 'utf8'), o.next);

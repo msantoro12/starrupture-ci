@@ -457,6 +457,14 @@ test('command line: record writes the asset, reference writes the base report an
   assert.equal(run(['bogus']).code, 2);
 });
 
+test('command line: reference without the layout step\'s layout-keys.txt says why in one line, not an ENOENT stack', () => {
+  const text = JSON.stringify(make(), null, 2) + '\n';
+  const p = inDir({ 'header.h': HEADER, 'rec.json': text, 'release.json': JSON.stringify(releaseFor(text)), 'native-keys.txt': '' });
+  const r = run(['reference', p('header.h'), '--record', p('rec.json'), '--release', p('release.json'), '--cl', '127004', '--sha256', SHA, '--native-keys', p('native-keys.txt'), '--layout-keys', p('layout-keys.txt'), '--out', p('base.json')]);
+  assert.equal(r.code, 3);
+  assert.match(r.err, /^layout step produced no layout-keys\.txt .*; see the 'Read the used layouts from the PDBs' step\n$/);
+});
+
 test('command line: --published names a directory; its file is cross-checked, and a missing one is skipped with one line', () => {
   const pub = published([hrow('ACrCrafter::CraftComponent', 1752, 8), hrow('AFoo::Bar', 16, 8)]);
   const text = JSON.stringify(make(), null, 2) + '\n';

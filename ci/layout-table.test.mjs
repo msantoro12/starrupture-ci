@@ -368,6 +368,22 @@ test('the header is deterministic and survives a round trip through parseHeader'
   assert.equal(renderHeader(buildTable(layout, layout.keys(), { cl: 1, sdk }), { namespace: 'Foo' }).includes('namespace Foo {'), true);
 });
 
+test('CLI: gen reads an Assertions.inl with Game SDK interface vtable offset lines and writes the same table', () => {
+  const dir = tmp();
+  const sdk = writeSdk();
+  const plain = join(dir, 'plain.inl');
+  const withInterface = join(dir, 'interface.inl');
+  writeFileSync(plain, inl(WIDGET));
+  writeFileSync(withInterface, inl(WIDGET).replace('SDK_NAMESPACE_END', 'static_assert(GetInterfaceOffset<UCrWidget, ICrThing>() == 0x0028, "Wrong interface VFT offset for \'UCrWidget::ICrThing\'"); \\\n\nSDK_NAMESPACE_END'));
+  const used = join(dir, 'used.txt');
+  writeFileSync(used, 'UCrWidget\nFCrThing\n');
+  const gen = (src, out) => run('gen', src, '--cl', '9', '--used', used, '--sdk', sdk, '--out', out);
+  assert.equal(gen(plain, join(dir, 'a.h')).code, 0);
+  const r = gen(withInterface, join(dir, 'b.h'));
+  assert.equal(r.code, 0, r.err);
+  assert.equal(readFileSync(join(dir, 'b.h'), 'utf8'), readFileSync(join(dir, 'a.h'), 'utf8'), 'an interface line changes nothing in the table');
+});
+
 test('without headers the table is offsets only and says so', () => {
   const layout = parseAssertions(inl(WIDGET), 'test');
   const t = buildTable(layout, ['UCrWidget'], { cl: 5 });
