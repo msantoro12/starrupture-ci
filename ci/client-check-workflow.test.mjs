@@ -1551,6 +1551,12 @@ test('S1 check: the rig\'s own set is resolved, fetched through the rig\'s cache
   // The rig's own script and its names file, from this repository.
   const tool = stepText(j, names[0]);
   assert.ok(tool.includes('ci/client-rig-set.ps1') && tool.includes('ci/plugin-names.json') && tool.includes('persist-credentials: false'));
+  // Every repository file the script reads next to itself is checked out with it: a missing one made Resolve throw,
+  // no facts were read and no refusal was declared to the rigs (run 44620381883).
+  const script = readFileSync(join(here, 'client-rig-set.ps1'), 'utf8').replace(/\r\n/g, '\n');
+  const reads = [...script.matchAll(/Join-Path \$PSScriptRoot '([^']+)'/g)].map((m) => join('ci', m[1].replace(/\\/g, '/')).replace(/\\/g, '/'));
+  assert.deepEqual(reads.sort(), ['.github/sr-pipeline/rig-branches.json', 'ci/plugin-names.json']);
+  for (const f of reads) assert.ok(tool.includes(`            ${f}\n`), `the rig tool checkout lists ${f}`);
   const res = stepText(j, names[1]);
   assert.ok(res.includes('-Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER'));
   assert.ok(res.includes("MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}"), 'the rig\'s default owner');
