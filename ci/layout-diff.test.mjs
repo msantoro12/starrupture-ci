@@ -85,6 +85,7 @@ test('interface vtable offset asserts are skipped, with and without the trailing
   bad('static_assert(GetInterfaceOffset<USoundBase, I>() == 28, "Wrong interface VFT offset for \'X\'");');
   bad('static_assert(GetInterfaceOffset<USoundBase, I>() != 0x0028, "Wrong interface VFT offset for \'X\'");');
   bad('static_assert(GetInterfaceOffset<USoundBase, I>() == 0x0028, "Wrong interface VFT offset for \'X\'") junk');
+  bad('static_assert(GetInterfaceOffset<USoundBase, I>() == 0x0028, "Wrong interface VFT offset for \'X\'"); static_assert(sizeof(AFoo) == 0x000050, "Wrong size on AFoo");');
   bad('static_assert(GetVtableOffset<USoundBase, I>() == 0x0028, "Wrong interface VFT offset for \'X\'");');
 });
 

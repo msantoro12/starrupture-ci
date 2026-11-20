@@ -368,13 +368,6 @@ export function fieldRows(headerText, { cl, keys, next, base, uses = null, sourc
   return { text: problems.length ? null : emit(out), added, rows: plan.rows.map((r) => r.key), problems, absent: plan.absent, covered: plan.covered, notes: plan.notes, alerts: plan.alerts, degraded: plan.degraded };
 }
 
-// The key list as the client check has it: ci/native-keys.txt (each plugin's
-// native members, with built values and `optional` where a line gives them) and
-// the plain list of keys the layout reports were read with. A key in both is
-// native; any other key in the plain list is a reflected field. A native key is
-// optional only when every plugin's line for it says so. The result also
-// carries `owners` (the plugins whose lines list each native key) and
-// `optionalBy` (the plugins whose line marks it optional).
 // The plain key list the check's layout step writes. That step does not fail the check, so a missing list is
 // said once, with its cause, instead of as a bare ENOENT.
 export function readLayoutKeys(path) {
@@ -384,6 +377,13 @@ export function readLayoutKeys(path) {
   }
 }
 
+// The key list as the client check has it: ci/native-keys.txt (each plugin's
+// native members, with built values and `optional` where a line gives them) and
+// the plain list of keys the layout reports were read with. A key in both is
+// native; any other key in the plain list is a reflected field. A native key is
+// optional only when every plugin's line for it says so. The result also
+// carries `owners` (the plugins whose lines list each native key) and
+// `optionalBy` (the plugins whose line marks it optional).
 export function keysFromCheck(nativeText, layoutText) {
   const natives = new Map();
   for (const e of parseNativeKeys(nativeText)) {

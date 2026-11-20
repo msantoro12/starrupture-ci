@@ -46,7 +46,7 @@ const RE_ALIGN = /^static_assert\(alignof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong al
 const RE_SIZE = /^static_assert\(sizeof\((.+)\) == 0x([0-9A-Fa-f]+), "Wrong size on .*"\);( \\)?$/;
 const RE_OFFSET = /^static_assert\(offsetof\((.+), ([A-Za-z0-9_]+)\) == 0x([0-9A-Fa-f]+), "Member '.*' has a wrong offset!"\);( \\)?$/;
 // Interface vtable offsets (newer Game SDK dumps): not a member offset, size or alignment, so no layout table row.
-const RE_INTERFACE = /^static_assert\(GetInterfaceOffset<.+>\(\) == 0x[0-9A-Fa-f]+, "Wrong interface VFT offset for .*"\);( \\)?$/;
+const RE_INTERFACE = /^static_assert\(GetInterfaceOffset<[^"]+>\(\) == 0x[0-9A-Fa-f]+, "Wrong interface VFT offset for [^"]*"\);( \\)?$/;
 const RE_IGNORED = /^(\/\/|\/\*|\*|#pragma|SDK_NAMESPACE_START|#define DUMPER7_ASSERTS_\S+ \\$)/;
 
 // A layout is a Map<class, Map<member, number>>; @size and @align are members.
