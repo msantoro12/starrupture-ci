@@ -56,6 +56,10 @@ on:
         description: 'true: the loader''s map has no row for this build, so the rig passes if the loader declines cleanly (the version-mismatch line, no plugin loaded, no crash, the game still running) or, from loader v1.26.0, boots on the newest known build''s checked values (no crash, nothing the loader refuses left loaded)'
         type: string
         default: ''
+      known_cls:
+        description: 'With expect_decline: the CLs of the candidate map''s build rows (space separated). If the loader accepts the build as one of them (its exe is a known one under a new Steam build id), the rig expects a normal boot'
+        type: string
+        default: ''
       remove_plugins:
         description: 'Plugins taken out of the install but still expected, so they must show as missing'
         type: string
@@ -88,6 +92,10 @@ on:
         default: ''
       expect_decline:
         description: 'true: the loader''s map has no row for this build, so the rig passes if the loader declines cleanly (the version-mismatch line, no plugin loaded, no crash, the game still running) or, from loader v1.26.0, boots on the newest known build''s checked values (no crash, nothing the loader refuses left loaded)'
+        type: string
+        default: ''
+      known_cls:
+        description: 'With expect_decline: the CLs of the candidate map''s build rows (space separated); a build the loader accepts as one of them is expected to boot'
         type: string
         default: ''
       remove_plugins:
@@ -154,6 +162,7 @@ jobs:
       EXPECT: ${{ inputs.expect }}
       EXPECT_REFUSED: ${{ inputs.expect_refused }}
       EXPECT_DECLINE: ${{ inputs.expect_decline }}
+      KNOWN_CLS: ${{ inputs.known_cls }}
       REMOVE_PLUGINS: ${{ inputs.remove_plugins }}
       FEED_ARTIFACT: ${{ inputs.feed_artifact }}
       FEED_SEQ: ${{ inputs.feed_seq }}
@@ -290,7 +299,7 @@ jobs:
           $feed = @{}
           if ($env:FEED_ARTIFACT) { $feed = @{ FeedFile = 'feed/feed.test-signed.txt'; FeedSeq = $env:FEED_SEQ; FeedCl = $env:FEED_CL } }
           ./ci/client-rig-set.ps1 -Mode Resolve -Branch $env:BRANCH -Tags $env:TAGS -Expect $env:EXPECT `
-            -ExpectRefused $env:EXPECT_REFUSED -ExpectDecline $env:EXPECT_DECLINE -RemovePlugins $env:REMOVE_PLUGINS -Owner $env:MOD_OWNER -CandidateDir $cand @feed
+            -ExpectRefused $env:EXPECT_REFUSED -ExpectDecline $env:EXPECT_DECLINE -KnownCls $env:KNOWN_CLS -RemovePlugins $env:REMOVE_PLUGINS -Owner $env:MOD_OWNER -CandidateDir $cand @feed
 
       # Repeat runs download nothing: the owner reads the public download counts.
       - name: Restore the release files
