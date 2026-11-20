@@ -72,6 +72,22 @@ test('parse errors: unknown assertion, truncated file, empty, conflicting duplic
   assert.throws(() => parseAssertions(nosize, 't'), /no sizeof/);
 });
 
+test('interface vtable offset asserts are skipped, with and without the trailing backslash; any other unknown assert still throws', () => {
+  const iface = (tail) => 'static_assert(GetInterfaceOffset<USoundBase, IAudioPropertiesSheetAssetUserInterface>() == 0x0028, "Wrong interface VFT offset for \'USoundBase::IAudioPropertiesSheetAssetUserInterface\'");' + tail;
+  const plain = parse({ AFoo: A });
+  for (const tail of [' \\', '']) {
+    const l = parseAssertions(inl({ AFoo: A }).replace('SDK_NAMESPACE_END', iface(tail) + '\nSDK_NAMESPACE_END'), 't');
+    assert.deepEqual([...l.keys()], [...plain.keys()], 'an interface line adds no class');
+    assert.deepEqual([...l.get('AFoo')], [...plain.get('AFoo')], 'and no member');
+  }
+  const bad = (line) => assert.throws(() => parseAssertions(inl({ AFoo: A }).replace('SDK_NAMESPACE_END', line + '\nSDK_NAMESPACE_END'), 't'), ParseError);
+  bad('static_assert(GetInterfaceOffset<USoundBase, I>() == 0x0028, "something else");');
+  bad('static_assert(GetInterfaceOffset<USoundBase, I>() == 28, "Wrong interface VFT offset for \'X\'");');
+  bad('static_assert(GetInterfaceOffset<USoundBase, I>() != 0x0028, "Wrong interface VFT offset for \'X\'");');
+  bad('static_assert(GetInterfaceOffset<USoundBase, I>() == 0x0028, "Wrong interface VFT offset for \'X\'") junk');
+  bad('static_assert(GetVtableOffset<USoundBase, I>() == 0x0028, "Wrong interface VFT offset for \'X\'");');
+});
+
 test('an identical duplicate assertion is accepted', () => {
   const text = inl({ AFoo: A }).replace('SDK_NAMESPACE_END', `static_assert(sizeof(AFoo) == 0x000040, "Wrong size on AFoo");\nSDK_NAMESPACE_END`);
   assert.equal(parseAssertions(text, 't').get('AFoo').get('@size'), 0x40);

@@ -375,6 +375,15 @@ export function fieldRows(headerText, { cl, keys, next, base, uses = null, sourc
 // optional only when every plugin's line for it says so. The result also
 // carries `owners` (the plugins whose lines list each native key) and
 // `optionalBy` (the plugins whose line marks it optional).
+// The plain key list the check's layout step writes. That step does not fail the check, so a missing list is
+// said once, with its cause, instead of as a bare ENOENT.
+export function readLayoutKeys(path) {
+  try { return readFileSync(path, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+    throw new MapError(`layout step produced no layout-keys.txt (${path} is missing); see the 'Read the used layouts from the PDBs' step`);
+  }
+}
+
 export function keysFromCheck(nativeText, layoutText) {
   const natives = new Map();
   for (const e of parseNativeKeys(nativeText)) {
@@ -431,7 +440,7 @@ export function main(argv) {
   }
   try {
     const keys = fromCheck
-      ? keysFromCheck(readFileSync(o['native-keys'], 'utf8'), readFileSync(o['layout-keys'], 'utf8'))
+      ? keysFromCheck(readFileSync(o['native-keys'], 'utf8'), readLayoutKeys(o['layout-keys']))
       : unionKeys(o.keys.map((p) => parseKeys(readFileSync(p, 'utf8'), p)));
     const uses = o.uses ? parseUses(readFileSync(o.uses, 'utf8'), o.uses) : null;
     const next = parseLayoutReport(readFileSync(o.next, 'utf8'), o.next);

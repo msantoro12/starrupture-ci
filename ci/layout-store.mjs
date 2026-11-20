@@ -63,7 +63,7 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ParseError } from './layout-diff.mjs';
-import { REFLECTED_SIZE_KEYS, keysFromCheck } from './field-rows.mjs';
+import { REFLECTED_SIZE_KEYS, keysFromCheck, readLayoutKeys } from './field-rows.mjs';
 import { KIND, parseHeader, parseLayoutReport } from './layout-table.mjs';
 import { numberOf } from './map-mode.mjs';
 import { EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, MapError, buildMismatch, parse, parseFeed } from './version-map.mjs';
@@ -454,7 +454,7 @@ export function main(argv, sdkCheck = SDK_TABLE_CHECK) {
       // The SDK tables, likewise: anything unreadable there is absent, and the check is skipped.
       const softIn = (f) => { try { return read(join(o['sdk-tables'], f)); } catch { return null; } };
       const listing = o['sdk-tables'] ? (() => { try { return readdirSync(o['sdk-tables']).filter((f) => SDK_TABLES.table.test(f)).sort(); } catch { return []; } })() : null;
-      const checkKeys = keysFromCheck(read(o['native-keys']), read(o['layout-keys']));
+      const checkKeys = keysFromCheck(read(o['native-keys']), readLayoutKeys(o['layout-keys']));
       const sdkTables = listing && { header: softIn(SDK_TABLES.header), tables: listing.map((name) => ({ name, text: softIn(name) ?? '' })), loaderKeys: softIn(SDK_TABLES.loaderKeys), nativeKeys: [...checkKeys.owners.keys()] };
       // A list that cannot be read or parsed is a defect in the repository: it refuses when enforcing, and is
       // reported (nothing excused) when not.
