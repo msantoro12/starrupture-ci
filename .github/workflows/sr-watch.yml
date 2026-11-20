@@ -81,8 +81,9 @@ jobs:
           ref: main
 
       # A supersede is a hand dispatch with a seq, and never with a rehearsal; anything else stops here, before the poll.
-      # It is also the owner's way round: the dispatching actor must hold admin or write permission on this repository
-      # (read again from the API, never taken from the input), and a permission that cannot be read refuses it.
+      # The dispatching actor must hold admin or write permission on this repository (read again from the API, never
+      # taken from the input), and a permission that cannot be read refuses it. Dispatching a workflow needs write
+      # anyway, so this cannot tell an agent from the owner; the policy carries that: Agents dispatch supersede (or retry) only on the owner's OK: write access cannot tell an agent from the owner, so this policy carries it.
       - name: Refuse a malformed supersede
         if: ${{ inputs.supersede != '' }}
         env:

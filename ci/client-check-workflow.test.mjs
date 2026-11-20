@@ -4458,7 +4458,7 @@ test('supersede (alert): a second release is a line in the alert issue with what
   assert.match(job('alert'), /\n {6}ACTOR: \$\{\{ github\.actor \}\}\n/);
 });
 
-// ------------------------------------------------------------ the history record: fail closed, feed first, owner only
+// ------------------------------------------------------------ the history record: fail closed, feed first, a restore command for every state
 
 // The chain's read of the vmap-feed release, run against a stand-in for gh: the release answers as MODE says (ok, 404 or another error),
 // lists the assets named in ASSETS, and a download fails when DL_FAIL names its pattern.
@@ -4520,6 +4520,15 @@ test('history download (chain): a flaky download stops the chain and is never re
   assert.match(noAsset.r.stdout, /has no vmap-history\.json and this run publishes/);
   assert.equal(readReleaseRun({ assets: [], first: true }).history, EMPTY_HISTORY, 'a first publish on a release with no assets');
   assert.equal(readReleaseRun({ assets: ['version-map-client.v1.txt'], publish: false }).history, EMPTY_HISTORY);
+  // a release with a history asset but no feed asset (a partial upload): a first publish does not read that history, it names a release that never went out
+  const orphan = readReleaseRun({ assets: ['vmap-history.json'], first: true });
+  assert.equal(orphan.r.status, 0, orphan.r.stdout + orphan.r.stderr);
+  assert.equal(orphan.history, EMPTY_HISTORY, 'a first publish on a release that lists only the history');
+  assert.ok(!callsOf(orphan.dir).some((c) => /^gh release download/.test(c)), 'nothing is downloaded');
+  // the same release for a run that publishes without being a first publish reads the history: it is never started again from nothing
+  const orphanRun = readReleaseRun({ assets: ['vmap-history.json'] });
+  assert.equal(orphanRun.r.status, 0, orphanRun.r.stdout + orphanRun.r.stderr);
+  assert.match(orphanRun.history, /"cl":"130000"/);
   // any other error on the release itself stops, whatever the run
   for (const flags of [{}, { first: true }, { publish: false }]) {
     const bad = readReleaseRun({ mode: 'err', ...flags });
@@ -4528,6 +4537,9 @@ test('history download (chain): a flaky download stops the chain and is never re
   }
 });
 
+// The one command a restore needs, as the publish job prints it: the history rides inside it.
+const restoreCommand = (text) => (text.match(/^echo [A-Za-z0-9+/=]+ \| base64 -d > vmap-history\.json && gh release upload vmap-feed vmap-history\.json --clobber --repo \S+$/m) ?? [])[0];
+
 test('history upload (publish job): the feed goes first and is verified, the history last; a failed feed leaves the history alone, a failed history says how to restore it', { skip: !bash }, () => {
   // the feed upload fails: nothing else is written
   const feedFail = publishFixture();
@@ -4535,19 +4547,48 @@ test('history upload (publish job): the feed goes first and is verified, the his
   const f = signAndPublish(feedFail, { UPLOAD_FAIL: 'version-map-client' });
   assert.notEqual(f.status, 0);
   assert.deepEqual(callsOf(feedFail.dir).filter((l) => /^gh release upload/.test(l)), ['gh release upload vmap-feed version-map-client.v1.txt --clobber'], 'the history upload never started');
+  // state a: the text says the history is untouched and a re-run can sign again, and it does not claim the feed is live
+  assert.match(f.stdout, /::error::the feed \(seq 200\) did not upload; the history was not written and the once-per-CL record is as it was, so a re-run can sign again/);
+  assert.ok(!/live/.test(f.stdout.split('::error::')[1] ?? ''), 'the error line does not claim the feed is live');
   // the feed is up but does not verify: the history is not written either
   const feedBad = publishFixture();
   writeFileSync(join(feedBad.dir, 'last-seq.txt'), '100\n');
-  assert.notEqual(signAndPublish(feedBad, { TAMPER: 'feed' }).status, 0);
+  const bad = signAndPublish(feedBad, { TAMPER: 'feed' });
+  assert.notEqual(bad.status, 0);
   assert.ok(!callsOf(feedBad.dir).some((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber'));
+  // state b (the feed is live, the history is not): the failure says a re-run is held and a supersede refused, and prints the one command
+  assert.match(bad.stdout, /::error::the feed \(seq 200\) is on the live release but this run did not confirm it, and the history entry is not written: a re-run is held and a supersede is refused until it is/);
+  assert.ok(restoreCommand(bad.stdout), 'the command is printed');
+  assert.ok(restoreCommand(readFileSync(join(feedBad.dir, 'summary.md'), 'utf8')), 'and written to the job summary');
   // the history upload fails after the feed is live: three tries, then the job stops with the recovery command and the history to restore
   const histFail = publishFixture();
   writeFileSync(join(histFail.dir, 'last-seq.txt'), '100\n');
   const h = signAndPublish(histFail, { UPLOAD_FAIL: 'vmap-history' });
   assert.equal(h.status, 2);
   assert.equal(callsOf(histFail.dir).filter((l) => l === 'gh release upload vmap-feed vmap-history.json --clobber').length, 3);
-  assert.match(h.stdout, /::error::the feed \(seq 200\) is live but vmap-history\.json did not upload; nothing can release this CL again, a supersede is refused until the history holds its entry: .*gh release upload vmap-feed vmap-history\.json --clobber/);
-  assert.match(h.stdout, /"seq": 200/, 'the history to restore is printed');
+  assert.match(h.stdout, /::error::the feed \(seq 200\) is live but vmap-history\.json did not upload; a re-run is held and a supersede is refused until the history holds its entry: the one command that writes it is in the job summary and below/);
+  assert.ok(restoreCommand(h.stdout), 'the command is printed after the failure');
+  assert.ok(restoreCommand(readFileSync(join(histFail.dir, 'summary.md'), 'utf8')), 'and written to the job summary');
+  // the command, run as printed from another directory, writes the history entry of this release
+  const cmd = restoreCommand(h.stdout);
+  const away = mkdtempSync(join(tmpdir(), 'restore-away-'));
+  mkdirSync(join(away, 'bin'));
+  writeFileSync(join(away, 'bin', 'gh'), readFileSync(join(histFail.dir, 'bin', 'gh'), 'utf8'));
+  chmodSync(join(away, 'bin', 'gh'), 0o755);
+  const run = sh(cmd, away, { PATH: join(away, 'bin') + delimiter + process.env.PATH });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(callsOf(away), ['gh release upload vmap-feed vmap-history.json --clobber --repo o/r']);
+  assert.equal(readFileSync(join(away, 'vmap-history.json'), 'utf8'), readFileSync(join(histFail.dir, 'vmap-history.json'), 'utf8'), 'the history it uploads is the one this run wrote');
+  assert.deepEqual(JSON.parse(readFileSync(join(away, 'vmap-history.json'), 'utf8')).releases.map((x) => [x.cl, x.seq]), [[129999, 200]]);
+  // a run cancelled between the feed upload and the history step: the feed step already printed the command, before the upload, to the log and the summary
+  const cancelled = publishFixture();
+  writeFileSync(join(cancelled.dir, 'last-seq.txt'), '100\n');
+  assert.equal(runPublishStep(cancelled, 'Sign with the release key and verify').status, 0);
+  const upFail = runPublishStep(cancelled, 'Publish the feed to the live release', { UPLOAD_FAIL: 'version-map-client' });
+  assert.ok(upFail.stdout.indexOf(restoreCommand(upFail.stdout)) < upFail.stdout.indexOf('::error::'), 'the command is in the log before the upload is tried');
+  const summary = readFileSync(join(cancelled.dir, 'summary.md'), 'utf8');
+  assert.ok(restoreCommand(summary), 'the job summary holds the command after the feed step alone');
+  assert.match(summary, /a re-run is held \(the live feed covers it\) and a supersede is refused \(the history lacks seq 200\)/);
   // a history that fails once and lands on the retry passes
   const retry = publishFixture();
   writeFileSync(join(retry.dir, 'last-seq.txt'), '100\n');

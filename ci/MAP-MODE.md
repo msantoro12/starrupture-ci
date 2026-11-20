@@ -1166,19 +1166,28 @@ stays: one release per CL (`maxReleasesPerClPerRepo`), the attempts limit (`maxA
 #### A history that did not upload
 
 The publish job uploads the feed first, downloads it again and checks its signature, seq and sha256, and only then
-writes the history (three tries, then a check of the uploaded copy). So a feed upload that fails or does not verify
-leaves the history exactly as it was, and a re-run signs again. If the last write fails, the feed is live and covers
-the CL (nothing can release it again), but the once-per-CL record lacks its entry and a supersede is refused until the
-history holds it. The job fails; its first error line says so and the log prints the history it was writing. To
-restore it, save that JSON as `vmap-history.json` and run one command:
+writes the history (three tries, then a check of the uploaded copy). There are two states to recover from.
+
+- **The feed did not upload.** The history is untouched and the live release is as it was, so a re-run is allowed
+  and signs again. Nothing to restore.
+- **The feed is live and the history entry is not written.** The history write failed, the feed did not verify
+  after its upload, or the run was cancelled (or timed out) between the two steps. The live feed covers the CL, so a
+  re-run is held by the published version object map and a supersede is refused (the named seq is not in the
+  history). A re-run does not fix this; one command does. The `Publish the feed to the live release` step prints
+  it BEFORE it uploads the feed (in its log and in the job summary), so even a cancelled run leaves it behind, and
+  the later steps print it again when they fail. It carries the history inside it and writes the entry of this
+  release:
 
 ```
-gh release upload vmap-feed vmap-history.json --clobber
+echo <history, base64> | base64 -d > vmap-history.json && gh release upload vmap-feed vmap-history.json --clobber --repo <owner>/<repo>
 ```
+
+  Run it from any shell that is logged in to `gh` with write access. If the feed did not verify, look at what the
+  release holds first and run it only when the feed there is the one this run signed.
 
 The chain's error "the vmap-feed release has no vmap-history.json" is the same state seen from the next run (the
 asset is missing, for example after an upload that deleted the old copy and then failed): restore it the same way,
-from the last published history.
+from the last published history (the command above, taken from the failed run).
 
 #### Supersede: a second release of a CL
 
@@ -1200,9 +1209,10 @@ It is not `force`: force is the routine retry of a check and must never release 
   and "the candidate must change what is served for that CL" all still apply.
 - **Who.** The `sr-watch` step that checks the input also reads the dispatching actor's permission on the
   repository (`gh api repos/<repo>/collaborators/<actor>/permission`) and refuses unless it is admin or write; a
-  permission that cannot be read refuses it too. The alert line still names the actor.
+  permission that cannot be read refuses it too. Dispatching a workflow already needs write access, so this does not
+  tell an agent from the owner. Agents dispatch supersede (or retry) only on the owner's OK: write access cannot tell an agent from the owner, so this policy carries it. The alert line names the actor.
 - **The history has to hold the release.** The named seq must be a release of that CL in `vmap-history.json`, so after
-  a history write that failed (see "A history that did not upload") restore the history first.
+  a history write that failed (see "A history that did not upload") restore the history first, with the command printed there.
 
 A manual `release.yml` dispatch (a loader release, not a version object map publish) stays outside the pipeline's
 checks: nothing here judges it.
