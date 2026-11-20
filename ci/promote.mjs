@@ -21,17 +21,16 @@
 //
 // Promote = rebase the data commit onto the loader fork's tip, land it as a PR
 // from the fork (merged once CI passes), export the feed, sign it, publish it
-// under state/autopilot.json path "M" (fails closed; the daily cap counts
-// publishes of the loader repo). A superseded staged CL is listed and skipped,
+// under state/autopilot.json path "M" (fails closed; one publish per CL of the
+// loader repo). A superseded staged CL is listed and skipped,
 // never published. A staged CL that is not the public build stays staged.
 //
 // seq is max(now, last + 1) in UTC seconds, as the signer writes it. --seq <N> plans
 // with a seq computed once elsewhere (vmap-sign.mjs next-seq), the one the signer and
 // the history entry get too; it must rise above --last-seq and be at most a day ahead
-// of --now, or the plan is refused. A publish
-// counts against the daily cap and the gap; only an owner-dispatched
+// of --now, or the plan is refused. Only an owner-dispatched
 // roll-forward (--roll-forward: a newer seq replacing a bad publish of the same
-// CL) is exempt from the one-publish-per-CL limit.
+// CL) is exempt from the one-publish-per-CL limit; no limit reads a clock.
 //
 // This is a plan printer. plan() reads files and returns lines; promote() calls
 // no effect in dry run and refuses a live run, so nothing is signed, published
@@ -44,7 +43,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { checkAutopilot, checkRateLimits } from './decide.mjs';
+import { checkAutopilot, checkReleaseLimits } from './decide.mjs';
 import { LOADER_REPO } from './staging.mjs';
 import { MAX_SEQ_AHEAD } from './vmap-sign.mjs';
 
@@ -63,12 +62,12 @@ export function classify(entry, pub) {
 // The checks are decide.mjs's, so a publish and a release obey one set of limits.
 // test: a dispatched test run plans past a disabled autopilot (every other check
 // stays); its plan is marked a test and is never published.
-export function gate({ autopilot, history, cl, now, rollForward = false, test = false }) {
+export function gate({ autopilot, history, cl, rollForward = false, test = false }) {
   const ap = checkAutopilot({ ok: true, value: autopilot });
   if (ap.error) return [ap.error];
   if (!ap.enabled && !test) return ['autopilot is disabled (enabled is not true)'];
   if (!ap.paths.includes('M')) return ['path M (map-only update) is not enabled in autopilot.paths'];
-  return checkRateLimits({ historyLoaded: { ok: true, value: history }, repo: LOADER_REPO, cl: String(cl), path: 'M', nowMs: now, maxPerDay: ap.maxPerDay, rollForward });
+  return checkReleaseLimits({ historyLoaded: { ok: true, value: history }, repo: LOADER_REPO, cl: String(cl), path: 'M', secondRelease: rollForward });
 }
 
 // Returns { action, kind, cl, seq, lines, hold }; kind is how the public build
@@ -132,7 +131,7 @@ function planOnce({ index, pub, autopilot, history, lastSeq, now, verify, rollFo
   lines.push(`rebase ${repo.ref} (${short(repo.sha)}) onto the ${LOADER_REPO} fork's current tip; regenerate the data commit if it conflicts`);
   lines.push(`open a PR from the fork into ${LOADER_REPO} main for CL-${pub.cl}; merge once CI passes`);
   if (rollForward) lines.push(`roll-forward: an owner-dispatched re-publish of CL-${pub.cl}; the one-publish-per-CL limit does not apply`);
-  const hold = gate({ autopilot, history, cl: pub.cl, now, rollForward, test });
+  const hold = gate({ autopilot, history, cl: pub.cl, rollForward, test });
   if (!isObj(verify) || verify.ok !== true) hold.push(`no passing ${check} result on the public exe`);
   // The signer's rule: the UTC second of signing, and never back.
   const seq = given ?? Math.max(Math.floor(now / 1000), lastSeq + 1);

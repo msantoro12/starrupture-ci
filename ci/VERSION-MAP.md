@@ -112,8 +112,8 @@ node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <C
   component; the rule then runs over the union of the lists.
 - `export-feed` writes the loader map as the feed (below) to `--out`, which must
   not be the header. Every CL in the header goes into the feed, and a feed over
-  the size cap (`FEED_MAX_BYTES`, half of the 1 MiB every loader accepts) is refused
-  with its size.
+  the size cap (`FEED_MAX_BYTES`, 1,040,000 bytes, under the 1 MiB loaders from v1.23.0
+  accept) is refused with its size.
 - `import-published` adds to the header every build line and row of the signed feed
   that the header lacks, so the next `export-feed` still carries them. It reads the
   feed only after the signature verifies. See "The published feed is part of the base".
@@ -307,7 +307,7 @@ field	ACrCharacterPlayerBase::ADSMoveSpeed	128786	0x13C8	0x4	0x00	ADSMoveSpeedSc
   read alone names its exe.
 - The feed has no `kBuiltCL`, no sequence number and no signature; signing is
   not this tool's. It is unsigned bytes, not a checkout file, so CRLF is refused.
-- `export-feed` fails above 512 KiB, so the loader's 1 MiB cap is never reached
+- `export-feed` fails above 1,040,000 bytes, so the loader's 1 MiB cap is never reached
   silently.
 
 `parseFeed` reads a feed back strictly: any line off the format is

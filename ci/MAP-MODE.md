@@ -570,8 +570,7 @@ paths are `M`, `B` and `C`:
 - **C**: a used class moved. Held until that path is proven.
 
 `state/autopilot.json` lists the paths that may run unattended (`"paths": ["M"]`),
-the `enabled` switch and `max_releases_per_day`, which can only lower the daily cap
-in `decide.mjs`. A file that names a path other than `M`, `B` or `C` is malformed and
+and the `enabled` switch. There is no time-based release limit (see "Version identity, not time" below). A file that names a path other than `M`, `B` or `C` is malformed and
 holds. The Game-SDK globals (GObjects, GNames, AppendString, GWorld) must still
 resolve. A value that differs from the SDK's baked `sdkRva` is a note, not a hold,
 because under path M the map row carries the new value.
@@ -637,7 +636,7 @@ and `candidate: true`. When `wouldBe` is `M`, the only thing that held it was th
 autopilot, and the chain runs on: export, TEST-key signing and verify, staging (and
 the push of the staged branch), and `promote.mjs plan --test-autopilot`, which plans
 past the switch and marks the plan `test`. Every other `HOLD` reason (a gate, a
-plugin verdict, the field rows, the path list, a rate limit, an unreadable
+plugin verdict, the field rows, the path list, a version identity check, an unreadable
 autopilot file) leaves `wouldBe` at `HOLD` and stops the chain before the export.
 The decision stays `HOLD` while the autopilot is off, and the map-mode `test` output
 is `true` for it, so the publish job cannot run. With the autopilot on, `--candidate`
@@ -667,14 +666,14 @@ Signing inserts a `seq` line after the `format` line and ends the file with
 the clock has not passed it. The private key is read from the environment variable
 `VMAP_SIGN_KEY` (a PEM) or a file and is never printed. Both commands refuse a
 `seq` more than a day ahead of the clock; the signer also refuses a feed over
-512 KiB or one that already has a `seq` or `sig` line; `verify` takes files up to
+1,040,000 bytes or one that already has a `seq` or `sig` line; `verify` takes files up to
 1 MiB, checks the signature before anything else and, with `--last-seq`, requires a
 higher `seq`. `verify` exits 3 when it refuses a file.
 
 **The feed carries every build in the header** (owner, 2026-11-08: every build we can reach).
 `export-feed <header> --out <file>` writes the whole map. A feed over the size cap
-(`FEED_MAX_BYTES`, 512 KiB, half of what every loader accepts) is refused with its size, before
-anything is signed.
+(`FEED_MAX_BYTES`, 1,040,000 bytes, under the 1 MiB (1,048,576 bytes) loaders from v1.23.0 accept,
+with room for the `seq` and `sig` lines) is refused with its size, before anything is signed.
 
 **One seq per publish.** `seq` is worked out once with `vmap-sign.mjs next-seq` and that
 number is passed on: `vmap-sign.mjs sign --seq <n>` signs exactly it (it must rise above
@@ -846,8 +845,7 @@ node ci/promote.mjs plan --index <staged.json> --public <public.json> --autopilo
   A different CL promotes nothing, and the staged build stays
   a second reference. A staged CL older than the public one is listed and skipped.
   A promote needs path `M` in `state/autopilot.json` and passes `decide.mjs`'s
-  `checkAutopilot` and `checkRateLimits`, with the daily cap counted on the loader
-  repository only. `seq` is max(now, last + 1) in UTC seconds, as the signer writes
+  `checkAutopilot` and `checkReleaseLimits`. `seq` is max(now, last + 1) in UTC seconds, as the signer writes
   it. One publish per CL; `--roll-forward` marks an owner-dispatched re-publish (a
   newer `seq` replacing a bad one), which skips only that limit. It prints the pull
   request it would open and `would sign and publish seq N`; any reason it may not
@@ -987,7 +985,7 @@ with `publish` on or a name that is not a plain branch, and `sr-watch` cannot se
 
 `proof_run` (dispatch only, `public` with `publish` and `test_autopilot` off, else map mode refuses it) carries the CL public already runs, which the header already maps, through the whole chain: G3 passes the same CL, its field rows take the build as its own reference, the candidate goes to `auto/update-<CL>-<run>-<attempt>` (never the plain name), both rigs and the rig gate run, and the run is marked a test, so it never publishes. The push needs the candidate to differ from the loader's header (it adds the CL's field rows while the header lacks them). The feed-path rig runs only when the feed adds or changes rows over the loader it builds: pair `proof_run` with `feed_loader_ref` (a branch without the CL's rows) to be sure it runs.
 
-A proof run re-runs a CL that is usually already published, so decide skips the one rate-limit reason "already released for CL-<n>" for it, and only that one (`proofRun` of `checkRateLimits`, taken from the `proof` mark in the G3 file). The daily cap, the minimum gap between publishes, the attempts limit and every other hold reason apply to a proof run as to any other run, and a run that is not a proof run is decided as before. The run is still marked a test and never publishes.
+A proof run re-runs a CL that is usually already published, so decide skips the already-released reasons for it ("already released for CL-<n>" and the version identity checks), and only those (`proofRun` of `checkReleaseLimits`, taken from the `proof` mark in the G3 file). The attempts limit and every other hold reason apply to a proof run as to any other run, and a run that is not a proof run is decided as before. The run is still marked a test and never publishes.
 
 The `map-mode` job of `sr-client-check.yml` (input `map_mode`, passed on by
 `sr-watch.yml`) is the unattended path M on one build. It reads only the check
@@ -1018,7 +1016,7 @@ no plugin code, no game file.
    the CL against the one the header was built for, G4 the client registry scan (the
    client check alone decides; no dedicated-server scan is read), G5 the classes
    the layout diff moved, changed or lost, the plugin verdicts (`plugins.json`), then
-   the field rows, and the history on the `vmap-feed` release for the rate limits.
+   the field rows, and the history on the `vmap-feed` release for the release limits.
 4. On path M, or on the HOLD that only the autopilot caused (the candidate chain, above):
    `export-feed` (every CL in the header; the step summary names them and the size), sign with the TEST key (k1, `VMAP_SIGN_KEY_TEST`) and verify it,
    `staging.mjs stage` for a build not on `public` yet, and `promote.mjs plan`. All dry runs. Then, for
@@ -1115,9 +1113,10 @@ path from the poll to the signed feed. Start it with the `rehearsal` input of `s
 - The poll takes the public build Steam lists now and sends it through, whether or not it changed
   (`poll-steam.mjs --rehearsal`). It writes no state, so `state/steam.json` on main is untouched.
 - The chain runs as always: the check, the layout, the map mode agreement, the candidate loader, every
-  rig and the rig gate, `decide.mjs` and the preserve and verify checks. The only two reasons
-  `decide.mjs --rehearsal` skips are "already released for CL-n" and "n releases in the last 24 h". The
-  autopilot, the 30 minute gap and the attempts limit still hold, and the result carries
+  rig and the rig gate, `decide.mjs` and the preserve and verify checks. The only reasons
+  `decide.mjs --rehearsal` skips are the already-released ones ("already released for CL-n" and the version identity
+  checks, which would hold a build that is served on purpose). The
+  autopilot and the attempts limit still hold, and the result carries
   `"rehearsal": true`.
 - The publish job signs with the release key in the `vmap-sign` environment, on the live published
   file as its base, with a seq above the live one, then uploads to the `vmap-feed-rehearsal` prerelease
@@ -1132,6 +1131,46 @@ path from the poll to the signed feed. Start it with the `rehearsal` input of `s
 - `sr-client-check.yml` refuses a `rehearsal` that is not one (not public, no map mode, no publish, or
   not called from `sr-watch.yml`), and the publish job refuses a chain whose rehearsal mark and own
   rehearsal flag disagree.
+
+### Version identity, not time
+
+Decision (owner, 2026-11-19): the two-a-day and 30-minute rules are gone; loops are stopped by version identity.
+No clock is read by any release check: `decide.mjs` and `promote.mjs` take no `now`, and `state/autopilot.json` has
+no release-count knob. A release is stopped by what was released and what is served, never by how long ago it was. What
+stays: one release per CL (`maxReleasesPerClPerRepo`), the attempts limit (`maxAttemptsPerCl`) and every gate.
+
+- **Covered.** A run that can publish is held when the released loader's header or the published version object
+  map already holds the CL or the Steam build. The loader's header is read at the commit the run scanned.
+- **A publish has to change what is served.** The candidate is compared with the published file
+  (`decide.mjs identity`): no new build line, no new or changed row and none dropped means HOLD with that
+  reason, so nothing is signed, staged or published and the seq does not move. A publish that does change
+  something takes a seq above the live one, as before.
+- **Where it is enforced.** `decide.mjs` is the single source. The chain runs the check after the export and the
+  published-base check; the publish job runs it again on the file that is live then, before the key is used.
+  A rehearsal, a proof run, a test run and a first publish are not judged (a rehearsal and a proof re-run a served CL
+  on purpose; a first publish has no live file).
+- **Loop paths closed.** A same-CL trigger right after a publish; a trigger after a failed publish (a feed
+  uploaded with a failed history write is covered by the published file, a history written with a failed upload is
+  held by the once-per-CL limit); a history that could not be downloaded (the published file still covers it); a
+  re-run or hand dispatch while the poll baseline has not moved; the loader pull request merged, so the header holds the CL;
+  a second Steam build serving the same CL.
+
+#### Supersede: a second release of a CL
+
+When our own release was bad, the owner can release the same CL a second time by hand: dispatch `sr-watch.yml`
+with the `supersede` input set to the seq of the release being replaced (the seq the published file serves now).
+It is not `force`: force is the routine retry of a check and must never release a CL twice.
+
+- Only a hand dispatch sets it. The watcher never does: the cron path passes nothing, only the public leg takes it,
+  and a test pins that no watch step writes it.
+- It lifts the already-released checks for that CL and nothing else. The candidate must still change what is served,
+  the attempts limit and every other gate stand, the named seq must be the one served now, the history must hold a
+  release of that CL with it, and the publish job checks all of it again.
+- The alert issue gets a line: what the run replaced, who started it, the run id and the new seq. The history entry
+  of the new release carries `supersedes`.
+
+A manual `release.yml` dispatch (a loader release, not a version object map publish) stays outside the pipeline's
+checks: nothing here judges it.
 
 ## Alerts
 

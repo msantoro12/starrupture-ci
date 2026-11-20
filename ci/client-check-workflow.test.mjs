@@ -1251,7 +1251,7 @@ test('other branch: map-mode finds the other branch\'s CL, hands it to decide, a
   const find = mm.indexOf(OTHER_STEP_FROM);
   const decideAt = mm.indexOf('node tool/ci/decide.mjs --repo');
   assert.ok(find > 0 && find < decideAt, 'the CL is found before decide runs');
-  assert.match(mm.slice(decideAt, decideAt + 500), /"\$\{test_flag\[@\]\}" "\$\{first_flag\[@\]\}" "\$\{rehearsal_flag\[@\]\}" "\$\{other_flag\[@\]\}"/);
+  assert.match(mm.slice(decideAt, decideAt + 500), /"\$\{test_flag\[@\]\}" "\$\{first_flag\[@\]\}" "\$\{rehearsal_flag\[@\]\}" "\$\{cover_flag\[@\]\}" "\$\{sup_flag\[@\]\}" "\$\{other_flag\[@\]\}"/);
   const out = mm.indexOf('echo "expect_refused_other=$expect_refused_other" >> "$GITHUB_OUTPUT"');
   assert.ok(out > mm.indexOf('echo "expect_refused=$expect_refused"') && out < mm.indexOf('nothing exported or signed'), 'set ahead of the exit that ends a chain whose decision is not M');
   assert.ok(mm.includes("grep -Eq '^[A-Za-z0-9_.-]+( [A-Za-z0-9_.-]+)*$'"));
@@ -2435,10 +2435,18 @@ case "$1 $2" in
 esac
 exit 0
 `);
+  // The version identity check is decide.mjs's, tested on its own: here a stub that logs how the job calls it and exits as IDENT_EXIT says.
+  writeFileSync(join(dir, 'tool', 'ci', 'decide.mjs'), `import { appendFileSync, writeFileSync } from 'node:fs';
+const a = process.argv.slice(2);
+appendFileSync('calls.log', 'decide ' + a.join(' ') + '\\n');
+const code = Number(process.env.IDENT_EXIT ?? 0);
+if (a[0] === 'identity') writeFileSync(a[a.indexOf('--report') + 1], JSON.stringify(code === 0 ? { ok: true, step: 'identity' } : { ok: false, step: 'identity', reasons: ['the published version object map already holds CL-129999'] }));
+process.exit(code);
+`);
   chmodSync(join(dir, 'bin', 'gh'), 0o755);
   return { dir, chainSeq };
 };
-const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, FIRST_PUBLISH: 'false', REHEARSAL: 'false', VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
+const runPublishStep = (fx, step, env = {}) => sh(runOf(job('publish'), step), fx.dir, { PATH: join(fx.dir, 'bin') + delimiter + process.env.PATH, GH_REPO: 'o/r', GH_TOKEN: 'x', CHAIN_SEQ: fx.chainSeq, FIRST_PUBLISH: 'false', REHEARSAL: 'false', SUPERSEDE: '', VMAP_SIGN_KEY: 'k', GITHUB_STEP_SUMMARY: join(fx.dir, 'summary.md'), ...env });
 // The live path: the signing step, then (when it passed) the step that uploads to the live release.
 const signAndPublish = (fx, env = {}) => {
   const r = runPublishStep(fx, 'Sign with the release key and verify', env);
@@ -2826,7 +2834,7 @@ test('publish job: it reads state/autopilot.json on main again right before sign
   const pub = job('publish');
   assert.ok(pub.indexOf('- name: Check the autopilot is still on') > pub.indexOf('- name: Refuse a test run'), 'after the test-run lock');
   assert.ok(pub.indexOf('- name: Check the autopilot is still on') < pub.indexOf('- name: Sign with the release key'), 'before anything is signed');
-  const on = { schema: 1, enabled: true, paths: ['M'], max_releases_per_day: 2 };
+  const on = { schema: 1, enabled: true, paths: ['M'] };
   const ok = autopilotStepRun(on);
   assert.equal(ok.status, 0, ok.out);
   assert.match(ok.calls, /repos\/o\/r\/contents\/state\/autopilot\.json\?ref=main/);
@@ -3796,7 +3804,7 @@ test('published base (chain): a base that was not taken ends the chain in a HOLD
   const exec = (held) => {
     const dir = mkdtempSync(join(tmpdir(), 'chain-hold-'));
     mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
-    copyFileSync(join(here, 'decide.mjs'), join(dir, 'tool', 'ci', 'decide.mjs'));
+    for (const f of readdirSync(here).filter((n) => /^[a-z0-9-]+\.mjs$/.test(n) && !n.endsWith('.test.mjs'))) copyFileSync(join(here, f), join(dir, 'tool', 'ci', f));
     writeFileSync(join(dir, 'published-base.json'), JSON.stringify({ ok: false, step: 'import', reasons: ['published base: the published file could not be fetched after 3 tries (x); the header was not changed'] }));
     const r = sh(`set -euo pipefail\ncl=129402\n${block}\necho reached-the-decide`, dir, { BASE_HELD: held, GITHUB_OUTPUT: join(dir, 'out.txt') });
     return { r, dir, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '' };
@@ -3818,7 +3826,7 @@ test('published base (chain): the new feed is compared with the published file; 
   const exec = (env, exit) => {
     const dir = mkdtempSync(join(tmpdir(), 'chain-preserve-'));
     mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
-    copyFileSync(join(here, 'decide.mjs'), join(dir, 'tool', 'ci', 'decide.mjs'));
+    for (const f of readdirSync(here).filter((n) => /^[a-z0-9-]+\.mjs$/.test(n) && !n.endsWith('.test.mjs'))) copyFileSync(join(here, f), join(dir, 'tool', 'ci', f));
     writeFileSync(join(dir, 'tool', 'ci', 'published-base.mjs'), `import { appendFileSync, writeFileSync } from 'node:fs';
 appendFileSync('calls.log', process.argv.slice(2).join(' ') + '\\n');
 const code = ${exit};
@@ -3826,7 +3834,7 @@ if (code !== 2) writeFileSync('preserve.json', JSON.stringify(code === 0 ? { ok:
 process.exit(code);
 `);
     writeFileSync(join(dir, 'decision.json'), JSON.stringify({ decision: 'M', ship: true, path: 'M', cl: 129402, repo: 'ModLoader', reasons: [], notes: [], plugins: [], pluginsOk: true, expectRefused: [] }));
-    const r = sh(`set -euo pipefail\n${block}\necho reached-the-signing`, dir, { FIRST_PUBLISH: 'false', GITHUB_OUTPUT: join(dir, 'out.txt'), ...env });
+    const r = sh(`set -euo pipefail\n${block}\necho reached-the-signing`, dir, { FIRST_PUBLISH: 'false', PUBLISH_RUN: 'false', GITHUB_OUTPUT: join(dir, 'out.txt'), ...env });
     return { r, dir, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '', calls: existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8') : '' };
   };
   const lost = exec({}, 3);
@@ -4094,4 +4102,174 @@ test('rehearsal: the staging steps run against stubs: signed with the chain seq,
   const m = runPublishStep(moved, 'Check the live release did not move', env);
   assert.equal(m.status, 2);
   assert.match(m.stdout + m.stderr, /the live release changed during a rehearsal/);
+});
+
+// ------------------------------------------------------------ version identity and the supersede dispatch input
+
+const WORKFLOWS = join(here, '..', '.github', 'workflows');
+const PIPELINE = join(here, '..', '.github', 'sr-pipeline');
+const nonComment = (text) => text.split('\n').filter((l) => !/^\s*#/.test(l));
+// The pass-through expression of sr-watch's client-check call, evaluated for an event, a leg and the dispatch input.
+const watchSupersede = (event, branch, input) => {
+  const expr = watch.match(/\n {6}supersede: \$\{\{ (.*) \}\}\n/)[1];
+  return new Function('github', 'matrix', 'inputs', `return (${expr.replace(/!=/g, '!==').replace(/([^=!<>])==(?!=)/g, '$1===')});`)({ event_name: event }, { branch }, { supersede: input });
+};
+
+test('supersede (wiring): the input is on sr-watch and the check, and only a hand dispatch on the public leg passes it', () => {
+  assert.match(watch, /\n {6}supersede:\n {8}description: [^\n]+\n {8}type: string\n {8}default: ''\n/, 'sr-watch dispatch input');
+  assert.match(call, /\n {6}supersede:\n[\s\S]*?type: string\n[\s\S]*?default: ''/, 'the check takes it as a call input');
+  assert.ok(!/\n {6}supersede:/.test(dispatch), 'the check has no dispatch input of its own: a hand run of the check cannot name one');
+  assert.equal(watchSupersede('workflow_dispatch', 'public', '1763500000'), '1763500000');
+  assert.equal(watchSupersede('workflow_dispatch', 'public_test_branch', '1763500000'), '', 'only the public leg publishes');
+  assert.equal(watchSupersede('schedule', 'public', ''), '', 'the cron path');
+  assert.equal(watchSupersede('schedule', 'public', '1763500000'), '', 'even if a value reached a scheduled run');
+  assert.equal(watchSupersede('workflow_dispatch', 'public', ''), '', 'a dispatch without it');
+});
+
+test('supersede (wiring): no watch code path sets it; only the dispatch input reaches it, and nothing else passes it', () => {
+  // Every use of the word in sr-watch is the input declaration, a read of inputs.supersede, or the step that refuses a bad one.
+  for (const line of nonComment(watch)) {
+    if (!/supersede/i.test(line)) continue;
+    assert.ok(/^\s*supersede:\s*$/.test(line) || /^\s*description: 'Supersede:/.test(line) || /inputs\.supersede/.test(line) || /name: Refuse a malformed supersede/.test(line) || /\$SUPERSEDE|seq of the release being replaced/.test(line), `unexpected use: ${line.trim()}`);
+  }
+  assert.ok(!nonComment(watch).some((l) => /supersede/i.test(l) && />>\s*"?\$\{?GITHUB_(OUTPUT|ENV)/.test(l)), 'no step writes it as an output or environment value');
+  // The scripts the watcher runs know nothing of it, so no output of the poll can carry one.
+  for (const f of readdirSync(PIPELINE).filter((n) => n.endsWith('.mjs'))) {
+    assert.ok(!/supersede/i.test(readFileSync(join(PIPELINE, f), 'utf8')), `${f} does not touch it`);
+  }
+  // No other workflow names it: only sr-watch (the input and the call) and the check that takes it.
+  for (const f of readdirSync(WORKFLOWS).filter((n) => /\.ya?ml$/.test(n) && n !== 'sr-watch.yml' && n !== 'sr-client-check.yml' && n !== 'sr-node-tests.yml')) {
+    assert.ok(!/supersede/i.test(readFileSync(join(WORKFLOWS, f), 'utf8')), `${f} does not pass or read it`);
+  }
+  // A supersede is not a force: force stays the routine retry and carries no supersede.
+  assert.match(watch, /FORCE: \$\{\{ inputs\.force == true \|\| inputs\.supersede != '' \}\}/, 'a supersede forces the poll, never the other way round');
+  assert.ok(!/supersede: \$\{\{[^}]*inputs\.force/.test(watch), 'force never becomes a supersede');
+});
+
+test('supersede (wiring): the check reads it only from a call made by sr-watch, and both jobs read it the same way', { skip: !bash }, () => {
+  const NOT_WATCH = 'o/r/.github/workflows/other.yml@refs/heads/main';
+  for (const j of ['map-mode', 'publish']) {
+    const m = job(j).match(/\n {6}SUPERSEDE: (\$\{\{ .* \}\})\n/);
+    assert.ok(m, `${j} reads it`);
+    assert.equal(evalExpr(m[1], { needs: {}, inputs: { supersede: '1763500000' } }), '1763500000', `${j}: from sr-watch`);
+    assert.equal(evalExpr(m[1], { needs: {}, inputs: { supersede: '1763500000' }, github: { workflow_ref: NOT_WATCH } }), '', `${j}: from anywhere else`);
+    assert.equal(evalExpr(m[1], { needs: {}, inputs: { supersede: '' } }), '', `${j}: empty stays empty`);
+  }
+  const refuse = runOf(job('map-mode'), 'Refuse a supersede that is not one');
+  assert.match(step(job('map-mode'), 'Refuse a supersede that is not one'), /\n {8}if: \$\{\{ inputs\.supersede != '' \}\}\n/);
+  const refuseRun = (env) => sh(`set -euo pipefail\n${refuse}`, here, env);
+  assert.equal(refuseRun({ SUPERSEDE: '1763500000', INPUT_SUPERSEDE: '1763500000', PUBLISH_RUN: 'true' }).status, 0, 'a seq on a publish run');
+  assert.equal(refuseRun({ SUPERSEDE: '', INPUT_SUPERSEDE: '1763500000', PUBLISH_RUN: 'true' }).status, 2, 'passed by someone other than sr-watch');
+  assert.equal(refuseRun({ SUPERSEDE: '1763500000', INPUT_SUPERSEDE: '1763500000', PUBLISH_RUN: 'false' }).status, 2, 'a run that cannot publish');
+  assert.equal(refuseRun({ SUPERSEDE: 'latest', INPUT_SUPERSEDE: 'latest', PUBLISH_RUN: 'true' }).status, 2, 'not a seq');
+});
+
+// The identity block of the chain step, with decide.mjs a stub that logs how it is called.
+const identityBlock = () => chainBlock('if [ "$PUBLISH_RUN" = true ]; then\n  ident=0', "node --input-type=module -e '\n  import { appendFileSync, readFileSync, statSync }");
+const identityRun = ({ sup, vars = {} } = {}, exit) => {
+  const dir = mkdtempSync(join(tmpdir(), 'chain-identity-'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  writeFileSync(join(dir, 'tool', 'ci', 'decide.mjs'), `import { appendFileSync, writeFileSync } from 'node:fs';
+const a = process.argv.slice(2);
+appendFileSync('calls.log', a.join(' ') + '\\n');
+const code = ${exit};
+if (a[0] === 'identity') writeFileSync('identity.json', JSON.stringify(code === 0 ? { ok: true, step: 'identity' } : { ok: false, step: 'identity', reasons: ['the published version object map already holds CL-129402'] }));
+process.exit(a[0] === 'hold' ? 0 : code);
+`);
+  const r = sh(`set -euo pipefail\ncl=129402\nbuildid=26461198\n${sup === undefined ? 'sup_flag=()' : `sup_flag=(--supersede ${sup})`}\n${identityBlock()}\necho reached-the-signing`, dir, { PUBLISH_RUN: 'true', GITHUB_OUTPUT: join(dir, 'out.txt'), ...vars });
+  return { r, out: existsSync(join(dir, 'out.txt')) ? readFileSync(join(dir, 'out.txt'), 'utf8') : '', calls: existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8') : '' };
+};
+
+test('version identity (chain): a candidate that changes nothing served is a HOLD before anything is signed; a pass goes on; a run that cannot publish skips it', { skip: !bash }, () => {
+  const run = chainRun();
+  assert.ok(run.indexOf('published-base.mjs preserve') < run.indexOf('decide.mjs identity') && run.indexOf('decide.mjs identity') < run.indexOf('vmap-sign.mjs sign feed.txt'), 'after the export and the base check, before any signing');
+  const held = identityRun({}, 3);
+  assert.equal(held.r.status, 0, held.r.stderr);
+  assert.ok(!held.r.stdout.includes('reached-the-signing'), 'the chain stops');
+  assert.equal(held.out, 'decision=HOLD\npublishable=false\n');
+  assert.equal(held.calls, 'identity --repo ModLoader --cl 129402 --buildid 26461198 --published published/version-map-client.v1.txt --feed feed.txt --history history.json --report identity.json\nhold --report identity.json --decision decision.json --out decision.json\n');
+  const passed = identityRun({}, 0);
+  assert.equal(passed.r.status, 0);
+  assert.ok(passed.r.stdout.includes('reached-the-signing'));
+  assert.equal(passed.out, '');
+  const crashed = identityRun({}, 2);
+  assert.equal(crashed.r.status, 2, 'a crash is not a pass and not a hold');
+  assert.match(crashed.r.stdout, /::error::decide\.mjs identity exited 2/);
+  const sup = identityRun({ sup: '1763500000' }, 0);
+  assert.ok(sup.calls.startsWith('identity --repo ModLoader --cl 129402 --buildid 26461198 --published published/version-map-client.v1.txt --feed feed.txt --history history.json --supersede 1763500000 --report identity.json'), sup.calls);
+  const none = identityRun({ vars: { PUBLISH_RUN: 'false' } }, 3);
+  assert.equal(none.calls, '', 'a rehearsal, proof or test run is not judged');
+  assert.ok(none.r.stdout.includes('reached-the-signing'));
+});
+
+test('version identity (publish job): the feed to sign is judged again against the live file, a hold fails the job before the key is used, a rehearsal is not judged', { skip: !bash }, () => {
+  const stepName = 'Check the seq and the feed before signing';
+  const ran = (env) => { const fx = publishFixture(); return { fx, r: runPublishStep(fx, stepName, env) }; };
+  const ok = ran({});
+  assert.equal(ok.r.status, 0, ok.r.stdout + ok.r.stderr);
+  assert.ok(callsOf(ok.fx.dir).includes('decide identity --repo ModLoader --cl 129999 --published live/version-map-client.v1.txt --feed chain/feed.txt --history chain/history.json --report identity.json'), callsOf(ok.fx.dir).join('\n'));
+  const held = ran({ IDENT_EXIT: '3' });
+  assert.equal(held.r.status, 2);
+  assert.match(held.r.stdout, /::error::the published version object map already holds CL-129999\n::error::the version identity check did not pass for the feed to sign \(identity exit 3\); nothing was signed or uploaded/);
+  assert.ok(!callsOf(held.fx.dir).some((c) => /^vmap-sign sign|release upload/.test(c)), 'nothing signed, nothing uploaded');
+  const sup = ran({ SUPERSEDE: '1763500000' });
+  assert.ok(callsOf(sup.fx.dir).some((c) => /^decide identity .* --history chain\/history\.json --supersede 1763500000 --report identity\.json$/.test(c)), callsOf(sup.fx.dir).join('\n'));
+  const rehearsal = ran({ REHEARSAL: 'true', IDENT_EXIT: '3' });
+  assert.equal(rehearsal.r.status, 0, rehearsal.r.stdout);
+  assert.ok(!callsOf(rehearsal.fx.dir).some((c) => c.startsWith('decide identity')), 'a rehearsal re-runs a served CL on purpose');
+  const first = ran({ FIRST_PUBLISH: 'true', IDENT_EXIT: '3' });
+  assert.ok(!callsOf(first.fx.dir).some((c) => c.startsWith('decide identity')), 'a first publish has no live file');
+});
+
+test('supersede (publish job): the history entry names the release it replaced, and a chain that disagrees on the supersede is not signed', { skip: !bash }, () => {
+  const withSup = publishFixture();
+  writeFileSync(join(withSup.dir, 'last-seq.txt'), '100\n');
+  writeFileSync(join(withSup.dir, 'chain', 'decision.json'), JSON.stringify({ decision: 'M', cl: 129999, candidate: true, wouldBe: 'M', supersedes: 1763500000 }));
+  const r = runPublishStep(withSup, 'Sign with the release key and verify', { SUPERSEDE: '1763500000' });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const h = JSON.parse(readFileSync(join(withSup.dir, 'vmap-history.json'), 'utf8'));
+  assert.deepEqual(h.releases.map((x) => [x.cl, x.seq, x.supersedes]), [[129999, 200, 1763500000]]);
+  const plain = publishFixture();
+  writeFileSync(join(plain.dir, 'last-seq.txt'), '100\n');
+  assert.equal(runPublishStep(plain, 'Sign with the release key and verify').status, 0);
+  assert.equal('supersedes' in JSON.parse(readFileSync(join(plain.dir, 'vmap-history.json'), 'utf8')).releases[0], false, 'an ordinary release carries no supersedes');
+  // The chain and this run must agree: a chain that lifted the already-released checks is signed only by the run that asked for it.
+  const disagree = publishFixture();
+  writeFileSync(join(disagree.dir, 'chain', 'decision.json'), JSON.stringify({ decision: 'M', cl: 129999, candidate: true, wouldBe: 'M', supersedes: 1763500000 }));
+  const d = runPublishStep(disagree, 'Refuse a test run', { TEST_INPUT: 'false', SUPERSEDE: '' });
+  assert.equal(d.status, 2);
+  assert.match(d.stdout + d.stderr, /disagree on the supersede/);
+  const noChain = publishFixture();
+  const n = runPublishStep(noChain, 'Refuse a test run', { TEST_INPUT: 'false', SUPERSEDE: '1763500000' });
+  assert.equal(n.status, 2, 'a run that was asked for one signs only a chain that carries it');
+  assert.match(n.stdout + n.stderr, /disagree on the supersede/);
+});
+
+test('wording: the alert, the summaries and the pipeline docs speak of version identity, never of a rate limit, a per-day count, 24 h or a gap', () => {
+  const FORBIDDEN = /rate[- ]limit|per day|a day cap|daily cap|24 ?h\b|two a day|2\/day|minimum gap|30 minute gap|minGap|max_releases_per_day/i;
+  const texts = {
+    'the alert job': job('alert'),
+    'the publish job': job('publish'),
+    'the map-mode job': job('map-mode'),
+    'sr-watch.yml': watch,
+    'ci/pipeline-alert.mjs': readFileSync(join(here, 'pipeline-alert.mjs'), 'utf8'),
+    'ci/supersede-note.mjs': readFileSync(join(here, 'supersede-note.mjs'), 'utf8'),
+    'ci/decide.mjs': readFileSync(join(here, 'decide.mjs'), 'utf8'),
+    'ci/promote.mjs': readFileSync(join(here, 'promote.mjs'), 'utf8'),
+    'ci/MAP-MODE.md': readFileSync(join(here, 'MAP-MODE.md'), 'utf8'),
+    'the sr-pipeline README': readFileSync(join(PIPELINE, 'README.md'), 'utf8'),
+  };
+  for (const [what, text] of Object.entries(texts)) {
+    // The Steam login's own "Rate Limit" reply is a different thing and is only in the check job.
+    for (const line of text.split('\n')) assert.doesNotMatch(line, FORBIDDEN, `${what}: ${line.trim().slice(0, 140)}`);
+  }
+  // No terms of ours for the data: "map update" and "the feed" are not used in alert text.
+  assert.doesNotMatch(readFileSync(join(here, 'supersede-note.mjs'), 'utf8'), /map update|the feed/i);
+});
+
+test('supersede (alert): a second release is a line in the alert issue with what it replaced, the run id and the new seq', () => {
+  const s = step(job('alert'), 'Note a second release of a CL');
+  assert.match(s, /\n {8}if: \$\{\{ needs\.publish\.result == 'success' \}\}\n/);
+  assert.match(job('alert'), /"chain\/supersede\.json"/, 'the alert reads the line');
+  assert.match(job('alert'), /\n {6}ACTOR: \$\{\{ github\.actor \}\}\n/);
 });

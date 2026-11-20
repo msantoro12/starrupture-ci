@@ -8,11 +8,11 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkRateLimits, decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS } from './decide.mjs';
+import { checkCandidateChange, checkCovered, checkIdentity, checkReleaseLimits, decide, expectedRefusals, holdFor, loaderRefusal, LIMITS, SDK_GLOBALS, servedDifference } from './decide.mjs';
+import { exportFeed, parseSignedFeedRows } from './version-map.mjs';
+import { nextSeq } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const NOW = Date.parse('2026-10-29T12:00:00Z');
-const ago = (min) => new Date(NOW - min * 60000).toISOString();
 const ok = (value) => ({ ok: true, value });
 // The layout-diff report shape (PR #3): changedUsed rows carry the class name.
 const layout = (...classes) => ({ changedUsedClasses: classes.length, changedUsed: classes.map((c) => ({ class: c })) });
@@ -30,8 +30,7 @@ function aob(rows, { noGlobals = false } = {}) {
 function base(over = {}) {
   return {
     repo: 'ModLoader',
-    now: NOW,
-    autopilot: ok({ schema: 1, enabled: true, paths: ['M', 'B'], max_releases_per_day: 2 }),
+    autopilot: ok({ schema: 1, enabled: true, paths: ['M', 'B'] }),
     g1: ok({ ok: true }),
     g2: ok({ ok: true }),
     g3: ok({ ok: true, cl: '127999', previousCl: '127004' }),
@@ -52,8 +51,7 @@ const holds = (r, re) => {
 
 // Safe means: off, or on for the map-feed path "M" only (it publishes the signed feed, nothing else).
 const autopilotIsSafe = (ap) => ap.enabled === false
-  || (ap.enabled === true && Array.isArray(ap.paths) && ap.paths.every((p) => p === 'M')
-    && Number.isInteger(ap.max_releases_per_day) && ap.max_releases_per_day > 0 && ap.max_releases_per_day <= 2);
+  || (ap.enabled === true && Array.isArray(ap.paths) && ap.paths.every((p) => p === 'M'));
 
 test('shipped state/autopilot.json is off or limited to the map-feed path M', () => {
   const ap = JSON.parse(readFileSync(join(here, '..', 'state', 'autopilot.json'), 'utf8'));
@@ -61,10 +59,9 @@ test('shipped state/autopilot.json is off or limited to the map-feed path M', ()
 });
 
 test('autopilot safe-state check: enabled with only M passes, any other path fails', () => {
-  assert.ok(autopilotIsSafe({ enabled: false, paths: ['M'], max_releases_per_day: 2 }));
-  assert.ok(autopilotIsSafe({ enabled: true, paths: ['M'], max_releases_per_day: 2 }));
-  assert.ok(!autopilotIsSafe({ enabled: true, paths: ['M', 'B'], max_releases_per_day: 2 }));
-  assert.ok(!autopilotIsSafe({ enabled: true, paths: ['M'], max_releases_per_day: 0 }));
+  assert.ok(autopilotIsSafe({ enabled: false, paths: ['M'] }));
+  assert.ok(autopilotIsSafe({ enabled: true, paths: ['M'] }));
+  assert.ok(!autopilotIsSafe({ enabled: true, paths: ['M', 'B'] }));
 });
 
 test('M: map-only change ships', () => {
@@ -96,7 +93,7 @@ test('B: an ambiguous required pattern counts as a miss', () => {
 
 test('C: a used class moved is HOLD with path C, even with every path enabled', () => {
   const r = decide(base({
-    autopilot: ok({ enabled: true, paths: ['M', 'B', 'C'], max_releases_per_day: 2 }),
+    autopilot: ok({ enabled: true, paths: ['M', 'B', 'C'] }),
     g5: ok(layout('UInventoryComponent')),
   }));
   holds(r, /path C held until shadow mode is proven/);
@@ -113,18 +110,18 @@ test('C wins over B when both a pattern missed and a class moved', () => {
 });
 
 test('HOLD: autopilot disabled', () => {
-  const r = decide(base({ autopilot: ok({ enabled: false, paths: ['M'], max_releases_per_day: 2 }) }));
+  const r = decide(base({ autopilot: ok({ enabled: false, paths: ['M'] }) }));
   holds(r, /disabled/);
   assert.equal(r.path, 'M', 'the would-be path is still reported');
 });
 
 test('HOLD: path not enabled in autopilot.paths', () => {
   const rB = decide(base({
-    autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 2 }),
+    autopilot: ok({ enabled: true, paths: ['M'] }),
     g4: ok(aob([aobRow('SpawnActor', 'MISSING')])),
   }));
   holds(rB, /path B is not enabled/);
-  const rM = decide(base({ autopilot: ok({ enabled: true, paths: [], max_releases_per_day: 2 }) }));
+  const rM = decide(base({ autopilot: ok({ enabled: true, paths: [] }) }));
   holds(rM, /path M is not enabled/);
 });
 
@@ -208,7 +205,7 @@ for (const key of SDK_GLOBALS) {
       assert.equal(r.path, null, 'never routed to B or M');
     }
     // even with every path enabled
-    holds(run(aobRow(key, 'MISSING'), ok({ enabled: true, paths: ['M', 'B', 'C'], max_releases_per_day: 2 })), /SDK global/);
+    holds(run(aobRow(key, 'MISSING'), ok({ enabled: true, paths: ['M', 'B', 'C'] })), /SDK global/);
     // a moved offset is a note: the map row carries the new value
     const moved = aobRow(key); moved.rva = '0x1A2B3D0';
     const rm = run(moved);
@@ -249,20 +246,19 @@ test('fail closed: autopilot unreadable or malformed', () => {
   holds(decide(base({ autopilot: BAD_JSON })), /autopilot/);
   holds(decide(base({ autopilot: ok(null) })), /autopilot/);
   holds(decide(base({ autopilot: ok([]) })), /autopilot/);
-  holds(decide(base({ autopilot: ok({ paths: ['M'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
-  holds(decide(base({ autopilot: ok({ enabled: 'true', paths: ['M'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
-  holds(decide(base({ autopilot: ok({ enabled: 1, paths: ['M'], max_releases_per_day: 2 }) })), /enabled is not a boolean/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: 'M', max_releases_per_day: 2 }) })), /paths/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M', 'Z'], max_releases_per_day: 2 }) })), /paths/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'] }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: '2' }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: -1 }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 1.5 }) })), /max_releases_per_day/);
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 2, error: 'stale' }) })), /error/);
+  holds(decide(base({ autopilot: ok({ paths: ['M'] }) })), /enabled is not a boolean/);
+  holds(decide(base({ autopilot: ok({ enabled: 'true', paths: ['M'] }) })), /enabled is not a boolean/);
+  holds(decide(base({ autopilot: ok({ enabled: 1, paths: ['M'] }) })), /enabled is not a boolean/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: 'M' }) })), /paths/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M', 'Z'] }) })), /paths/);
+  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], error: 'stale' }) })), /error/);
 });
 
-test('fail closed: max_releases_per_day 0 blocks everything', () => {
-  holds(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 0 }) })), /rate limit/);
+test('the autopilot file carries no per-day knob: the old key is ignored, a file without it is whole', () => {
+  assert.equal(decide(base({ autopilot: ok({ enabled: true, paths: ['M'] }) })).decision, 'M');
+  assert.equal(decide(base({ autopilot: ok({ enabled: true, paths: ['M'], max_releases_per_day: 0 }) })).decision, 'M');
+  assert.equal(LIMITS.maxReleasesPerDay, undefined);
+  assert.equal(LIMITS.minGapMinutes, undefined);
 });
 
 for (const gate of ['g1', 'g2', 'g3', 'g4', 'g5', 'plugins', 'history']) {
@@ -304,7 +300,7 @@ test('G3 proof: an owner\'s proof run passes a CL already mapped, the built one 
 
 test('first publish: it passes a CL that is not newer and skips the autopilot, only with the flag and the G3 mark together', () => {
   const g3 = (over = {}) => ok({ ok: true, cl: '127004', previousCl: '127004', firstPublish: true, ...over });
-  const off = ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 });
+  const off = ok({ schema: 1, enabled: false, paths: ['M'] });
   // The bypass is the run's own: the flag and the mark, with the autopilot off and the CL not newer.
   const fp = decide(base({ firstPublish: true, g3: g3(), autopilot: off }));
   assert.equal(fp.decision, 'M');
@@ -351,95 +347,119 @@ test('fail closed: G5 must be a consistent layout-diff report', () => {
   holds(decide(base({ g5: ok({ ok: true, changedUsedClasses: 2, changedUsed: [{ class: 'UFoo' }] }) })), /disagrees/);
 });
 
-test('fail closed: missing repo name or clock', () => {
+test('fail closed: missing repo name', () => {
   holds(decide(base({ repo: undefined })), /repo name/);
-  holds(decide(base({ now: NaN })), /clock/);
 });
 
-// ------------------------------------------------------------ rate limits
+// ------------------------------------------------------------ release limits (no clock)
 
-const rel = (min, repo = 'ModLoader', cl = '127004') => ({ repo, cl, at: ago(min) });
+// A history entry: the repo, the CL and the seq it was signed with. `at` is only a record.
+const rel = (cl = '127004', repo = 'ModLoader', seq = undefined) => ({ repo, cl, at: '2026-10-28T00:00:00Z', ...(seq === undefined ? {} : { seq }) });
+const hist = (...releases) => ok({ releases, attempts: {} });
 
-test('rate limit: one release per CL per repo', () => {
-  holds(decide(base({ history: ok({ releases: [rel(60 * 30, 'ModLoader', '127999')], attempts: {} }) })), /already released for CL-127999/);
+test('release limits: one release per CL per repo', () => {
+  holds(decide(base({ history: hist(rel('127999')) })), /already released for CL-127999/);
   // the same CL in another repo does not count
-  assert.equal(decide(base({ history: ok({ releases: [rel(60 * 30, 'Waila', '127999')], attempts: {} }) })).decision, 'M');
+  assert.equal(decide(base({ history: hist(rel('127999', 'Waila')) })).decision, 'M');
 });
 
-test('rate limit: a proof run skips the once-per-CL reason and no other', () => {
+test('release limits: no reason carries the old rate-limit words', () => {
+  const r = decide(base({ history: hist(rel('127999')) }));
+  assert.deepEqual(r.reasons, ['ModLoader already released for CL-127999']);
+  const b = decide(base({ g4: ok(aob([aobRow('SpawnActor', 'MISSING')])), history: ok({ releases: [], attempts: { 127999: 2 } }) }));
+  assert.deepEqual(b.reasons, ['2 auto-fix attempts already used for CL-127999 (limit 2)']);
+  for (const text of [...r.reasons, ...b.reasons]) assert.doesNotMatch(text, /rate limit|per day|24 h|gap|minutes/i);
+});
+
+test('release limits: a release is judged by its CL, never by its age', () => {
+  for (const at of ['2026-10-29T11:59:59Z', '2020-01-01T00:00:00Z', '2099-01-01T00:00:00Z', 'yesterday', undefined]) {
+    const mk = (cl) => ok({ releases: [{ repo: 'ModLoader', cl, ...(at === undefined ? {} : { at }) }], attempts: {} });
+    holds(decide(base({ history: mk('127999') })), /already released for CL-127999/);
+    assert.equal(decide(base({ history: mk('126000') })).decision, 'M');
+  }
+  // Releases of other CLs, as many as you like and as close together as you like, hold nothing.
+  assert.equal(decide(base({ history: hist(rel('126001'), rel('126002'), rel('126003'), rel('126004')) })).decision, 'M');
+  // No clock reaches the decision, the promote gate or the autopilot file.
+  assert.equal(Object.hasOwn(base(), 'now'), false);
+  const code = (f) => readFileSync(join(here, f), 'utf8').split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  assert.doesNotMatch(code('decide.mjs'), /\bDate\b|nowMs|minGap|maxReleasesPerDay|maxPerDay|max_releases_per_day/);
+  assert.doesNotMatch(code('promote.mjs'), /minGap|maxReleasesPerDay|maxPerDay|max_releases_per_day|DAY_MS/);
+});
+
+test('release limits: a proof run skips the once-per-CL reason and no other', () => {
   const proof = ok({ ok: true, cl: '127004', previousCl: '127004', proof: true });
-  const published = (min = 60 * 30) => ok({ releases: [rel(min)], attempts: {} });
+  const published = hist(rel('127004'));
   // A build already published: a proof run does not hold for it and decides as it does for a build that never was.
-  const r = decide(base({ g3: proof, history: published() }));
+  const r = decide(base({ g3: proof, history: published }));
   assert.equal(r.decision, 'M');
   assert.deepEqual(r.reasons, []);
-  assert.deepEqual(r, decide(base({ g3: proof, history: ok({ releases: [], attempts: {} }) })));
+  assert.deepEqual(r, decide(base({ g3: proof, history: hist() })));
   // The same history for a run that is not a proof run still holds, with the same words.
-  const plain = decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '126000' }), history: published() }));
+  const plain = decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '126000' }), history: published }));
   holds(plain);
-  assert.deepEqual(plain.reasons, ['rate limit: ModLoader already released for CL-127004']);
+  assert.deepEqual(plain.reasons, ['ModLoader already released for CL-127004']);
   // Only the boolean marks a proof run.
-  for (const mark of ['true', 1, false, null]) holds(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '126000', proof: mark }), history: published() })), /already released for CL-127004/);
-  // The daily cap, the gap and the attempts limit apply to a proof run as ever.
-  holds(decide(base({ g3: proof, history: ok({ releases: [rel(60), rel(120, 'ModLoader', '126000')], attempts: {} }) })), /2 ModLoader releases in the last 24 h/);
-  holds(decide(base({ g3: proof, history: published(29) })), /30 minutes/);
+  for (const mark of ['true', 1, false, null]) holds(decide(base({ g3: ok({ ok: true, cl: '127004', previousCl: '126000', proof: mark }), history: published })), /already released for CL-127004/);
+  // The attempts limit applies to a proof run as ever.
   const missB = ok(aob([aobRow('SpawnActor', 'MISSING')]));
   holds(decide(base({ g3: proof, g4: missB, history: ok({ releases: [], attempts: { 127004: 2 } }) })), /2 auto-fix attempts/);
-  // The skip is the one reason: on a published build the cap's reason comes out alone.
-  const capped = decide(base({ g3: proof, history: ok({ releases: [rel(60), rel(120)], attempts: {} }) }));
-  assert.deepEqual(capped.reasons, ['rate limit: 2 ModLoader releases in the last 24 h (limit 2)']);
+  // A proof run is not judged by what is already served either: it republishes nothing.
+  const served = vmap({ builds: [bld(127004)] });
+  assert.equal(decide(base({ g3: proof, history: published, coverage: { buildid: '12700400', loaderMap: served, publishedMap: served } })).decision, 'M');
   // The workflow decides a proof run with the candidate flag: wouldBe M, nothing different on a published build.
-  const cand = decide(base({ g3: proof, candidate: true, history: published() }));
+  const cand = decide(base({ g3: proof, candidate: true, history: published }));
   assert.equal(cand.decision, 'M');
   assert.equal(cand.wouldBe, 'M');
   assert.equal(cand.candidate, true);
   assert.deepEqual(cand.reasons, []);
 });
 
-test('rate limit: checkRateLimits skips the once-per-CL reason only with proofRun', () => {
-  const args = { historyLoaded: ok({ releases: [rel(60 * 30)], attempts: {} }), repo: 'ModLoader', cl: '127004', path: 'M', nowMs: NOW, maxPerDay: 2 };
-  assert.deepEqual(checkRateLimits(args), ['rate limit: ModLoader already released for CL-127004']);
-  assert.deepEqual(checkRateLimits({ ...args, proofRun: false }), ['rate limit: ModLoader already released for CL-127004']);
-  assert.deepEqual(checkRateLimits({ ...args, proofRun: true }), []);
+test('release limits: checkReleaseLimits skips the once-per-CL reason only with proofRun', () => {
+  const args = { historyLoaded: hist(rel('127004')), repo: 'ModLoader', cl: '127004', path: 'M' };
+  assert.deepEqual(checkReleaseLimits(args), ['ModLoader already released for CL-127004']);
+  assert.deepEqual(checkReleaseLimits({ ...args, proofRun: false }), ['ModLoader already released for CL-127004']);
+  assert.deepEqual(checkReleaseLimits({ ...args, proofRun: true }), []);
 });
 
-test('rate limit: a rehearsal skips the once-per-CL reason and the 24 h cap, and no other', () => {
+test('release limits: a rehearsal skips the once-per-CL reason and the version identity checks, and no other', () => {
   const g3 = ok({ ok: true, cl: '127999', previousCl: '127004' });
-  const published = (min = 60 * 30) => ok({ releases: [rel(min, 'ModLoader', '127999')], attempts: {} });
-  const capped = ok({ releases: [rel(60, 'ModLoader', '127999'), rel(120, 'ModLoader', '126000')], attempts: {} });
-  // The build is already released and the cap is full: without the flag both reasons hold; with it neither does.
-  holds(decide(base({ g3, history: capped })), /already released for CL-127999.*2 ModLoader releases in the last 24 h|2 ModLoader releases in the last 24 h.*already released/);
-  const r = decide(base({ g3, history: capped, rehearsal: true }));
+  const published = hist(rel('127999'));
+  const served = vmap({ builds: [bld(127999)] });
+  const coverage = { buildid: '12799900', loaderMap: served, publishedMap: served };
+  // The build is already released and served: without the flag it holds; with it nothing does.
+  holds(decide(base({ g3, history: published, coverage })), /already released for CL-127999/);
+  const r = decide(base({ g3, history: published, coverage, rehearsal: true }));
   assert.equal(r.decision, 'M');
   assert.deepEqual(r.reasons, []);
   assert.equal(r.rehearsal, true);
-  assert.match(r.notes.join(' | '), /rehearsal: the once-per-CL limit and the 24 h cap were not applied/);
+  assert.match(r.notes.join(' | '), /rehearsal: the already-released checks were not applied; the version object map goes to the staging release only/);
   // Only a rehearsal carries the mark; the same inputs without it never do.
-  assert.equal(decide(base({ g3, history: ok({ releases: [], attempts: {} }) })).rehearsal, undefined);
+  assert.equal(decide(base({ g3, history: hist() })).rehearsal, undefined);
   // Only the boolean flag counts.
-  for (const flag of ['true', 1, null, undefined]) holds(decide(base({ g3, history: published(), rehearsal: flag })), /already released for CL-127999/);
-  // The gap and the attempts limit apply to a rehearsal as ever, and so does every gate.
-  holds(decide(base({ g3, history: published(29), rehearsal: true })), /30 minutes/);
+  for (const flag of ['true', 1, null, undefined]) holds(decide(base({ g3, history: published, rehearsal: flag })), /already released for CL-127999/);
+  // The attempts limit applies to a rehearsal as ever, and so does every gate.
   holds(decide(base({ g3, rehearsal: true, g4: ok(aob([aobRow('SpawnActor', 'MISSING')])), history: ok({ releases: [], attempts: { 127999: 2 } }) })), /2 auto-fix attempts/);
-  holds(decide(base({ g3, history: published(), rehearsal: true, g1: ok({ ok: false }) })), /./);
-  holds(decide(base({ g3, history: published(), rehearsal: true, g2: ok({ ok: false }) })), /./);
-  holds(decide(base({ g3, history: published(), rehearsal: true, autopilot: ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 }) })), /./);
+  holds(decide(base({ g3, history: published, rehearsal: true, g1: ok({ ok: false }) })), /./);
+  holds(decide(base({ g3, history: published, rehearsal: true, g2: ok({ ok: false }) })), /./);
+  holds(decide(base({ g3, history: published, rehearsal: true, autopilot: ok({ schema: 1, enabled: false, paths: ['M'] }) })), /./);
   // Never with a test run or a first publish.
-  holds(decide(base({ g3, history: published(), rehearsal: true, testAutopilot: true })), /never a test run or a first publish/);
-  holds(decide(base({ g3, history: published(), rehearsal: true, firstPublish: true })), /never a test run or a first publish/);
+  holds(decide(base({ g3, history: published, rehearsal: true, testAutopilot: true })), /never a test run or a first publish/);
+  holds(decide(base({ g3, history: published, rehearsal: true, firstPublish: true })), /never a test run or a first publish/);
 });
 
-test('rate limit: checkRateLimits skips the cap and the once-per-CL reason only with rehearsal', () => {
-  const args = { historyLoaded: ok({ releases: [rel(60), rel(120)], attempts: {} }), repo: 'ModLoader', cl: '127004', path: 'M', nowMs: NOW, maxPerDay: 2 };
-  assert.equal(checkRateLimits(args).length, 2);
-  assert.equal(checkRateLimits({ ...args, rehearsal: false }).length, 2);
-  assert.deepEqual(checkRateLimits({ ...args, rehearsal: true }), []);
-  // the gap is not skipped
-  assert.match(checkRateLimits({ ...args, historyLoaded: ok({ releases: [rel(10)], attempts: {} }), rehearsal: true }).join(), /30 minutes/);
+test('release limits: checkReleaseLimits skips the once-per-CL reason only with rehearsal', () => {
+  const args = { historyLoaded: hist(rel('127004')), repo: 'ModLoader', cl: '127004', path: 'M' };
+  assert.equal(checkReleaseLimits(args).length, 1);
+  assert.equal(checkReleaseLimits({ ...args, rehearsal: false }).length, 1);
+  assert.deepEqual(checkReleaseLimits({ ...args, rehearsal: true }), []);
+  // the attempts limit is not skipped
+  const capped = { ...args, path: 'B', historyLoaded: ok({ releases: [rel('127004')], attempts: { 127004: 2 } }) };
+  assert.match(checkReleaseLimits({ ...capped, rehearsal: true }).join(), /auto-fix attempts/);
+  assert.match(checkReleaseLimits({ ...capped, secondRelease: true }).join(), /auto-fix attempts/);
 });
 
 test('cli: --rehearsal decides M on an already-released build and writes the mark; without it the same files HOLD', () => {
-  const files = cliFiles({ history: { releases: [rel(60, 'ModLoader', '127999'), rel(120, 'ModLoader', '126000')], attempts: {} } });
+  const files = cliFiles({ history: { releases: [rel('127999')], attempts: {} } });
   const plain = runCli(files);
   assert.equal(plain.status, 1);
   assert.match(plain.out.reasons.join(' | '), /already released for CL-127999/);
@@ -451,30 +471,348 @@ test('cli: --rehearsal decides M on an already-released build and writes the mar
   assert.notEqual(runCli(files, ['--rehearsal', '--first-publish']).status, 0);
 });
 
-test('rate limit: at most 2 releases per repo in 24 h', () => {
-  holds(decide(base({ history: ok({ releases: [rel(60), rel(120)], attempts: {} }) })), /2 ModLoader releases in the last 24 h/);
-  assert.equal(decide(base({ history: ok({ releases: [rel(60), rel(60 * 25)], attempts: {} }) })).decision, 'M');
-  assert.equal(decide(base({ history: ok({ releases: [rel(60), rel(120, 'Waila')], attempts: {} }) })).decision, 'M');
+// ------------------------------------------------------------ version identity
+
+// Small version object maps in the parsers' shape (parse for a header, parseFeed for a feed): builds and rows.
+const bld = (cl, source = `public ${cl}00`) => ({ cl, stamp: 0x11111111, size: 0x01000000, source });
+const frow = (key, cl, rva = 0x5500) => ({ key, kind: 1, fp: 0, cl, absent: false, pattern: 'AA 55', resultOffset: 0, followRel32At: -1, followRipDispAt: -1, rva, owners: null });
+const vmap = ({ builds = [], functions = [], fields = [] } = {}) => ({ flavour: 'loader', builtCL: null, builds, functions, fields, absentFields: [] });
+
+test('identity: checkCovered holds a CL or a build the released loader or the published version object map holds', () => {
+  const has = (cl, source) => vmap({ builds: [bld(cl, source)] });
+  const none = vmap();
+  assert.deepEqual(checkCovered({ cl: '127999', buildid: '5', loaderMap: none, publishedMap: none }), []);
+  assert.deepEqual(checkCovered({ cl: '127999' }), []);
+  assert.deepEqual(checkCovered({ cl: '127999', loaderMap: null, publishedMap: null }), []);
+  assert.deepEqual(checkCovered({ cl: '127999', loaderMap: has(127999), publishedMap: none }), ['the released loader version object map already holds CL-127999']);
+  assert.deepEqual(checkCovered({ cl: '127999', publishedMap: has(127999), loaderMap: none }), ['the published version object map already holds CL-127999']);
+  assert.equal(checkCovered({ cl: '127999', loaderMap: has(127999), publishedMap: has(127999) }).length, 2);
+  // The same Steam build under another CL label is covered too.
+  assert.match(checkCovered({ cl: '128000', buildid: '777', publishedMap: has(127999, 'public 777') }).join(), /already holds CL-128000 \(build 777\)/);
+  assert.deepEqual(checkCovered({ cl: '128000', buildid: '778', publishedMap: has(127999, 'public 777') }), []);
+  assert.deepEqual(checkCovered({ cl: '128000', buildid: '', publishedMap: has(127999, 'public 777') }), []);
+  // A map that could not be read holds.
+  assert.match(checkCovered({ cl: '127999', publishedMap: { error: 'bad signature' } }).join(), /published version object map could not be read: bad signature/);
+  assert.match(checkCovered({ cl: '127999', loaderMap: { error: 'no header' } }).join(), /released loader version object map could not be read/);
 });
 
-test('rate limit: the autopilot cap can lower but never raise the design cap', () => {
-  const one = ok({ enabled: true, paths: ['M'], max_releases_per_day: 1 });
-  holds(decide(base({ autopilot: one, history: ok({ releases: [rel(60)], attempts: {} }) })), /limit 1/);
-  const five = ok({ enabled: true, paths: ['M'], max_releases_per_day: 5 });
-  holds(decide(base({ autopilot: five, history: ok({ releases: [rel(60), rel(120)], attempts: {} }) })), /limit 2/);
-  assert.equal(LIMITS.maxReleasesPerDay, 2);
+test('identity: secondRelease lifts only the already-holds reasons, never an unreadable map', () => {
+  const served = vmap({ builds: [bld(127999)] });
+  assert.deepEqual(checkCovered({ cl: '127999', loaderMap: served, publishedMap: served, secondRelease: true }), []);
+  assert.equal(checkCovered({ cl: '127999', loaderMap: { error: 'x' }, publishedMap: served, secondRelease: true }).length, 1);
 });
 
-test('rate limit: releases at least 30 minutes apart', () => {
-  holds(decide(base({ history: ok({ releases: [rel(29)], attempts: {} }) })), /30 minutes/);
-  assert.equal(decide(base({ history: ok({ releases: [rel(31)], attempts: {} }) })).decision, 'M');
+test('identity: servedDifference and checkCandidateChange name a publish that changes nothing', () => {
+  const published = vmap({ builds: [bld(130000)], functions: [frow('A', 130000)] });
+  const same = vmap({ builds: [bld(130000)], functions: [frow('A', 130000)] });
+  assert.equal(servedDifference(same, published, 130000).differs, false);
+  assert.match(checkCandidateChange({ candidate: same, published, cl: '130000' }).join(), /changes nothing served for CL-130000 .* so there is nothing to publish/);
+  // a new build line
+  assert.equal(servedDifference(vmap({ builds: [bld(130000), bld(130001)], functions: [frow('A', 130000)] }), published, 130001).differs, true);
+  // a new row, a changed row and a dropped row each differ
+  const added = vmap({ builds: [bld(130000)], functions: [frow('A', 130000), frow('B', 130000)] });
+  assert.deepEqual(servedDifference(added, published, 130000).added, ['function B (fp 0x00000000)']);
+  const changed = vmap({ builds: [bld(130000)], functions: [frow('A', 130000, 0x6600)] });
+  assert.deepEqual(servedDifference(changed, published, 130000).changed, ['function A (fp 0x00000000)']);
+  const dropped = vmap({ builds: [bld(130000)], functions: [] });
+  assert.deepEqual(servedDifference(dropped, published, 130000).removed, ['function A (fp 0x00000000)']);
+  for (const c of [added, changed, dropped]) assert.deepEqual(checkCandidateChange({ candidate: c, published, cl: '130000' }), []);
+  // rows of another CL do not count for this one
+  assert.equal(servedDifference(vmap({ builds: [bld(130000), bld(130001)], functions: [frow('A', 130000)] }), published, 130000).differs, false);
+  // not given: not judged; unreadable: holds
+  assert.deepEqual(checkCandidateChange({ candidate: null, published, cl: '130000' }), []);
+  assert.deepEqual(checkCandidateChange({ candidate: same, published: null, cl: '130000' }), []);
+  assert.match(checkCandidateChange({ candidate: { error: 'bad feed' }, published, cl: '130000' }).join(), /could not be read: bad feed/);
 });
 
-test('rate limit: a future-dated release counts as recent', () => {
-  holds(decide(base({ history: ok({ releases: [rel(-600)], attempts: {} }) })), /30 minutes/);
+test('identity: decide holds a CL the released loader or the published version object map already holds', () => {
+  const served = vmap({ builds: [bld(127999, 'public 4242')] });
+  const none = vmap();
+  const run = (coverage, over = {}) => decide(base({ coverage: { buildid: '4242', ...coverage }, ...over }));
+  assert.equal(run({ loaderMap: none, publishedMap: none }).decision, 'M');
+  holds(run({ loaderMap: served, publishedMap: none }), /the released loader version object map already holds CL-127999 \(build 4242\)/);
+  holds(run({ loaderMap: none, publishedMap: served }), /the published version object map already holds CL-127999/);
+  holds(run({ loaderMap: none, publishedMap: { error: 'unreadable' } }), /could not be read/);
+  // by build id alone: another CL label for the same Steam build
+  holds(decide(base({ coverage: { buildid: '4242', loaderMap: vmap({ builds: [bld(120000, 'public 4242')] }), publishedMap: none } })), /already holds CL-127999/);
+  // no coverage given: the history alone judges
+  assert.equal(decide(base()).decision, 'M');
+  // A run that cannot publish is not judged by it: a test run, a first publish, a proof run.
+  const covered = { loaderMap: served, publishedMap: served };
+  assert.equal(run(covered, { testAutopilot: true }).wouldBe, 'M');
+  assert.equal(run(covered, { testAutopilot: true }).reasons.length, 0);
+  assert.equal(run(covered, { firstPublish: true, g3: ok({ ok: true, cl: '127999', previousCl: '127999', firstPublish: true }) }).decision, 'M');
+  assert.equal(run(covered, { g3: ok({ ok: true, cl: '127999', previousCl: '127004', proof: true }) }).decision, 'M');
 });
 
-test('rate limit: at most 2 Claude attempts per CL, B only', () => {
+test('identity: checkIdentity gives the reasons for a candidate and the seq a supersede replaces', () => {
+  const published = vmap({ builds: [bld(130000)], functions: [frow('A', 130000)] });
+  const history = hist(rel('130000', 'ModLoader', 1761900001));
+  const changed = vmap({ builds: [bld(130000)], functions: [frow('A', 130000, 0x6600)] });
+  const same = vmap({ builds: [bld(130000)], functions: [frow('A', 130000)] });
+  const args = { repo: 'ModLoader', cl: '130000', buildid: '13000000', loaderMap: vmap(), publishedMap: published, historyLoaded: history };
+  const sup = { seq: '1761900001', liveSeq: '1761900001' };
+  // without the input: already held, whatever the candidate
+  assert.match(checkIdentity({ ...args, candidate: changed }).reasons.join(), /published version object map already holds CL-130000/);
+  // with the input and a changed candidate: accepted
+  assert.deepEqual(checkIdentity({ ...args, candidate: changed, supersede: sup }), { reasons: [], supersedes: 1761900001 });
+  // with the input and an identical candidate: rejected
+  const identical = checkIdentity({ ...args, candidate: same, supersede: sup });
+  assert.match(identical.reasons.join(), /changes nothing served for CL-130000/);
+  assert.equal(identical.supersedes, 1761900001);
+  // a seq that is not the live one, not in the history, or not a seq: rejected, and the CL stays held
+  for (const bad of [{ seq: '1761900000', liveSeq: '1761900001' }, { seq: '1761900001', liveSeq: '1761900002' }, { seq: '1761900001', liveSeq: null }, { seq: 'latest', liveSeq: '1761900001' }, { seq: '0', liveSeq: '0' }, { seq: '1761900001 ', liveSeq: '1761900001' }]) {
+    const r = checkIdentity({ ...args, candidate: changed, supersede: bad });
+    assert.equal(r.supersedes, null, JSON.stringify(bad));
+    assert.match(r.reasons.join(' | '), /supersede.*already holds CL-130000|already holds CL-130000.*supersede/s, JSON.stringify(bad));
+  }
+  // the named seq must be a release of THIS CL of THIS repo
+  for (const other of [hist(rel('129999', 'ModLoader', 1761900001)), hist(rel('130000', 'Waila', 1761900001)), hist(rel('130000', 'ModLoader'))]) {
+    assert.match(checkIdentity({ ...args, historyLoaded: other, candidate: changed, supersede: sup }).reasons.join(), /not a ModLoader release of CL-130000 in the release history/);
+  }
+  // a history that cannot be read holds
+  assert.match(checkIdentity({ ...args, historyLoaded: { ok: false, error: 'cannot read h' }, candidate: changed, supersede: sup }).reasons.join(), /cannot read h/);
+});
+
+// What the chain does for one trigger of a CL on a state of what is released and what is served: decide (before
+// the build, with the maps the release must not already be in) and the identity check of the candidate feed (after
+// it). Nothing here has a time: the history entries carry one and no check reads it.
+const AT = '2026-10-29T12:00:00Z';
+function chain(state, cl, { supersede, rva = 0x5500, over = {} } = {}) {
+  const buildid = `${cl}00`;
+  const d = decide(base({ g3: ok({ ok: true, cl: String(cl), previousCl: '127004' }), history: ok(state.history), coverage: { buildid, loaderMap: state.loader, publishedMap: state.published }, ...(supersede ? { supersede } : {}), ...over }));
+  const candidate = vmap({
+    builds: [...state.published.builds.filter((b) => b.cl !== cl), bld(cl)],
+    functions: [...state.published.functions.filter((r) => r.cl !== cl), frow('Test::MapOnly', cl, rva)],
+  });
+  const id = checkIdentity({ repo: 'ModLoader', cl: String(cl), buildid, loaderMap: state.loader, publishedMap: state.published, candidate, supersede, historyLoaded: ok(state.history) });
+  return { d, id, candidate };
+}
+const publish = (state, cl, candidate, seq) => {
+  state.published = candidate;
+  state.history = { ...state.history, releases: [...state.history.releases, { repo: 'ModLoader', cl: String(cl), at: AT, seq }] };
+};
+const freshState = () => ({ loader: vmap({ builds: [bld(127004)] }), published: vmap({ builds: [bld(127004)] }), history: { releases: [], attempts: {} } });
+
+test('loop: a same-CL trigger repeated right after a publish, with no time gap, stops by version identity', () => {
+  const state = freshState();
+  const first = chain(state, 130000);
+  assert.equal(first.d.decision, 'M');
+  assert.deepEqual(first.id.reasons, []);
+  publish(state, 130000, first.candidate, 1761900001);
+  const seen = [];
+  for (let n = 1; n <= 12; n++) {
+    const t = chain(state, 130000);
+    holds(t.d, /already released for CL-130000/);
+    assert.match(t.d.reasons.join(' | '), /the published version object map already holds CL-130000/);
+    assert.match(t.id.reasons.join(' | '), /the published version object map already holds CL-130000/);
+    seen.push(t.d.decision);
+  }
+  assert.deepEqual(seen, Array(12).fill('HOLD'));
+  // The loader's own change merges: its header holds the CL too, and the trigger still holds.
+  state.loader = vmap({ builds: [bld(127004), bld(130000)] });
+  for (let n = 1; n <= 12; n++) {
+    const t = chain(state, 130000);
+    holds(t.d, /the released loader version object map already holds CL-130000/);
+    assert.notEqual(t.id.reasons.length, 0);
+  }
+  // Nothing is locked for good: the next CL goes through, and its seq rises.
+  const next = chain(state, 130001);
+  assert.equal(next.d.decision, 'M');
+  assert.deepEqual(next.id.reasons, []);
+  assert.ok(nextSeq(1761900001, 1761900001) > 1761900001);
+});
+
+test('loop: a trigger after a failed publish stops by version identity, whichever half was written', () => {
+  // The upload went out and the history write failed: the published file holds the CL, the history does not.
+  const served = freshState();
+  const cand = chain(served, 130000).candidate;
+  served.published = cand;
+  for (let n = 1; n <= 12; n++) {
+    const t = chain(served, 130000);
+    holds(t.d, /the published version object map already holds CL-130000/);
+    assert.ok(!/already released for/.test(t.d.reasons.join(' | ')), 'the history is empty: only the published file stops it');
+    assert.notEqual(t.id.reasons.length, 0);
+  }
+  // The history was written and the upload failed: the history holds the release, the published file does not.
+  const recorded = freshState();
+  recorded.history = { releases: [{ repo: 'ModLoader', cl: '130000', at: AT, seq: 1761900001 }], attempts: {} };
+  for (let n = 1; n <= 12; n++) holds(chain(recorded, 130000).d, /already released for CL-130000/);
+  // Nothing served and nothing recorded is not a release: a retry may go, and releases once.
+  const nothing = freshState();
+  for (let n = 1; n <= 3; n++) assert.equal(chain(nothing, 130000).d.decision, 'M');
+  publish(nothing, 130000, chain(nothing, 130000).candidate, 1761900001);
+  assert.equal(chain(nothing, 130000).d.decision, 'HOLD');
+});
+
+test('loop: the attempts limit stands beside the version identity', () => {
+  const state = freshState();
+  state.history.attempts = { 130000: 2 };
+  const missB = { g4: ok(aob([aobRow('SpawnActor', 'MISSING')])) };
+  holds(chain(state, 130000, { over: missB }).d, /2 auto-fix attempts already used for CL-130000 \(limit 2\)/);
+});
+
+test('supersede: accepted with the input and a changed candidate, rejected without it or with an identical candidate', () => {
+  const state = freshState();
+  const first = chain(state, 130000);
+  publish(state, 130000, first.candidate, 1761900001);
+  state.loader = vmap({ builds: [bld(127004), bld(130000)] }); // the loader header has the CL too, as it does after the loader's change merges
+  const sup = { seq: '1761900001', liveSeq: '1761900001' };
+  // accepted: the owner asks for a second release and the candidate changed a row
+  const ok2 = chain(state, 130000, { supersede: sup, rva: 0x6600 });
+  assert.equal(ok2.d.decision, 'M');
+  assert.equal(ok2.d.supersedes, 1761900001);
+  assert.match(ok2.d.notes.join(' | '), /supersede: a second release of CL-130000, replacing the release served now \(seq 1761900001\)/);
+  assert.deepEqual(ok2.id, { reasons: [], supersedes: 1761900001 });
+  // rejected without the input, even with a changed candidate
+  const plain = chain(state, 130000, { rva: 0x6600 });
+  holds(plain.d, /already released for CL-130000/);
+  assert.notEqual(plain.id.reasons.length, 0);
+  assert.equal(plain.d.supersedes, undefined);
+  // rejected with the input and an identical candidate: the decision before the build cannot see the candidate, the check after it does
+  const same = chain(state, 130000, { supersede: sup });
+  assert.match(same.id.reasons.join(' | '), /the candidate version object map changes nothing served for CL-130000/);
+  // the second release publishes with a seq that rises
+  publish(state, 130000, ok2.candidate, nextSeq(1761900001, 1761900001));
+  assert.equal(state.history.releases.at(-1).seq, 1761900002);
+});
+
+test('supersede: decide refuses it when the seq is wrong, not released, or the run is not an ordinary publish', () => {
+  const history = hist(rel('127999', 'ModLoader', 1761900001));
+  const served = vmap({ builds: [bld(127999)] });
+  const coverage = { buildid: '12799900', loaderMap: served, publishedMap: served };
+  const run = (supersede, over = {}) => decide(base({ history, coverage, supersede, ...over }));
+  assert.equal(run({ seq: '1761900001', liveSeq: '1761900001' }).decision, 'M');
+  holds(run({ seq: '1761900000', liveSeq: '1761900001' }), /supersede names seq 1761900000, but the live published version object map is seq 1761900001/);
+  holds(run({ seq: '1761900001', liveSeq: null }), /seq of the live published version object map was not given/);
+  holds(run({ seq: '1761900001', liveSeq: '1761900001' }, { history: hist(rel('127999', 'ModLoader', 1761900009)) }), /not a ModLoader release of CL-127999/);
+  holds(run({ seq: '1761900001', liveSeq: '1761900001' }, { history: hist() }), /not a ModLoader release of CL-127999/);
+  holds(run({ seq: '', liveSeq: '1' }), /is not a seq/);
+  // Never with a test run, a first publish or a rehearsal.
+  for (const flag of ['testAutopilot', 'firstPublish', 'rehearsal']) holds(run({ seq: '1761900001', liveSeq: '1761900001' }, { [flag]: true }), /a supersede is only for an ordinary publishing run/);
+  // It lifts the already-released hold and nothing else: a failed gate, a disabled autopilot, the attempts limit and an unreadable map all still hold.
+  const sup = { seq: '1761900001', liveSeq: '1761900001' };
+  holds(run(sup, { g1: ok({ ok: false }) }), /G1/);
+  holds(run(sup, { autopilot: ok({ schema: 1, enabled: false, paths: ['M'] }) }), /disabled/);
+  holds(run(sup, { g4: ok(aob([aobRow('SpawnActor', 'MISSING')])), history: ok({ releases: [rel('127999', 'ModLoader', 1761900001)], attempts: { 127999: 2 } }) }), /2 auto-fix attempts/);
+  holds(run(sup, { coverage: { ...coverage, publishedMap: { error: 'unreadable' } } }), /could not be read/);
+  // The named seq has to be a release of this very CL: another CL stays held.
+  holds(run(sup, { g3: ok({ ok: true, cl: '128000', previousCl: '127999' }), history }), /not a ModLoader release of CL-128000/);
+});
+
+test('cli: --supersede is read from the flags and the live seq from the published file', () => {
+  const s = idScratch();
+  const published = s.w('published.txt', K1_LF);
+  const history = s.w('history.json', JSON.stringify({ releases: [{ repo: 'ModLoader', cl: '127999', at: AT, seq: 1761900000 }], attempts: {} }));
+  const files = cliFiles({ history: JSON.parse(readFileSync(history, 'utf8')) });
+  // The fixture's published file holds neither CL-127999 nor build 4242: a plain trigger passes; the build id of CL-128786 holds it.
+  assert.equal(runCli(files, ['--published', published, '--buildid', '4242']).status, 1, 'the history already holds the CL');
+  const sup = runCli(files, ['--published', published, '--buildid', '4242', '--supersede', '1761900000']);
+  assert.equal(sup.status, 0, JSON.stringify(sup.out));
+  assert.equal(sup.out.decision, 'M');
+  assert.equal(sup.out.supersedes, 1761900000);
+  const wrong = runCli(files, ['--published', published, '--buildid', '4242', '--supersede', '1761900005']);
+  assert.equal(wrong.status, 1);
+  assert.match(wrong.out.reasons.join(' | '), /supersede names seq 1761900005, but the live published version object map is seq 1761900000/);
+  // A build the published file holds is covered unless a supersede names the live release.
+  const byBuild = runCli(cliFiles({ history: { releases: [], attempts: {} } }), ['--published', published, '--buildid', '2']);
+  assert.equal(byBuild.status, 1);
+  assert.match(byBuild.out.reasons.join(' | '), /the published version object map already holds CL-127999 \(build 2\)/);
+  // A given option that cannot be read is a hold, never a pass.
+  assert.equal(runCli(files, ['--published', join(s.dir, 'missing.txt')]).status, 1);
+  // A supersede with no published file has no live seq to compare with.
+  const noLive = runCli(files, ['--loader-header', s.w('loader.h', LOADER_LF), '--supersede', '1761900000']);
+  assert.equal(noLive.status, 1);
+  assert.match(noLive.out.reasons.join(' | '), /seq of the live published version object map was not given/);
+});
+
+test('cli: a --now is not read', () => {
+  const r = runCli(cliFiles(), ['--now', 'not a date']);
+  assert.equal(r.status, 0);
+  assert.equal(r.out.decision, 'M');
+});
+
+// The identity subcommand, on the loader's own fixtures: loader.h (CL-127004 and CL-128786) and the signed
+// TEST-key file (CL-128786 and CL-130001, seq 1761900000).
+const LF = (s) => s.replace(/\r\n/g, '\n');
+const LOADER_LF = LF(readFileSync(join(here, 'fixtures', 'version-map', 'loader.h'), 'utf8'));
+const K1_LF = LF(readFileSync(join(here, 'fixtures', 'vmap-sign', 'test-feed-k1.txt'), 'utf8'));
+function idScratch() {
+  const dir = mkdtempSync(join(tmpdir(), 'identity-'));
+  return { dir, w: (name, text) => { writeFileSync(join(dir, name), text); return join(dir, name); } };
+}
+function runIdentity(s, flags) {
+  const report = join(s.dir, 'identity.json');
+  const r = spawnSync(process.execPath, [cli, 'identity', '--repo', 'ModLoader', ...flags, '--report', report], { encoding: 'utf8', windowsHide: true });
+  return { status: r.status, stderr: r.stderr, stdout: r.stdout, report: r.status === 2 ? null : JSON.parse(readFileSync(report, 'utf8')) };
+}
+// The candidate feed for the fixtures: the published rows with one edit.
+function candidateText(edit) {
+  const m = parseSignedFeedRows(K1_LF);
+  edit(m);
+  return exportFeed(m);
+}
+
+test('cli identity: a new CL that changes what is served passes; one that is held, or changes nothing, does not', () => {
+  const s = idScratch();
+  const loader = s.w('loader.h', LOADER_LF);
+  const published = s.w('published.txt', K1_LF);
+  const add = (m) => { m.builds.push({ cl: 140000, stamp: 0x66666666, size: 0x06000000, source: 'public 27000000' }); m.functions.push(frow('Test::MapOnly', 140000)); };
+  const fresh = s.w('fresh.txt', candidateText(add));
+  const ok1 = runIdentity(s, ['--cl', '140000', '--buildid', '27000000', '--loader-header', loader, '--published', published, '--feed', fresh]);
+  assert.equal(ok1.status, 0, ok1.stderr);
+  assert.equal(ok1.report.ok, true);
+  assert.equal(ok1.report.step, 'identity');
+  // A publish that changes nothing: the candidate is the published rows.
+  const identical = s.w('identical.txt', candidateText(() => {}));
+  const none = runIdentity(s, ['--cl', '140000', '--buildid', '27000000', '--loader-header', loader, '--published', published, '--feed', identical]);
+  assert.equal(none.status, 3);
+  assert.match(none.report.reasons.join(' | '), /the candidate version object map changes nothing served for CL-140000/);
+  // The published file already holds CL-130001, and the loader header already holds CL-127004.
+  const held = runIdentity(s, ['--cl', '130001', '--loader-header', loader, '--published', published, '--feed', fresh]);
+  assert.equal(held.status, 3);
+  assert.match(held.report.reasons.join(' | '), /the published version object map already holds CL-130001/);
+  const loaderHeld = runIdentity(s, ['--cl', '127004', '--loader-header', loader, '--published', published, '--feed', fresh]);
+  assert.equal(loaderHeld.status, 3);
+  assert.match(loaderHeld.report.reasons.join(' | '), /the released loader version object map already holds CL-127004/);
+  // The Steam build id of CL-128786 covers a CL label that is new.
+  const byBuild = runIdentity(s, ['--cl', '140000', '--buildid', '26271156', '--loader-header', loader, '--published', published, '--feed', fresh]);
+  assert.equal(byBuild.status, 3);
+  assert.match(byBuild.report.reasons.join(' | '), /already holds CL-140000 \(build 26271156\)/);
+  // An unreadable file holds; a bad option is a usage error.
+  assert.equal(runIdentity(s, ['--cl', '140000', '--published', join(s.dir, 'missing.txt'), '--feed', fresh]).status, 3);
+  assert.equal(runIdentity(s, ['--cl', 'x']).status, 2);
+  assert.equal(runIdentity(s, ['--cl', '140000', '--supersede', '1761900000']).status, 2, 'a supersede needs the history');
+});
+
+test('cli identity: a second release of a CL names the live seq and still has to change what is served', () => {
+  const s = idScratch();
+  const loader = s.w('loader.h', LOADER_LF);
+  const published = s.w('published.txt', K1_LF);
+  const history = s.w('history.json', JSON.stringify({ releases: [{ repo: 'ModLoader', cl: '130001', at: AT, seq: 1761900000 }], attempts: {} }));
+  const changed = s.w('changed.txt', candidateText((m) => { m.fields[0].offset = 0x58; }));
+  const identical = s.w('identical.txt', candidateText(() => {}));
+  const base2 = ['--cl', '130001', '--loader-header', loader, '--published', published, '--history', history];
+  // accepted: the input names the live release and the candidate changed a row
+  const accepted = runIdentity(s, [...base2, '--feed', changed, '--supersede', '1761900000']);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(accepted.report.supersedes, 1761900000);
+  // rejected: the input, an identical candidate
+  const same = runIdentity(s, [...base2, '--feed', identical, '--supersede', '1761900000']);
+  assert.equal(same.status, 3);
+  assert.match(same.report.reasons.join(' | '), /changes nothing served for CL-130001/);
+  // rejected: no input, a changed candidate
+  const plain = runIdentity(s, [...base2, '--feed', changed]);
+  assert.equal(plain.status, 3);
+  assert.match(plain.report.reasons.join(' | '), /already holds CL-130001/);
+  // rejected: an input that names a seq that is not the live one
+  const stale = runIdentity(s, [...base2, '--feed', changed, '--supersede', '1761800000']);
+  assert.equal(stale.status, 3);
+  assert.match(stale.report.reasons.join(' | '), /supersede names seq 1761800000, but the live published version object map is seq 1761900000/);
+});
+
+
+test('release limits: at most 2 Claude attempts per CL, B only', () => {
   const missB = ok(aob([aobRow('SpawnActor', 'MISSING')]));
   assert.equal(decide(base({ g4: missB, history: ok({ releases: [], attempts: { 127999: 1 } }) })).decision, 'B');
   holds(decide(base({ g4: missB, history: ok({ releases: [], attempts: { 127999: 2 } }) })), /2 auto-fix attempts/);
@@ -489,8 +827,9 @@ test('rate limit: at most 2 Claude attempts per CL, B only', () => {
 test('fail closed: malformed history', () => {
   holds(decide(base({ history: ok({}) })), /malformed/);
   holds(decide(base({ history: ok({ releases: 'none', attempts: {} }) })), /malformed/);
-  holds(decide(base({ history: ok({ releases: [{ repo: 'ModLoader', cl: '1', at: 'yesterday' }], attempts: {} }) })), /malformed release/);
-  holds(decide(base({ history: ok({ releases: [{ repo: 'ModLoader', cl: 'abc', at: ago(500) }], attempts: {} }) })), /malformed release/);
+  holds(decide(base({ history: ok({ releases: [{ repo: 'ModLoader', cl: 'abc', at: AT }], attempts: {} }) })), /malformed release/);
+  holds(decide(base({ history: ok({ releases: [{ repo: 7, cl: '1', at: AT }], attempts: {} }) })), /malformed release/);
+  for (const seq of ['1761900001', 0, -5, 1.5, null]) holds(decide(base({ history: ok({ releases: [{ repo: 'ModLoader', cl: '1', at: AT, seq }], attempts: {} }) })), /malformed release/);
   holds(decide(base({ history: ok({ releases: [null], attempts: {} }) })), /malformed release/);
   holds(decide(base({ history: ok({ releases: [], attempts: [] }) })), /malformed/);
 });
@@ -506,7 +845,7 @@ function runCli(files, extra = []) {
     names[k] = join(dir, `${k}.json`);
     writeFileSync(names[k], typeof v === 'string' ? v : JSON.stringify(v));
   }
-  const args = ['--repo', 'ModLoader', '--now', new Date(NOW).toISOString()];
+  const args = ['--repo', 'ModLoader'];
   for (const k of ['autopilot', 'g1', 'g2', 'g3', 'g4', 'g5', 'plugins', 'history']) args.push(`--${k}`, names[k] ?? join(dir, `${k}-missing.json`));
   const r = spawnSync(process.execPath, [cli, ...args, ...extra], { encoding: 'utf8', windowsHide: true });
   let out = null;
@@ -533,7 +872,7 @@ test('cli: exit 0 and a decision file for M', () => {
 });
 
 test('cli: exit 1 with HOLD for a disabled autopilot', () => {
-  const r = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 } }));
+  const r = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'] } }));
   assert.equal(r.status, 1);
   assert.equal(r.out.decision, 'HOLD');
 });
@@ -570,7 +909,7 @@ test('cli: exit 10 for B, so a caller that only checks "zero" cannot ship an aut
 });
 
 test('cli: exit 1 for a path C hold and for an unverified SDK global', () => {
-  const c = runCli(cliFiles({ autopilot: { schema: 1, enabled: true, paths: ['M', 'B', 'C'], max_releases_per_day: 2 }, g5: layout('UFoo') }));
+  const c = runCli(cliFiles({ autopilot: { schema: 1, enabled: true, paths: ['M', 'B', 'C'] }, g5: layout('UFoo') }));
   assert.equal(c.status, 1);
   assert.equal(c.out.path, 'C');
   const g = runCli(cliFiles({ g4: aob([aobRow('GetWorld')], { noGlobals: true }) }));
@@ -579,7 +918,7 @@ test('cli: exit 1 for a path C hold and for an unverified SDK global', () => {
 });
 
 test('cli: --first-publish decides M with the autopilot file off and leaves that file untouched; without it the same files HOLD', () => {
-  const off = { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 };
+  const off = { schema: 1, enabled: false, paths: ['M'] };
   const files = cliFiles({ autopilot: off, g3: { ok: true, cl: '127004', previousCl: '127004', firstPublish: true } });
   const plain = runCli(files);
   assert.equal(plain.status, 1);
@@ -606,11 +945,6 @@ test('cli: bad usage exits 2, never 0', () => {
   assert.equal(r.status, 2);
 });
 
-test('cli: an unparseable --now cannot turn into a release', () => {
-  const r = runCli(cliFiles(), ['--now', 'not a date']);
-  assert.equal(r.status, 1);
-  assert.equal(r.out.decision, 'HOLD');
-});
 
 test('cli: --out writes the same decision', () => {
   const out = join(mkdtempSync(join(tmpdir(), 'decide-out-')), 'decision.json');
@@ -736,7 +1070,7 @@ test('HOLD: a verdict this file does not know, a loader request or a missing glo
 });
 
 test('test autopilot: a disabled autopilot still holds, and wouldBe names the path it would take', () => {
-  const autopilot = ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 });
+  const autopilot = ok({ schema: 1, enabled: false, paths: ['M'] });
   const r = decide(base({ autopilot, testAutopilot: true }));
   holds(r, /autopilot is disabled/);
   assert.equal(r.wouldBe, 'M');
@@ -751,7 +1085,7 @@ test('test autopilot: a disabled autopilot still holds, and wouldBe names the pa
 
 // ------------------------------------------------------------ candidate (the unattended chain)
 
-const apOff = ok({ schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 });
+const apOff = ok({ schema: 1, enabled: false, paths: ['M'] });
 const holdsOnlyForAutopilot = (r) => {
   holds(r, /autopilot is disabled/);
   assert.equal(r.wouldBe, 'M', 'every other check reached M, so only the autopilot holds');
@@ -790,13 +1124,13 @@ test('candidate: every other HOLD reason still blocks the candidate (wouldBe is 
   blocked(g({ g4: ok(aob([aobRow('GetWorld')], { noGlobals: true })) }), /SDK global offsets not resolved/);
   blocked(g({ g5: ok(layout('UFoo')) }), /path C held/);
   blocked(g({ plugins: ok({ status: 'fail', plugins: [{ name: 'WAILA', verdict: 'MYSTERY' }] }) }), /not verified/);
-  blocked(g({ history: ok({ releases: [{ repo: 'ModLoader', cl: '127999', at: ago(60 * 30) }], attempts: {} }) }), /already released for CL-127999/);
+  blocked(g({ history: ok({ releases: [{ repo: 'ModLoader', cl: '127999', at: AT }], attempts: {} }) }), /already released for CL-127999/);
   blocked(g({ fields: ok({ written: false, cl: 127999, added: 0, absent: [], covered: [], notes: [], problems: ['field UFoo::Core: gone'] }) }), /field rows/);
-  blocked(g({ autopilot: ok({ schema: 1, enabled: false, paths: ['B'], max_releases_per_day: 2 }) }), /path M is not enabled in autopilot\.paths/);
+  blocked(g({ autopilot: ok({ schema: 1, enabled: false, paths: ['B'] }) }), /path M is not enabled in autopilot\.paths/);
 });
 
 test('candidate: an unreadable or malformed autopilot file is never excused', () => {
-  for (const autopilot of [{ ok: false, error: 'cannot read' }, ok({ schema: 1, enabled: 'no', paths: ['M'], max_releases_per_day: 2 }), ok({ schema: 1, enabled: false, paths: ['X'], max_releases_per_day: 2 })]) {
+  for (const autopilot of [{ ok: false, error: 'cannot read' }, ok({ schema: 1, enabled: 'no', paths: ['M'] }), ok({ schema: 1, enabled: false, paths: ['X'] })]) {
     const r = decide(base({ autopilot, candidate: true }));
     assert.equal(r.decision, 'HOLD');
     assert.equal(r.wouldBe, 'HOLD');
@@ -804,13 +1138,13 @@ test('candidate: an unreadable or malformed autopilot file is never excused', ()
 });
 
 test('cli: --candidate with a disabled autopilot exits 1 (HOLD) and names the M it would take', () => {
-  const r = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 } }), ['--candidate']);
+  const r = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'] } }), ['--candidate']);
   assert.equal(r.status, 1);
   assert.equal(r.out.decision, 'HOLD');
   assert.equal(r.out.wouldBe, 'M');
   assert.equal(r.out.candidate, true);
   assert.equal(r.out.ship, false);
-  const hold = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'], max_releases_per_day: 2 }, g2: { ok: false } }), ['--candidate']);
+  const hold = runCli(cliFiles({ autopilot: { schema: 1, enabled: false, paths: ['M'] }, g2: { ok: false } }), ['--candidate']);
   assert.equal(hold.out.wouldBe, 'HOLD');
 });
 
