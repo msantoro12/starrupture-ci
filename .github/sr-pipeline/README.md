@@ -186,7 +186,7 @@ The repo setting "Allow GitHub Actions to create and approve pull requests" must
 
 The client check logs in with a separate Steam account that owns StarRupture, never the owner's main account. Its password never reaches CI: `steam-ci-login.ps1` (on the owner's PC) runs Valve's steamcmd from a private folder, the owner types the password and the Steam Guard code into steamcmd's own prompt, and the script saves steamcmd's login cache (`config/config.vdf`, whose `ConnectCache` entry holds the refresh token), base64-encoded, to:
 
-- Bitwarden Secrets Manager, project `dev`: `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`
+- Bitwarden Secrets Manager, project `prod`: `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE`
 - this repo's environment `steam-client` (deployment branch: `main` only): the same two secrets
 - repo variable `STEAM_CI_LOGIN_AT`: the date of the login, for the expiry warning
 
