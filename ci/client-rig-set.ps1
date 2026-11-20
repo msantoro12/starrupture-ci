@@ -69,7 +69,9 @@ if (-not $PlanPath) { $PlanPath = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNE
 # is installed as <Asset>.dll. Owner, when present, is the GitHub owner of that plugin's repo
 # (MiniMap and PersistentIdFix are their author's, LetMeInside; the other nine take -Owner). StripV: the plugin logs its
 # version without the release tag's leading v (MiniMap prints 1.2.0 for v1.2.0, PersistentIdFix 1.3.1 for v1.3.1), so that is what
-# the log must show. Pin = { Tag, Digest } is the one reviewed release of a plugin whose owner is
+# the log must show. LoggedVersion, when present, is the exact version that plugin's DLL logs where that differs
+# from its tag (the MiniMap v1.3.0 DLL still logs 1.2.0); the rig then expects that string, and LoggedVersionNote says why.
+# Remove both once the plugin logs its real version. Pin = { Tag, Digest } is the one reviewed release of a plugin whose owner is
 # neither msantoro12 nor AlienXAXS: such a plugin runs beside the live Steam login only at that tag,
 # and only when the release API's digest for its client DLL is that sha256. A plugin of a third
 # party without a Pin is refused, and a newer Latest release is reported (never run) for review.
@@ -320,7 +322,7 @@ function Resolve-Plan {
         }
         $entries += [ordered]@{
             name = $p.Name; logName = $p.LogName; repo = $p.Repo; assetPrefix = $p.Asset; dll = "$($p.Asset).dll"; extra = $false
-            tag = $tag; expect = $(if ($expMap.ContainsKey($p.Name)) { $expMap[$p.Name] } elseif ($p.PSObject.Properties['StripV'] -and $p.StripV) { $tag -replace '^v', '' } else { $tag })
+            tag = $tag; expect = $(if ($expMap.ContainsKey($p.Name)) { $expMap[$p.Name] } elseif ($p.PSObject.Properties['LoggedVersion'] -and $p.LoggedVersion) { [string]$p.LoggedVersion } elseif ($p.PSObject.Properties['StripV'] -and $p.StripV) { $tag -replace '^v', '' } else { $tag })
             expectRefused = $refused.ContainsKey($p.Name); removed = $removed.ContainsKey($p.Name); overlaid = $over; asset = $asset
             uiOffInitFailure = $(if ($p.PSObject.Properties['UiOffInitFailure']) { [string]$p.UiOffInitFailure } else { '' })
         }

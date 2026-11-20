@@ -455,6 +455,7 @@ $rigCases = [ordered]@{
  'uioff other plugin same'    = @{ Run = 'public'; Mut = { param($c)
         $c.ml += "[19:00:36.000] [ERROR] [T:02032] [Plugin:Codex] $uiOffText"
         $c.ml += '[19:00:36.001] [INFO ] [T:02032] [ModLoader] Plugin initialization failed: Codex' };                                                       Fail = 'plugin_no_fault_Codex' }
+ 'minimap logs 1.3.0, set expects 1.2.0' = @{ Run = 'public'; Mut = { param($c) $c.ml = $c.ml -replace 'Name: MiniMap, Version: 1\.2\.0', 'Name: MiniMap, Version: 1.3.0' }; Fail = 'plugin_version_MiniMap' }
  'uioff plugin crashed'       = @{ Run = 'public'; Mut = { param($c) $c.ml += "$($err)[PluginManager] Plugin 'MiniMap' CRASHED in its tick callback -- code=0xC0000005 fault=0x7FF700001234" }; Fail = 'plugin_no_fault_MiniMap' }
  'uioff plugin refused'       = @{ Run = 'public'; Mut = { param($c) $c.ml += "$($sig)Plugin 'MiniMap' is not loaded: Needs an update to run on CL-127004" };       Fail = 'plugin_not_refused_MiniMap' }
  'uioff summary says ten'     = @{ Run = 'public'; Mut = { param($c) $c.ml = $c.ml -replace '9 initialized, 1 failed \(of 10', '10 initialized, 0 failed (of 10' }; Fail = 'plugins_initialized' }
