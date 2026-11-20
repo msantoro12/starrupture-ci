@@ -573,6 +573,51 @@ test('an OK row without a pattern refuses the write and the message names the ke
   assert.throws(() => mapMode(header(), input), (e) => e.message.includes(JSON.stringify(SF)) && e.message.includes('CL-130000') && /gives no pattern/.test(e.message));
 });
 
+// A plugin request that gave several patterns prints `candidates` and no top-level pattern (scanner, interface 72+).
+const candidateScan = (candidates, extra = {}) => ({
+  plugin: { name: 'BetterCheats' },
+  patterns: [{ call: 'Resolve', name: SF, key: SF, kind: 'function', required: true, result: 'OK', rva: '0x123000', fp: '0x00000000', resultOffset: 0, candidates, ...extra }],
+});
+const candidateInput = (scan) => {
+  const dir = scratch({ 'bc.json': scan });
+  const input = assemble({ cl: 130000, build: BUILD, scans: [{ owner: 'BetterCheats', tag: 'v0.23.0', rank: 'current', file: 'bc.json' }] }, dir);
+  return { input, row: input.components[0].releases[0].rows[0] };
+};
+const P1 = '48 89 5C 24 ?? 57 48 83 EC 20';
+const P2 = '40 53 48 83 EC 20 48 8B D9';
+
+test('a candidates-only row with one matching candidate takes that candidate pattern', () => {
+  const { input, row } = candidateInput(candidateScan([{ pattern: P1, matches: 1 }, { pattern: P2, matches: 0 }]));
+  assert.equal(row.pattern, P1);
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  assert.equal(find(out.text, SF, 0).pattern, P1);
+});
+
+test('a candidates-only row whose matching candidates repeat one pattern takes it', () => {
+  const { input, row } = candidateInput(candidateScan([{ pattern: P1, matches: 1 }, { pattern: P1, matches: 1 }]));
+  assert.equal(row.pattern, P1);
+  assert.equal(find(mapMode(header(), input).text, SF, 0).pattern, P1);
+});
+
+test('a candidates-only row with two distinct matching patterns is still refused, and says why', () => {
+  const { input, row } = candidateInput(candidateScan([{ pattern: P1, matches: 1 }, { pattern: P2, matches: 1 }]));
+  assert.equal(row.pattern, undefined);
+  assert.throws(() => mapMode(header(), input), (e) => /gives no pattern/.test(e.message) && /candidates were not a single distinct match/.test(e.message));
+});
+
+test('a candidates-only row with no candidate matching once is still refused', () => {
+  for (const candidates of [[{ pattern: P1, matches: 0 }, { pattern: P2, matches: 0 }], [{ pattern: P1, matches: 2 }], []]) {
+    const { input } = candidateInput(candidateScan(candidates));
+    assert.throws(() => mapMode(header(), input), (e) => /gives no pattern/.test(e.message) && /candidates were not a single distinct match/.test(e.message));
+  }
+});
+
+test('a top-level pattern wins over the candidates', () => {
+  const { row } = candidateInput(candidateScan([{ pattern: P2, matches: 1 }], { pattern: P1 }));
+  assert.equal(row.pattern, P1);
+});
+
 // ---- carried rows and the completeness check ----------------------------------
 
 import { completeness } from './map-mode.mjs';
