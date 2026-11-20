@@ -1,0 +1,2 @@
+# Shell scripts the workflows run stay LF on every checkout (bash fails on CRLF).
+*.sh text eol=lf

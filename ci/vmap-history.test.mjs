@@ -200,3 +200,23 @@ test('check: the command line refuses a history that lists one version twice, in
   assert.equal(key.status, 2);
   assert.equal(cli(['check', '--history', join(d, 'missing.json')]).status, 2, 'unreadable refuses');
 });
+
+test('the pre-dedupe live history (CL 130045 twice): check names it and refuses; record collapses it to the newest seq and the result passes check', () => {
+  const d = dir();
+  const original = { releases: [
+    { repo: 'ModLoader', cl: '127004', at: '2026-11-09T04:11:58.583Z', seq: 1794194330 },
+    { repo: 'ModLoader', cl: '130045', at: '2026-11-19T17:26:22.387Z', seq: 1795109176 },
+    { repo: 'ModLoader', cl: '130045', at: '2026-11-19T17:36:00.818Z', seq: 1795109742 },
+  ], attempts: {} };
+  const file = join(d, 'original.json');
+  writeFileSync(file, JSON.stringify(original));
+  const named = cli(['check', '--history', file]);
+  assert.equal(named.status, 2);
+  assert.match(named.stderr, /ModLoader CL-130045 is listed twice/);
+  const out = join(d, 'out.json');
+  assert.equal(cli(['record', '--history', file, '--repo', 'ModLoader', '--cl', '130046', '--seq', '1795200000', '--at', AT, '--out', out]).status, 0);
+  const next = JSON.parse(readFileSync(out, 'utf8'));
+  assert.deepEqual(Object.keys(next.releases), ['ModLoader:127004', 'ModLoader:130045', 'ModLoader:130046']);
+  assert.equal(next.releases['ModLoader:130045'].seq, 1795109742, 'the newest seq stays');
+  assert.equal(cli(['check', '--history', out]).status, 0);
+});
