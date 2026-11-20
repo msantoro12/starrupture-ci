@@ -4612,7 +4612,7 @@ jobs:
             } else if (r && (r.status === "skipped" || r.status === "no-login")) {
               lines.push("- client check **did not run** (status " + r.status + "): " + clip(r.reason ?? "no reason recorded"));
             }
-            if (r?.status === "new-build") info.push("New build **CL-" + (r.checks?.exe?.cl ?? "?") + "** (" + (r.checks?.exe?.productVersion ?? "unknown ProductVersion") + "), measured by map mode: the loader does not run on it yet (" + (r.checks?.exe?.requiredCl ?? "unknown") + "); this is not a failure.");
+            if (r?.status === "new-build") info.push("New build **CL-" + (r.checks?.exe?.cl ?? "?") + "** (" + (r.checks?.exe?.productVersion ?? "unknown ProductVersion") + "), measured by map mode: it is not in the build table of the loader that was scanned (" + (r.checks?.exe?.requiredCl ?? "unknown") + "); this is not a failure.");
             if (e.MAP_MODE_RESULT === "failure") {
               lines.push("- job **map mode** failed");
               if (!chainThere) lines.push("  - the map-mode artifact is missing: the job stopped before it uploaded one, so no gate or decision is available");
@@ -4873,7 +4873,7 @@ jobs:
             $md.Add("The client build was not checked: $($r.reason).")
           } elseif ($r) {
             if ($status -eq 'new-build') {
-              $md.Add("**New build, measured by map mode.** The loader does not run on CL-$($r.checks.exe.cl) yet; that is the case map mode exists for, not a failure. Every other check below passed, and the map-mode job decides what the build needs.")
+              $md.Add("**New build, measured by map mode.** CL-$($r.checks.exe.cl) is not in the build table of the loader that was scanned; that is the case map mode exists for, not a failure. Every other check below passed, and the map-mode job decides what the build needs.")
               $md.Add('')
             }
             $dl = $r.download; $ck = $r.checks
