@@ -454,8 +454,10 @@ jobs:
             Write-Host "::error title=usmap::no usable .usmap came out of the dump ($($f.Count) found)"
           }
 
-      # The payload kept the CppSDK and build_cl.txt under out/sdk while the game was up. This only
-      # checks they are there; a missing or empty SDK fails the run (the usmap is still uploaded).
+      # The payload kept the CppSDK and build_cl.txt under out/sdk while the game was up. This checks
+      # they are there and comments out the Dumper-7 asserts MSVC can never satisfy (ci/sdk-asserts.mjs
+      # prints every line it changes and fails past 50), so a drop builds without a hand edit. A missing
+      # or empty SDK, or a failed edit, fails the run (the usmap is still uploaded).
       - name: Find the SDK
         id: sdk
         if: always() && steps.launch.outcome != 'skipped'
@@ -464,8 +466,14 @@ jobs:
           $files = @(Get-ChildItem out/sdk -Recurse -File -ErrorAction SilentlyContinue)
           $cl = if (Test-Path out/sdk/build_cl.txt) { (Get-Content -LiteralPath out/sdk/build_cl.txt -Raw).Trim() } else { '' }
           if ($files.Count -gt 1 -and (Test-Path out/sdk/SDK.hpp) -and $cl -match '^\d+$') {
-            "ok=true" >> $env:GITHUB_OUTPUT
-            "sdk: $($files.Count) files, build CL-$cl"
+            node ci/sdk-asserts.mjs out/sdk
+            if ($LASTEXITCODE -eq 0) {
+              "ok=true" >> $env:GITHUB_OUTPUT
+              "sdk: $($files.Count) files, build CL-$cl"
+            } else {
+              "ok=false" >> $env:GITHUB_OUTPUT
+              Write-Host "::error title=sdk::the unbuildable asserts could not be commented out of the CppSDK (exit $LASTEXITCODE); see the lines above"
+            }
           } else {
             "ok=false" >> $env:GITHUB_OUTPUT
             Write-Host "::error title=sdk::the CppSDK was not kept ($($files.Count) files under out/sdk, build_cl.txt '$cl'); see the payload lines of the launch step"
