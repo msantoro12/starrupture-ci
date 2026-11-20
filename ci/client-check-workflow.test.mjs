@@ -896,8 +896,11 @@ case "$1 $2" in
   "pr list") reply pr.json ;;
   "pr view") case "$*" in *title*) echo "Game build 26461198 on public_test_branch" ;; *) reply pr-chain-labels.txt ;; esac ;;
   "issue list") if [ -f "$FAKE_DIR/issue-number.txt" ]; then
-      if [ ! -f "$FAKE_DIR/issue-closed.txt" ]; then sed 's/$/ OPEN/' "$FAKE_DIR/issue-number.txt"
-      else case "$*" in *"--state all"*) sed 's/$/ CLOSED/' "$FAKE_DIR/issue-number.txt" ;; esac; fi
+      # The stale-PR step asks for "<number> <state>" lines (--json ...,state); the alert job asks for the number.
+      case "$*" in *"number,title,state"*) st=OPEN; [ -f "$FAKE_DIR/issue-closed.txt" ] && st=CLOSED
+        # A closed issue is listed only when the lookup says --state all.
+        if [ "$st" = OPEN ]; then sed "s/$/ OPEN/" "$FAKE_DIR/issue-number.txt"; else case "$*" in *"--state all"*) sed "s/$/ CLOSED/" "$FAKE_DIR/issue-number.txt" ;; esac; fi ;;
+        *) reply issue-number.txt ;; esac
     fi ;;
   "api repos/"*) case "$*" in *'.[].body'*) reply comment-bodies.txt ;; *'.body // '*) reply issue-body.txt ;; *) case "$2" in */comments) reply comment-times.txt ;; esac ;; esac ;;
 esac
