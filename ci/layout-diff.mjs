@@ -142,6 +142,9 @@ export function parseUsedList(text) {
   return names;
 }
 
+// Does the used name u select class c (see matchUsed).
+export const nameMatches = (c, u) => c === u || c.endsWith('::' + u) || c.startsWith(u + '::');
+
 // A used name U selects class C when C is U, a namespace-qualified U
 // (`Ns::U`) or something nested inside U (`U::FNested`). Deliberately wide:
 // over-matching costs a HOLD, under-matching ships corrupt memory.
@@ -152,7 +155,7 @@ export function matchUsed(used, classNames) {
   for (const u of used) {
     let hit = false;
     for (const c of all) {
-      if (c === u || c.endsWith('::' + u) || c.startsWith(u + '::')) {
+      if (nameMatches(c, u)) {
         if (!matched.has(c)) matched.set(c, u);
         hit = true;
       }

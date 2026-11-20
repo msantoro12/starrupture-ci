@@ -6,7 +6,7 @@
 //   node ci/layout-table.mjs gen <Client/Assertions.inl> --cl <build> \
 //        [--used used-classes.txt]... [--src <source-dir>]... \
 //        [--sdk <Client/SDK dir>] [--granularity 0|1] [--namespace SrLayoutTable] [--out layout_table.generated.h] \
-//        [--consumer <id>=<path>]... [--plugin-sdk <rule3-allow.json>]
+//        [--consumer <id>=<path>]... [--plugin-sdk <rule3-allow.json>] [--check <committed.h>]
 //   node ci/layout-table.mjs compare <old.h> <new.h> [--json report.json]
 //   node ci/layout-table.mjs keys <table.h> [--out keys.txt]
 //   node ci/layout-table.mjs pdb-diff <base.json> <next.json> [--keys keys.txt] [--json report.json]
@@ -35,6 +35,12 @@
 //   rule-3 allow list: a parameter block, a class with no path, and a class
 //   in one of its enginePackages get the id `plugin-sdk`, since a plugin keeps
 //   those layouts compiled in. A class no group uses gets no id: unknown.
+//   --check <committed.h> says whether that table is what these inputs generate
+//   now. A class is in the table when any --src file names it, so the table moves
+//   whenever the sources do (a new version-map key adds its class). When the
+//   committed table differs, the classes added, removed and changed go to stdout,
+//   each added class with the files that pulled it in, and the exit code is 3.
+//   The header is not printed with --check; --out still writes it.
 //
 // compare
 //   Reads two generated headers and reports what the new build breaks in the
@@ -62,7 +68,7 @@
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { ALIGN, EXIT_ERROR, EXIT_USED_CHANGED, SIZE, isMain, loadLayout, matchUsed, parseUsedList, ParseError } from './layout-diff.mjs';
+import { ALIGN, EXIT_ERROR, EXIT_USED_CHANGED, SIZE, isMain, loadLayout, matchUsed, nameMatches, parseUsedList, ParseError } from './layout-diff.mjs';
 import { collectLazyMembers, collectMemberNames, collectRequests, collectSizedNames, collectSizeUses, collectUsed, knownFilter } from './used-classes.mjs';
 
 export const FORMAT_VERSION = 1;
@@ -253,13 +259,85 @@ export function consumersOf(usedNames, groups, classNames) {
     }
     if (!ids.size) continue;
     for (const c of all) {
-      if (!(c === u || c.endsWith('::' + u) || c.startsWith(u + '::'))) continue;
+      if (!nameMatches(c, u)) continue;
       let set = byClass.get(c);
       if (!set) byClass.set(c, (set = new Set()));
       for (const id of ids) set.add(id);
     }
   }
   return byClass;
+}
+
+// ---- scope report and freshness check ---------------------------------------
+
+// Why a class is in a table: Map<class, sorted source files> from collectUsed's names (each file
+// as `<src dir name>/<path under it>`) and the classes to explain, by matchUsed's rule. A class
+// with no file is there as a reflected base, or from a --used list.
+export function pulledInBy(usedNames, classNames) {
+  const byClass = new Map();
+  const all = [...classNames];
+  for (const [u, e] of usedNames) {
+    for (const c of all) {
+      if (!nameMatches(c, u)) continue;
+      let set = byClass.get(c);
+      if (!set) byClass.set(c, (set = new Set()));
+      for (const f of e.files ?? []) set.add(f);
+    }
+  }
+  return new Map([...byClass].map(([c, set]) => [c, [...set].sort(cmp)]));
+}
+
+// What differs between two tables read by parseHeader: classes only in `next`, classes only in
+// `old`, and classes in both whose size, alignment, kind, path, rows or consumers differ.
+// Every difference counts, unlike compareTables, which reports only what a new build breaks.
+export function diffTables(old, next) {
+  const oldBy = new Map(old.classes.map((c) => [c.name, c]));
+  const nextBy = new Map(next.classes.map((c) => [c.name, c]));
+  const added = next.classes.filter((c) => !oldBy.has(c.name)).map((c) => c.name);
+  const removed = old.classes.filter((c) => !nextBy.has(c.name)).map((c) => c.name);
+  const same = (a, b) => JSON.stringify([a.sizeOf, a.alignOf, a.kind, a.path, a.rows, a.consumers ?? null]) === JSON.stringify([b.sizeOf, b.alignOf, b.kind, b.path, b.rows, b.consumers ?? null]);
+  const changed = [];
+  for (const c of next.classes) {
+    const o = oldBy.get(c.name);
+    if (!o || same(o, c)) continue;
+    const rowOf = (cls) => new Map(cls.rows.map((r) => [r.member, JSON.stringify(r)]));
+    const a = rowOf(o);
+    const b = rowOf(c);
+    changed.push({
+      cls: c.name,
+      rowsAdded: [...b.keys()].filter((m) => !a.has(m)),
+      rowsRemoved: [...a.keys()].filter((m) => !b.has(m)),
+      rowsChanged: [...b.keys()].filter((m) => a.has(m) && a.get(m) !== b.get(m)),
+      other: o.sizeOf !== c.sizeOf || o.alignOf !== c.alignOf || o.kind !== c.kind || o.path !== c.path,
+      consumers: [o.consumers ?? null, c.consumers ?? null],
+    });
+  }
+  return { oldCL: old.cl, nextCL: next.cl, added, removed, changed };
+}
+
+// The diff as text: one line per class, an added class with the source files that pulled it in
+// (`why`: Map<class, files>) and the ids that read it.
+export function formatTableDiff(d, oldTable, nextTable, why = new Map()) {
+  const rowTotal = (t) => t.classes.reduce((s, c) => s + c.rows.length, 0);
+  const nextBy = new Map(nextTable.classes.map((c) => [c.name, c]));
+  const ids = (c) => (c?.consumers ? `[${c.consumers.join(', ') || 'unknown'}]` : '');
+  const lines = [`layout table scope: committed CL-${d.oldCL} (${oldTable.classes.length} classes, ${rowTotal(oldTable)} rows) -> generated CL-${d.nextCL} (${nextTable.classes.length} classes, ${rowTotal(nextTable)} rows)`];
+  for (const c of d.added) {
+    const files = why.get(c) ?? [];
+    lines.push(`ADDED   ${c} ${ids(nextBy.get(c))} <- ${files.length ? files.slice(0, 3).join(', ') + (files.length > 3 ? ` and ${files.length - 3} more` : '') : 'a reflected base or a --used list'}`);
+  }
+  for (const c of d.removed) lines.push(`REMOVED ${c}`);
+  for (const c of d.changed) {
+    const parts = [];
+    if (c.rowsAdded.length) parts.push(`+${c.rowsAdded.join(' +')}`);
+    if (c.rowsRemoved.length) parts.push(`-${c.rowsRemoved.join(' -')}`);
+    if (c.rowsChanged.length) parts.push(`~${c.rowsChanged.join(' ~')}`);
+    if (c.other) parts.push('size, alignment, kind or path');
+    if (JSON.stringify(c.consumers[0]) !== JSON.stringify(c.consumers[1])) parts.push(`consumers ${ids({ consumers: c.consumers[0] }) || 'none'} -> ${ids({ consumers: c.consumers[1] }) || 'none'}`);
+    lines.push(`CHANGED ${c.cls}: ${parts.join('; ')}`);
+  }
+  lines.push(`${d.added.length} classes added, ${d.removed.length} removed, ${d.changed.length} changed`);
+  return lines.join('\n') + '\n';
 }
 
 // The package names of a Plugin SDK rule-3 allow list's enginePackages.
@@ -569,11 +647,25 @@ function parseArgs(argv, valued, repeated = []) {
   return { opt, pos };
 }
 
+// gen --check: say whether the committed table is what these inputs generate now; when it is not,
+// list what differs and which source files pulled each added class in, and exit 3.
+function checkFresh(committedPath, text, scanned) {
+  const committed = readFileSync(committedPath, 'utf8');
+  if (committed.replace(/\r\n/g, '\n') === text) {
+    process.stdout.write(`layout-table: ${committedPath} is fresh\n`);
+    return;
+  }
+  const [old, next] = [parseHeader(committed, committedPath), parseHeader(text, 'generated table')];
+  process.stdout.write(formatTableDiff(diffTables(old, next), old, next, pulledInBy(scanned, next.classes.map((c) => c.name))));
+  process.stdout.write(`layout-table: ${committedPath} is stale: regenerate it with the same command\n`);
+  process.exitCode = EXIT_USED_CHANGED;
+}
+
 function main(argv) {
   const [cmd, ...rest] = argv;
   if (cmd === 'gen') {
-    const { opt, pos } = parseArgs(rest, ['cl', 'sdk', 'namespace', 'out', 'granularity', 'uses-out', 'plugin-sdk'], ['used', 'src', 'consumer']);
-    if (pos.length !== 1) throw new Error('usage: layout-table.mjs gen <Assertions.inl> --cl <build> [--used f]... [--src dir]... [--sdk dir] [--granularity 0|1|2] [--out f] [--uses-out f]');
+    const { opt, pos } = parseArgs(rest, ['cl', 'sdk', 'namespace', 'out', 'granularity', 'uses-out', 'plugin-sdk', 'check'], ['used', 'src', 'consumer']);
+    if (pos.length !== 1) throw new Error('usage: layout-table.mjs gen <Assertions.inl> --cl <build> [--used f]... [--src dir]... [--sdk dir] [--granularity 0|1|2] [--out f] [--uses-out f] [--check committed.h]');
     if (opt.used.length + opt.src.length === 0) throw new Error('give at least one --used list or --src directory');
     const granularity = opt.granularity ?? '0';
     if (!['0', '1', '2'].includes(granularity)) throw new Error('--granularity is 0, 1 or 2');
@@ -606,7 +698,8 @@ function main(argv) {
     const text = renderHeader(table, { namespace: opt.namespace });
     if (opt.out) writeFileSync(opt.out, text);
     if (opt['uses-out']) writeFileSync(opt['uses-out'], usesLines(sizeUses, collectLazyMembers(opt.src), table, collectRequests(opt.src)).join('\n') + '\n');
-    else process.stdout.write(text);
+    else if (!opt.check) process.stdout.write(text);
+    if (opt.check) checkFresh(opt.check, text, scanned);
     const rows = table.classes.reduce((s, c) => s + c.rows.length, 0);
     process.stderr.write(`layout-table: ${table.classes.length} classes, ${rows} rows, ${text.length} bytes; ${unmatched.length} used names not in the layout${unmatched.length ? ` (${unmatched.join(', ')})` : ''}\n`);
     const sk = table.skipped;

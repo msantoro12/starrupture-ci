@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildReport, loadLayout, matchUsed, parseAssertions, parseUsedList } from './layout-diff.mjs';
-import { KIND, buildTable, compareTables, diffLayoutReports, parseHeader, parseLayoutReport, parseSdkHeaders, renderHeader, selectKeys, tableKeys } from './layout-table.mjs';
+import { KIND, buildTable, compareTables, diffLayoutReports, diffTables, formatTableDiff, parseHeader, parseLayoutReport, parseSdkHeaders, pulledInBy, renderHeader, selectKeys, tableKeys } from './layout-table.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIX = join(here, 'fixtures', 'layout');
@@ -511,6 +511,101 @@ test('CLI: gen --consumer and --plugin-sdk tag each class with what reads it; ba
   assert.equal(run(...args.slice(0, -2), '--consumer', `plugin-sdk=${src}`).code, 2);
   assert.equal(run(...args.slice(0, -2), '--consumer', `x=${join(dir, 'nope')}`).code, 2);
   assert.equal(run('gen', asserts, '--cl', '9', '--src', src, '--plugin-sdk', allow).code, 2, '--plugin-sdk needs --sdk');
+});
+
+// ---- scope: what puts a class in the table, and the freshness check -------------------
+
+// A tree like the loader's: core code naming UCrWidget, and a generated key file that gains a
+// `"FCrThing::A"` key. Returns { asserts, sdk, src, run(args) } for gen over it.
+function scopeFixture() {
+  const dir = tmp();
+  const asserts = join(dir, 'Assertions.inl');
+  writeFileSync(asserts, inl(WIDGET));
+  const src = join(dir, 'src');
+  mkdirSync(join(src, 'core'), { recursive: true });
+  mkdirSync(join(src, 'gen'), { recursive: true });
+  writeFileSync(join(src, 'core', 'a.cpp'), 'void f(SDK::UCrWidget* w) { w->Count; }\n');
+  const sdk = writeSdk();
+  const gen = (...more) => run('gen', asserts, '--cl', '9', '--src', src, '--sdk', sdk, '--granularity', '1', '--consumer', `core=${join(src, 'core')}`, '--consumer', `keys=${join(src, 'gen')}`, ...more);
+  return { dir, src, gen };
+}
+
+test('scope: a class is in the table when a source names it, a wider tree only adds classes, and the output is deterministic', () => {
+  const { dir, src, gen } = scopeFixture();
+  const narrow = join(dir, 'narrow.h');
+  assert.equal(gen('--out', narrow).code, 0);
+  const before = parseHeader(readFileSync(narrow, 'utf8'));
+  assert.deepEqual(before.classes.map((c) => c.name), ['UCrWidget'], 'only the class a source names');
+  // A key string names FCrThing and its parameter block's class: both join, nothing leaves.
+  writeFileSync(join(src, 'gen', 'keys.h'), 'const char* k[] = { "FCrThing::A", "CrWidget_SetCount::NewCount" };\n');
+  const wide = join(dir, 'wide.h');
+  assert.equal(gen('--out', wide).code, 0);
+  const after = parseHeader(readFileSync(wide, 'utf8'));
+  assert.deepEqual(after.classes.map((c) => c.name), ['CrWidget_SetCount', 'FCrThing', 'UCrWidget']);
+  for (const c of before.classes) assert.ok(after.classes.some((x) => x.name === c.name), `${c.name} stays`);
+  // The attribution follows the file that names the class; the member rows of a class an older file used stay as they were.
+  const tags = Object.fromEntries(after.classes.map((c) => [c.name, c.consumers]));
+  assert.deepEqual(tags, { CrWidget_SetCount: ['keys'], FCrThing: ['keys'], UCrWidget: ['core'] });
+  assert.deepEqual(after.classes.find((c) => c.name === 'UCrWidget').rows, before.classes[0].rows);
+  // Same inputs, same bytes, however often it is run.
+  const again = join(dir, 'again.h');
+  assert.equal(gen('--out', again).code, 0);
+  assert.equal(readFileSync(again, 'utf8'), readFileSync(wide, 'utf8'));
+});
+
+test('scope: pulledInBy lists the files that name each class, sorted; a base reached only by inheritance has none', () => {
+  const used = new Map([
+    ['UCrWidget', { files: new Set(['src/b.cpp', 'src/a.cpp']) }],
+    ['FCrThing', { files: new Set(['src/gen/keys.h']) }],
+  ]);
+  const why = pulledInBy(used, ['UCrWidget', 'FCrThing', 'UCrBase']);
+  assert.deepEqual(why.get('UCrWidget'), ['src/a.cpp', 'src/b.cpp']);
+  assert.deepEqual(why.get('FCrThing'), ['src/gen/keys.h']);
+  assert.equal(why.has('UCrBase'), false);
+  // The same name rule as matchUsed: a nested class and a namespaced class follow their used name.
+  assert.deepEqual([...pulledInBy(new Map([['Foo', { files: new Set(['x.cpp']) }]]), ['Foo::Bar', 'Ns::Foo', 'Foo2']).keys()], ['Foo::Bar', 'Ns::Foo']);
+});
+
+test('scope: diffTables lists classes added, removed and changed, and what changed in them', () => {
+  const row = (member, offset, size = 4, mask = 0) => ({ member, offset, size, mask });
+  const cls = (name, rows, extra = {}) => ({ name, sizeOf: 0, alignOf: 0, kind: 1, path: `P.${name}`, rows, consumers: ['core'], ...extra });
+  const old = { cl: 1, detail: 1, classes: [cls('A', [row('x', 0), row('y', 4)]), cls('B', [row('z', 0)]), cls('Gone', [])] };
+  const next = { cl: 2, detail: 1, classes: [cls('A', [row('x', 8), row('w', 12)], { consumers: ['core', 'keys'] }), cls('B', [row('z', 0)]), cls('New', [row('n', 0)], { consumers: ['keys'] })] };
+  const d = diffTables(old, next);
+  assert.deepEqual(d.added, ['New']);
+  assert.deepEqual(d.removed, ['Gone']);
+  assert.equal(d.changed.length, 1);
+  assert.deepEqual([d.changed[0].cls, d.changed[0].rowsAdded, d.changed[0].rowsRemoved, d.changed[0].rowsChanged], ['A', ['w'], ['y'], ['x']]);
+  const text = formatTableDiff(d, old, next, new Map([['New', ['src/gen/keys.h']]]));
+  assert.match(text, /^layout table scope: committed CL-1 \(3 classes, 3 rows\) -> generated CL-2 \(3 classes, 4 rows\)$/m);
+  assert.match(text, /^ADDED   New \[keys\] <- src\/gen\/keys\.h$/m);
+  assert.match(text, /^REMOVED Gone$/m);
+  assert.match(text, /^CHANGED A: \+w; -y; ~x; consumers \[core\] -> \[core, keys\]$/m);
+  assert.deepEqual(diffTables(old, old), { oldCL: 1, nextCL: 1, added: [], removed: [], changed: [] });
+});
+
+test('CLI: gen --check is quiet when the committed table is fresh (CRLF or not) and exits 3 with the delta when it is stale', () => {
+  const { dir, src, gen } = scopeFixture();
+  const committed = join(dir, 'committed.h');
+  assert.equal(gen('--out', committed).code, 0);
+  let r = gen('--check', committed);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /is fresh/);
+  assert.doesNotMatch(r.out, /namespace SrLayoutTable/, 'the header is not printed with --check');
+  writeFileSync(committed, readFileSync(committed, 'utf8').replace(/\n/g, '\r\n'));
+  assert.equal(gen('--check', committed).code, 0, 'a Windows checkout of the table is still fresh');
+  // The loader gains a key for FCrThing: the committed table is stale by exactly that class.
+  writeFileSync(join(src, 'gen', 'keys.h'), 'const char* k[] = { "FCrThing::A" };\n');
+  const fresh = join(dir, 'fresh.h');
+  r = gen('--check', committed, '--out', fresh);
+  assert.equal(r.code, 3, r.err);
+  assert.match(r.out, /^ADDED   FCrThing \[keys\] <- src\/gen\/keys\.h$/m);
+  assert.match(r.out, /1 classes added, 0 removed, 0 changed/);
+  assert.match(r.out, /is stale/);
+  assert.match(readFileSync(fresh, 'utf8'), /"FCrThing"/, '--out still writes the regenerated table');
+  // Regenerating it makes the check pass again.
+  assert.equal(gen('--check', fresh).code, 0);
+  assert.equal(gen('--check', join(dir, 'missing.h')).code, 2);
 });
 
 // ---- keys and pdb-diff ---------------------------------------------------------------

@@ -42,6 +42,27 @@ node ci/layout-table.mjs gen <Client/Assertions.inl> --cl <built CL> \
 A header offset that disagrees with the `Assertions.inl` stops the run (the
 headers are from a different build than the assertions).
 
+### What is in the table, and keeping it fresh
+
+A class is in the table when a file under `--src` names it: `SDK::X`, a field
+request (`SR_FIELD` and its wrappers) or a `"Class::Member"` key string. The
+loader's generated version-map header holds one such key per field row, so every
+key the version object map gains adds its class to the table on the next
+regeneration. The table only ever grows with the sources: a class is never
+dropped to make a build pass. Where a member differs between game builds, give
+it a per-build row in the version map instead.
+
+```
+node ci/layout-table.mjs gen ... --check <committed layout_table.generated.h>
+```
+
+Runs the same generation and compares it with the committed file. Identical:
+prints `is fresh`, exit 0. Different: prints each class added, removed or
+changed (an added class with the source files that pulled it in, and the
+consumer ids that would gate on it) and exits 3. Regenerate the committed table
+with the same command, without `--check`. Run it in the loader's CI so a
+changed source tree cannot leave the table behind.
+
 ```
 node ci/layout-table.mjs compare <old.h> <new.h> [--json report.json]
 ```
