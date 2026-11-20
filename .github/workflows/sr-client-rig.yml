@@ -20,6 +20,12 @@ name: SR client rig
 # it. It needs a candidate loader that trusts the TEST key (the caller builds it), and the
 # feed must be signed with the TEST key: a release-signed feed is refused here, so nothing the
 # release key signed ever reaches this job.
+# A live feed run (live_feed, a dispatch) seeds the feed players get instead: the published
+# version-map-client.v1.txt of the vmap-feed release, read with the job token (public, no secret),
+# checked with the release PUBLIC key k2 and nothing else (the test key is not accepted), and
+# copied to the loader's feed cache. Released loaders trust k2 only, so this works with the
+# default released loader as well as with a candidate. The rig records the seq and sha256 of the
+# file it seeded. It never signs, holds no signing key and publishes nothing.
 # Game files, engine logs, dumps and Steam config files never leave the runner. Nothing
 # taken from the logs reaches the console, the job summary or an upload before the leak
 # gate has passed: the verdict writes its text to files in out/, and the last step
@@ -64,6 +70,10 @@ on:
         description: 'Plugins taken out of the install but still expected, so they must show as missing'
         type: string
         default: ''
+      live_feed:
+        description: 'true: seed the loader''s feed cache with the live signed version object map feed (the vmap-feed release, checked with the release key k2), as players get it. Works with a released loader or a candidate. false: no feed, as before'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       branch:
@@ -167,6 +177,7 @@ jobs:
       FEED_ARTIFACT: ${{ inputs.feed_artifact }}
       FEED_SEQ: ${{ inputs.feed_seq }}
       FEED_CL: ${{ inputs.feed_cl }}
+      LIVE_FEED: ${{ inputs.live_feed }}
       MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
       DOWNLOAD_DIR: D:\rig-dl
       # One name per rig run. A caller's run id is the top-level run's, so the several rigs of one run (the
@@ -287,6 +298,34 @@ jobs:
             console.log("The feed carries a build row for CL-" + cl);
           ' feed/feed.test-signed.txt "$FEED_CL" || reason "the feed does not carry a build row for CL-$FEED_CL"
 
+      # The live feed, as players get it: the file on the public vmap-feed release, read with the job
+      # token. It must verify with the release public key k2 and no other key (the verifier is run
+      # without its test-key flag), and it fails closed: any failure stops the rig before the install.
+      # The seq and the sha256 come from the verified file and go on to the install and the summary.
+      - name: Download and check the live feed
+        id: live
+        if: inputs.live_feed == true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          reason() { echo "::error::$1"; printf '%s\n' "$1" > "$RUNNER_TEMP/rig-reason.txt"; exit 1; }
+          [ -z "$FEED_ARTIFACT$FEED_SEQ$FEED_CL" ] || reason 'live_feed does not go with feed_artifact, feed_seq or feed_cl'
+          mkdir live-feed
+          gh release download vmap-feed --repo "$REPO" --pattern version-map-client.v1.txt --dir live-feed || reason 'the live feed could not be downloaded from the vmap-feed release'
+          [ -f live-feed/version-map-client.v1.txt ] || reason 'the vmap-feed release has no version-map-client.v1.txt'
+          out="$(node ci/vmap-sign.mjs verify live-feed/version-map-client.v1.txt 2>&1)" || reason "the live feed does not verify: $out"
+          # The release key k2 only: the verifier refuses the test key unless told otherwise, and says so here too.
+          [[ "$out" =~ ^ok\ seq=([1-9][0-9]{0,14})\ key=k2$ ]] || reason "the live feed is not signed with the release key k2: $out"
+          seq="${BASH_REMATCH[1]}"
+          sha="$(sha256sum live-feed/version-map-client.v1.txt | cut -d' ' -f1)"
+          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || reason 'the live feed has no sha256'
+          echo "Live feed verified with the release key k2: seq $seq, sha256 $sha"
+          echo "seq=$seq" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
       # Validates every input and the candidate, resolves the releases, and fails here, not
       # after a 16 GB install, on a bad one.
       - name: Resolve the set
@@ -294,10 +333,12 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          LIVE_FEED_SEQ: ${{ steps.live.outputs.seq }}
         run: |
           $cand = if (Test-Path candidate) { 'candidate' } else { '' }
           $feed = @{}
           if ($env:FEED_ARTIFACT) { $feed = @{ FeedFile = 'feed/feed.test-signed.txt'; FeedSeq = $env:FEED_SEQ; FeedCl = $env:FEED_CL } }
+          elseif ($env:LIVE_FEED_SEQ) { $feed = @{ FeedFile = 'live-feed/version-map-client.v1.txt'; FeedSeq = $env:LIVE_FEED_SEQ; FeedLive = $true } }
           ./ci/client-rig-set.ps1 -Mode Resolve -Branch $env:BRANCH -Tags $env:TAGS -Expect $env:EXPECT `
             -ExpectRefused $env:EXPECT_REFUSED -ExpectDecline $env:EXPECT_DECLINE -KnownCls $env:KNOWN_CLS -RemovePlugins $env:REMOVE_PLUGINS -Owner $env:MOD_OWNER -CandidateDir $cand @feed
 
@@ -334,10 +375,12 @@ jobs:
         shell: pwsh
         env:
           INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          LIVE_FEED_SEQ: ${{ steps.live.outputs.seq }}
         run: |
           $cand = if (Test-Path candidate) { 'candidate' } else { '' }
           $feed = @{}
           if ($env:FEED_ARTIFACT) { $feed = @{ FeedFile = 'feed/feed.test-signed.txt'; FeedSeq = $env:FEED_SEQ; FeedCl = $env:FEED_CL } }
+          elseif ($env:LIVE_FEED_SEQ) { $feed = @{ FeedFile = 'live-feed/version-map-client.v1.txt'; FeedSeq = $env:LIVE_FEED_SEQ; FeedLive = $true } }
           ./ci/client-rig-set.ps1 -Mode Install -DownloadDir $env:DOWNLOAD_DIR -InstallDir $env:INSTALL_DIR -OutDir out -CandidateDir $cand @feed
 
       - name: Launch the game client

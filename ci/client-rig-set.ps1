@@ -36,6 +36,12 @@
 # get its rows from. Install copies it, byte for byte, to ModLoader\version-map-client.v1.cache,
 # the file the loader reads at start, and set.json records the seq and the CL for ci/verdict.ps1.
 # It needs a candidate loader (the feed is trusted by that build only); Resolve refuses it without.
+#
+# -FeedLive marks -FeedFile as the live feed players get (signed with the release key, checked by the
+# workflow before this runs), so any loader that trusts the release key can read it: a released loader
+# needs no candidate, and no CL is given (the loader takes whatever rows the feed has for the running
+# build). Resolve reads the feed's own seq line and refuses a -FeedSeq that differs from it; Install
+# copies the file to the cache, and set.json records the seq and the sha256 of the cache file written.
 
 [CmdletBinding()]
 param(
@@ -51,6 +57,7 @@ param(
     [string]$FeedFile = '',
     [string]$FeedSeq = '',
     [string]$FeedCl = '',
+    [switch]$FeedLive,
     # Owner of the mod repos: the same two the other pipeline workflows accept.
     [string]$Owner = 'AlienXAXS',
     [string]$PlanPath = '',
@@ -236,17 +243,29 @@ function Resolve-Plan {
 
     # ---- the feed to seed ----
     $feed = $null
-    if ($FeedFile -or $FeedSeq -or $FeedCl) {
-        if (-not $FeedFile -or -not $FeedSeq -or -not $FeedCl) { throw 'the feed file, its seq and its CL go together' }
-        if (-not $CandidateDir) { throw 'a seeded feed needs the candidate loader that trusts it; no candidate was given' }
+    if ($FeedFile -or $FeedSeq -or $FeedCl -or $FeedLive) {
+        if ($FeedLive) {
+            if (-not $FeedFile -or -not $FeedSeq) { throw 'the live feed file and its seq go together' }
+            if ($FeedCl) { throw 'a live feed takes no CL: the loader takes the rows the feed has for the running build' }
+        }
+        else {
+            if (-not $FeedFile -or -not $FeedSeq -or -not $FeedCl) { throw 'the feed file, its seq and its CL go together' }
+            if (-not $CandidateDir) { throw 'a seeded feed needs the candidate loader that trusts it; no candidate was given' }
+        }
         if ($FeedSeq -cnotmatch '^[1-9][0-9]{0,14}$') { throw "the feed seq '$FeedSeq' is not a number" }
-        if ($FeedCl -cnotmatch '^[1-9][0-9]{0,8}$') { throw "the feed CL '$FeedCl' is not a number" }
+        if ($FeedCl -and $FeedCl -cnotmatch '^[1-9][0-9]{0,8}$') { throw "the feed CL '$FeedCl' is not a number" }
         if (-not (Test-Path -LiteralPath $FeedFile -PathType Leaf)) { throw "feed file '$FeedFile' does not exist" }
         $feedBytes = [IO.File]::ReadAllBytes($FeedFile)
         # The loader reads at most 1 MiB and refuses a file that does not end in a line feed.
         if ($feedBytes.Length -eq 0 -or $feedBytes.Length -gt 1MB -or $feedBytes[$feedBytes.Length - 1] -ne 10) { throw "feed file '$FeedFile' is empty, over 1 MiB, or does not end in a line feed" }
         if (-not [Text.Encoding]::ASCII.GetString($feedBytes).StartsWith("format$([char]9)1$([char]10)", [StringComparison]::Ordinal)) { throw "feed file '$FeedFile' is not a format 1 feed" }
-        $feed = [ordered]@{ seq = [int64]$FeedSeq; cl = [int]$FeedCl }
+        if ($FeedLive) {
+            # The seq is the one the file itself carries (its second line), not only the one the caller names.
+            $fileSeq = ([Text.Encoding]::ASCII.GetString($feedBytes) -split "`n" | Select-Object -Skip 1 -First 1)
+            if ($fileSeq -cne "seq$([char]9)$FeedSeq") { throw "the live feed file carries '$fileSeq', not seq $FeedSeq" }
+            $feed = [ordered]@{ seq = [int64]$FeedSeq; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $FeedFile).Hash.ToLowerInvariant(); live = $true }
+        }
+        else { $feed = [ordered]@{ seq = [int64]$FeedSeq; cl = [int]$FeedCl } }
     }
 
     # ---- the candidate overlay ----
@@ -436,14 +455,21 @@ function Install-Set {
         elseif (-not $e.extra -and -not (Test-Path -LiteralPath (Join-Path $plugDir $e.dll))) { throw "$($e.dll) is not in the install" }
     }
 
-    # The feed the candidate loader reads at start, as the loader stores it: the signed file itself.
+    # The feed the loader reads at start, as the loader stores it: the signed file itself. A live feed
+    # (release key) is read by a released loader as well as by a candidate.
+    $feedLive = [bool]($plan.feed -and $plan.feed.PSObject.Properties['live'] -and $plan.feed.live)
     if ($plan.feed) {
         $cache = Join-Path $bin 'ModLoader\version-map-client.v1.cache'
         New-Item -ItemType Directory -Force (Split-Path $cache) | Out-Null
         Copy-Item -LiteralPath $FeedFile -Destination $cache -Force
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath $cache).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $FeedFile).Hash) { throw 'the seeded feed cache differs from the feed file' }
         (Get-Item -LiteralPath $cache).LastWriteTimeUtc = [DateTime]::UtcNow
-        Write-Host "Seeded the feed cache with seq $($plan.feed.seq) for CL-$($plan.feed.cl)"
+        if ($feedLive) {
+            $seeded = (Get-FileHash -Algorithm SHA256 -LiteralPath $cache).Hash.ToLowerInvariant()
+            if ($seeded -ne $plan.feed.sha256) { throw "the seeded live feed (sha256 $seeded) is not the one that was resolved (sha256 $($plan.feed.sha256))" }
+            Write-Host "Seeded the feed cache with the live feed: seq $($plan.feed.seq), sha256 $seeded"
+        }
+        else { Write-Host "Seeded the feed cache with seq $($plan.feed.seq) for CL-$($plan.feed.cl)" }
     }
 
     # The install's own record: the branch Steam mounted and the build id.
@@ -470,7 +496,10 @@ function Install-Set {
         $set.expectDecline = $true
         if ($plan.PSObject.Properties['knownCls'] -and @($plan.knownCls).Count -gt 0) { $set.knownCls = @($plan.knownCls | ForEach-Object { [int]$_ }) }
     }
-    if ($plan.feed) { $set.feed = [ordered]@{ seq = [int64]$plan.feed.seq; cl = [int]$plan.feed.cl } }
+    if ($plan.feed) {
+        $set.feed = if ($feedLive) { [ordered]@{ seq = [int64]$plan.feed.seq; sha256 = [string]$plan.feed.sha256; live = $true } }
+                    else { [ordered]@{ seq = [int64]$plan.feed.seq; cl = [int]$plan.feed.cl } }
+    }
     [IO.File]::WriteAllText((Join-Path $OutDir 'set.json'), ($set | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
     Write-Host "Installed on branch $($plan.branch), build ${build}:"
     Get-ChildItem -LiteralPath $plugDir -Filter *.dll | ForEach-Object { Write-Host ("  {0} {1:N0} bytes" -f $_.Name, $_.Length) }

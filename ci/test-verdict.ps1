@@ -133,6 +133,15 @@ function Seed-Feed($c, $Seq = 41, $Cl = 127004, [string]$Line = '', [switch]$Aft
     $i = [array]::IndexOf($c.ml, ($c.ml | Where-Object { $_ -match 'Game version OK:' } | Select-Object -First 1))
     $c.ml = @($c.ml[0..($i - 1)]) + @($Line) + @($c.ml[$i..($c.ml.Count - 1)])
 }
+# The live feed (release key k2): set.json names the seq and the sha256 of the file seeded, no CL.
+$liveSha = ('ab12' * 16)
+function Seed-LiveFeed($c, $Seq = 41, [string]$Line = '', [switch]$AfterGate) {
+    $c.set | Add-Member -NotePropertyName feed -NotePropertyValue ([pscustomobject]@{ seq = $Seq; sha256 = $liveSha; live = $true }) -Force
+    if (-not $Line) { $Line = "[07:13:48.640] [INFO ] [T:03432] [VersionFeed] Feed seq $Seq (key k2): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)" }
+    if ($AfterGate) { $c.ml += $Line; return }
+    $i = [array]::IndexOf($c.ml, ($c.ml | Where-Object { $_ -match 'Game version OK:' } | Select-Object -First 1))
+    $c.ml = @($c.ml[0..($i - 1)]) + @($Line) + @($c.ml[$i..($c.ml.Count - 1)])
+}
 $vf = '[07:13:48.700] [WARN ] [T:03432] [VersionFeed] '
 
 $sig = '[00:00:01.000] [WARN ] [T:03432] [ModLoader] '
@@ -259,6 +268,16 @@ $clientCases = [ordered]@{
  'feed_fetch_started'      = @{ Mut = { param($c) Seed-Feed $c; $c.ml += '[07:13:49.000] [INFO ] [T:03432] [VersionFeed] Fetching the feed (stage 1)' }; Fail = 'feed_not_fetched' }
  'feed_fetched_stored'     = @{ Mut = { param($c) Seed-Feed $c; $c.ml += '[07:13:49.500] [INFO ] [T:03432] [VersionFeed] Feed seq 41 stored for the next launch' }; Fail = 'feed_not_fetched' }
  'feed_no_request_ok'      = @{ Mut = { param($c) Seed-Feed $c; $c.ml += '[07:13:49.000] [INFO ] [T:03432] [VersionFeed] No feed request (stage 1): auto-update is off' } }
+ # The live feed: key k2 and no CL; the loader may take 0 rows from it on a build it already knows
+ 'feed_live_good'          = @{ Mut = { param($c) Seed-LiveFeed $c } }
+ 'feed_live_zero_rows_ok'  = @{ Mut = { param($c) Seed-LiveFeed $c -Line "[07:13:48.640] [INFO ] [T:03432] [VersionFeed] Feed seq 41 (key k2): 0 rows from the feed, 12 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)" } }
+ 'feed_live_test_key'      = @{ Mut = { param($c) Seed-LiveFeed $c -Line "[07:13:48.640] [INFO ] [T:03432] [VersionFeed] Feed seq 41 (key k1, TEST KEY): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)" }; Fail = 'feed_applied' }
+ 'feed_live_wrong_seq'     = @{ Mut = { param($c) Seed-LiveFeed $c 41; $c.set.feed.seq = 42 };                              Fail = 'feed_applied' }
+ 'feed_live_line_missing'  = @{ Mut = { param($c) Seed-LiveFeed $c; Drop $c '\[VersionFeed\] Feed seq' };                  Fail = 'feed_applied' }
+ 'feed_live_after_gate'    = @{ Mut = { param($c) Seed-LiveFeed $c -AfterGate };                                           Fail = 'feed_rows_used' }
+ 'feed_live_no_sha'        = @{ Mut = { param($c) Seed-LiveFeed $c; $c.set.feed.sha256 = 'nothex' };                       Fail = 'feed_record' }
+ 'feed_live_with_cl'       = @{ Mut = { param($c) Seed-LiveFeed $c; $c.set.feed | Add-Member -NotePropertyName cl -NotePropertyValue 127004 }; Fail = 'feed_record' }
+ 'feed_live_fetch_started' = @{ Mut = { param($c) Seed-LiveFeed $c; $c.ml += '[07:13:49.000] [INFO ] [T:03432] [VersionFeed] Fetching the feed (stage 1)' }; Fail = 'feed_not_fetched' }
  # Not a failure
  'feature_off_note'        = @{ Mut = { param($c) $c.ml += "$($sig)[Map] Waila: feature ""Hover details"" is off: no row for CL-128786 (reflected)" } }
 }
@@ -277,6 +296,8 @@ $extra = {
         if ($w.state -ne 'ok' -or $w.logVersion -ne 'v0.20.0' -or $w.expected -ne 'v0.20.0') { $bad += 'WAILA row wrong' }
         if ($j.loader.logVersion -ne 'v1.23.1') { $bad += 'loader row wrong' }
     }
+    if ($k -eq 'feed_live_good' -and ((Get-Content -LiteralPath (Join-Path $r.Dir 'summary.md') -Raw) -notmatch "Live feed seeded: seq 41, sha256 $liveSha") ) { $bad += 'summary.md lacks the live feed seq and sha256' }
+    if ($k -eq 'good' -and ((Get-Content -LiteralPath (Join-Path $r.Dir 'summary.md') -Raw) -match 'Live feed seeded')) { $bad += 'summary.md names a live feed on a run without one' }
     if ($k -eq 'plugin_removed' -and (& $row 'WAILA').state -ne 'missing') { $bad += 'removed plugin not reported missing' }
     if ($k -eq 'plugin_older_version' -and ((& $row 'WAILA').state -ne 'wrong version' -or (& $row 'WAILA').logVersion -ne 'v0.19.0')) { $bad += 'wrong version not reported' }
     if ($k -eq 'refused_not_loaded' -and (& $row 'Codex').state -ne 'refused') { $bad += 'refused plugin not reported refused' }

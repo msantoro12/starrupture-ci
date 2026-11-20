@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -53,7 +54,8 @@ test('triggers: dispatch and call only, no schedule, no pull request, one set of
   const want = ['branch', 'tags', 'candidate_run_id', 'candidate_artifact', 'expect', 'expect_refused', 'expect_decline', 'known_cls', 'remove_plugins'];
   // The feed inputs name an artifact of the calling run: a dispatch has none, so only a call takes them.
   const feedInputs = ['feed_artifact', 'feed_seq', 'feed_cl'];
-  assert.deepEqual(names(dispatch), want);
+  // live_feed is a dispatch input only: a call passes a feed artifact instead.
+  assert.deepEqual(names(dispatch), [...want, 'live_feed']);
   assert.deepEqual(names(call), [...want, ...feedInputs]);
   assert.match(dispatch, /branch:\n(?:.*\n)*?\s+default: public\n/);
   for (const n of [...want.slice(1), ...feedInputs]) assert.match(call, new RegExp(`${n}:\\n(?:.*\\n)*?\\s+default: ''`), `${n} defaults to empty`);
@@ -833,4 +835,173 @@ test('feed run: the rig seeds a TEST-signed feed only, checks it before the inst
   assert.ok(setup.includes('version-map-client.v1.cache'), 'seeded at the loader cache path');
   assert.match(verdictPs, /feed_applied/);
   assert.match(verdictPs, /feed_rows_used/);
+});
+
+// ---- live_feed: the feed players get, for a released loader or a candidate ----
+
+const liveStepName = 'Download and check the live feed';
+const liveStep = () => step(liveStepName);
+const liveScript = () => {
+  const lines = liveStep().split('\n');
+  const body = lines.slice(lines.findIndex((l) => /^ {8}run: \|$/.test(l)) + 1);
+  const end = body.findIndex((l) => l !== '' && !l.startsWith(' '.repeat(10)));
+  return (end < 0 ? body : body.slice(0, end)).map((l) => l.slice(10)).join('\n');
+};
+
+test('live_feed: a boolean dispatch input, false by default, and not a call input', () => {
+  const on = header.slice(header.indexOf('\non:\n'), header.indexOf('\npermissions:'));
+  const dispatch = on.slice(on.indexOf('  workflow_dispatch:'), on.indexOf('  workflow_call:'));
+  const call = on.slice(on.indexOf('  workflow_call:'), on.indexOf('    outputs:'));
+  assert.match(dispatch, /\n {6}live_feed:\n(?: {8}.*\n)*? {8}type: boolean\n {8}default: false\n/);
+  assert.ok(!/live_feed/.test(call), 'a caller passes a feed artifact, not live_feed');
+  assert.match(wf, /\n {6}LIVE_FEED: \$\{\{ inputs\.live_feed \}\}\n/);
+});
+
+test('live_feed: the feed comes from the vmap-feed release and must verify with the release key k2 alone, failing closed', () => {
+  const s = liveStep();
+  const script = liveScript();
+  assert.match(s, /\n {8}if: inputs\.live_feed == true\n/, 'runs only for live_feed');
+  assert.match(s, /\n {8}id: live\n/);
+  assert.match(script, /gh release download vmap-feed --repo "\$REPO" --pattern version-map-client\.v1\.txt --dir live-feed/);
+  // The existing verifier, without its test-key flag, and an exact k2 answer.
+  assert.match(script, /node ci\/vmap-sign\.mjs verify live-feed\/version-map-client\.v1\.txt 2>&1/);
+  assert.ok(!script.includes('--allow-test-key') && !/TEST/.test(script.replace(/the test key/g, '')), 'the live step never accepts the test key');
+  assert.match(script, /\^ok\\ seq=\(\[1-9\]\[0-9\]\{0,14\}\)\\ key=k2\$/);
+  assert.match(script, /set -euo pipefail/);
+  for (const m of ['could not be downloaded', 'has no version-map-client.v1.txt', 'does not verify', 'is not signed with the release key k2']) assert.ok(script.includes(m), `stops on: ${m}`);
+  assert.match(script, /reason\(\) \{[^\n]*rig-reason\.txt[^\n]*exit 1; \}/);
+  // The seq and the sha256 come from the verified file and go to the outputs, the log and the job summary.
+  assert.match(script, /sha="\$\(sha256sum live-feed\/version-map-client\.v1\.txt/);
+  assert.match(script, /echo "seq=\$seq" >> "\$GITHUB_OUTPUT"/);
+  assert.match(script, /echo "sha256=\$sha" >> "\$GITHUB_OUTPUT"/);
+  assert.match(script, /Live feed verified with the release key k2: seq \$seq, sha256 \$sha/);
+  assert.ok(!/GITHUB_STEP_SUMMARY/.test(s), 'the job summary is written by the last step only; the verdict summary carries the seq and sha256');
+  // It reads a public release with the job token; no secret, no signing key, no write.
+  assert.ok(!/secrets\./.test(s) && !/VMAP_SIGN_KEY/.test(s), 'no secret and no signing key');
+  assert.ok(!/gh release (upload|create|edit|delete)|vmap-sign\.mjs sign/.test(script), 'nothing is published or signed');
+  assert.match(s, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  // The test key is accepted in exactly one place: the feed artifact check of a call.
+  assert.equal(wf.match(/--allow-test-key/g).length, 1);
+  assert.ok(step('Check the feed').includes('--allow-test-key'));
+});
+
+test('live_feed: the feed is checked before the resolve and seeded through the same script path, with no candidate needed', () => {
+  const at = (n) => steps.findIndex((s) => nameOf(s) === n);
+  assert.ok(at(liveStepName) > at('Check the feed') && at(liveStepName) < at('Resolve the set'), 'checked before Resolve and any download');
+  for (const n of ['Resolve the set', 'Install the loader and plugins']) {
+    const s = step(n);
+    assert.match(s, /LIVE_FEED_SEQ: \$\{\{ steps\.live\.outputs\.seq \}\}/, `${n}: the seq of the verified file`);
+    assert.match(s, /elseif \(\$env:LIVE_FEED_SEQ\) \{ \$feed = @\{ FeedFile = 'live-feed\/version-map-client\.v1\.txt'; FeedSeq = \$env:LIVE_FEED_SEQ; FeedLive = \$true \} \}/, `${n}: seeds the live feed`);
+    assert.match(s, /\$cand = if \(Test-Path candidate\) \{ 'candidate' \} else \{ '' \}/, `${n}: a candidate stays optional`);
+  }
+  // The test-signed feed path is as before.
+  assert.equal(wf.match(/if \(\$env:FEED_ARTIFACT\) \{ \$feed = @\{ FeedFile = 'feed\/feed\.test-signed\.txt'; FeedSeq = \$env:FEED_SEQ; FeedCl = \$env:FEED_CL \} \}/g).length, 2);
+  assert.ok(!/candidate/.test(liveScript()), 'the live step does not look at a candidate');
+  // The script records the seq and the sha256 of the cache file written, and the verdict reports them.
+  assert.match(setup, /Seeded the feed cache with the live feed: seq \$\(\$plan\.feed\.seq\), sha256 \$seeded/);
+  assert.match(setup, /live = \$true/);
+  assert.match(verdictPs, /Live feed seeded: seq /);
+  assert.match(verdictPs, /key k2\\\)/);
+});
+
+test('live_feed: false (and a call) leave the rig as it was: no live step runs, and the feed inputs behave as before', () => {
+  assert.match(liveStep(), /if: inputs\.live_feed == true/);
+  // The steps that take a feed do nothing extra without the live seq: the branch is an elseif behind the artifact one.
+  assert.equal(wf.match(/elseif \(\$env:LIVE_FEED_SEQ\)/g).length, 2);
+  // A call that passes a feed artifact still needs its candidate and the TEST key.
+  assert.match(step('Check the feed inputs'), /a seeded feed needs the candidate loader that trusts it/);
+  assert.match(step('Check the feed'), /key=k1 TEST-KEY/);
+  // And the live step refuses to run beside a feed artifact.
+  assert.match(liveScript(), /live_feed does not go with feed_artifact, feed_seq or feed_cl/);
+});
+
+// The live step run for real in bash with a stand-in gh, against the repository's own verifier: every way
+// it can go wrong stops the rig with a reason and writes no seq.
+const liveBash = process.platform === 'win32' ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'].find(existsSync) : 'bash';
+function runLiveStep({ gh, env = {} }) {
+  if (!liveBash) return null;
+  const dir = mkdtempSync(join(tmpdir(), 'rig-live-'));
+  try {
+    mkdirSync(join(dir, 'bin'));
+    writeFileSync(join(dir, 'bin', 'gh'), `#!/bin/bash\n${gh}\n`, { mode: 0o755 });
+    const script = liveScript().replace('node ci/vmap-sign.mjs', `node '${join(here, 'vmap-sign.mjs').replace(/\\/g, '/')}'`);
+    writeFileSync(join(dir, 'step.sh'), script);
+    const out = join(dir, 'github-output.txt');
+    writeFileSync(out, '');
+    const r = spawnSync(liveBash, ['step.sh'], {
+      cwd: dir, encoding: 'utf8', windowsHide: true,
+      env: { ...process.env, PATH: join(dir, 'bin') + delimiter + process.env.PATH, RUNNER_TEMP: dir, GITHUB_OUTPUT: out, REPO: 'o/r', GH_TOKEN: 'x', FEED_ARTIFACT: '', FEED_SEQ: '', FEED_CL: '', ...env },
+    });
+    if (r.error) return null;
+    let reason = '';
+    try { reason = readFileSync(join(dir, 'rig-reason.txt'), 'utf8').trim(); } catch { /* none */ }
+    return { r, reason, outputs: readFileSync(out, 'utf8'), text: `${r.stdout}\n${r.stderr}` };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('live_feed: the step stops, with a reason and no seq, when the download fails, the file is missing, or the feed does not verify', (t) => {
+  const down = runLiveStep({ gh: 'echo "gh: boom" >&2; exit 1' });
+  if (!down) return t.skip('no bash on this machine');
+  assert.equal(down.r.status, 1, down.text);
+  assert.match(down.reason, /could not be downloaded/);
+  const empty = runLiveStep({ gh: 'exit 0' });
+  assert.equal(empty.r.status, 1, empty.text);
+  assert.match(empty.reason, /has no version-map-client\.v1\.txt/);
+  // A file that is not a signed feed, and a feed whose last line is a signature that is not the release key's.
+  const junk = runLiveStep({ gh: 'printf "format\\t1\\nseq\\t5\\nsig\\tk2\\t%s==\\n" "$(printf A%.0s {1..86})" > live-feed/version-map-client.v1.txt' });
+  assert.equal(junk.r.status, 1, junk.text);
+  assert.match(junk.reason, /does not verify: vmap-sign: refused/);
+  assert.equal(junk.outputs, '', 'no seq on a refusal');
+  const both = runLiveStep({ gh: 'exit 0', env: { FEED_ARTIFACT: 'a', FEED_SEQ: '1', FEED_CL: '2' } });
+  assert.equal(both.r.status, 1, both.text);
+  assert.match(both.reason, /live_feed does not go with/);
+});
+
+test('live_feed: the verifier accepts a k2 feed and refuses a test-key feed without the flag (the check the step relies on)', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { signFeed, verifyFeed, PUBLIC_KEYS } = await import('./vmap-sign.mjs');
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const pem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const raw = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('hex');
+  const unsigned = 'format\t1\nbuild\t130045\t++Earth20+Kobalt-CL-130045\tx\n';
+  const now = 1795109742;
+  const k2 = signFeed(unsigned, pem, { keyId: 'k2', now });
+  // The feed's own pair stands in for k2; the step's check is that the key is not a TEST key.
+  const ok = verifyFeed(k2.text, { keys: { k2: { hex: raw, test: false } }, now });
+  assert.deepEqual([ok.keyId, ok.test], ['k2', false]);
+  const k1 = signFeed(unsigned, pem, { keyId: 'k1', now });
+  const test = verifyFeed(k1.text, { keys: { k1: { hex: raw, test: true } }, now });
+  assert.equal(test.test, true, 'a k1 feed is a TEST-key feed: the CLI refuses it without --allow-test-key');
+  assert.equal(PUBLIC_KEYS.k1.test, true);
+  assert.equal(PUBLIC_KEYS.k2.test, false);
+});
+
+test('rig set: Resolve takes a live feed with no candidate and no CL, records its seq and sha256 from the file, and refuses a seq or a CL it does not fit', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'rig-livefeed-'));
+  try {
+    const feed = join(dir, 'version-map-client.v1.txt');
+    const text = 'format\t1\nseq\t1795109742\nbuild\t130045\tx\ty\nsig\tk2\tAAAA\n';
+    writeFileSync(feed, text);
+    const sha = createHash('sha256').update(text).digest('hex');
+    const ok = resolveWithMock(`-Branch public -FeedFile '${feed}' -FeedSeq 1795109742 -FeedLive`);
+    if (!ok) return t.skip('no PowerShell on this machine');
+    assert.equal(ok.r.status, 0, ok.text);
+    assert.deepEqual(ok.plan.feed, { seq: 1795109742, sha256: sha, live: true });
+    assert.equal(ok.plan.loader.overlaid, false, 'the released loader, no candidate');
+    const wrongSeq = resolveWithMock(`-Branch public -FeedFile '${feed}' -FeedSeq 1795109743 -FeedLive`);
+    assert.notEqual(wrongSeq.r.status, 0);
+    assert.match(wrongSeq.text, /the live feed file carries 'seq\t1795109742', not seq 1795109743/);
+    const withCl = resolveWithMock(`-Branch public -FeedFile '${feed}' -FeedSeq 1795109742 -FeedCl 130045 -FeedLive`);
+    assert.notEqual(withCl.r.status, 0);
+    assert.match(withCl.text, /a live feed takes no CL/);
+    // Without -FeedLive nothing changed: a seeded feed still needs its candidate and its CL.
+    const noCand = resolveWithMock(`-Branch public -FeedFile '${feed}' -FeedSeq 1795109742 -FeedCl 130045`);
+    assert.notEqual(noCand.r.status, 0);
+    assert.match(noCand.text, /a seeded feed needs the candidate loader that trusts it/);
+    const noCl = resolveWithMock(`-Branch public -FeedFile '${feed}' -FeedSeq 1795109742`);
+    assert.notEqual(noCl.r.status, 0);
+    assert.match(noCl.text, /the feed file, its seq and its CL go together/);
+    const plain = resolveWithMock('-Branch public');
+    assert.equal(plain.plan.feed, null, 'no feed, no change');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
