@@ -8,7 +8,7 @@ name: SR Steam watch
 # branch changed, it also runs the offline client check (sr-client-check.yml)
 # per changed branch, which comments its own result. When the dedicated server's public branch changed,
 # the offline server check (sr-server-check.yml) reads the new server build's identity and field layout
-# and keeps them in an artifact; it needs no Steam login and no secret, and nothing waits on it.
+# and keeps them in an artifact; it needs no Steam login and no secret, and neither the client chain nor the planner extract waits on it.
 # Merging the PR means "handled" and advances the baseline on main.
 #
 # Only writes: the first baseline commit to main, and game-update/* branches,
@@ -399,8 +399,8 @@ jobs:
   # field layout of ci/server-keys.txt from its PDB, and keeps the result in the server-check-<build id>
   # artifact. No Steam login, no secret and no environment: none is passed, and the called workflow
   # asks for contents: read only. Its own concurrency group (sr-server-check), not the client rig's.
-  # Nothing needs this job, so it cannot hold the client chain or the planner extract; a failure of
-  # it reaches the alert job below.
+  # Neither the client chain nor the planner extract needs this job, so it cannot hold them; only the
+  # alert job below waits for it, so that a failure of it is reported.
   server-check:
     name: server-check (${{ matrix.branch }})
     needs: poll

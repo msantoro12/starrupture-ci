@@ -73,8 +73,8 @@ permissions: {}
 
 jobs:
   # ---- sr-aobscan, built the way the client check builds it (no secrets) ----
-  build-scanner:
-    name: build-scanner
+  server-scanner:
+    name: server-scanner
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -147,9 +147,9 @@ jobs:
           retention-days: 1
 
   # ---- Download the server, read its identity, read its layout ------------
-  check:
-    name: check
-    needs: build-scanner
+  server-layout:
+    name: server-layout
+    needs: server-scanner
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -159,15 +159,9 @@ jobs:
     concurrency:
       group: sr-server-check
       cancel-in-progress: false
-    outputs:
-      cl: ${{ steps.exe.outputs.cl }}
-      build_id: ${{ steps.dl.outputs.build_id }}
-      image_stamp: ${{ steps.exe.outputs.image_stamp }}
-      image_size: ${{ steps.exe.outputs.image_size }}
-      exe_sha256: ${{ steps.exe.outputs.exe_sha256 }}
     env:
       EXPECTED_BUILDID: ${{ inputs.buildid }}
-      SCANNER_SHA256: ${{ needs.build-scanner.outputs.scanner_sha256 }}
+      SCANNER_SHA256: ${{ needs.server-scanner.outputs.scanner_sha256 }}
     steps:
       - name: Check out the scripts and the key list
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -181,11 +175,11 @@ jobs:
           name: server-check-scanner-${{ inputs.buildid }}
           path: scanner
 
-      - name: Check the scanner is the one build-scanner made
+      - name: Check the scanner is the one server-scanner made
         shell: pwsh
         run: |
           $h = (Get-FileHash scanner\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($h -ne $env:SCANNER_SHA256) { throw "sr-aobscan-client.exe hash $h is not the one build-scanner made ($($env:SCANNER_SHA256))" }
+          if ($h -ne $env:SCANNER_SHA256) { throw "sr-aobscan-client.exe hash $h is not the one server-scanner made ($($env:SCANNER_SHA256))" }
           "sr-aobscan-client.exe SHA-256 $h"
 
       - name: Download the dedicated server
@@ -276,7 +270,7 @@ jobs:
           KEY_COUNT: ${{ steps.layout.outputs.key_count }}
           BUILD_ID: ${{ steps.dl.outputs.build_id }}
           PRODUCT_VERSION: ${{ steps.exe.outputs.product_version }}
-          CL: ${{ steps.exe.outputs.cl }}
+          CL_NUMBER: ${{ steps.exe.outputs.cl }}
           IMAGE_STAMP: ${{ steps.exe.outputs.image_stamp }}
           IMAGE_SIZE: ${{ steps.exe.outputs.image_size }}
           EXE_SHA256: ${{ steps.exe.outputs.exe_sha256 }}
@@ -286,8 +280,8 @@ jobs:
           $problems = [Collections.Generic.List[string]]::new()
           $rows = 0
           $summary = $null
-          if ($env:LAYOUT_EXIT -notmatch '^\d+$') { $problems.Add('the layout scan did not run') }
-          elseif ([int]$env:LAYOUT_EXIT -gt 1) { $problems.Add("sr-aobscan --layout failed (exit $($env:LAYOUT_EXIT))") }
+          if ($env:LAYOUT_EXIT -notmatch '^-?\d+$') { $problems.Add('the layout scan did not run') }
+          elseif ([int]$env:LAYOUT_EXIT -notin 0, 1) { $problems.Add("sr-aobscan --layout failed (exit $($env:LAYOUT_EXIT))") }
           if (Test-Path out\server-layout.json) {
             try {
               $layout = Get-Content out\server-layout.json -Raw | ConvertFrom-Json
@@ -302,7 +296,7 @@ jobs:
             buildId       = $env:BUILD_ID
             requestedBuildId = $env:EXPECTED_BUILDID
             productVersion = $env:PRODUCT_VERSION
-            cl            = [int]$env:CL
+            cl            = [int]$env:CL_NUMBER
             imageStamp    = $env:IMAGE_STAMP
             imageSize     = $env:IMAGE_SIZE
             exeSha256     = $env:EXE_SHA256
@@ -310,14 +304,14 @@ jobs:
             scannerSha256 = $env:SCANNER_SHA256
             keyCount      = [int]$env:KEY_COUNT
             layoutRows    = $rows
-            layoutExit    = $(if ($env:LAYOUT_EXIT -match '^\d+$') { [int]$env:LAYOUT_EXIT } else { $null })
+            layoutExit    = $(if ($env:LAYOUT_EXIT -match '^-?\d+$') { [int]$env:LAYOUT_EXIT } else { $null })
           }
           $result | ConvertTo-Json | Set-Content out\server-result.json -Encoding utf8
 
           $md = @(
             '### Server check',
             '',
-            "- Build $($env:BUILD_ID), CL-$($env:CL)$(if ($env:REHEARSAL -eq 'true') { ' (rehearsal: a build that is already handled)' })",
+            "- Build $($env:BUILD_ID), CL-$($env:CL_NUMBER)$(if ($env:REHEARSAL -eq 'true') { ' (rehearsal: a build that is already handled)' })",
             "- PE stamp $($env:IMAGE_STAMP), image size $($env:IMAGE_SIZE), SHA-256 ``$($env:EXE_SHA256)``",
             "- PDB $($env:PDB_NAME)",
             "- Layout: $($env:KEY_COUNT) keys, $rows rows$(if ($summary) { ", $($summary.ok) resolved, $($summary.failing) failing" }), exit $($env:LAYOUT_EXIT)"

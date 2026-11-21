@@ -40,9 +40,9 @@ test('trust: no secret, no environment, contents: read only, and an owner allow 
   assert.ok(!/secrets\./.test(wf) && !/\n\s+secrets:/.test(wf) && !wf.includes('inherit'), 'no secret in or passed to it');
   assert.ok(!/\n\s+environment:/.test(wf), 'no environment');
   assert.match(wf, /\npermissions: \{\}\n/);
-  for (const name of ['build-scanner', 'check']) assert.match(job(wf, name), /\n {4}permissions:\n {6}contents: read\n/, `${name}: contents: read`);
+  for (const name of ['server-scanner', 'server-layout']) assert.match(job(wf, name), /\n {4}permissions:\n {6}contents: read\n/, `${name}: contents: read`);
   assert.ok(!/(?:pull-requests|issues|actions|checks|id-token|packages):/.test(wf), 'asks for no other permission');
-  const build = job(wf, 'build-scanner');
+  const build = job(wf, 'server-scanner');
   assert.ok(build.includes("'^(msantoro12|AlienXAXS)/StarRupture-ModLoader$'") && build.includes('is not allowed'));
   assert.ok((wf.match(/persist-credentials: false/g) ?? []).length === (wf.match(/uses: actions\/checkout@/g) ?? []).length, 'no checkout keeps the token');
 });
@@ -52,7 +52,7 @@ test('no run block takes an expression: every input reaches a script through env
   const oneLiners = [...wf.matchAll(/\n +run: (?!\|).*/g)].map((m) => m[0]);
   assert.equal(blocks.length + oneLiners.length, 9, 'every run step was found');
   for (const r of [...blocks, ...oneLiners]) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
-  assert.match(wf, /\n {4}env:\n {6}EXPECTED_BUILDID: \$\{\{ inputs\.buildid \}\}\n {6}SCANNER_SHA256: \$\{\{ needs\.build-scanner\.outputs\.scanner_sha256 \}\}\n/);
+  assert.match(wf, /\n {4}env:\n {6}EXPECTED_BUILDID: \$\{\{ inputs\.buildid \}\}\n {6}SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.scanner_sha256 \}\}\n/);
 });
 
 test('shells and status functions: every step with run names pwsh, and a status function sits only in an if', () => {
@@ -62,17 +62,17 @@ test('shells and status functions: every step with run names pwsh, and a status 
 });
 
 test('scanner: built Client Release like the client check, and the check refuses any other hash', () => {
-  const build = job(wf, 'build-scanner');
+  const build = job(wf, 'server-scanner');
   assert.ok(build.includes('/p:Configuration="Client Release"') && build.includes('tools\\AobScan\\AobScan.vcxproj'));
   assert.match(build, /sparse-checkout: tools\/AobScan/);
   assert.match(build, /scanner_sha256: \$\{\{ steps\.hash\.outputs\.sha256 \}\}/);
-  const check = job(wf, 'check');
-  assert.match(check, /needs: build-scanner/);
-  assert.ok(check.includes('is not the one build-scanner made'));
+  const check = job(wf, 'server-layout');
+  assert.match(check, /needs: server-scanner/);
+  assert.ok(check.includes('is not the one server-scanner made'));
 });
 
 test('download: the unchanged anonymous script, public branch only, with no login, key or argument', () => {
-  const check = job(wf, 'check');
+  const check = job(wf, 'server-layout');
   assert.ok(check.includes('run: ./ci/download-server.ps1\n'), 'no argument: the script defaults to the public branch');
   assert.ok(!/steamcmd|STEAM_|\+login|-beta/i.test(wf), 'no Steam login in this workflow');
   const dl = read('ci', 'download-server.ps1');
@@ -82,7 +82,7 @@ test('download: the unchanged anonymous script, public branch only, with no logi
 });
 
 test('identity: CL from ProductVersion, PE stamp and image size as hex strings, exe SHA-256', () => {
-  const check = job(wf, 'check');
+  const check = job(wf, 'server-layout');
   assert.ok(check.includes("$pv -notmatch 'CL-(\\d+)$'"));
   assert.ok(check.includes('$fs.Position = 0x3C') && check.includes('$fs.Position = $pe + 8') && check.includes('$fs.Position = $pe + 24 + 56'), 'TimeDateStamp at +8, SizeOfImage at +56 of the optional header');
   assert.ok(check.includes("'0x{0:X8}' -f $stamp") && check.includes("'0x{0:X8}' -f $size"));
@@ -91,16 +91,16 @@ test('identity: CL from ProductVersion, PE stamp and image size as hex strings, 
 });
 
 test('layout: the committed key list is the one scanned and the one uploaded, and a failing key is a warning', () => {
-  const check = job(wf, 'check');
+  const check = job(wf, 'server-layout');
   assert.ok(check.includes('Copy-Item ci\\server-keys.txt out\\layout-keys.txt'));
   assert.ok(check.includes('& scanner\\sr-aobscan-client.exe $env:EXE_PATH --layout out\\layout-keys.txt --json > out\\server-layout.json'));
   assert.ok(check.includes('          exit 0\n'), 'the scanner exit code is judged by the result step, not by the runner');
-  assert.ok(check.includes('elseif ([int]$env:LAYOUT_EXIT -gt 1)'), 'exit 0 and 1 pass, anything else fails');
+  assert.ok(check.includes('elseif ([int]$env:LAYOUT_EXIT -notin 0, 1)'), 'exit 0 and 1 pass, anything else, a crash included, fails');
   assert.ok(check.includes('$summary.failing -gt 0') && check.includes('::warning title=Layout keys::'));
 });
 
 test('result: server-result.json carries the identity, and only three files are uploaded', () => {
-  const check = job(wf, 'check');
+  const check = job(wf, 'server-layout');
   for (const k of ['schema        = 1', 'buildId', 'cl            =', 'imageStamp', 'imageSize', 'exeSha256', 'pdbName', 'scannerSha256', 'keyCount', 'layoutRows', 'layoutExit']) {
     assert.ok(check.includes(k), k);
   }
@@ -128,6 +128,14 @@ test('sr-watch: the server-check job calls the workflow per matrix entry with no
   assert.match(j, /with:\n\s+buildid: \$\{\{ matrix\.buildid \}\}\n\s+rehearsal: \$\{\{ inputs\.rehearsal == true \}\}\n/);
   assert.ok(!/secrets:|secrets\.|inherit/.test(j), 'nothing secret is passed to it');
   assert.match(watch, /server_matrix: \$\{\{ steps\.poll\.outputs\.server_matrix \}\}/);
+});
+
+test('job names: neither job ends in a name the client check alert looks up (check, build-scanner), so a failed server job is never quoted as a client cause', () => {
+  const client = read('.github', 'workflows', 'sr-client-check.yml');
+  const names = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n {4}name: (.*)\n/g)].map((m) => m[2]);
+  assert.deepEqual(names, ['server-scanner', 'server-layout']);
+  for (const n of names) assert.ok(!new RegExp(`\\n {2}${n}:\\n`).test(client), `${n} is not a job of the client check`);
+  for (const n of ['check', 'build-scanner']) assert.ok(!names.some((x) => x === n || x.endsWith(` / ${n}`)));
 });
 
 test('sr-watch: the extract and the client chain do not wait for the server check, and it has its own concurrency group', () => {

@@ -83,9 +83,9 @@ test('outside: the compile check failure is an alert line with its cause; the cl
   assert.match(md, /- job \*\*build-all \/ loader-client\*\* failed\n  - cause: step "Check the loader repository"\n/);
   assert.ok(!md.includes('push the map rows'));
   // The server check is not part of a client check: its failed job is an alert line of this chain.
-  const server = outsideBody([{ id: 9, name: 'server-check (public) / check', step: 'Read the layout keys from the PDB', error: 'sr-aobscan --layout failed (exit 2)' }], { owner: 'o', runUrl: 'u' });
-  assert.match(server, /- job \*\*server-check \(public\) \/ check\*\* failed\n  - cause: step "Read the layout keys from the PDB": sr-aobscan --layout failed \(exit 2\)\n/);
-  assert.ok(!inClientCheck('server-check (public) / check') && !inClientCheck('server-check (public) / build-scanner'));
+  const server = outsideBody([{ id: 9, name: 'server-check (public) / server-layout', step: 'Read the layout keys from the PDB', error: 'sr-aobscan --layout failed (exit 2)' }], { owner: 'o', runUrl: 'u' });
+  assert.match(server, /- job \*\*server-check \(public\) \/ server-layout\*\* failed\n  - cause: step "Read the layout keys from the PDB": sr-aobscan --layout failed \(exit 2\)\n/);
+  assert.ok(!inClientCheck('server-check (public) / server-layout') && !inClientCheck('server-check (public) / server-scanner'));
   assert.equal(outsideBody([LIVE_JOBS[1]], { owner: 'o', runUrl: 'u' }), null);
   assert.equal(outsideBody([], { owner: 'o', runUrl: 'u' }), null);
   assert.ok(inClientCheck('client-check (public) / alert') && !inClientCheck('build-all / loader-client') && !inClientCheck('poll'));
