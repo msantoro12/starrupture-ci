@@ -397,9 +397,9 @@ jobs:
   # ---- Offline check of the dedicated server build ----
   # sr-server-check.yml downloads the server anonymously (public branch only), reads its identity and the
   # field layout of ci/server-keys.txt from its PDB, keeps the result in the server-check-<build id>
-  # artifact, makes the server's part of the version object map from it and signs it. No Steam login. The one
-  # secret passed is VMAP_SIGN_KEY, by name (the signing job's environment vmap-sign holds it); contents: write
-  # is the ceiling for that job's upload. The upload goes to the vmap-feed-rehearsal prerelease: this call
+  # artifact, makes the server's part of the version object map from it and signs it. No Steam login. The two
+  # secrets passed, by name: VMAP_SIGN_KEY_TEST (the map job's TEST-key dry run) and VMAP_SIGN_KEY (the signing job's
+  # environment vmap-sign holds it); contents: write is the ceiling for that job's upload. The upload goes to the vmap-feed-rehearsal prerelease: this call
   # does not pass `live` (the called workflow declares it for a hand dispatch only), so a scheduled or
   # dispatched watch never writes the live release from here. Its own concurrency group (sr-server-check) for the
   # download, not the client rig's.
@@ -421,6 +421,7 @@ jobs:
       buildid: ${{ matrix.buildid }}
       rehearsal: ${{ inputs.rehearsal == true }}
     secrets:
+      VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
       VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
 
   # ---- Alert: a failed job of this chain outside the client check ----

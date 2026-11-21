@@ -11,7 +11,8 @@ name: SR server check
 #
 # Two jobs follow the check (ci/MAP-MODE.md, "Dedicated server"):
 #   - server-map writes the server's version object map header from that artifact (the build line and the
-#     field and size rows), on top of the published server file, and cuts the unsigned server file from it
+#     field and size rows), on top of the published server file, cuts the unsigned server file from it, checks
+#     its version identity and signs it once with the TEST key (k1, secret VMAP_SIGN_KEY_TEST) as a dry run
 #   - server-publish signs that file with the release key (k2, secret VMAP_SIGN_KEY, environment vmap-sign) and
 #     uploads it with the shared routine (ci/vmap-publish.sh)
 # The upload goes to the vmap-feed-rehearsal prerelease ALWAYS, unless the `live` input is set. `live` is a
@@ -25,8 +26,9 @@ name: SR server check
 # compile on the loader's current code, so it is not built here.
 #
 # Trust: the scanner is built from the same two owners the client check allows (msantoro12 and
-# AlienXAXS) and runs on a runner that holds no secret. Only server-publish holds one (VMAP_SIGN_KEY), and it
-# runs this repository's scripts, never the scanner or any file from the loader repository.
+# AlienXAXS) and runs on a runner that holds no secret. Only the two jobs after it hold one: server-map the TEST key
+# (VMAP_SIGN_KEY_TEST, which no loader trusts) and server-publish the release key (VMAP_SIGN_KEY). Both run
+# this repository's scripts only, never the scanner or any file from the loader repository.
 # Game files only live on the runner: never cached, never uploaded.
 # No pull_request trigger.
 
@@ -54,6 +56,9 @@ on:
         type: string
         default: 'ci/aobscan'
     secrets:
+      VMAP_SIGN_KEY_TEST:
+        description: 'TEST signing key (k1) for the server map dry run; pass it by name. Used by server-map only'
+        required: false
       VMAP_SIGN_KEY:
         description: 'Release signing key (k2, environment vmap-sign); pass it by name. Used by server-publish only'
         required: false
@@ -365,8 +370,10 @@ jobs:
   # ---- The server's part of the version object map: the build line and the field and size rows ----
   # Made from the server-check artifact alone (no scan of addresses yet). The published server file is the base:
   # ci/published-base.mjs verifies its signature and adds every line it has. A key the layout could not place, a
-  # row that differs from a published one, or a published line the new file lost stops the job. Function and global
-  # keys (ci/server-function-keys.txt) are only reported: no scan makes their rows yet.
+  # row that differs from a published one, a published line the new file lost, or a version identity that changes
+  # nothing served for the CL (not checked in a rehearsal) stops the job. Function and global keys
+  # (ci/server-function-keys.txt) are only reported: no scan makes their rows yet. The chain's one seq is made here,
+  # above the published server file's own, and the file is signed with the TEST key once to prove the path.
   server-map:
     name: server-map
     needs: server-layout
@@ -382,6 +389,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      REHEARSAL: ${{ inputs.rehearsal == true }}
     steps:
       - name: Check out the scripts and the key lists
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -412,18 +420,29 @@ jobs:
           '
 
       # Read only. No server file on the vmap-feed release yet means a first publish: there is no base to take.
-      - name: Read what the live release holds
+      - name: Read what the live release holds (read only)
         id: live
         run: |
           set -euo pipefail
           first=true
+          mkdir -p live
           if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > live-release.json 2> live-release.err; then
             has="$(node -p "String((JSON.parse(require('fs').readFileSync('live-release.json','utf8')).assets ?? []).some((a) => a.name === 'version-map-server.v1.txt'))")"
+            has_history="$(node -p "String((JSON.parse(require('fs').readFileSync('live-release.json','utf8')).assets ?? []).some((a) => a.name === 'vmap-history.json'))")"
             if [ "$has" = true ]; then first=false; fi
+            if [ "$has_history" = true ]; then
+              gh release download vmap-feed --pattern vmap-history.json --dir live \
+                || { echo "::error::cannot download vmap-history.json from the vmap-feed release; nothing was made from this run"; exit 2; }
+            fi
           elif grep -q 'HTTP 404' live-release.err; then
             echo "no vmap-feed release yet"
           else
             cat live-release.err; echo "::error::cannot read the vmap-feed release"; exit 2
+          fi
+          # The history is never started again from nothing: only a first server file may begin without one.
+          if [ ! -f live/vmap-history.json ]; then
+            [ "$first" = true ] || { echo "::error::the vmap-feed release holds a server file and no vmap-history.json; nothing was made from this run"; exit 2; }
+            echo '{"releases":{},"attempts":{}}' > live/vmap-history.json
           fi
           echo "first_publish=$first" >> "$GITHUB_OUTPUT"
           if [ "$first" = true ]; then echo "No server file is published yet: this is a first publish."; fi
@@ -451,6 +470,20 @@ jobs:
             node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("out/base.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
             echo "::error::the published server file could not be taken as the base (published-base exit $code); nothing was made from this run"; exit 2
           fi
+
+      - name: Read the published server file's seq
+        id: seq
+        env:
+          FIRST_PUBLISH: ${{ steps.live.outputs.first_publish }}
+        run: |
+          set -euo pipefail
+          last_seq=0
+          if [ "$FIRST_PUBLISH" != true ]; then
+            last_seq="$(node tool/ci/vmap-sign.mjs verify published-base/version-map-server.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+            [ -n "$last_seq" ] || { echo "::error::the published server file does not verify"; exit 2; }
+          fi
+          echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
+          echo "The server file's last seq is $last_seq."
 
       # Every key of the layout list needs a row on this CL: one the scan could not place is a gap, and the job stops on it.
       - name: Check every layout key has a row
@@ -491,6 +524,43 @@ jobs:
           cp chk/server-result.json out/server-result.json
           { echo "### Server version object map"; echo; echo "- CL-$CL: $(grep -c '^field' out/server.feed.txt || true) field and size rows, $(grep -c '^build' out/server.feed.txt || true) build lines in the file"; } >> "$GITHUB_STEP_SUMMARY"
 
+      # A published CL is not released again, and the file has to change what is served for its CL (ci/decide.mjs
+      # identity). A rehearsal re-runs a CL on purpose and is not judged here.
+      - name: Check the version identity of the new server file
+        if: ${{ env.REHEARSAL != 'true' }}
+        env:
+          FIRST_PUBLISH: ${{ steps.live.outputs.first_publish }}
+          CL: ${{ steps.res.outputs.cl }}
+          BUILD_ID: ${{ steps.res.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          published=()
+          if [ "$FIRST_PUBLISH" != true ]; then published=(--published published-base/version-map-server.v1.txt); fi
+          ident=0
+          node tool/ci/decide.mjs identity --repo ModLoaderServer --cl "$CL" --buildid "$BUILD_ID" "${published[@]}" --feed out/server.feed.txt --history live/vmap-history.json --report out/identity.json || ident=$?
+          if [ "$ident" -ne 0 ]; then
+            node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("out/identity.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+            echo "::error::the version identity check did not pass for the server file (identity exit $ident); nothing was signed or staged"; exit 2
+          fi
+
+      # The chain's one seq, above the server file's own last seq (not the client's), and a signature with the TEST key (k1,
+      # which no released loader trusts) to prove the path before the publish job uses the release key.
+      - name: Sign with the TEST key as a dry run and record the seq
+        env:
+          VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+          LAST_SEQ: ${{ steps.seq.outputs.last_seq }}
+          CL: ${{ steps.res.outputs.cl }}
+          BUILD_ID: ${{ steps.res.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
+          seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$LAST_SEQ")"
+          case "$seq" in ''|0*|*[!0-9]*) echo "::error::no usable seq ('$seq')"; exit 2 ;; esac
+          node tool/ci/vmap-sign.mjs sign out/server.feed.txt --out out/server.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$LAST_SEQ" --seq "$seq"
+          node tool/ci/vmap-sign.mjs verify out/server.test-signed.txt --allow-test-key --last-seq "$LAST_SEQ" --expect-seq "$seq"
+          printf '{"schema":1,"cl":%s,"buildId":"%s","seq":%s,"lastSeq":%s}\n' "$CL" "$BUILD_ID" "$seq" "$LAST_SEQ" > out/server-chain.json
+          echo "TEST-signed the server file: seq $seq above $LAST_SEQ."
+
       - name: Upload the server map result
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -500,6 +570,8 @@ jobs:
             out/server.h
             out/server.feed.txt
             out/server-result.json
+            out/server-chain.json
+            out/identity.json
             out/map-report.json
             out/base.json
             out/preserve.json
@@ -593,12 +665,14 @@ jobs:
         run: |
           set -euo pipefail
           last_seq="$(cat last-seq.txt)"
-          cl="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-result.json','utf8')).cl")"
-          buildid="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-result.json','utf8')).buildId")"
+          cl="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-chain.json','utf8')).cl")"
+          buildid="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-chain.json','utf8')).buildId")"
+          seq="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-chain.json','utf8')).seq")"
           echo "{\"cl\": $cl}" > chain/decision.json
-          # The one seq of this run, above the server file's own last seq (not the client's).
-          seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$last_seq")"
-          case "$seq" in ''|0*|*[!0-9]*) echo "::error::no usable seq ('$seq')"; exit 2 ;; esac
+          # The chain's one seq (made by server-map above the server file's own last seq, not the client's), read again
+          # against the live server file now: another publish may have landed since.
+          case "$seq" in ''|0*|*[!0-9]*) echo "::error::the chain carries no usable seq ('$seq')"; exit 2 ;; esac
+          [ "$seq" -gt "$last_seq" ] || { echo "::error::the chain's seq $seq no longer rises above the published server seq $last_seq (another publish landed since); nothing was signed, the chain has to run again"; exit 2; }
           echo "CHAIN_SEQ=$seq" >> "$GITHUB_ENV"
           # The file to sign must be the one the map job staged: cut again from its header, byte for byte.
           node tool/ci/version-map.mjs export-feed chain/server.h --out feed.again.txt --server
@@ -612,9 +686,9 @@ jobs:
               echo "::error::the server file to sign would lose or change a published row; nothing was signed or uploaded"; exit 2
             fi
           fi
-          # Version identity, for a live publish: the CL is not served yet and the file changes what is served for it.
-          # A staging upload re-runs a CL on purpose and is not judged here.
-          if [ "$LIVE" = true ]; then
+          # Version identity, read again against the file that is live now: the CL is not served yet and the file changes
+          # what is served for it. A rehearsal re-runs a CL on purpose and is not judged here.
+          if [ "$REHEARSAL" != true ]; then
             published=()
             if [ "$FIRST_PUBLISH" != true ]; then published=(--published live/version-map-server.v1.txt); fi
             ident=0
