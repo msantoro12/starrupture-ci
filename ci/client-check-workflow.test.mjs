@@ -4156,7 +4156,8 @@ test('rehearsal: a dispatch input of sr-watch only, off by default, passed down 
   const inputs = watch.slice(watch.indexOf('  workflow_dispatch:\n'), watch.indexOf('\npermissions:'));
   assert.match(inputs, /\n {6}rehearsal:\n(?: {8}description: .*\n) {8}type: boolean\n {8}default: false\n/);
   assert.ok(!watch.slice(0, watch.indexOf('  workflow_dispatch:\n')).includes('rehearsal:'), 'not a schedule input');
-  assert.equal(watch.match(/\n {6}rehearsal: /g)?.length, 1, 'the pass-down; the input is declared once above');
+  assert.equal(watch.match(/\n {6}rehearsal: /g)?.length, 2, 'the pass-down to the client check and to the server check; the input is declared once above');
+  assert.deepEqual(mapOf(watchJob('server-check'), 'with').rehearsal, '${{ inputs.rehearsal == true }}');
   assert.deepEqual(mapOf(watchJob('client-check'), 'with').rehearsal, '${{ inputs.rehearsal == true }}');
   // The called workflow takes it as a boolean that defaults to false; its own dispatch does not offer it.
   assert.match(call, /\n {6}rehearsal:\n(?: {8}description: .*\n) {8}type: boolean\n {8}default: false\n/);

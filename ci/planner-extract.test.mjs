@@ -400,8 +400,8 @@ test('sr-watch.yml: the pin is read from the file, not written in the workflow',
   assert.ok(script.includes("a['pin-file'] ?? 'ci/data/extractor-ref.txt'"), 'the script reads ci/data/extractor-ref.txt by default');
 });
 
-test('sr-watch.yml: the alert job still waits for the poll and the build only', () => {
-  assert.match(watchJobs.alert, /^    needs: \[poll, build\]$/m);
+test('sr-watch.yml: the alert job waits for the poll, the build and the server check only, not the client check or the extract', () => {
+  assert.match(watchJobs.alert, /^    needs: \[poll, build, server-check\]$/m);
 });
 
 test('sr-watch.yml: the cancel step runs only when the client chain starts and cannot fail the poll or the chain', () => {

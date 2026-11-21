@@ -6,8 +6,10 @@ name: SR Steam watch
 # request with the per-component checklist and runs the compile check
 # (sr-build-all.yml), which comments its result on the PR. When a client
 # branch changed, it also runs the offline client check (sr-client-check.yml)
-# per changed branch, which comments its own result. Merging the PR means
-# "handled" and advances the baseline on main.
+# per changed branch, which comments its own result. When the dedicated server's public branch changed,
+# the offline server check (sr-server-check.yml) reads the new server build's identity and field layout
+# and keeps them in an artifact; it needs no Steam login and no secret, and nothing waits on it.
+# Merging the PR means "handled" and advances the baseline on main.
 #
 # Only writes: the first baseline commit to main, and game-update/* branches,
 # and, with state/autopilot.json enabled and every gate passed, the signed feed on the
@@ -78,6 +80,7 @@ jobs:
     outputs:
       changed: ${{ steps.poll.outputs.changed }}
       client_matrix: ${{ steps.poll.outputs.client_matrix }}
+      server_matrix: ${{ steps.poll.outputs.server_matrix }}
       pr: ${{ steps.pr.outputs.number }}
       skip: ${{ steps.pr.outputs.skip }}
     env:
@@ -391,17 +394,41 @@ jobs:
       SR_DEPLOYKEY_WAVEOPTIMISER: ${{ secrets.SR_DEPLOYKEY_WAVEOPTIMISER }}
       SR_DEPLOYKEY_CAMERACONTROLS: ${{ secrets.SR_DEPLOYKEY_CAMERACONTROLS }}
 
+  # ---- Offline check of the dedicated server build ----
+  # sr-server-check.yml downloads the server anonymously (public branch only), reads its identity and the
+  # field layout of ci/server-keys.txt from its PDB, and keeps the result in the server-check-<build id>
+  # artifact. No Steam login, no secret and no environment: none is passed, and the called workflow
+  # asks for contents: read only. Its own concurrency group (sr-server-check), not the client rig's.
+  # Nothing needs this job, so it cannot hold the client chain or the planner extract; a failure of
+  # it reaches the alert job below.
+  server-check:
+    name: server-check (${{ matrix.branch }})
+    needs: poll
+    if: needs.poll.outputs.changed == 'true' && needs.poll.outputs.skip != 'true' && startsWith(needs.poll.outputs.server_matrix, '[{')
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.poll.outputs.server_matrix) }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sr-server-check.yml
+    with:
+      buildid: ${{ matrix.buildid }}
+      rehearsal: ${{ inputs.rehearsal == true }}
+
   # ---- Alert: a failed job of this chain outside the client check ----
   # The client check alerts on its own jobs. This covers the rest of the chain: the
-  # poll and the compile check (sr-build-all.yml, called as build-all). The cause
+  # poll, the compile check (sr-build-all.yml, called as build-all) and the server
+  # check (sr-server-check.yml, called as server-check). The cause
   # lines and the issue come from the same script as the client check's alert
   # (ci/pipeline-alert.mjs), so the failure reaches each changed client branch's
   # issue ("SR map mode: <branch> needs attention", label pipeline-alert, assigned
   # to the owner), or one chain issue when no client branch changed.
   alert:
     name: alert
-    needs: [poll, build]
-    if: ${{ always() && inputs.rehearsal != true && (needs.poll.result == 'failure' || needs.build.result == 'failure') }}
+    needs: [poll, build, server-check]
+    if: ${{ always() && inputs.rehearsal != true && (needs.poll.result == 'failure' || needs.build.result == 'failure' || needs.server-check.result == 'failure') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
