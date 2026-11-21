@@ -92,3 +92,15 @@ test('plugin job: the client build and its artifact are as before', () => {
   assert.match(j, /- name: Build Client Release\n\s+shell: pwsh\n\s+env:\n\s+BUILD_TAG: \$\{\{ steps\.ver\.outputs\.build_tag \}\}\n\s+run: \|\n\s+msbuild "\$\{\{ matrix\.sln \}\}" `\n\s+\/p:Configuration="Client Release" `/);
   assert.match(j, /- name: Upload build\n\s+uses: actions\/upload-artifact@[^\n]+\n\s+with:\n\s+name: \$\{\{ matrix\.name \}\}\n\s+path: build\/Client Release\/Plugins\/\$\{\{ matrix\.dll \}\}\n/);
 });
+
+test('only the Server Release leg compiles in the server version map URL, from the loader repository like the manifest URL', () => {
+  const j = job('loader');
+  assert.match(j, /- name: loader-client\n\s+config: Client Release\n\s+manifest: manifest-client\.json\n\s+- name: loader-server\n\s+config: Server Release\n\s+manifest: manifest-server\.json\n\s+vmap_server_feed: version-map-server\.v1\.txt\n/);
+  assert.equal(j.match(/vmap_server_feed\b/g)?.length, 3, 'one matrix key (server entry), used twice in the one expression');
+  assert.match(j, /vmap_server_feed_url: \$\{\{ matrix\.vmap_server_feed && format\('\{0\}\/\{1\}\/releases\/latest\/download\/\{2\}', github\.server_url, env\.LOADER_REPO, matrix\.vmap_server_feed\) \|\| '' \}\}\n/);
+  const action = readFileSync(join(here, '..', '.github', 'actions', 'build-loader', 'action.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(action, /vmap_server_feed_url:\n(?:.*\n)*?\s+default: ''/);
+  assert.ok(action.includes('/p:VmapServerFeedUrl=$($env:VMAP_SERVER_FEED_URL)'), 'passed as VmapServerFeedUrl');
+  assert.ok(action.includes('if ($env:VMAP_SERVER_FEED_URL)'), 'only when set');
+  assert.ok(!/VmapServerFeedUrl/.test(wf), 'the workflow itself never passes it to the client leg');
+});

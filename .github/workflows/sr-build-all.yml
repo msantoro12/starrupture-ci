@@ -170,6 +170,7 @@ jobs:
           - name: loader-server
             config: Server Release
             manifest: manifest-server.json
+            vmap_server_feed: version-map-server.v1.txt
     steps:
       - name: Check the loader repository
         shell: bash
@@ -211,6 +212,7 @@ jobs:
           configuration: ${{ matrix.config }}
           build_tag: ci-${{ github.run_number }}
           manifest_url: ${{ github.server_url }}/${{ env.LOADER_REPO }}/releases/latest/download/${{ matrix.manifest }}
+          vmap_server_feed_url: ${{ matrix.vmap_server_feed && format('{0}/{1}/releases/latest/download/{2}', github.server_url, env.LOADER_REPO, matrix.vmap_server_feed) || '' }}
 
       - name: Pattern scan (placeholder)
         shell: bash
