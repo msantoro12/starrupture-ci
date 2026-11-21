@@ -280,6 +280,11 @@ $clientCases = [ordered]@{
  'layout_mismatch'         = @{ Mut = { param($c) $c.ml = $c.ml -replace '159 checked, 0 mismatched', '159 checked, 3 mismatched' }; Fail = 'layout_ok' }
  'layout_missing_classes'  = @{ Mut = { param($c) $c.ml = $c.ml -replace '0 missing', '2 missing' };                        Fail = 'layout_ok' }
  'layout_line_missing'     = @{ Mut = { param($c) Drop $c 'SDK CL 127004 against' };                                       Fail = 'layout_ok' }
+ # The loader's layout line puts the running build at the end ("; game build <CL>"); the older shape has none. Both read the same.
+ 'layout_line_build_last'  = @{ Mut = { param($c) $c.ml = $c.ml -replace '(SDK CL 127004 against the game: .* in all)$', '$1; game build 127004' } }
+ 'layout_line_build_last_newest' = @{ Mut = { param($c) $c.ml = $c.ml -replace '(SDK CL 127004 against the game: .* in all)$', '$1; game build 129402, no table of its own: the newest is used' } }
+ 'layout_line_build_last_mismatch' = @{ Mut = { param($c) $c.ml = $c.ml -replace '(SDK CL 127004 against the game: .* in all)$', '$1; game build 127004' -replace '159 checked, 0 mismatched', '159 checked, 3 mismatched' }; Fail = 'layout_ok' }
+ 'layout_line_build_last_missing' = @{ Mut = { param($c) $c.ml = $c.ml -replace '(SDK CL 127004 against the game: .* in all)$', '$1; game build 127004' -replace '0 missing', '2 missing' }; Fail = 'layout_ok' }
  'layout_plugins_off'      = @{ Mut = { param($c) $c.ml += "$($err)[init] Layout mismatch -- plugins are switched off for this session" }; Fail = 'plugins_not_switched_off' }
  'layout_not_run'          = @{ Mut = { param($c) $c.ml += "$($err)[init] The game did not finish starting within 120 seconds, so the layout check could not run -- plugins are switched off for this session" }; Fail = 'layout_ok' }
  'layout_not_run_off'      = @{ Mut = { param($c) $c.ml += "$($err)[init] The game did not finish starting within 120 seconds, so the layout check could not run -- plugins are switched off for this session" }; Fail = 'plugins_not_switched_off' }

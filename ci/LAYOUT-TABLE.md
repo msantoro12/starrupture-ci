@@ -33,6 +33,10 @@ node ci/layout-table.mjs gen <Client/Assertions.inl> --cl <built CL> \
   never to be embedded, because it still holds classes the game does not
   reflect.
 - `--cl` is the built CL, written to `kBuiltCL`.
+- The file name is the caller's choice (`--out`). The loader keeps one table per game build,
+  `core/layout_table_<CL>.generated.h` with `--namespace SrLayoutTable_<CL>`; the client check reads the one
+  named by the `kBuiltCL` of the loader's `version_map.generated.h`, and a loader from before that, with a single
+  `core/layout_table.generated.h`, still works (the check falls back to that name when the per-build file is not there).
 - The tool prints counts to stderr: classes, rows, bytes, used names not in the
   layout, and what `--sdk` left out. An `--sdk` directory with none of the
   selected classes, or one that lacks a declaration for more than a quarter of

@@ -1974,6 +1974,81 @@ test('native-keys: the layout step accepts every line of ci/native-keys.txt and 
   assert.equal(size.exec('P FMassQuery size optional')[2], 'FMassQuery');
 });
 
+// ---- The loader's layout table: one file per game build, the old name as the fallback ----
+
+// The lines of the layout step that fetch the loader's table, run for real with a stand-in for
+// Invoke-WebRequest that serves `files` (path under StarRupture-ModLoader-Core -> content), answers
+// 404 for any other path and `status` for the paths in `fail`. Skipped where no PowerShell is installed.
+const LOADER_SHA = 'a'.repeat(40);
+const tableFetch = ({ files, fail = {} }) => {
+  const step = runOf(job('check'), 'Read the used layouts from the PDBs');
+  const from = step.indexOf('function Get-LoaderFile');
+  const endMark = 'has no layout table';
+  const to = step.indexOf('\n', step.indexOf(endMark, from));
+  assert.ok(from > 0 && to > from, 'the layout step fetches the loader table in one block');
+  const dir = mkdtempSync(join(tmpdir(), 'layout-table-'));
+  const log = join(dir, 'requests.txt');
+  writeFileSync(join(dir, 'run.ps1'), '﻿' + [
+    "$ErrorActionPreference = 'Stop'; Set-StrictMode -Version Latest",
+    `$work = '${dir}'`,
+    `$metas = @([pscustomobject]@{ loaderRepo = 'AlienXAXS/StarRupture-ModLoader'; loaderInterface = '${LOADER_SHA}' })`,
+    "$loaderTable = Join-Path $work 'loader-table.h'",
+    `$files = '${JSON.stringify(files)}' | ConvertFrom-Json`,
+    `$fail = '${JSON.stringify(fail)}' | ConvertFrom-Json`,
+    'function Invoke-WebRequest { param($Uri, $OutFile, $TimeoutSec)',
+    `  Add-Content -LiteralPath '${log}' -Value $Uri`,
+    `  $rel = $Uri -replace '^https://raw\\.githubusercontent\\.com/AlienXAXS/StarRupture-ModLoader/${LOADER_SHA}/StarRupture-ModLoader-Core/', ''`,
+    "  if ($rel -eq $Uri) { throw \"unexpected $Uri\" }",
+    '  $code = if ($fail.PSObject.Properties[$rel]) { [int]$fail.$rel } elseif ($files.PSObject.Properties[$rel]) { 200 } else { 404 }',
+    '  if ($code -eq 200) { Set-Content -LiteralPath $OutFile -Value $files.$rel -NoNewline; return }',
+    "  $ex = [System.Exception]::new(\"HTTP $code\")",
+    '  Add-Member -InputObject $ex -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = [System.Net.HttpStatusCode]$code })',
+    '  throw $ex',
+    '}',
+    step.slice(from, to),
+    'Write-Output ("table=" + (Get-Content -LiteralPath $loaderTable -Raw))',
+  ].join('\n'));
+  const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(dir, 'run.ps1')], { encoding: 'utf8', windowsHide: true });
+  const requested = existsSync(log) ? readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean).map((u) => u.slice(u.indexOf('StarRupture-ModLoader-Core/') + 'StarRupture-ModLoader-Core/'.length)) : [];
+  return { r, text: `${r.stdout}\n${r.stderr}`, requested, table: /table=(.*)/.exec(r.stdout)?.[1] };
+};
+const VMAP = (cl) => `inline constexpr uint32_t kFormatVersion = 2;\ninline constexpr uint32_t kBuiltCL = ${cl};\n`;
+const VMAP_FILE = 'hooks/game/version_map.generated.h';
+
+test('loader table: a loader with one table per build is read at the kBuiltCL of its version map', { skip: !powershell }, () => {
+  const x = tableFetch({ files: { [VMAP_FILE]: VMAP(130045), 'core/layout_table_130045.generated.h': 'NEW-130045', 'core/layout_table_127004.generated.h': 'NEW-127004' } });
+  assert.equal(x.r.status, 0, x.text);
+  assert.equal(x.table, 'NEW-130045');
+  assert.deepEqual(x.requested, [VMAP_FILE, 'core/layout_table_130045.generated.h'], 'the old name is not even asked for');
+  const y = tableFetch({ files: { [VMAP_FILE]: VMAP(127004), 'core/layout_table_127004.generated.h': 'NEW-127004', 'core/layout_table_130045.generated.h': 'NEW-130045' } });
+  assert.equal(y.table, 'NEW-127004');
+});
+
+test('loader table: a loader with the single old table, or no version map, is read at the old name', { skip: !powershell }, () => {
+  const old = tableFetch({ files: { [VMAP_FILE]: VMAP(130045), 'core/layout_table.generated.h': 'OLD' } });
+  assert.equal(old.r.status, 0, old.text);
+  assert.equal(old.table, 'OLD');
+  assert.deepEqual(old.requested, [VMAP_FILE, 'core/layout_table_130045.generated.h', 'core/layout_table.generated.h']);
+  const noMap = tableFetch({ files: { 'core/layout_table.generated.h': 'OLD' } });
+  assert.equal(noMap.r.status, 0, noMap.text);
+  assert.equal(noMap.table, 'OLD');
+  assert.deepEqual(noMap.requested, [VMAP_FILE, 'core/layout_table.generated.h']);
+  // A version map that names no built CL is no reason to stop either.
+  assert.equal(tableFetch({ files: { [VMAP_FILE]: 'nothing here', 'core/layout_table.generated.h': 'OLD' } }).table, 'OLD');
+});
+
+test('loader table: no table at all, or a failure that is not a 404, stops the step', { skip: !powershell }, () => {
+  const none = tableFetch({ files: { [VMAP_FILE]: VMAP(130045) } });
+  assert.notEqual(none.r.status, 0);
+  assert.match(none.text.replace(/\r?\n/g, ''), /has no layout table \(tried: .*layout_table_130045\.generated\.h, .*layout_table\.generated\.h\)/);
+  // A server error is not "absent": nothing falls back to the other name, so a stale table is never read by mistake.
+  const err = tableFetch({ files: { [VMAP_FILE]: VMAP(130045), 'core/layout_table.generated.h': 'OLD' }, fail: { 'core/layout_table_130045.generated.h': 500 } });
+  assert.notEqual(err.r.status, 0);
+  assert.match(err.text, /HTTP 500/);
+  assert.ok(!err.requested.includes('core/layout_table.generated.h'));
+  assert.notEqual(tableFetch({ files: { 'core/layout_table.generated.h': 'OLD' }, fail: { [VMAP_FILE]: 503 } }).r.status, 0);
+});
+
 // ---- Carried rows: the carry scan in the check job, assemble and the completeness gate in map mode ----
 
 test('carry: the check job scans the base header against the new exe after the login cache is gone, and reports from the JSON', () => {
