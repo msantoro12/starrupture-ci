@@ -71,3 +71,24 @@ test('the loader build steps are the shared action, which the candidate job of t
   const client = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-check.yml'), 'utf8');
   assert.ok(client.includes('uses: ./ci-actions/.github/actions/build-loader'), 'the candidate job builds with it');
 });
+
+test('plugin job: a Server Release build runs only for a plugin whose solution has the configuration', () => {
+  const j = job('plugin');
+  const detect = j.indexOf('- name: Look for a Server Release configuration');
+  assert.ok(detect > j.indexOf('- name: Read the plugin version'), 'the check runs after the version step');
+  assert.ok(detect < j.indexOf('- name: Build Client Release'), 'and before the builds, so the client build is untouched');
+  assert.match(j.slice(detect), /id: server\n\s+shell: pwsh\n\s+run: \|\n(?:.*\n)*?\s+\$has = Select-String -Path "\$\{\{ matrix\.sln \}\}" -SimpleMatch 'Server Release\|x64' -Quiet\n(?:.*\n)*?\s+"present=/);
+  const step = j.slice(j.indexOf('- name: Build Server Release'), j.indexOf('- name: Upload server build'));
+  assert.match(step, /if: \$\{\{ !cancelled\(\) && steps\.server\.outputs\.present == 'true' \}\}/);
+  for (const arg of ['/p:Configuration="Server Release"', '/p:Platform=x64', '/p:PostBuildEventUseInBuild=false', '/p:ModLoaderBuildTag="$env:BUILD_TAG"', '/p:GameSDKRoot="${{ github.workspace }}\\game-sdk"', '/p:PluginSDKInclude="${{ github.workspace }}\\plugin-sdk\\include"']) {
+    assert.ok(step.includes(arg), `the server build passes ${arg}`);
+  }
+  assert.ok(!/continue-on-error/.test(j), 'a failing server build fails the job like the client build does');
+  assert.match(j, /- name: Upload server build\n\s+if: \$\{\{ steps\.server\.outputs\.present == 'true' \}\}\n\s+uses: actions\/upload-artifact@[^\n]+\n\s+with:\n\s+name: \$\{\{ matrix\.name \}\}-server\n\s+path: build\/Server Release\/Plugins\/\$\{\{ matrix\.dll \}\}\n/);
+});
+
+test('plugin job: the client build and its artifact are as before', () => {
+  const j = job('plugin');
+  assert.match(j, /- name: Build Client Release\n\s+shell: pwsh\n\s+env:\n\s+BUILD_TAG: \$\{\{ steps\.ver\.outputs\.build_tag \}\}\n\s+run: \|\n\s+msbuild "\$\{\{ matrix\.sln \}\}" `\n\s+\/p:Configuration="Client Release" `/);
+  assert.match(j, /- name: Upload build\n\s+uses: actions\/upload-artifact@[^\n]+\n\s+with:\n\s+name: \$\{\{ matrix\.name \}\}\n\s+path: build\/Client Release\/Plugins\/\$\{\{ matrix\.dll \}\}\n/);
+});
