@@ -1303,9 +1303,12 @@ rows and four function rows, with three keys not placed and one row not for the 
    adds every line it has (the first server file has none to take). `map-mode.mjs complete --keys ci/server-keys.txt`
    stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but only reported:
    no scan makes function or global rows yet. `export-feed --server` cuts the unsigned file and `published-base.mjs
-   preserve` checks it keeps every published line.
-3. `server-publish` (environment `vmap-sign`): takes its own seq above the server file's last one (the client's seq is
-   not used), signs with k2, and runs `vmap-publish.sh` with `VMAP_ASSET=version-map-server.v1.txt` and
+   preserve` checks it keeps every published line. `decide.mjs identity --repo ModLoaderServer` checks the CL is not
+   served yet and the file changes what is served for it (skipped in a rehearsal). The chain's seq is made here, above
+   the published server file's own last seq (the client's seq is not used), and the file is signed once with the TEST
+   key (k1, secret `VMAP_SIGN_KEY_TEST`) as a dry run. Artifact `server-map-<build id>`.
+3. `server-publish` (environment `vmap-sign`): checks the chain's seq still rises above the live server file's, signs
+   with k2, and runs `vmap-publish.sh` with `VMAP_ASSET=version-map-server.v1.txt` and
    `VMAP_HISTORY_REPO=ModLoaderServer`: the history entry is `ModLoaderServer:<CL>` in the shared `vmap-history.json`,
    the server file goes first, the history last, and `verify` shows `key=k2`.
 
