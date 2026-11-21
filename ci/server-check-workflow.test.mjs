@@ -53,14 +53,16 @@ test('triggers: workflow_call and workflow_dispatch, each with buildid and rehea
   assert.ok(!/pull_request|schedule:|push:/.test(on), 'no trigger a stranger can pull');
 });
 
-test('trust: the scanner and the layout check hold no secret; the key is read only by server-publish, in environment vmap-sign', () => {
-  assert.ok(!/secrets\.(?!VMAP_SIGN_KEY\b)/.test(wf) && !wf.includes('inherit'), 'no secret but the release key, no inherit');
-  assert.deepEqual([...wf.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]), ['VMAP_SIGN_KEY'], 'the key is read once');
-  assert.ok(publish.includes('VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}'), 'by server-publish');
-  assert.ok(!/secrets\.|\n\s+environment:/.test(windows + map), 'no secret and no environment in the scanner, the layout check or the map job');
+test('trust: the scanner and the layout check hold no secret; the TEST key is read only by server-map, the release key only by server-publish, in environment vmap-sign', () => {
+  assert.ok(!/secrets\.(?!VMAP_SIGN_KEY(?:_TEST)?\b)/.test(wf) && !wf.includes('inherit'), 'no secret but the two signing keys, no inherit');
+  assert.deepEqual([...wf.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]), ['VMAP_SIGN_KEY_TEST', 'VMAP_SIGN_KEY'], 'each key is read once');
+  assert.ok(map.includes('VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}') && !/secrets\.VMAP_SIGN_KEY\b/.test(map), 'server-map reads the TEST key only');
+  assert.ok(publish.includes('VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}') && !/VMAP_SIGN_KEY_TEST|key-id k1|allow-test-key/.test(publish), 'server-publish reads the release key only');
+  assert.ok(!/secrets\.|\n\s+environment:/.test(windows), 'no secret and no environment in the scanner or the layout check');
+  assert.ok(!/\n\s+environment:/.test(map), 'the map job runs in no environment (the TEST key is a repository secret, as in the client check)');
   assert.deepEqual([...wf.matchAll(/\n\s+environment: (.*)/g)].map((m) => m[1]), ['vmap-sign']);
   assert.match(publish, /\n {4}environment: vmap-sign\n/);
-  assert.ok(!/VMAP_SIGN_KEY_TEST|allow-test-key|key-id k1/.test(wf), 'the TEST key is not used here');
+  assert.ok(!/key-id k2/.test(map) && !/--key-id k1/.test(publish), 'k1 only in the map job, k2 only in the publish job');
   assert.match(wf, /\npermissions: \{\}\n/);
   for (const name of ['server-scanner', 'server-layout', 'server-map']) assert.match(job(wf, name), /\n {4}permissions:\n {6}contents: read\n/, `${name}: contents: read`);
   assert.match(publish, /\n {4}permissions:\n {6}contents: write\n/, 'server-publish: contents: write (the upload)');
@@ -70,12 +72,12 @@ test('trust: the scanner and the layout check hold no secret; the key is read on
   assert.ok((wf.match(/persist-credentials: false/g) ?? []).length === (wf.match(/uses: actions\/checkout@/g) ?? []).length, 'no checkout keeps the token');
   // The job that holds the key checks out this repository's scripts only: no loader, no scanner, no input-named repository.
   assert.ok(!/repository:/.test(map + publish), 'the map and publish jobs take no other repository');
-  assert.ok(!/\$\{\{ inputs\./.test(map + publish.replace(/LIVE: .*\n|REHEARSAL: .*\n/g, '')), 'an input reaches those jobs through nothing but the two flags');
+  assert.ok(!/\$\{\{ inputs\./.test((map + publish).replace(/LIVE: .*\n|REHEARSAL: .*\n/g, '')), 'an input reaches those jobs through nothing but the two flags');
 });
 
 test('no run block takes an expression: every input and output reaches a script through env', () => {
   assert.equal(runSteps(windows).length, 9, 'every run step of the Windows jobs was found');
-  assert.equal(runSteps(map).length, 7, 'every run step of server-map was found');
+  assert.equal(runSteps(map).length, 10, 'every run step of server-map was found');
   assert.equal(runSteps(publish).length, 9, 'every run step of server-publish was found');
   for (const r of runSteps(wf)) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
   assert.match(wf, /\n {4}env:\n {6}EXPECTED_BUILDID: \$\{\{ inputs\.buildid \}\}\n {6}SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.scanner_sha256 \}\}\n/);
@@ -163,11 +165,21 @@ test('server-map: the version object map header from the result, on the verified
   assert.ok(exp.includes('version-map.mjs export-feed out/server.h --out out/server.feed.txt --server'));
   assert.ok(exp.includes('published-base.mjs preserve out/server.feed.txt --published published-base/version-map-server.v1.txt'));
   assert.ok(map.indexOf('Take the published server file') < map.indexOf('Check every layout key') && map.indexOf('Check every layout key') < map.indexOf('Export the server file'));
-  const live = stepOf(map, 'Read what the live release holds');
+  const live = stepOf(map, 'Read what the live release holds (read only)');
   assert.ok(live.includes('first_publish=$first') && live.includes("a.name === 'version-map-server.v1.txt'"), 'a first server file is the only run without a base');
+  assert.ok(live.includes('--pattern vmap-history.json --dir live') && live.includes('the vmap-feed release holds a server file and no vmap-history.json'), 'the history is read, never started again from nothing');
+  const lastSeq = stepOf(map, "Read the published server file's seq");
+  assert.ok(lastSeq.includes('vmap-sign.mjs verify published-base/version-map-server.v1.txt | sed -n'), "the server file's own last seq, from a verified file");
+  const ident = stepOf(map, 'Check the version identity of the new server file');
+  assert.ok(ident.includes("if: ${{ env.REHEARSAL != 'true' }}\n") && ident.includes('decide.mjs identity --repo ModLoaderServer') && ident.includes('--history live/vmap-history.json') && ident.includes('exit 2'), 'identity unless a rehearsal; a hold fails the job');
+  const dry = stepOf(map, 'Sign with the TEST key as a dry run and record the seq');
+  assert.ok(dry.includes('vmap-sign.mjs next-seq --last-seq "$LAST_SEQ"') && dry.includes('--key-id k1 --key-env VMAP_SIGN_KEY_TEST') && dry.includes('verify out/server.test-signed.txt --allow-test-key'), 'the chain seq above the server last seq, signed with k1 and verified');
+  assert.ok(dry.includes('out/server-chain.json') && dry.includes('[ -n "$VMAP_SIGN_KEY_TEST" ]'));
+  assert.ok(map.indexOf('Export the server file') < map.indexOf('Check the version identity') && map.indexOf('Check the version identity') < map.indexOf('Sign with the TEST key'));
   assert.ok(!/gh release (upload|create|edit|delete)|git push/.test(map), 'the map job writes nothing outside its runner');
   const up = map.slice(map.lastIndexOf('- name: Upload the server map result'));
-  assert.ok(up.includes('name: server-map-${{ needs.server-layout.outputs.build_id }}') && up.includes('out/server.h') && up.includes('out/server.feed.txt'));
+  assert.ok(up.includes('name: server-map-${{ needs.server-layout.outputs.build_id }}') && up.includes('out/server.h') && up.includes('out/server.feed.txt') && up.includes('out/server-chain.json'));
+  assert.ok(!/test-signed/.test(up), 'the TEST-signed file is not kept');
   assert.ok(!/\.exe|\.pdb|install_dir/.test(up), 'no game file leaves the runner');
 });
 
@@ -208,11 +220,12 @@ test('server-publish: staging by default, the live release only with the live in
 
 test('server-publish: its own seq, the release key k2, the shared routine for the history, and the checks before the key is used', () => {
   const seq = stepOf(publish, 'Check the seq and the server file before signing');
-  assert.ok(seq.includes('vmap-sign.mjs next-seq --last-seq "$last_seq"'), 'above the server file\'s own last seq, not the client\'s');
+  assert.ok(seq.includes("chain/server-chain.json','utf8')).seq") && seq.includes('[ "$seq" -gt "$last_seq" ]'), "the chain's seq (made above the server file's own last seq), read again against the live server file");
+  assert.ok(!/next-seq/.test(publish), 'the chain makes the seq, the publish job only checks it');
   assert.ok(seq.includes('cmp -s chain/server.feed.txt feed.again.txt'), 'the file to sign is the one the map job staged');
   assert.ok(seq.includes('published-base.mjs preserve chain/server.feed.txt --published live/version-map-server.v1.txt'), 'every published line is held, read again now');
-  assert.ok(seq.includes('decide.mjs identity --repo ModLoaderServer') && seq.includes('--history live/vmap-history.json'), 'the version identity of a live publish');
-  assert.ok(seq.indexOf('if [ "$LIVE" = true ]; then') < seq.indexOf('decide.mjs identity'), 'a staging upload re-runs a CL on purpose and is not judged');
+  assert.ok(seq.includes('decide.mjs identity --repo ModLoaderServer') && seq.includes('--history live/vmap-history.json'), 'the version identity, read again against the live file');
+  assert.ok(seq.indexOf('if [ "$REHEARSAL" != true ]; then') < seq.indexOf('decide.mjs identity'), 'a rehearsal re-runs a CL on purpose and is not judged');
   const read = stepOf(publish, 'Read the live release');
   assert.ok(read.includes("vmap-sign.mjs verify live/version-map-server.v1.txt | sed -n 's/^ok seq=\\([0-9]*\\) .*/\\1/p'"), 'the last seq is read from a verified server file');
   assert.ok(read.includes('the history is never rebuilt from nothing') && read.includes('"releases":{},"attempts":{}'), 'a history is started only with the first server file');
@@ -233,7 +246,7 @@ test('text: no second Steam branch named, no attribution line, version object ma
   assert.ok(!/\bthe feed\b/i.test(wf), 'version object map, not the feed');
 });
 
-test('sr-watch: the server-check job calls the workflow per matrix entry with the release key by name and no live input', () => {
+test('sr-watch: the server-check job calls the workflow per matrix entry with the two signing keys by name and no live input', () => {
   const j = job(watch, 'server-check');
   assert.match(j, /\n {4}name: server-check \(\$\{\{ matrix\.branch \}\}\)\n/);
   assert.match(j, /\n {4}needs: poll\n/);
@@ -241,8 +254,8 @@ test('sr-watch: the server-check job calls the workflow per matrix entry with th
   assert.match(j, /fail-fast: false\n\s+max-parallel: 1\n\s+matrix:\n\s+include: \$\{\{ fromJSON\(needs\.poll\.outputs\.server_matrix\) \}\}/);
   assert.match(j, /\n {4}permissions:\n {6}contents: write\n {4}uses: \.\/\.github\/workflows\/sr-server-check\.yml\n/, 'contents: write is the ceiling of the called signing job');
   assert.match(j, /with:\n\s+buildid: \$\{\{ matrix\.buildid \}\}\n\s+rehearsal: \$\{\{ inputs\.rehearsal == true \}\}\n/);
-  assert.match(j, /\n {4}secrets:\n {6}VMAP_SIGN_KEY: \$\{\{ secrets\.VMAP_SIGN_KEY \}\}\n/);
-  assert.ok(!/inherit|secrets\.(?!VMAP_SIGN_KEY\b)/.test(j), 'nothing but the release key is passed');
+  assert.match(j, /\n {4}secrets:\n {6}VMAP_SIGN_KEY_TEST: \$\{\{ secrets\.VMAP_SIGN_KEY_TEST \}\}\n {6}VMAP_SIGN_KEY: \$\{\{ secrets\.VMAP_SIGN_KEY \}\}\n/);
+  assert.ok(!/inherit|secrets\.(?!VMAP_SIGN_KEY(?:_TEST)?\b)/.test(j), 'nothing but the two signing keys is passed');
   assert.ok(!/^ +live:/m.test(j) && !/\binputs\.live\b/.test(watch), 'sr-watch does not pass live, and declares no such input');
   assert.ok(!/secrets: inherit/.test(watch));
   assert.match(watch, /server_matrix: \$\{\{ steps\.poll\.outputs\.server_matrix \}\}/);

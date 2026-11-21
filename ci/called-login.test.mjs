@@ -99,7 +99,7 @@ test('sr-watch passes the login, the TEST key, the release key, the loader fork 
   assert.ok(!/feed_loader_ref/.test(j), 'the proof input is never set by the unattended chain');
 });
 
-test('sr-watch passes the server check the release key by name and nothing else; the called workflow declares it and reads it only in the signing job', () => {
+test('sr-watch passes the server check the TEST key and the release key by name and nothing else; the called workflow declares them and each key is read by one job', () => {
   const callers = [];
   for (const [file, wf] of Object.entries(workflows)) {
     for (const j of jobs(wf)) {
@@ -109,21 +109,23 @@ test('sr-watch passes the server check the release key by name and nothing else;
       const block = j.slice(j.indexOf('\n    secrets:\n') + 1).split('\n').slice(1);
       const end = block.findIndex((l) => !/^ {6}[A-Z][A-Z0-9_]*:/.test(l));
       const names = (end < 0 ? block : block.slice(0, end)).map((l) => l.trim().split(':')[0]);
-      assert.deepEqual(names, ['VMAP_SIGN_KEY'], `${file}: exactly the release key`);
-      assert.ok(passesByName(j.slice(j.indexOf('\n    secrets:\n')), 'VMAP_SIGN_KEY'), `${file}: passed by name`);
+      assert.deepEqual(names, ['VMAP_SIGN_KEY_TEST', 'VMAP_SIGN_KEY'], `${file}: exactly the two signing keys`);
+      for (const name of names) assert.ok(passesByName(j.slice(j.indexOf('\n    secrets:\n')), name), `${file}: ${name} passed by name`);
       assert.ok(!/inherit/.test(j), `${file}: no inherit`);
       assert.ok(!/^ +live:/m.test(j), `${file}: does not pass live`);
     }
   }
   assert.deepEqual(callers, ['sr-watch.yml:server-check']);
   const called = workflows['sr-server-check.yml'];
-  assert.match(callSection(called), /\n {4}secrets:\n {6}VMAP_SIGN_KEY:\n {8}description: [^\n]+\n {8}required: false\n?$/, 'the one secret it declares, not required (a run without it only stops at the signing step)');
+  assert.match(callSection(called), /\n {4}secrets:\n {6}VMAP_SIGN_KEY_TEST:\n {8}description: [^\n]+\n {8}required: false\n {6}VMAP_SIGN_KEY:\n {8}description: [^\n]+\n {8}required: false\n?$/, 'the two secrets it declares, not required (a run without them only stops at the signing step)');
+  const readers = {};
   for (const j of jobs(called)) {
-    if (!/secrets\./.test(j)) continue;
-    assert.match(j, /^ {2}server-publish:\n/, 'only the signing job reads a secret');
-    assert.match(j, /\n {4}environment: vmap-sign\n/, 'in the environment that holds the key');
-    assert.deepEqual([...j.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]), ['VMAP_SIGN_KEY']);
+    const names = [...j.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]);
+    if (names.length) readers[j.match(/^ {2}([\w-]+):/)[1]] = names;
   }
+  assert.deepEqual(readers, { 'server-map': ['VMAP_SIGN_KEY_TEST'], 'server-publish': ['VMAP_SIGN_KEY'] }, 'the TEST key in the map job, the release key in the signing job, nothing else');
+  assert.match(job(called, 'server-publish'), /\n {4}environment: vmap-sign\n/, 'the release key in the environment that holds it');
+  assert.ok(!/\n {4}environment:/.test(job(called, 'server-map')), 'the TEST key is a repository secret: no environment, as in the client check');
 });
 
 test('client check: a missing login fails the check job with its cause, never a green skip', () => {
