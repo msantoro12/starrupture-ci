@@ -70,6 +70,7 @@ public:
 	uint8                                         BitPad_48_2 : 1;    // 0x0048(0x0001)(Fixing Bit-Field Size Between Bits [ Dumper-7 ])
 	class TArray<struct FCrThing>                 Things;    // 0x0050(0x0010)(Edit, NativeAccessSpecifierPublic)
 	class UObject*                                Outer;    // 0x0020(0x0008)(NOT AUTO-GENERATED PROPERTY)
+	class TArray<class UObject*>                  Actors;    // 0x0060(0x0010)(Hand-written, kept for plugins. [NOT AUTO-GENERATED PROPERTY])
 
 public:
 	bool IsEnabled() const;
@@ -119,7 +120,7 @@ function writeSdk() {
 }
 
 const WIDGET = {
-  UCrWidget: { size: 0x70, align: 0x10, members: { bEnabled: 0x30, Count: 0x38, Things: 0x50, Outer: 0x20 } },
+  UCrWidget: { size: 0x70, align: 0x10, members: { bEnabled: 0x30, Count: 0x38, Things: 0x50, Outer: 0x20, Actors: 0x60 } },
   UCrBlueprintWidget_C: { size: 0x78, members: { Speed: 0x70 } },
   FCrThing: { size: 8, align: 4, members: { A: 0, B: 4 } },
   CrWidget_SetCount: { size: 8, align: 4, members: { NewCount: 0, ReturnValue: 4 } },
@@ -134,13 +135,15 @@ test('header parser: sizes, bool and bit-field masks, kinds and paths; padding a
   const w = sdk.get('UCrWidget');
   assert.equal(w.kind, KIND.class);
   assert.equal(w.path, 'Chimera.CrWidget');
-  assert.deepEqual([...w.members.keys()], ['bEnabled', 'Count', 'bLow', 'bHigh', 'Things', 'Outer'], 'Pad_ and BitPad_ members are not rows');
+  assert.deepEqual([...w.members.keys()], ['bEnabled', 'Count', 'bLow', 'bHigh', 'Things', 'Outer', 'Actors'], 'Pad_ and BitPad_ members are not rows');
   assert.deepEqual(w.members.get('bEnabled'), { offset: 0x30, size: 1, mask: 0xff, bits: false, reflected: true });
   assert.equal(w.members.get('Count').size, 0x10, 'an array reports its total size');
   assert.equal(w.members.get('bHigh').mask, 1 << 3);
   assert.equal(w.members.get('bHigh').bits, true);
   assert.equal(w.members.get('Things').size, 0x10, 'a template type with spaces still parses');
   assert.equal(w.members.get('Outer').reflected, false);
+  assert.equal(w.members.get('Actors').reflected, false, 'the marker is a hand-written member wherever it sits in the comment');
+  assert.equal(w.members.get('Count').reflected, true);
   assert.equal(sdk.get('UCrBlueprintWidget_C').kind, KIND.blueprint);
   assert.equal(sdk.get('FCrThing').kind, KIND.struct);
   const p = sdk.get('CrWidget_SetCount');
@@ -180,7 +183,7 @@ test('buildTable with headers: sizes and masks filled, bit-fields added, predefi
   const sdk = parseSdkHeaders(writeSdk());
   const t = buildTable(layout, layout.keys(), { cl: 127004, sdk });
   assert.equal(t.detail, 1);
-  assert.deepEqual(t.skipped, { classes: ['FName'], members: 1, unmatched: 0 });
+  assert.deepEqual(t.skipped, { classes: ['FName'], members: 2, unmatched: 0 });
   const w = t.classes.find((c) => c.name === 'UCrWidget');
   assert.deepEqual(w.rows.map((r) => r.member), ['bEnabled', 'Count', 'bHigh', 'bLow', 'Things']);
   assert.equal(w.sizeOf, 0x70);
