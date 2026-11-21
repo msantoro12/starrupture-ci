@@ -2005,12 +2005,15 @@ const tableFetch = ({ files, fail = {} }) => {
     '  Add-Member -InputObject $ex -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = [System.Net.HttpStatusCode]$code })',
     '  throw $ex',
     '}',
+    // The message goes to stdout: PowerShell 7 draws an uncaught error with colour codes and cuts it short.
+    'try {',
     step.slice(from, to),
+    '} catch { Write-Output ("error=" + $_.Exception.Message); exit 1 }',
     'Write-Output ("table=" + (Get-Content -LiteralPath $loaderTable -Raw))',
   ].join('\n'));
   const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(dir, 'run.ps1')], { encoding: 'utf8', windowsHide: true });
   const requested = existsSync(log) ? readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean).map((u) => u.slice(u.indexOf('StarRupture-ModLoader-Core/') + 'StarRupture-ModLoader-Core/'.length)) : [];
-  return { r, text: `${r.stdout}\n${r.stderr}`, requested, table: /table=(.*)/.exec(r.stdout)?.[1] };
+  return { r, text: `${r.stdout}\n${r.stderr}`, error: /error=(.*)/.exec(r.stdout)?.[1] ?? '', requested, table: /table=(.*)/.exec(r.stdout)?.[1] };
 };
 const VMAP = (cl) => `inline constexpr uint32_t kFormatVersion = 2;\ninline constexpr uint32_t kBuiltCL = ${cl};\n`;
 const VMAP_FILE = 'hooks/game/version_map.generated.h';
@@ -2040,11 +2043,11 @@ test('loader table: a loader with the single old table, or no version map, is re
 test('loader table: no table at all, or a failure that is not a 404, stops the step', { skip: !powershell }, () => {
   const none = tableFetch({ files: { [VMAP_FILE]: VMAP(130045) } });
   assert.notEqual(none.r.status, 0);
-  assert.match(none.text.replace(/\r?\n/g, ''), /has no layout table \(tried: .*layout_table_130045\.generated\.h, .*layout_table\.generated\.h\)/);
+  assert.match(none.error, /has no layout table \(tried: .*layout_table_130045\.generated\.h, .*layout_table\.generated\.h\)/);
   // A server error is not "absent": nothing falls back to the other name, so a stale table is never read by mistake.
   const err = tableFetch({ files: { [VMAP_FILE]: VMAP(130045), 'core/layout_table.generated.h': 'OLD' }, fail: { 'core/layout_table_130045.generated.h': 500 } });
   assert.notEqual(err.r.status, 0);
-  assert.match(err.text, /HTTP 500/);
+  assert.match(err.error, /HTTP 500/);
   assert.ok(!err.requested.includes('core/layout_table.generated.h'));
   assert.notEqual(tableFetch({ files: { 'core/layout_table.generated.h': 'OLD' }, fail: { [VMAP_FILE]: 503 } }).r.status, 0);
 });
