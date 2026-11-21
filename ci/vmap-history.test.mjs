@@ -37,6 +37,28 @@ test('the same version identity written twice leaves one entry, with the newest 
   assert.equal(historyKey('ModLoader', '130045'), 'ModLoader:130045');
 });
 
+test('the dedicated server shares the history file: ModLoaderServer:<CL> is its own identity, next to the client\'s for the same CL', () => {
+  const d = dir();
+  const file = join(d, 'h.json');
+  writeFileSync(file, JSON.stringify({ releases: { 'ModLoader:130045': entry('130045', 1795109742) }, attempts: { 130045: 1 } }));
+  let r = cli(['record', '--history', file, '--repo', 'ModLoaderServer', '--cl', '130045', '--seq', '1795200000', '--at', AT, '--out', join(d, 'out.json')]);
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(readFileSync(join(d, 'out.json'), 'utf8'));
+  assert.deepEqual(Object.keys(out.releases), ['ModLoader:130045', 'ModLoaderServer:130045']);
+  assert.equal(out.releases['ModLoader:130045'].seq, 1795109742, 'the client entry is as it was');
+  assert.equal(out.releases['ModLoaderServer:130045'].seq, 1795200000, 'the server has its own seq');
+  // A second server release of the CL replaces the server entry only, and the file still passes the duplicate check.
+  r = cli(['record', '--history', join(d, 'out.json'), '--repo', 'ModLoaderServer', '--cl', '130045', '--seq', '1795300000', '--supersedes', '1795200000', '--out', join(d, 'out2.json')]);
+  assert.equal(r.status, 0, r.stderr);
+  const out2 = JSON.parse(readFileSync(join(d, 'out2.json'), 'utf8'));
+  assert.deepEqual([out2.releases['ModLoaderServer:130045'].seq, out2.releases['ModLoaderServer:130045'].supersedes, out2.releases['ModLoader:130045'].seq], [1795300000, 1795200000, 1795109742]);
+  assert.equal(cli(['check', '--history', join(d, 'out2.json')]).status, 0);
+  // A seq below the stored server seq is refused; the client's lower seq is no obstacle to the server entry.
+  assert.notEqual(cli(['record', '--history', join(d, 'out2.json'), '--repo', 'ModLoaderServer', '--cl', '130045', '--seq', '1795109743', '--out', join(d, 'out3.json')]).status, 0);
+  assert.equal(existsSync(join(d, 'out3.json')), false);
+  assert.equal(historyKey('ModLoaderServer', '130045'), 'ModLoaderServer:130045');
+});
+
 test('an upsert refuses an entry that is not one', () => {
   assert.throws(() => upsertRelease(empty(), { repo: 'ModLoader', cl: 'abc', seq: 1 }), /malformed release entry/);
   assert.throws(() => upsertRelease(empty(), { repo: 'ModLoader', cl: '1' }), /needs the seq/);

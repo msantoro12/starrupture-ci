@@ -263,3 +263,60 @@ test('--rehearsal: Steam not listing public now means nothing goes through', asy
   assert.equal(r.outputs.client_matrix, '[]');
   assert.deepEqual(r.state, recorded);
 });
+
+test('server_matrix: a changed server public build goes to the server check alone, and no client branch is checked', async () => {
+  const info = { [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) }, [SERVER]: { public: branch(201, 2100) } };
+  const r = await withApi(info, (base) => run(base, recorded));
+  assert.equal(r.code, 0, r.log);
+  assert.equal(r.outputs.changed, 'true');
+  assert.deepEqual(JSON.parse(r.outputs.server_matrix), [{ branch: 'public', buildid: '201' }]);
+  assert.equal(r.outputs.client_matrix, '[]');
+  assert.match(r.file('pr-body.md'), /offline check of the new server build/);
+  assert.ok(!/scan tool not available/.test(r.file('pr-body.md')));
+});
+
+test('server_matrix: a client-only change, or no change, leaves it empty', async () => {
+  const clientOnly = await withApi({ [CLIENT]: { public: branch(101, 1010), public_test_branch: branch(110, 1100) }, [SERVER]: serverInfo }, (base) => run(base, recorded));
+  assert.equal(clientOnly.outputs.changed, 'true');
+  assert.equal(clientOnly.outputs.server_matrix, '[]');
+  const quiet = await withApi({ [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) }, [SERVER]: serverInfo }, (base) => run(base, recorded));
+  assert.equal(quiet.outputs.changed, 'false');
+  assert.equal(quiet.outputs.server_matrix, '[]');
+});
+
+test('server_matrix: a server branch the download script cannot install is alerted on but not checked', async () => {
+  const info = { [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) }, [SERVER]: { public: branch(200, 2000), public_test_branch: branch(300, 3000) } };
+  const r = await withApi(info, (base) => run(base, recorded));
+  assert.equal(r.outputs.changed, 'true', 'the new server branch is still an alert');
+  assert.equal(r.state.apps[SERVER].branches.public_test_branch.buildid, '300');
+  assert.equal(r.outputs.server_matrix, '[]');
+  // Both moved: only public is in the matrix.
+  const both = await withApi({ ...info, [SERVER]: { public: branch(201, 2100), public_test_branch: branch(300, 3000) } }, (base) => run(base, recorded));
+  assert.deepEqual(JSON.parse(both.outputs.server_matrix), [{ branch: 'public', buildid: '201' }]);
+});
+
+test('server_matrix: a forced run checks the recorded server public build', async () => {
+  const info = { [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) }, [SERVER]: serverInfo };
+  const forced = await withApi(info, (base) => run(base, recorded, ['--force']));
+  assert.equal(forced.outputs.changed, 'true');
+  assert.deepEqual(JSON.parse(forced.outputs.server_matrix), [{ branch: 'public', buildid: '200' }]);
+});
+
+test('server_matrix: a rehearsal checks the server public build Steam lists now', async () => {
+  const info = { [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) }, [SERVER]: serverInfo };
+  const r = await withApi(info, (base) => run(base, recorded, ['--rehearsal']));
+  assert.equal(r.code, 0, r.log);
+  assert.deepEqual(JSON.parse(r.outputs.server_matrix), [{ branch: 'public', buildid: '200' }]);
+  assert.deepEqual(r.state, recorded, 'the state file is what it was');
+  const moved = await withApi({ ...info, [SERVER]: { public: branch(201, 2100) } }, (base) => run(base, recorded, ['--rehearsal']));
+  assert.deepEqual(JSON.parse(moved.outputs.server_matrix), [{ branch: 'public', buildid: '201' }]);
+  assert.deepEqual(moved.state, recorded);
+});
+
+test('server_matrix: when the server poll fails, a forced run falls back to the recorded build and a rehearsal checks nothing', { timeout: 120000 }, async () => {
+  const info = { [CLIENT]: { public: branch(100, 1000), public_test_branch: branch(110, 1100) } };
+  const [forced, rehearsal] = await withApi(info, (base) => Promise.all([run(base, recorded, ['--force']), run(base, recorded, ['--rehearsal'])]));
+  assert.deepEqual(JSON.parse(forced.outputs.server_matrix), [{ branch: 'public', buildid: '200' }], 'nothing newer is known');
+  assert.equal(rehearsal.outputs.changed, 'true');
+  assert.equal(rehearsal.outputs.server_matrix, '[]');
+});

@@ -1,0 +1,10 @@
+{
+  "summary": { "keys": 5, "ok": 3, "failing": 2, "loadMs": 491, "resolveMs": 1200 },
+  "keys": [
+    { "key": "FCrEnviroWaveSettings", "result": "OK", "size": 44 },
+    { "key": "UCrDedicatedServerSettingsComp::bStartNewGame", "result": "OK", "offset": 220, "size": 1, "boolMask": 255 },
+    { "key": "UCrMassPersistentIDSubsystem::MaxID", "result": "OK", "offset": 208, "size": 4, "boolMask": 0 },
+    { "key": "UCrMassPersistentIDSubsystem::GoneMember", "result": "NOMEMBER" },
+    { "key": "FGoneStruct", "result": "NOTYPE" }
+  ]
+}

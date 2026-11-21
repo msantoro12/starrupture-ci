@@ -1,0 +1,9 @@
+format	1
+build	127004	0x2E3595FF	0x0E2A8000	server steam_build 25642172
+function	GWorld	0x00000000	127004	0x2E3595FF	0x0E2A8000	4	-	0	-1	-1	0x0E601F38
+function	ModLoader/GObjects (GUObjectArray.ObjObjects)	0x1C4D2E3F	127004	0x2E3595FF	0x0E2A8000	6	-	0	-1	-1	0x0E5F8A10
+function	UCrMassPersistentIDSubsystem::GetOrAddIDForHandle	0x00000000	127004	0x2E3595FF	0x0E2A8000	1	-	0	-1	-1	0x05DF5410
+function	UCrMassPersistentIDSubsystem::SetIDHandlePair	0x00000000	127004	0x2E3595FF	0x0E2A8000	1	-	0	-1	-1	0x05DF77C0
+field	FCrEnviroWaveSettings	127004	0x0	0x2C	0x00	-
+field	UCrDedicatedServerSettingsComp::bStartNewGame	127004	0xDC	0x1	0xFF	-
+field	UCrMassPersistentIDSubsystem::MaxID	127004	0xD0	0x4	0x00	-

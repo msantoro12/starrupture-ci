@@ -8,6 +8,11 @@ name: Engine load test
 #   mode=vanilla  only download the server and boot it with no loader
 #                 (baseline: disk, download, boot time, log layout)
 #   mode=full     build, then download, install, scan, boot and judge
+#   mode=rows     as full, for a server boot with candidate rows: the loader is built with the
+#                 define that makes it trust the TEST key, the signed server version object map
+#                 file at rows_url is seeded byte for byte as the loader's cache before the boot,
+#                 and the verdict adds the "rows served" checks (ci/verdict.ps1 -ExpectRows).
+#                 Nothing is published, and the seeded file is not uploaded.
 #
 # The server is Steam app 3809400 (anonymous download, to be confirmed by the first run). Its files live only on
 # the runner: they are never cached, uploaded or committed. Artifacts hold our
@@ -17,10 +22,22 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'build | vanilla | full'
+        description: 'build | vanilla | full | rows'
         type: choice
-        options: [build, vanilla, full]
+        options: [build, vanilla, full, rows]
         default: full
+      rows_url:
+        description: 'rows mode only: https URL of the signed server version object map file (version-map-server.v1.txt) to seed, for example an asset of a prerelease'
+        type: string
+        default: ''
+      rows_expect:
+        description: 'rows mode only: least number of log lines that say the loader served a row for the build'
+        type: string
+        default: '1'
+      rows_keys:
+        description: 'rows mode only: optional, comma-separated keys the file holds rows for; a "reflected (no row ...)" line for one of them fails the run (empty: any such line fails)'
+        type: string
+        default: ''
       loader_repo:
         description: 'Loader repository (owner/name)'
         type: string
@@ -54,6 +71,19 @@ jobs:
     outputs:
       required_cl: ${{ steps.cl.outputs.required_cl }}
     steps:
+      - name: Check the rows inputs
+        if: ${{ inputs.mode == 'rows' }}
+        shell: pwsh
+        env:
+          ROWS_URL: ${{ inputs.rows_url }}
+          ROWS_EXPECT: ${{ inputs.rows_expect }}
+        run: |
+          # Fail before anything is built: a blank or zero rows_expect would switch the "rows served"
+          # checks off, and rows mode would pass having checked nothing.
+          if ($env:ROWS_URL -notmatch '^https://[^\s]+$') { throw 'rows mode needs rows_url: the https URL of the signed server file' }
+          $n = 0
+          if (-not [int]::TryParse($env:ROWS_EXPECT, [ref]$n) -or $n -lt 1) { throw "rows_expect must be a whole number of at least 1 (got '$($env:ROWS_EXPECT)')" }
+
       - name: Check out the loader (with its pinned Game SDK)
         uses: actions/checkout@v7.0.1
         with:
@@ -104,15 +134,40 @@ jobs:
       - name: Build loader Server Release
         shell: pwsh
         working-directory: loader
+        env:
+          # Rows mode only: the one define that makes the loader trust the TEST key k1 (the client
+          # test rig's candidate loader sets it the same way). cl.exe reads it from CL and prepends
+          # it to every compile, so the loader source is unchanged. /Bt+ makes each compile print
+          # its timing, which the next step uses to prove cl.exe read this variable. Empty in the
+          # other modes.
+          CL: ${{ inputs.mode == 'rows' && '/DVMAP_TRUST_TEST_KEY /Bt+' || '' }}
+          ROWS_MODE: ${{ inputs.mode == 'rows' }}
         run: |
           # Arguments as in the loader's release.yml "Build Server Release".
+          $log = @()
+          if ($env:ROWS_MODE -eq 'true') { $log = @("/flp:LogFile=$($env:GITHUB_WORKSPACE)\msbuild-loader.log;Verbosity=normal") }
           msbuild "StarRupture-ModLoader.sln" `
             /p:Configuration="Server Release" `
             /p:Platform=x64 `
             /p:PostBuildEventUseInBuild=false `
             /p:ModLoaderBuildTag="$env:BUILD_TAG" `
-            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal `
+            @log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check the TEST key define reached the compiler
+        if: ${{ inputs.mode == 'rows' }}
+        shell: pwsh
+        run: |
+          $f = Join-Path $env:GITHUB_WORKSPACE 'msbuild-loader.log'
+          if (-not (Test-Path -LiteralPath $f)) { throw 'the build wrote no MSBuild log, so the define cannot be checked' }
+          $log = Get-Content -LiteralPath $f
+          # The file that reads the define was compiled, and cl.exe printed the timing the same variable asked for.
+          $timed = @($log | Where-Object { $_ -match 'time\(.*c1xx\.dll\)=' })
+          $feedUnit = @($log | Where-Object { $_ -match 'version_feed\.cpp' })
+          if ($feedUnit.Count -eq 0) { throw 'the build log never names version_feed.cpp: the file that reads VMAP_TRUST_TEST_KEY was not compiled in this build' }
+          if ($timed.Count -eq 0) { throw 'the build log has no /Bt+ timing line: cl.exe did not read the CL environment variable, so VMAP_TRUST_TEST_KEY was not defined' }
+          "cl.exe read the CL environment variable: $($timed.Count) timed compile line(s), version_feed.cpp compiled."
 
       - name: Build sr-aobscan (Server Release)
         shell: pwsh
@@ -202,14 +257,14 @@ jobs:
         run: ./ci/download-server.ps1
 
       - name: Download our build outputs
-        if: ${{ inputs.mode == 'full' }}
+        if: ${{ inputs.mode == 'full' || inputs.mode == 'rows' }}
         uses: actions/download-artifact@v8.0.2
         with:
           name: engine-test-build
           path: stage
 
       - name: Install the loader and WAILA
-        if: ${{ inputs.mode == 'full' }}
+        if: ${{ inputs.mode == 'full' || inputs.mode == 'rows' }}
         shell: pwsh
         env:
           SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
@@ -228,8 +283,54 @@ jobs:
           Get-ChildItem $dir -Filter dwmapi.dll | ForEach-Object { '{0:N0}  {1}' -f $_.Length, $_.FullName }
           Get-ChildItem "$dir\ModLoader" -Recurse -File | ForEach-Object { '{0:N0}  {1}' -f $_.Length, $_.FullName.Substring($dir.Length) }
 
+      - name: Seed the signed server rows as the loader's cache
+        id: rows
+        if: ${{ inputs.mode == 'rows' }}
+        shell: pwsh
+        env:
+          SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
+          ROWS_URL: ${{ inputs.rows_url }}
+        run: |
+          # The loader has no setting that changes where it fetches from, so the test seeds its cache
+          # (the way the client test rig does): the file, byte for byte, at
+          # <server dir>\ModLoader\version-map-server.v1.cache. At start the loader verifies it and
+          # merges it onto its built-in table with no network. The file is kept only in the runner's
+          # temp folder: it is not uploaded, and nothing is written to any release.
+          if ($env:ROWS_URL -notmatch '^https://[^\s]+$') { throw 'rows_url must be an https URL of the signed server file' }
+          $exe = Get-ChildItem -Path $env:SERVER_ROOT -Recurse -Filter 'StarRuptureServerEOS-Win64-Shipping.exe' -File | Select-Object -First 1
+          if (-not $exe) { throw 'Shipping exe not found' }
+          $dir = $exe.DirectoryName
+          $tmp = Join-Path $env:RUNNER_TEMP 'version-map-server.staged.txt'
+          Invoke-WebRequest -Uri $env:ROWS_URL -OutFile $tmp -UseBasicParsing -MaximumRedirection 5 -TimeoutSec 120
+          $bytes = [IO.File]::ReadAllBytes($tmp)
+          if ($bytes.Length -eq 0 -or $bytes.Length -gt 1MB) { throw "the file is $($bytes.Length) bytes: the loader reads at most 1 MiB" }
+          $text = [Text.Encoding]::UTF8.GetString($bytes)
+          if (-not $text.EndsWith("`n")) { throw 'the file does not end with a line feed' }
+          $lines = $text.TrimEnd("`n") -split "`n"
+          if ($lines[0] -cne "format`t1") { throw 'line 1 is not "format<TAB>1"' }
+          if ($lines[1] -cnotmatch '^seq\t([1-9][0-9]{0,12})$') { throw 'line 2 is not "seq<TAB><n>"' }
+          $seq = $Matches[1]
+          if ($lines[-1] -cnotmatch '^sig\t(k[12])\t') { throw 'the last line is not a "sig<TAB>k1 or k2<TAB>..." line' }
+          $key = $Matches[1]
+          $builds = @($lines | Where-Object { $_ -cmatch '^build\t(\d+)\t' } | ForEach-Object { ($_ -split "`t")[1] })
+          $pv = $exe.VersionInfo.ProductVersion
+          if ($pv -cnotmatch 'CL-(\d+)$') { throw "the server exe's ProductVersion '$pv' does not end in CL-<n>" }
+          $cl = $Matches[1]
+          if ($builds -notcontains $cl) { throw "the file has no build line for the server exe's CL-$cl (it has: $($builds -join ', '))" }
+          New-Item -ItemType Directory -Force "$dir\ModLoader" | Out-Null
+          $cache = "$dir\ModLoader\version-map-server.v1.cache"
+          Copy-Item -LiteralPath $tmp -Destination $cache -Force
+          $sha = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-FileHash -LiteralPath $cache -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha) { throw 'the seeded cache is not byte for byte the file that was fetched' }
+          New-Item -ItemType Directory -Force out | Out-Null
+          [ordered]@{ url = $env:ROWS_URL; sha256 = $sha; bytes = $bytes.Length; seq = $seq; key = $key; cl = $cl; product_version = $pv; build_cls = $builds } | ConvertTo-Json | Set-Content out\rows.json -Encoding utf8
+          "rows_seq=$seq" >> $env:GITHUB_OUTPUT
+          "rows_key=$key" >> $env:GITHUB_OUTPUT
+          "rows_cl=$cl" >> $env:GITHUB_OUTPUT
+          "Seeded $cache : seq $seq, key $key, CL-$cl, $($bytes.Length) bytes, sha256 $sha"
+
       - name: Offline pattern scan of the server exe
-        if: ${{ inputs.mode == 'full' }}
+        if: ${{ inputs.mode == 'full' || inputs.mode == 'rows' }}
         shell: pwsh
         env:
           SERVER_ROOT: ${{ steps.dl.outputs.install_dir }}
@@ -281,12 +382,27 @@ jobs:
             -SettleSec ([int]$env:SETTLE_SEC) -TimeoutSec 900
 
       - name: Verdict
-        if: ${{ inputs.mode == 'full' && !cancelled() }}
+        if: ${{ (inputs.mode == 'full' || inputs.mode == 'rows') && !cancelled() }}
         shell: pwsh
         env:
           EXPECT_TAG: ${{ env.BUILD_TAG }}
           READY_REGEX: ${{ inputs.ready_regex }}
-        run: ./ci/verdict.ps1 -OutDir out -ExpectTag $env:EXPECT_TAG -ExpectPlugins Waila -ReadyRegex $env:READY_REGEX
+          MODE: ${{ inputs.mode }}
+          ROWS_EXPECT: ${{ inputs.rows_expect }}
+          ROWS_KEYS: ${{ inputs.rows_keys }}
+          ROWS_SEQ: ${{ steps.rows.outputs.rows_seq }}
+          ROWS_KEY: ${{ steps.rows.outputs.rows_key }}
+          ROWS_CL: ${{ steps.rows.outputs.rows_cl }}
+        run: |
+          # Rows mode adds the "rows served" checks; every other mode runs the verdict as before.
+          $rows = @{}
+          if ($env:MODE -eq 'rows') {
+            if ([int]$env:ROWS_EXPECT -lt 1) { throw 'rows_expect must be at least 1' }
+            $rows = @{ ExpectRows = [int]$env:ROWS_EXPECT; ExpectedCl = $env:ROWS_CL; ExpectSeq = $env:ROWS_SEQ; ExpectKey = $env:ROWS_KEY }
+            $keys = @($env:ROWS_KEYS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($keys.Count -gt 0) { $rows.ExpectKeys = $keys }
+          }
+          ./ci/verdict.ps1 -OutDir out -ExpectTag $env:EXPECT_TAG -ExpectPlugins Waila -ReadyRegex $env:READY_REGEX @rows
 
       - name: Runner after
         if: ${{ !cancelled() }}

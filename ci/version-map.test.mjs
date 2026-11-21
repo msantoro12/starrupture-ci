@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addAbsentField, addBuild, addField, addFunction, carriedFieldKeys, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
+  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addAbsentField, addBuild, addField, addFunction, carriedFieldKeys, buildIdOf, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
   parseFeed, parseKeys, parseRowList, preserveCheck, prune, readPublished, removeKey, replaceBuild, restorePublished, unionKeys,
 } from './version-map.mjs';
 import { signFeed } from './vmap-sign.mjs';
@@ -160,7 +160,7 @@ test('the model refuses rows it cannot write', () => {
     () => addField(plugin, { key: 'F', cl: 127004, offset: 0x10, size: 0 }),
     () => addField(plugin, { key: 'F', cl: 127004, offset: 0x10, size: 4, member: 'not a name' }),
     () => addField(plugin, { key: 'F', cl: 127004, offset: 0x10, size: 4, mask: 0x11 }),
-    () => emptyMap('server', 127004),
+    () => emptyMap('client', 127004),
   ];
   for (const f of bad) assert.throws(f, MapError, f.toString());
 });
@@ -270,7 +270,7 @@ test('export-feed refuses a feed over its size cap', () => {
   for (let i = 1; i <= fits; i++) map.functions.push(row(i));
   assert.ok(Buffer.byteLength(exportFeed(map)) <= FEED_MAX_BYTES);
   map.functions.push(row(fits + 1));
-  assert.throws(() => exportFeed(map), MapError);
+  assert.throws(() => exportFeed(map), /over the 1040000 the export allows/);
   // The cap (1,040,000 bytes) is under the loader's own cap of 1,048,576, and the refusal names the size.
   assert.equal(FEED_MAX_BYTES, 1040000);
   assert.ok(FEED_MAX_BYTES < 1048576, 'the cap is under the loader cap, with room for the seq and sig lines');
@@ -605,6 +605,15 @@ test('clOfBuild: the CL of a Steam build id comes from the build rows, in either
   assert.equal(clOfBuild(m, 26271156), 129402);
   assert.equal(clOfBuild(m, '26271157'), null, 'a build the map has not measured');
   for (const odd of ['', undefined, null, 'public', '12 34', '1e3']) assert.equal(clOfBuild(m, odd), null, String(odd));
+});
+
+test('clOfBuild: a dedicated server build row (`server steam_build <id>`) is found by its Steam build id too', () => {
+  const m = emptyMap('server', 127004);
+  addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'server steam_build 26271156' });
+  assert.equal(buildIdOf('server steam_build 26271156'), '26271156');
+  assert.equal(clOfBuild(m, '26271156'), 129402);
+  assert.equal(clOfBuild(m, '26271157'), null);
+  for (const odd of ['server steam_build', 'server  steam_build 1', 'a server steam_build 1', 'server 1']) assert.equal(buildIdOf(odd), odd === 'server 1' ? '1' : null, odd);
 });
 
 test('holdsCl: the build row and the number of present function rows of one CL; an absent row does not count', () => {
@@ -1069,5 +1078,208 @@ test('restore-published and carry-keys on the command line', () => {
     assert.match(c.out, /1 field keys of CL-130001/);
     assert.equal(run('carry-keys', s.path('keys.txt'), ...k1, '--cl', '130001', '--out', s.path('none.txt')).code, 0);
     assert.equal(readFileSync(s.path('none.txt'), 'utf8'), '');
+  } finally { s.done(); }
+});
+
+// ---- The dedicated server's file -----------------------------------------------------------------
+//
+// fixtures/version-map/server.h and server.feed.txt are the output of the commands the replay test runs.
+// CL-127004 is in the loader fixture too, with the client exe's stamp: the same CL, another exe.
+
+const SRV = { cl: 127004, stamp: 0x2e3595ff, size: 0x0e2a8000, source: 'server steam_build 25642172' };
+const SRV_FN = ['UCrMassPersistentIDSubsystem::GetOrAddIDForHandle', 'UCrMassPersistentIDSubsystem::SetIDHandlePair'];
+const serverRow = (key, extra = {}) => ({ key, kind: 1, fp: 0, cl: 127004, absent: false, pattern: null, resultOffset: 0, followRel32At: -1, followRipDispAt: -1, rva: 0x1000, owners: null, ...extra });
+const withServerBuild = () => {
+  const map = emptyMap('server', 127004);
+  addBuild(map, { ...SRV });
+  return map;
+};
+
+test('the server fixtures read and write back byte for byte, and read as a server map', () => {
+  const text = fixture('server.h');
+  const map = parse(text, 'server.h');
+  assert.equal(map.flavour, 'server');
+  assert.equal(emit(map), text);
+  assert.deepEqual(map.builds, [SRV]);
+  assert.deepEqual(map.functions.filter((r) => r.key === GO).map((r) => [r.kind, r.fp, r.pattern, r.followRipDispAt, r.rva]), [[6, 0x1c4d2e3f, null, -1, 0x0e5f8a10]]);
+  assert.deepEqual(map.functions.filter((r) => SRV_FN.includes(r.key)).map((r) => [r.kind, r.pattern, r.resultOffset, r.followRel32At, r.followRipDispAt, r.absent]), [[1, null, 0, -1, -1, false], [1, null, 0, -1, -1, false]]);
+  assert.equal(map.functions.find((r) => r.key === 'GWorld').kind, 4);
+  assert.deepEqual(map.fields.find((r) => r.key === 'FCrEnviroWaveSettings'), { key: 'FCrEnviroWaveSettings', cl: 127004, offset: 0, size: 0x2c, mask: 0, member: null });
+  // The client header has no server line, and still reads as a loader map.
+  assert.ok(!fixture('loader.h').includes('Dedicated server'));
+  assert.equal(parse(fixture('loader.h')).flavour, 'loader');
+});
+
+test('the server export: the fixture feed, byte for byte, and it parses back as the same map', () => {
+  const map = parse(fixture('server.h'));
+  const feed = exportFeed(map);
+  assert.equal(feed, fixture('server.feed.txt'));
+  assert.ok(feed.startsWith('format\t1\n') && feed.endsWith('\n') && !feed.includes('\r'));
+  assert.ok(feed.includes('build\t127004\t0x2E3595FF\t0x0E2A8000\tserver steam_build 25642172\n'));
+  const back = parseFeed(feed, 'feed', { server: true });
+  assert.equal(back.flavour, 'server');
+  assert.deepEqual({ builds: back.builds, functions: back.functions, fields: back.fields }, { builds: map.builds, functions: map.functions, fields: map.fields });
+  assert.equal(exportFeed(back), feed);
+  // The grammar is the client's: the same text reads with no flag too (what the published-base code does).
+  assert.equal(exportFeed(parseFeed(feed)), feed);
+});
+
+test('a server file takes the same CL as a client build with another exe; the client file refuses it', () => {
+  const client = parse(fixture('loader.h'));
+  assert.equal(client.builds.find((b) => b.cl === 127004).stamp, 0x68f0a1b2);
+  assert.throws(() => addBuild(client, { ...SRV, source: 'steam_build 25642172' }), /another image stamp or size/);
+  const server = emptyMap('server', 127004);
+  assert.equal(addBuild(server, { ...SRV }), true);
+  assert.equal(server.builds.find((b) => b.cl === 127004).stamp, 0x2e3595ff);
+  // The same exe again changes nothing; another exe of the CL is refused.
+  assert.equal(addBuild(server, { ...SRV, source: 'server steam_build 25999999' }), false);
+  assert.equal(server.builds[0].source, SRV.source);
+  assert.throws(() => addBuild(server, { ...SRV, stamp: 0x2e3595fe }), /another image stamp or size/);
+  assert.equal(server.builds.length, 1);
+});
+
+test('the server file takes what its format allows and nothing else', () => {
+  const bad = [
+    ['a pattern', (m) => addFunction(m, serverRow('K', { pattern: '48 8B ??' }))],
+    ['a result offset', (m) => addFunction(m, serverRow('K', { resultOffset: 4 }))],
+    ['a rel32 follow', (m) => addFunction(m, serverRow('K', { followRel32At: 0 }))],
+    ['a rip follow', (m) => addFunction(m, serverRow('K', { followRipDispAt: 0 }))],
+    ['no address', (m) => addFunction(m, serverRow('K', { rva: 0 }))],
+    ['a scoped key that is not GObjects', (m) => addFunction(m, serverRow(PE, { kind: 2, fp: 0x2d1ac6ae }))],
+    ['another ModLoader/ key of kind 6', (m) => addFunction(m, serverRow('ModLoader/Something', { kind: 6, fp: 5 }))],
+    ['GObjects as a function start', (m) => addFunction(m, serverRow(GO, { kind: 1 }))],
+    ['an absent row', (m) => addAbsent(m, { key: 'K', kind: 1, cl: 127004, owners: ['WAILA'] })],
+    ['an absent field', (m) => addAbsentField(m, { key: 'A::b', cl: 127004 })],
+    ['a client label', () => addBuild(emptyMap('server', 128786), { cl: 128786, stamp: 1, size: 2, source: 'steam_build 26271156' })],
+    ['no image stamp', () => addBuild(emptyMap('server', 128786), { cl: 128786, stamp: 0, size: 2, source: 'server steam_build 1' })],
+  ];
+  // A refused row leaves the map as it was: the command line writes nothing on an error, so each case gets a fresh map.
+  for (const [what, f] of bad) assert.throws(() => f(withServerBuild()), MapError, what);
+  const map = withServerBuild();
+  assert.equal(map.functions.length, 0);
+  assert.equal(addFunction(map, serverRow('GWorld', { kind: 4, rva: 0x10 })), true);
+  assert.equal(addFunction(map, serverRow(GO, { kind: 6, fp: 0x1c4d2e3f })), true);
+  // The rules do not reach the client map: it still takes a pattern row and an absent row.
+  const client = parse(fixture('loader.h'));
+  assert.equal(addFunction(client, rowOf('UCrNew::Fn', 128786)), true);
+  assert.equal(addAbsent(client, { key: 'UCrNew::Gone', kind: 1, cl: 128786, owners: ['WAILA'] }), true);
+});
+
+test('export-feed --server: the flag has to match the header, from the command line', () => {
+  const s = scratch({ 'server.h': fixture('server.h'), 'loader.h': fixture('loader.h') });
+  try {
+    const ok = run('export-feed', s.path('server.h'), '--out', s.path('feed.txt'), '--server');
+    assert.equal(ok.code, 0, ok.err);
+    assert.equal(readFileSync(s.path('feed.txt'), 'utf8'), fixture('server.feed.txt'));
+    const noFlag = run('export-feed', s.path('server.h'), '--out', s.path('x.txt'));
+    assert.equal(noFlag.code, 2);
+    assert.match(noFlag.err, /is a server header: give --server/);
+    const wrong = run('export-feed', s.path('loader.h'), '--out', s.path('y.txt'), '--server');
+    assert.equal(wrong.code, 2);
+    assert.match(wrong.err, /--server needs a server header/);
+    // The client export is as it was.
+    assert.equal(run('export-feed', s.path('loader.h'), '--out', s.path('z.txt')).code, 0);
+    assert.equal(readFileSync(s.path('z.txt'), 'utf8'), exportFeed(parse(fixture('loader.h'))));
+  } finally { s.done(); }
+});
+
+test('the server fixtures are the output of these commands', () => {
+  const s = scratch({});
+  try {
+    const h = s.path('server.h');
+    const fn = (key, rva, kind, ...more) => ['add-function', h, '--key', key, '--cl', '127004', '--rva', rva, '--rva-only', '--kind', kind, ...more];
+    const steps = [
+      ['init', h, '--flavour', 'server', '--built-cl', '127004'],
+      ['add-build', h, '--cl', '127004', '--stamp', '0x2E3595FF', '--size', '0x0E2A8000', '--source', 'server steam_build 25642172'],
+      fn(SRV_FN[0], '0x05DF5410', '1'),
+      fn(SRV_FN[1], '0x05DF77C0', '1'),
+      fn('GWorld', '0x0E601F38', '4'),
+      fn(GO, '0x0E5F8A10', '6', '--fp', '0x1C4D2E3F'),
+      ['add-field', h, '--key', 'UCrMassPersistentIDSubsystem::MaxID', '--cl', '127004', '--offset', '0xD0', '--size', '0x4'],
+      ['add-field', h, '--key', 'UCrDedicatedServerSettingsComp::bStartNewGame', '--cl', '127004', '--offset', '0xDC', '--size', '0x1', '--mask', '0xFF'],
+      ['add-field', h, '--key', 'FCrEnviroWaveSettings', '--cl', '127004', '--offset', '0x0', '--size', '0x2C'],
+    ];
+    for (const a of steps) assert.equal(run(...a).code, 0, a.join(' '));
+    assert.equal(readFileSync(h, 'utf8'), fixture('server.h'));
+    // A pattern row or an absent row is refused on the command line, and the header stays as it was.
+    assert.equal(run('add-function', h, '--key', 'K', '--cl', '127004', '--rva', '0x10', '--pattern', '48 8B ??', '--kind', '1').code, 2);
+    assert.equal(run('add-absent', h, '--key', 'K', '--cl', '127004', '--kind', '1', '--owners', 'WAILA').code, 2);
+    assert.equal(readFileSync(h, 'utf8'), fixture('server.h'));
+  } finally { s.done(); }
+});
+
+test('the server header and export are the same bytes for any order of the rows', () => {
+  const map = parse(fixture('server.h'));
+  const rot = (a, n) => [...a.slice(n), ...a.slice(0, n)];
+  for (let n = 0; n < 4; n++) {
+    const m = { ...map, functions: rot(map.functions, n).reverse(), fields: rot(map.fields, n % 3).reverse() };
+    assert.equal(exportFeed(m), fixture('server.feed.txt'), `feed, rotation ${n}`);
+    assert.equal(emit(m), fixture('server.h'), `header, rotation ${n}`);
+  }
+  const grown = withServerBuild();
+  for (const f of [...map.fields].reverse()) addField(grown, f);
+  for (const r of [...map.functions].reverse()) addFunction(grown, r);
+  assert.equal(exportFeed(grown), fixture('server.feed.txt'));
+  assert.equal(emit(grown), fixture('server.h'));
+});
+
+test('the server export refuses a file over FEED_MAX_BYTES', () => {
+  const map = withServerBuild();
+  const per = `field\tAAAAAAAAAAAAAAAAAAAA::Member0000000\t127004\t0x8\t0x4\t0x0\n`.length;
+  for (let i = 0; i < Math.ceil(FEED_MAX_BYTES / per) + 10; i++) map.fields.push({ key: `AAAAAAAAAAAAAAAAAAAA::Member${String(i).padStart(7, '0')}`, cl: 127004, offset: 8, size: 4, mask: 0, member: null });
+  assert.throws(() => exportFeed(map), /over the 1040000 the export allows/);
+});
+
+test('the server file is signed and read like the client file: a TEST key is accepted only when asked', () => {
+  const k = keyPair();
+  const signed = signFeed(exportFeed(parse(fixture('server.h'))), k.pem, { keyId: 'k1' }).text;
+  const test = { k1: { ...k.keys.k1, test: true } };
+  assert.equal(readPublished(signed, { keys: k.keys, server: true }).flavour, 'server');
+  assert.match(thrown(() => readPublished(signed, { keys: test, server: true })).message, /TEST key/);
+  const read = readPublished(signed, { keys: test, allowTestKey: true, server: true });
+  assert.equal(exportFeed(read), fixture('server.feed.txt'));
+});
+
+test('a published server file kept as the base: the import adds, and a different row is a conflict', () => {
+  const base = parseFeed(fixture('server.feed.txt'), 'base', { server: true });
+  const next = emptyMap('server', 128786);
+  addBuild(next, { cl: 128786, stamp: 0x2f000001, size: 0x0e300000, source: 'server steam_build 26000000' });
+  const out = importPublished(next, base);
+  assert.equal(out.map.flavour, 'server');
+  assert.equal(out.added.builds, 1);
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(out.map), 'next', { server: true }), base).violations, []);
+  const clash = parse(fixture('server.h'));
+  clash.fields.find((r) => r.key === 'UCrMassPersistentIDSubsystem::MaxID').offset = 0xd4;
+  const held = importPublished(clash, base);
+  assert.equal(held.map, null);
+  assert.match(held.conflicts.join('\n'), /MaxID/);
+});
+
+test('the server header compiles as C++20', { skip: !compiler && 'no g++ or clang++ on the PATH' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'version-map-cxx-server-'));
+  try {
+    writeFileSync(join(dir, 'plugin_interface.h'), STUB);
+    const src = join(dir, 'use-server.cpp');
+    writeFileSync(src, `#include "${join(FIX, 'server.h').replace(/\\/g, '/')}"\nstatic_assert(VersionMap::kFormatVersion == 2);\nstatic_assert(VersionMap::kFunctionRows.size() == 4);\nint main() { return 0; }\n`);
+    const r = spawnSync(compiler, ['-std=c++20', '-fsyntax-only', '-Wall', '-Wextra', '-Werror', '-I', dir, src], { encoding: 'utf8', windowsHide: true });
+    assert.equal(r.status, 0, r.stderr);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a server feed does not merge into a client header, nor a client feed into a server header', () => {
+  const serverFeed = parseFeed(fixture('server.feed.txt'), 'server feed', { server: true });
+  const clientFeed = parseFeed(fixture('loader.feed.txt'), 'client feed');
+  assert.throws(() => importPublished(parse(fixture('loader.h')), serverFeed), /the published feed is the server's file.*this header is a loader map/);
+  assert.throws(() => importPublished(parse(fixture('server.h')), clientFeed), /not a server exe; this header is a server map/);
+  // The same flavour merges as before.
+  assert.ok(importPublished(parse(fixture('server.h')), serverFeed).map);
+  assert.ok(importPublished(parse(fixture('loader.h')), clientFeed).map);
+  // On the command line: a signed client file into the server header exits 2 and leaves the header alone.
+  const s = scratch({ 'server.h': fixture('server.h'), 'k1.txt': k1Fixture() });
+  try {
+    const r = run('import-published', s.path('server.h'), '--published', s.path('k1.txt'), '--allow-test-key');
+    assert.equal(r.code, 2, r.err);
+    assert.match(r.err, /not a server exe; this header is a server map/);
+    assert.equal(readFileSync(s.path('server.h'), 'utf8'), fixture('server.h'));
   } finally { s.done(); }
 });

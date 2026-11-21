@@ -794,9 +794,9 @@ function idScratch() {
   const dir = mkdtempSync(join(tmpdir(), 'identity-'));
   return { dir, w: (name, text) => { writeFileSync(join(dir, name), text); return join(dir, name); } };
 }
-function runIdentity(s, flags) {
+function runIdentity(s, flags, repo = 'ModLoader') {
   const report = join(s.dir, 'identity.json');
-  const r = spawnSync(process.execPath, [cli, 'identity', '--repo', 'ModLoader', ...flags, '--report', report], { encoding: 'utf8', windowsHide: true });
+  const r = spawnSync(process.execPath, [cli, 'identity', '--repo', repo, ...flags, '--report', report], { encoding: 'utf8', windowsHide: true });
   return { status: r.status, stderr: r.stderr, stdout: r.stdout, report: r.status === 2 ? null : JSON.parse(readFileSync(report, 'utf8')) };
 }
 // The candidate feed for the fixtures: the published rows with one edit.
@@ -864,6 +864,46 @@ test('cli identity: a second release of a CL names the live seq and still has to
   assert.match(stale.report.reasons.join(' | '), /supersede names seq 1761800000, but the live published version object map is seq 1761900000/);
 });
 
+// The dedicated server's file: the same check against the server asset (server steam_build labels, repo ModLoaderServer).
+// The signature is verified by published-base.mjs before this reads the file, so the sig line here is only a placeholder.
+const SERVER_LF = LF(readFileSync(join(here, 'fixtures', 'version-map', 'server.feed.txt'), 'utf8'));
+const SERVER_SIGNED = SERVER_LF.replace('\n', '\nseq\t1761900000\n') + 'sig\tk1\tAAAA\n';
+test('cli identity: the server file is judged like the client file: its build id is read from a server steam_build label, and its history key is ModLoaderServer', () => {
+  const s = idScratch();
+  const published = s.w('version-map-server.v1.txt', SERVER_SIGNED);
+  const candidate = (edit) => {
+    const m = parseSignedFeedRows(SERVER_SIGNED, 'x', { server: true });
+    edit(m);
+    return exportFeed(m);
+  };
+  const add = (m) => { m.builds.push({ cl: 140000, stamp: 0x66666666, size: 0x06000000, source: 'server steam_build 27000001' }); m.functions.push({ ...frow('Test::ServerOnly', 140000), pattern: null, resultOffset: 0, followRel32At: -1, followRipDispAt: -1, rva: 0x5500 }); };
+  const fresh = s.w('fresh.txt', candidate(add));
+  const ok = runIdentity(s, ['--cl', '140000', '--buildid', '27000001', '--published', published, '--feed', fresh], 'ModLoaderServer');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.report.ok, true);
+  // The published server file already holds CL-127004, and the Steam build id of that row covers a CL label that is new.
+  const held = runIdentity(s, ['--cl', '127004', '--published', published, '--feed', fresh], 'ModLoaderServer');
+  assert.equal(held.status, 3);
+  assert.match(held.report.reasons.join(' | '), /the published version object map already holds CL-127004/);
+  const byBuild = runIdentity(s, ['--cl', '140000', '--buildid', '25642172', '--published', published, '--feed', fresh], 'ModLoaderServer');
+  assert.equal(byBuild.status, 3);
+  assert.match(byBuild.report.reasons.join(' | '), /already holds CL-140000 \(build 25642172\)/);
+  // A candidate that is the published rows changes nothing.
+  const identical = s.w('identical.txt', candidate(() => {}));
+  const none = runIdentity(s, ['--cl', '140000', '--published', published, '--feed', identical], 'ModLoaderServer');
+  assert.equal(none.status, 3);
+  assert.match(none.report.reasons.join(' | '), /changes nothing served for CL-140000/);
+  // A second release of CL-127004: the supersede is judged against the ModLoaderServer entry of the history, not the client's.
+  const changed = s.w('changed.txt', candidate((m) => { m.fields[0].offset = 0x58; }));
+  const base2 = ['--cl', '127004', '--published', published, '--feed', changed, '--supersede', '1761900000'];
+  const mine = s.w('history.json', JSON.stringify({ releases: [{ repo: 'ModLoaderServer', cl: '127004', at: AT, seq: 1761900000 }], attempts: {} }));
+  const accepted = runIdentity(s, [...base2, '--history', mine], 'ModLoaderServer');
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(accepted.report.supersedes, 1761900000);
+  const theirs = s.w('client-history.json', JSON.stringify({ releases: [{ repo: 'ModLoader', cl: '127004', at: AT, seq: 1761900000 }], attempts: {} }));
+  const refused = runIdentity(s, [...base2, '--history', theirs], 'ModLoaderServer');
+  assert.equal(refused.status, 3);
+});
 
 test('release limits: at most 2 Claude attempts per CL, B only', () => {
   const missB = ok(aob([aobRow('SpawnActor', 'MISSING')]));

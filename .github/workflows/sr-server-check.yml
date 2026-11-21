@@ -1,0 +1,750 @@
+name: SR server check
+
+# Offline check of a new StarRupture dedicated server build (Steam app 3809400). It downloads the
+# server anonymously (no Steam login, no secret, public branch only: ci/download-server.ps1), finds
+# the shipping exe and the PDB next to it, and measures them without running anything:
+#   - the exe's identity: ProductVersion CL, PE TimeDateStamp, SizeOfImage and SHA-256
+#   - sr-aobscan --layout reads every key of ci/server-keys.txt (class sizes and member offsets the
+#     server plugins read) from that PDB
+# The result is the artifact server-check-<build id>: server-result.json, server-layout.json and
+# layout-keys.txt, the inputs the server's part of the version object map is made from.
+#
+# Two jobs follow the check (ci/MAP-MODE.md, "Dedicated server"):
+#   - server-map writes the server's version object map header from that artifact (the build line and the
+#     field and size rows), on top of the published server file, cuts the unsigned server file from it, checks
+#     its version identity and signs it once with the TEST key (k1, secret VMAP_SIGN_KEY_TEST) as a dry run
+#   - server-publish signs that file with the release key (k2, secret VMAP_SIGN_KEY, environment vmap-sign) and
+#     uploads it with the shared routine (ci/vmap-publish.sh)
+# The upload goes to the vmap-feed-rehearsal prerelease ALWAYS, unless the `live` input is set. `live` is a
+# dispatch input of this workflow only (a workflow_call caller such as sr-watch cannot set it), needs main, and
+# is the owner's switch: nothing in this repository turns it on. A run without it reads the live vmap-feed
+# release before and after and fails if it changed. Nothing is commented on a pull request; the job summary
+# shows the numbers.
+#
+# The scanner is the one the client check builds (Client Release): --layout is handled before any
+# client-only code and reads the PDB alone. A Server Release scanner (functions and globals) does not
+# compile on the loader's current code, so it is not built here.
+#
+# Trust: the scanner is built from the same two owners the client check allows (msantoro12 and
+# AlienXAXS) and runs on a runner that holds no secret. Only the two jobs after it hold one: server-map the TEST key
+# (VMAP_SIGN_KEY_TEST, which no loader trusts) and server-publish the release key (VMAP_SIGN_KEY). Both run
+# this repository's scripts only, never the scanner or any file from the loader repository.
+# Game files only live on the runner: never cached, never uploaded.
+# No pull_request trigger.
+
+on:
+  workflow_call:
+    inputs:
+      buildid:
+        description: 'Build id the watcher saw (compared with what Steam installs; blank: no comparison)'
+        type: string
+        default: ''
+      rehearsal:
+        description: 'Rehearsal (only sr-watch passes true, from its rehearsal input): the check on a build that is already handled; shown in the job summary'
+        type: boolean
+        default: false
+      loader_repo:
+        type: string
+        default: 'AlienXAXS/StarRupture-ModLoader'
+      loader_ref:
+        type: string
+        default: 'main'
+      scanner_repo:
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
+      scanner_ref:
+        type: string
+        default: 'ci/aobscan'
+    secrets:
+      VMAP_SIGN_KEY_TEST:
+        description: 'TEST signing key (k1) for the server map dry run; pass it by name. Used by server-map only'
+        required: false
+      VMAP_SIGN_KEY:
+        description: 'Release signing key (k2, environment vmap-sign); pass it by name. Used by server-publish only'
+        required: false
+  workflow_dispatch:
+    inputs:
+      buildid:
+        description: 'Build id the watcher saw (compared with what Steam installs; blank: no comparison)'
+        type: string
+        default: ''
+      rehearsal:
+        description: 'Rehearsal: the check on a build that is already handled; shown in the job summary'
+        type: boolean
+        default: false
+      loader_repo:
+        description: 'Loader repository the scanner is built in (the released line: AlienXAXS main)'
+        type: string
+        default: 'AlienXAXS/StarRupture-ModLoader'
+      loader_ref:
+        description: 'Loader branch the scanner is built in'
+        type: string
+        default: 'main'
+      scanner_repo:
+        description: 'Repository holding the scanner branch (only tools/AobScan is taken from it)'
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
+      scanner_ref:
+        description: 'Branch of the scanner repository holding tools/AobScan'
+        type: string
+        default: 'ci/aobscan'
+      live:
+        description: 'Publish to the LIVE vmap-feed release (the owner sets it; main only). Off: the signed file and history go to the vmap-feed-rehearsal prerelease and the live release is checked unchanged'
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  # ---- sr-aobscan, built the way the client check builds it (no secrets) ----
+  server-scanner:
+    name: server-scanner
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      scanner_sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - name: Check the loader repository
+        shell: pwsh
+        env:
+          LOADER_REPO: ${{ inputs.loader_repo }}
+          SCANNER_REPO: ${{ inputs.scanner_repo }}
+        run: |
+          if ($env:LOADER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
+            throw "loader_repo '$($env:LOADER_REPO)' is not allowed"
+          }
+          if ($env:SCANNER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
+            throw "scanner_repo '$($env:SCANNER_REPO)' is not allowed"
+          }
+
+      - name: Check out the loader (with its pinned Game SDK)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.loader_ref }}
+          path: loader
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check out tools/AobScan
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.scanner_repo }}
+          ref: ${{ inputs.scanner_ref }}
+          path: scanner-src
+          sparse-checkout: tools/AobScan
+          persist-credentials: false
+
+      - name: Lay the scanner over the loader
+        shell: pwsh
+        run: Copy-Item -Recurse -Force scanner-src\tools\AobScan loader\tools\
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+
+      - name: Build sr-aobscan (Client Release)
+        shell: pwsh
+        working-directory: loader
+        run: |
+          msbuild "tools\AobScan\AobScan.vcxproj" `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Hash the scanner
+        id: hash
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash loader\build\tools\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sr-aobscan-client.exe SHA-256 $h"
+          "sha256=$h" >> $env:GITHUB_OUTPUT
+
+      - name: Upload the scanner
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-check-scanner-${{ inputs.buildid }}
+          path: loader/build/tools/sr-aobscan-client.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---- Download the server, read its identity, read its layout ------------
+  server-layout:
+    name: server-layout
+    needs: server-scanner
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      build_id: ${{ steps.dl.outputs.build_id }}
+    # One server download and layout scan at a time. It is not the client rig's group: no Steam client
+    # session is used here.
+    concurrency:
+      group: sr-server-check
+      cancel-in-progress: false
+    env:
+      EXPECTED_BUILDID: ${{ inputs.buildid }}
+      SCANNER_SHA256: ${{ needs.server-scanner.outputs.scanner_sha256 }}
+    steps:
+      - name: Check out the scripts and the key list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the scanner
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server-check-scanner-${{ inputs.buildid }}
+          path: scanner
+
+      - name: Check the scanner is the one server-scanner made
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash scanner\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($h -ne $env:SCANNER_SHA256) { throw "sr-aobscan-client.exe hash $h is not the one server-scanner made ($($env:SCANNER_SHA256))" }
+          "sr-aobscan-client.exe SHA-256 $h"
+
+      - name: Download the dedicated server
+        id: dl
+        shell: pwsh
+        run: ./ci/download-server.ps1
+
+      - name: Read the server exe
+        id: exe
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          BUILD_ID: ${{ steps.dl.outputs.build_id }}
+        run: |
+          $found = @(Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter 'StarRuptureServerEOS-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' })
+          if ($found.Count -ne 1) { throw "expected one StarRuptureServerEOS-Win64-Shipping.exe under $($env:INSTALL_DIR), found $($found.Count)" }
+          $exe = $found[0]
+          $pdb = [IO.Path]::ChangeExtension($exe.FullName, '.pdb')
+          if (-not (Test-Path -LiteralPath $pdb)) { throw "no PDB next to the exe ($([IO.Path]::GetFileName($pdb)))" }
+          "exe: $($exe.FullName.Substring($env:INSTALL_DIR.Length))"
+          'PDB: {0} ({1:N2} GB)' -f [IO.Path]::GetFileName($pdb), ((Get-Item -LiteralPath $pdb).Length / 1GB)
+
+          $pv = [string]$exe.VersionInfo.ProductVersion
+          if ($pv -notmatch 'CL-(\d+)$') { throw "ProductVersion '$pv' does not end in a CL number" }
+          $cl = $Matches[1]
+
+          # The PE header: TimeDateStamp at +8 of the PE signature, SizeOfImage at +56 of the optional header (+24).
+          $fs = [IO.File]::OpenRead($exe.FullName)
+          try {
+            $br = [IO.BinaryReader]::new($fs)
+            $fs.Position = 0x3C
+            $pe = $br.ReadInt32()
+            $fs.Position = $pe
+            if ($br.ReadUInt32() -ne 0x00004550) { throw 'the exe has no PE signature' }
+            $fs.Position = $pe + 8
+            $stamp = $br.ReadUInt32()
+            $fs.Position = $pe + 24 + 56
+            $size = $br.ReadUInt32()
+          } finally { $fs.Dispose() }
+          $sha = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $hexStamp = '0x{0:X8}' -f $stamp
+          $hexSize = '0x{0:X8}' -f $size
+          "ProductVersion=$pv CL=$cl PE stamp $hexStamp image size $hexSize"
+          "SHA-256=$sha"
+          "Installed build id $($env:BUILD_ID)"
+          if ($env:EXPECTED_BUILDID -and $env:EXPECTED_BUILDID -ne $env:BUILD_ID) {
+            Write-Host "::warning::The watcher saw build $($env:EXPECTED_BUILDID); Steam installed $($env:BUILD_ID). The result is for the installed build."
+          }
+
+          "cl=$cl" >> $env:GITHUB_OUTPUT
+          "product_version=$pv" >> $env:GITHUB_OUTPUT
+          "image_stamp=$hexStamp" >> $env:GITHUB_OUTPUT
+          "image_size=$hexSize" >> $env:GITHUB_OUTPUT
+          "exe_sha256=$sha" >> $env:GITHUB_OUTPUT
+          "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          "pdb_name=$([IO.Path]::GetFileName($pdb))" >> $env:GITHUB_OUTPUT
+
+      - name: Read the layout keys from the PDB
+        id: layout
+        shell: pwsh
+        env:
+          EXE_PATH: ${{ steps.exe.outputs.exe_path }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          # The key file the scan reads is the one uploaded: blank lines and # lines are the scanner's to skip.
+          Copy-Item ci\server-keys.txt out\layout-keys.txt
+          $keyCount = @(Get-Content out\layout-keys.txt | Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') }).Count
+          "key_count=$keyCount" >> $env:GITHUB_OUTPUT
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $ErrorActionPreference = 'Continue'
+          & scanner\sr-aobscan-client.exe $env:EXE_PATH --layout out\layout-keys.txt --json > out\server-layout.json
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          "sr-aobscan --layout: $keyCount keys, exit $code, $([int]$sw.Elapsed.TotalSeconds) s"
+          "exit_code=$code" >> $env:GITHUB_OUTPUT
+          # The scanner's exit code is judged by the next step; the runner would otherwise end this one with it.
+          exit 0
+
+      # Exit 0: every key resolved. Exit 1: a key did not (a class renamed or gone from this build): the
+      # check passes with a warning, and the rows for that key are not made. Anything else fails the check.
+      - name: Write the result and judge it
+        id: result
+        if: ${{ !cancelled() && steps.exe.outcome == 'success' }}
+        shell: pwsh
+        env:
+          LAYOUT_EXIT: ${{ steps.layout.outputs.exit_code }}
+          KEY_COUNT: ${{ steps.layout.outputs.key_count }}
+          BUILD_ID: ${{ steps.dl.outputs.build_id }}
+          PRODUCT_VERSION: ${{ steps.exe.outputs.product_version }}
+          CL_NUMBER: ${{ steps.exe.outputs.cl }}
+          IMAGE_STAMP: ${{ steps.exe.outputs.image_stamp }}
+          IMAGE_SIZE: ${{ steps.exe.outputs.image_size }}
+          EXE_SHA256: ${{ steps.exe.outputs.exe_sha256 }}
+          PDB_NAME: ${{ steps.exe.outputs.pdb_name }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+        run: |
+          $problems = [Collections.Generic.List[string]]::new()
+          $rows = 0
+          $summary = $null
+          if ($env:LAYOUT_EXIT -notmatch '^-?\d+$') { $problems.Add('the layout scan did not run') }
+          elseif ([int]$env:LAYOUT_EXIT -notin 0, 1) { $problems.Add("sr-aobscan --layout failed (exit $($env:LAYOUT_EXIT))") }
+          if (Test-Path out\server-layout.json) {
+            try {
+              $layout = Get-Content out\server-layout.json -Raw | ConvertFrom-Json
+              $rows = @($layout.keys).Count
+              $summary = $layout.summary
+            } catch { $problems.Add("server-layout.json is not JSON: $($_.Exception.Message)") }
+          } else { $problems.Add('no server-layout.json') }
+          if ($summary -and $rows -ne [int]$env:KEY_COUNT) { $problems.Add("the layout has $rows rows for $($env:KEY_COUNT) keys") }
+
+          $result = [ordered]@{
+            schema        = 1
+            buildId       = $env:BUILD_ID
+            requestedBuildId = $env:EXPECTED_BUILDID
+            productVersion = $env:PRODUCT_VERSION
+            cl            = [int]$env:CL_NUMBER
+            imageStamp    = $env:IMAGE_STAMP
+            imageSize     = $env:IMAGE_SIZE
+            exeSha256     = $env:EXE_SHA256
+            pdbName       = $env:PDB_NAME
+            scannerSha256 = $env:SCANNER_SHA256
+            keyCount      = [int]$env:KEY_COUNT
+            layoutRows    = $rows
+            layoutExit    = $(if ($env:LAYOUT_EXIT -match '^-?\d+$') { [int]$env:LAYOUT_EXIT } else { $null })
+          }
+          $result | ConvertTo-Json | Set-Content out\server-result.json -Encoding utf8
+
+          $md = @(
+            '### Server check',
+            '',
+            "- Build $($env:BUILD_ID), CL-$($env:CL_NUMBER)$(if ($env:REHEARSAL -eq 'true') { ' (rehearsal: a build that is already handled)' })",
+            "- PE stamp $($env:IMAGE_STAMP), image size $($env:IMAGE_SIZE), SHA-256 ``$($env:EXE_SHA256)``",
+            "- PDB $($env:PDB_NAME)",
+            "- Layout: $($env:KEY_COUNT) keys, $rows rows$(if ($summary) { ", $($summary.ok) resolved, $($summary.failing) failing" }), exit $($env:LAYOUT_EXIT)"
+          )
+          $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          $md | Write-Host
+
+          foreach ($f in 'server-result.json', 'server-layout.json', 'layout-keys.txt') {
+            if (-not (Test-Path "out\$f")) { $problems.Add("out\$f was not written") }
+          }
+          if ($summary -and $summary.failing -gt 0) {
+            Write-Host "::warning title=Layout keys::$($summary.failing) of $($env:KEY_COUNT) keys did not resolve on this build."
+          }
+          foreach ($p in $problems) { Write-Host "::error::$p" }
+          if ($problems.Count) { exit 1 }
+
+      # Only the three files below leave the runner: no game file, no PDB, no log.
+      - name: Upload the result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-check-${{ steps.dl.outputs.build_id || inputs.buildid }}
+          path: |
+            out/server-result.json
+            out/server-layout.json
+            out/layout-keys.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---- The server's part of the version object map: the build line and the field and size rows ----
+  # Made from the server-check artifact alone (no scan of addresses yet). The published server file is the base:
+  # ci/published-base.mjs verifies its signature and adds every line it has. A key the layout could not place, a
+  # row that differs from a published one, a published line the new file lost, or a version identity that changes
+  # nothing served for the CL (not checked in a rehearsal) stops the job. Function and global keys
+  # (ci/server-function-keys.txt) are only reported: no scan makes their rows yet. The chain's one seq is made here,
+  # above the published server file's own, and the file is signed with the TEST key once to prove the path.
+  server-map:
+    name: server-map
+    needs: server-layout
+    if: ${{ !cancelled() && needs.server-layout.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # One run at a time reads the published files (the client chain's group).
+    concurrency:
+      group: sr-server-map
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REHEARSAL: ${{ inputs.rehearsal == true }}
+    steps:
+      - name: Check out the scripts and the key lists
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the server check result
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server-check-${{ needs.server-layout.outputs.build_id }}
+          path: chk
+
+      - name: Read the server exe from the result
+        id: res
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync("chk/server-result.json", "utf8"));
+            const want = (name, value, re) => { if (!re.test(String(value))) { console.error("::error::server-result.json has no usable " + name + ": " + JSON.stringify(value)); process.exit(2); } };
+            want("cl", r.cl, /^[1-9][0-9]{0,8}$/);
+            want("buildId", r.buildId, /^[0-9]+$/);
+            want("imageStamp", r.imageStamp, /^0x[0-9A-F]{8}$/);
+            want("imageSize", r.imageSize, /^0x[0-9A-F]{8}$/);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, ["cl=" + r.cl, "build_id=" + r.buildId, "stamp=" + r.imageStamp, "size=" + r.imageSize].join("\n") + "\n");
+          '
+
+      # Read only. No server file on the vmap-feed release yet means a first publish: there is no base to take.
+      - name: Read what the live release holds (read only)
+        id: live
+        run: |
+          set -euo pipefail
+          first=true
+          mkdir -p live
+          if gh api "repos/$GH_REPO/releases/tags/vmap-feed" > live-release.json 2> live-release.err; then
+            has="$(node -p "String((JSON.parse(require('fs').readFileSync('live-release.json','utf8')).assets ?? []).some((a) => a.name === 'version-map-server.v1.txt'))")"
+            has_history="$(node -p "String((JSON.parse(require('fs').readFileSync('live-release.json','utf8')).assets ?? []).some((a) => a.name === 'vmap-history.json'))")"
+            if [ "$has" = true ]; then first=false; fi
+            if [ "$has_history" = true ]; then
+              gh release download vmap-feed --pattern vmap-history.json --dir live \
+                || { echo "::error::cannot download vmap-history.json from the vmap-feed release; nothing was made from this run"; exit 2; }
+            fi
+          elif grep -q 'HTTP 404' live-release.err; then
+            echo "no vmap-feed release yet"
+          else
+            cat live-release.err; echo "::error::cannot read the vmap-feed release"; exit 2
+          fi
+          # The history is never started again from nothing: only a first server file may begin without one.
+          if [ ! -f live/vmap-history.json ]; then
+            [ "$first" = true ] || { echo "::error::the vmap-feed release holds a server file and no vmap-history.json; nothing was made from this run"; exit 2; }
+            echo '{"releases":{},"attempts":{}}' > live/vmap-history.json
+          fi
+          echo "first_publish=$first" >> "$GITHUB_OUTPUT"
+          if [ "$first" = true ]; then echo "No server file is published yet: this is a first publish."; fi
+
+      - name: Write the build line and the layout rows into a server header
+        env:
+          CL: ${{ steps.res.outputs.cl }}
+          BUILD_ID: ${{ steps.res.outputs.build_id }}
+          IMAGE_STAMP: ${{ steps.res.outputs.stamp }}
+          IMAGE_SIZE: ${{ steps.res.outputs.size }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          node tool/ci/map-mode.mjs server out/server.h --cl "$CL" --stamp "$IMAGE_STAMP" --size "$IMAGE_SIZE" --build-id "$BUILD_ID" \
+            --layout chk/server-layout.json --report out/map-report.json
+
+      - name: Take the published server file as the base
+        env:
+          FIRST_PUBLISH: ${{ steps.live.outputs.first_publish }}
+        run: |
+          set -uo pipefail
+          code=0
+          node tool/ci/published-base.mjs take out/server.h --asset version-map-server.v1.txt --report out/base.json --dir published-base --first-publish "$FIRST_PUBLISH" || code=$?
+          if [ "$code" -ne 0 ]; then
+            node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("out/base.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+            echo "::error::the published server file could not be taken as the base (published-base exit $code); nothing was made from this run"; exit 2
+          fi
+
+      - name: Read the published server file's seq
+        id: seq
+        env:
+          FIRST_PUBLISH: ${{ steps.live.outputs.first_publish }}
+        run: |
+          set -euo pipefail
+          last_seq=0
+          if [ "$FIRST_PUBLISH" != true ]; then
+            last_seq="$(node tool/ci/vmap-sign.mjs verify published-base/version-map-server.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+            [ -n "$last_seq" ] || { echo "::error::the published server file does not verify"; exit 2; }
+          fi
+          echo "last_seq=$last_seq" >> "$GITHUB_OUTPUT"
+          echo "The server file's last seq is $last_seq."
+
+      # Every key of the layout list needs a row on this CL: one the scan could not place is a gap, and the job stops on it.
+      - name: Check every layout key has a row
+        env:
+          CL: ${{ steps.res.outputs.cl }}
+        run: |
+          set -euo pipefail
+          node tool/ci/map-mode.mjs complete out/server.h --cl "$CL" --keys tool/ci/server-keys.txt --report out/complete-report.json \
+            || { echo "::error::a layout key has no row for CL-$CL in the server header (the keys are listed above); nothing was made from this run"; exit 2; }
+
+      # Reported, not gating: the rows for these come from scans of the server exe, which this job does not run.
+      - name: Report the function and global keys with no row yet
+        env:
+          CL: ${{ steps.res.outputs.cl }}
+        run: |
+          set -uo pipefail
+          code=0
+          node tool/ci/map-mode.mjs complete out/server.h --cl "$CL" --keys tool/ci/server-function-keys.txt --report out/function-keys.json > function-keys.txt 2>&1 || code=$?
+          cat function-keys.txt
+          case "$code" in 0|3) ;; *) echo "::error::map-mode complete exited $code on the function key list"; exit 2 ;; esac
+          { echo "### Server function and global keys"; echo; sed 's/^/    /' function-keys.txt; echo; echo "Reported only: no scan makes these rows yet."; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Export the server file and check it keeps every published line
+        env:
+          FIRST_PUBLISH: ${{ steps.live.outputs.first_publish }}
+          CL: ${{ steps.res.outputs.cl }}
+        run: |
+          set -euo pipefail
+          node tool/ci/version-map.mjs export-feed out/server.h --out out/server.feed.txt --server
+          if [ "$FIRST_PUBLISH" != true ]; then
+            kept=0
+            node tool/ci/published-base.mjs preserve out/server.feed.txt --published published-base/version-map-server.v1.txt --report out/preserve.json || kept=$?
+            if [ "$kept" -ne 0 ]; then
+              node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("out/preserve.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+              echo "::error::the new server file would lose or change a published row (published-base exit $kept)"; exit 2
+            fi
+          fi
+          cp chk/server-result.json out/server-result.json
+          { echo "### Server version object map"; echo; echo "- CL-$CL: $(grep -c '^field' out/server.feed.txt || true) field and size rows, $(grep -c '^build' out/server.feed.txt || true) build lines in the file"; } >> "$GITHUB_STEP_SUMMARY"
+
+      # A published CL is not released again, and the file has to change what is served for its CL (ci/decide.mjs
+      # identity). A rehearsal re-runs a CL on purpose and is not judged here.
+      - name: Check the version identity of the new server file
+        if: ${{ env.REHEARSAL != 'true' }}
+        env:
+          FIRST_PUBLISH: ${{ steps.live.outputs.first_publish }}
+          CL: ${{ steps.res.outputs.cl }}
+          BUILD_ID: ${{ steps.res.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          published=()
+          if [ "$FIRST_PUBLISH" != true ]; then published=(--published published-base/version-map-server.v1.txt); fi
+          ident=0
+          node tool/ci/decide.mjs identity --repo ModLoaderServer --cl "$CL" --buildid "$BUILD_ID" "${published[@]}" --feed out/server.feed.txt --history live/vmap-history.json --report out/identity.json || ident=$?
+          if [ "$ident" -ne 0 ]; then
+            node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("out/identity.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+            echo "::error::the version identity check did not pass for the server file (identity exit $ident); nothing was signed or staged"; exit 2
+          fi
+
+      # The chain's one seq, above the server file's own last seq (not the client's), and a signature with the TEST key (k1,
+      # which no released loader trusts) to prove the path before the publish job uses the release key.
+      - name: Sign with the TEST key as a dry run and record the seq
+        env:
+          VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
+          LAST_SEQ: ${{ steps.seq.outputs.last_seq }}
+          CL: ${{ steps.res.outputs.cl }}
+          BUILD_ID: ${{ steps.res.outputs.build_id }}
+        run: |
+          set -euo pipefail
+          [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
+          seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$LAST_SEQ")"
+          case "$seq" in ''|0*|*[!0-9]*) echo "::error::no usable seq ('$seq')"; exit 2 ;; esac
+          node tool/ci/vmap-sign.mjs sign out/server.feed.txt --out out/server.test-signed.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$LAST_SEQ" --seq "$seq"
+          node tool/ci/vmap-sign.mjs verify out/server.test-signed.txt --allow-test-key --last-seq "$LAST_SEQ" --expect-seq "$seq"
+          printf '{"schema":1,"cl":%s,"buildId":"%s","seq":%s,"lastSeq":%s}\n' "$CL" "$BUILD_ID" "$seq" "$LAST_SEQ" > out/server-chain.json
+          echo "TEST-signed the server file: seq $seq above $LAST_SEQ."
+
+      - name: Upload the server map result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-map-${{ needs.server-layout.outputs.build_id }}
+          path: |
+            out/server.h
+            out/server.feed.txt
+            out/server-result.json
+            out/server-chain.json
+            out/identity.json
+            out/map-report.json
+            out/base.json
+            out/preserve.json
+            out/complete-report.json
+            out/function-keys.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---- Sign the server file and publish it ----
+  # Staging only unless the `live` input is set (a hand dispatch of this workflow, on the owner's OK):
+  # the signed file and its history go to the vmap-feed-rehearsal prerelease, through the same routine as the
+  # client's (ci/vmap-publish.sh). The live vmap-feed release is read before and after and must not change.
+  # sr-watch.yml cannot set `live`: the input is not a workflow_call input.
+  server-publish:
+    name: server-publish
+    needs: [server-layout, server-map]
+    if: ${{ !cancelled() && needs.server-layout.result == 'success' && needs.server-map.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: vmap-sign
+    concurrency:
+      group: vmap-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      LIVE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-server-check.yml@') && github.event_name == 'workflow_dispatch' && inputs.live == true }}
+      REHEARSAL: ${{ inputs.rehearsal == true }}
+      SCANNER_DEFAULTS: ${{ inputs.loader_repo == 'AlienXAXS/StarRupture-ModLoader' && inputs.loader_ref == 'main' && inputs.scanner_repo == 'msantoro12/StarRupture-ModLoader' && inputs.scanner_ref == 'ci/aobscan' }}
+      VMAP_ASSET: version-map-server.v1.txt
+      VMAP_HISTORY_REPO: ModLoaderServer
+      STAGING_RELEASE: vmap-feed-rehearsal
+      ACTOR: ${{ github.actor }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Check out the sign tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the server map result
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server-map-${{ needs.server-layout.outputs.build_id }}
+          path: chain
+
+      - name: Refuse a live publish that is not allowed
+        if: ${{ env.LIVE == 'true' }}
+        run: |
+          set -euo pipefail
+          [ "$REHEARSAL" != true ] || { echo "::error::live and rehearsal are both set: a rehearsal never writes the live release"; exit 2; }
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a live publish runs from main only (this run is on $GITHUB_REF)"; exit 2; }
+          [ "$SCANNER_DEFAULTS" = true ] || { echo "::error::a live publish takes the default loader and scanner inputs only"; exit 2; }
+          echo "This run publishes to the LIVE vmap-feed release."
+
+      # Read only: what the live release holds now (its asset list is read again after a staging upload), the
+      # server file's own last seq, and the history the new entry goes into (the same vmap-history.json the client uses).
+      - name: Read the live release
+        run: |
+          set -euo pipefail
+          snapshot() {
+            gh api "repos/$GH_REPO/releases/tags/vmap-feed" --jq '[.assets[] | [.name, .id, .updated_at, .size]]' 2> snapshot.err \
+              || { if grep -q 'HTTP 404' snapshot.err; then echo '[]'; else cat snapshot.err >&2; return 1; fi; }
+          }
+          snapshot > live-assets.before.json
+          has() { node -p "String(JSON.parse(require('fs').readFileSync('live-assets.before.json','utf8')).some((a) => a[0] === process.argv[1]))" "$1"; }
+          mkdir -p live
+          last_seq=0
+          first=true
+          if [ "$(has version-map-server.v1.txt)" = true ]; then
+            first=false
+            gh release download vmap-feed --pattern version-map-server.v1.txt --dir live
+            last_seq="$(node tool/ci/vmap-sign.mjs verify live/version-map-server.v1.txt | sed -n 's/^ok seq=\([0-9]*\) .*/\1/p')"
+            [ -n "$last_seq" ] || { echo "::error::the published server file does not verify"; exit 2; }
+          fi
+          if [ "$(has vmap-history.json)" = true ]; then
+            gh release download vmap-feed --pattern vmap-history.json --dir live \
+              || { echo "::error::cannot download vmap-history.json from the vmap-feed release; the history is never rebuilt from nothing, so nothing was signed"; exit 2; }
+          fi
+          if [ ! -f live/vmap-history.json ]; then
+            [ "$first" = true ] || { echo "::error::the vmap-feed release has no vmap-history.json and a server file is published; the history is never started again from nothing, so nothing was signed"; exit 2; }
+            echo '{"releases":{},"attempts":{}}' > live/vmap-history.json
+          fi
+          echo "$last_seq" > last-seq.txt
+          echo "FIRST_PUBLISH=$first" >> "$GITHUB_ENV"
+          echo "The live release holds $(node -p "JSON.parse(require('fs').readFileSync('live-assets.before.json','utf8')).length") assets; the server file's last seq is $last_seq."
+
+      - name: Check the seq and the server file before signing
+        run: |
+          set -euo pipefail
+          last_seq="$(cat last-seq.txt)"
+          cl="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-chain.json','utf8')).cl")"
+          buildid="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-chain.json','utf8')).buildId")"
+          seq="$(node -p "JSON.parse(require('fs').readFileSync('chain/server-chain.json','utf8')).seq")"
+          echo "{\"cl\": $cl}" > chain/decision.json
+          # The chain's one seq (made by server-map above the server file's own last seq, not the client's), read again
+          # against the live server file now: another publish may have landed since.
+          case "$seq" in ''|0*|*[!0-9]*) echo "::error::the chain carries no usable seq ('$seq')"; exit 2 ;; esac
+          [ "$seq" -gt "$last_seq" ] || { echo "::error::the chain's seq $seq no longer rises above the published server seq $last_seq (another publish landed since); nothing was signed, the chain has to run again"; exit 2; }
+          echo "CHAIN_SEQ=$seq" >> "$GITHUB_ENV"
+          # The file to sign must be the one the map job staged: cut again from its header, byte for byte.
+          node tool/ci/version-map.mjs export-feed chain/server.h --out feed.again.txt --server
+          cmp -s chain/server.feed.txt feed.again.txt || { echo "::error::the server file the map job staged differs from the export of its header; nothing was signed"; exit 2; }
+          # The published server file, read again now, must still be held line for line.
+          if [ "$FIRST_PUBLISH" != true ]; then
+            kept=0
+            node tool/ci/published-base.mjs preserve chain/server.feed.txt --published live/version-map-server.v1.txt --report preserve.json || kept=$?
+            if [ "$kept" -ne 0 ]; then
+              node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("preserve.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+              echo "::error::the server file to sign would lose or change a published row; nothing was signed or uploaded"; exit 2
+            fi
+          fi
+          # Version identity, read again against the file that is live now: the CL is not served yet and the file changes
+          # what is served for it. A rehearsal re-runs a CL on purpose and is not judged here.
+          if [ "$REHEARSAL" != true ]; then
+            published=()
+            if [ "$FIRST_PUBLISH" != true ]; then published=(--published live/version-map-server.v1.txt); fi
+            ident=0
+            node tool/ci/decide.mjs identity --repo ModLoaderServer --cl "$cl" --buildid "$buildid" "${published[@]}" --feed chain/server.feed.txt --history live/vmap-history.json --report identity.json || ident=$?
+            if [ "$ident" -ne 0 ]; then
+              node -e 'let r = {}; try { r = JSON.parse(require("fs").readFileSync("identity.json", "utf8")); } catch {} for (const x of r.reasons ?? []) console.log("::error::" + x);'
+              echo "::error::the version identity check did not pass for the server file (identity exit $ident); nothing was signed or uploaded"; exit 2
+            fi
+          fi
+
+      - name: Sign with the release key and verify
+        env:
+          VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$VMAP_SIGN_KEY" ] || { echo "::error::the VMAP_SIGN_KEY secret is not set"; exit 2; }
+          last_seq="$(cat last-seq.txt)"
+          node tool/ci/vmap-sign.mjs sign chain/server.feed.txt --out version-map-server.v1.txt --key-id k2 --last-seq "$last_seq" --seq "$CHAIN_SEQ"
+          node tool/ci/vmap-sign.mjs verify version-map-server.v1.txt --last-seq "$last_seq" --expect-seq "$CHAIN_SEQ"
+          # The history entry ModLoaderServer:<CL> is the shared routine's, written into the live history read above.
+          bash tool/ci/vmap-publish.sh entry
+
+      # Live, only with the live input: the server file first, then the history, as the client's publish does.
+      - name: Publish the server file to the live release
+        if: ${{ env.LIVE == 'true' }}
+        run: |
+          bash tool/ci/vmap-publish.sh feed vmap-feed live
+
+      - name: Verify the published server file
+        if: ${{ env.LIVE == 'true' }}
+        run: |
+          bash tool/ci/vmap-publish.sh verify vmap-feed live
+
+      - name: Publish the history to the live release
+        if: ${{ env.LIVE == 'true' }}
+        run: |
+          bash tool/ci/vmap-publish.sh history vmap-feed live
+
+      # The default: the one write of a run without the live input. The prerelease named in STAGING_RELEASE, the same
+      # asset names, the same routine. No step here names the live release.
+      - name: Upload to the staging prerelease
+        if: ${{ env.LIVE != 'true' }}
+        run: |
+          set -euo pipefail
+          bash tool/ci/vmap-publish.sh feed "$STAGING_RELEASE" staging
+          bash tool/ci/vmap-publish.sh verify "$STAGING_RELEASE" staging
+          bash tool/ci/vmap-publish.sh history "$STAGING_RELEASE" staging
+
+      # Read the live release again; without the live input it must be what it was before.
+      - name: Check the live release did not move
+        if: ${{ env.LIVE != 'true' }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/tags/vmap-feed" --jq '[.assets[] | [.name, .id, .updated_at, .size]]' > live-assets.after.json 2> after.err \
+            || { if grep -q 'HTTP 404' after.err; then echo '[]' > live-assets.after.json; else cat after.err >&2; exit 2; fi; }
+          cmp -s live-assets.before.json live-assets.after.json || { echo "::error::the live release changed during a staging run"; diff live-assets.before.json live-assets.after.json || true; exit 2; }
+          echo "The live release is unchanged."

@@ -29,7 +29,7 @@ $boot = [ordered]@{ label='full'; process_found=$true; process_found_s=6; ready_
 
 function New-Case([string]$Name, [scriptblock]$Mutate) {
     $d = Join-Path $root $Name; New-Item -ItemType Directory $d | Out-Null
-    $c = @{ ml = [string[]]$ml; game = [string[]]$game; boot = ($boot | ConvertTo-Json -Depth 3 | ConvertFrom-Json); exit = '0'; scan = 'OK 31/31 patterns' ; skip = @() }
+    $c = @{ ml = [string[]]$ml; game = [string[]]$game; boot = ($boot | ConvertTo-Json -Depth 3 | ConvertFrom-Json); exit = '0'; scan = 'OK 31/31 patterns' ; skip = @(); args = @() }
     & $Mutate $c
     if ('ml' -notin $c.skip) { Set-Content (Join-Path $d 'modloader.log') $c.ml -Encoding utf8 }
     if ('game' -notin $c.skip) { Set-Content (Join-Path $d 'game.log') $c.game -Encoding utf8 }
@@ -37,7 +37,7 @@ function New-Case([string]$Name, [scriptblock]$Mutate) {
     if ('exit' -notin $c.skip) { Set-Content (Join-Path $d 'scanner.exit') $c.exit -Encoding ascii }
     if ('scan' -notin $c.skip) { Set-Content (Join-Path $d 'scanner.txt') $c.scan -Encoding utf8 }
     $shell = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
-    $out = & $shell -NoProfile -File $verdict -OutDir $d -ExpectTag $tag -ExpectPlugins Waila 2>&1
+    $out = & $shell -NoProfile -File $verdict -OutDir $d -ExpectTag $tag -ExpectPlugins Waila @($c.args) 2>&1
     [pscustomobject]@{ Case=$Name; Exit=$LASTEXITCODE; Out=($out -join "`n") }
 }
 
@@ -91,6 +91,73 @@ foreach ($k in $cases.Keys) {
     $failed = ($r.Out -split "`n" | Where-Object { $_ -match ' FAIL ' } | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
     if ($ok -and $serverMustFail.ContainsKey($k) -and (($failed -split ',') -notcontains $serverMustFail[$k])) { $ok = $false; $bad++ }
     '{0,-24} exit={1} want={2} {3}  failed: {4}' -f $k, $r.Exit, $want, $(if ($ok) { 'OK ' } else { 'BAD' }), $failed
+}
+
+# ---- server mode: the "rows served" checks (-ExpectRows) ---------------------------
+# The rows boot seeded a signed server file as the loader's cache. The loader logs the feed
+# line (seq, key), then a line per row it serves to a plugin for the build's CL. Every case
+# starts from the good fixture plus these lines and the rows arguments, changes one thing,
+# and must fail the check it names.
+$rowsFeedK1 = "[16:51:04.150] [INFO ] [T:01484] [VersionFeed] Feed seq 41 (key k1, TEST KEY): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)"
+$rowsFeedK2 = "[16:51:04.150] [INFO ] [T:01484] [VersionFeed] Feed seq 41 (key k2): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)"
+$rowsServedA = '[16:51:41.200] [INFO ] [T:75664] [ModLoader] [Map] Waila: UWorld::GameState: loader map, CL-127004 row (0x1B0/0x8)'
+$rowsServedB = '[16:51:41.210] [INFO ] [T:75664] [ModLoader] [Map] Waila: UCrFoo::Run: loader map, CL-127004 row (address on this exe)'
+$rowsNoRow = '[16:51:41.300] [INFO ] [T:75664] [ModLoader] [Map] Waila: UCrFoo::Bar: reflected (no row for CL-127004; the loader map, CL-126000 row agrees)'
+$rowsBaseArgs = @('-ExpectRows', '2', '-ExpectedCl', '127004', '-ExpectSeq', '41', '-ExpectKey', 'k1')
+function Set-Rows($c, [string[]]$Lines = @($rowsFeedK1, $rowsServedA, $rowsServedB), [string[]]$RowArgs = $rowsBaseArgs) {
+    $c.ml = @($c.ml) + @($Lines)
+    $c.args = $RowArgs
+}
+$rowsCases = [ordered]@{
+ 'rows_good'                     = @{ Mut = { param($c) Set-Rows $c } }
+ 'rows_good_release_key'         = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK2, $rowsServedA, $rowsServedB) @('-ExpectRows', '2', '-ExpectedCl', '127004', '-ExpectSeq', '41', '-ExpectKey', 'k2') } }
+ 'rows_more_than_needed'         = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA, $rowsServedB, $rowsServedB) } }
+ 'rows_feed_line_missing'        = @{ Mut = { param($c) Set-Rows $c @($rowsServedA, $rowsServedB) }; Fail = 'rows_feed_loaded' }
+ 'rows_feed_wrong_seq'           = @{ Mut = { param($c) Set-Rows $c @(($rowsFeedK1 -replace 'seq 41', 'seq 40'), $rowsServedA, $rowsServedB) }; Fail = 'rows_feed_loaded' }
+ 'rows_feed_release_key_on_test' = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK2, $rowsServedA, $rowsServedB) }; Fail = 'rows_feed_loaded' }
+ 'rows_feed_test_key_on_release' = @{ Mut = { param($c) Set-Rows $c -RowArgs @('-ExpectRows', '2', '-ExpectedCl', '127004', '-ExpectSeq', '41', '-ExpectKey', 'k2') }; Fail = 'rows_feed_loaded' }
+ 'rows_feed_zero_rows'           = @{ Mut = { param($c) Set-Rows $c @(($rowsFeedK1 -replace ': 12 rows from the feed', ': 0 rows from the feed'), $rowsServedA, $rowsServedB) }; Fail = 'rows_feed_loaded' }
+ 'rows_loader_entries_only'      = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, ($rowsServedA -replace 'Waila: UWorld::GameState', 'ModLoader: GWorld'), ($rowsServedB -replace 'Waila: UCrFoo::Run', 'ModLoader: GNames')) }; Fail = 'rows_served_count' }
+ 'rows_game_overrules_row'       = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA, '[16:51:41.220] [WARN ] [T:75664] [ModLoader] [Map] Waila: UWorld::Levels: the loader map, CL-127004 row says 0x70, the game says 0x78; the game wins') }; Fail = 'rows_served_count' }
+ 'rows_reflected_no_row_plain'   = @{ Mut = { param($c) Set-Rows $c; $c.ml += ($rowsNoRow -replace '; the loader map, CL-126000 row agrees\)', ')') }; Fail = 'rows_no_reflected_no_row' }
+ 'rows_cache_unusable'           = @{ Mut = { param($c) Set-Rows $c; $c.ml += "[16:51:04.160] [INFO ] [T:01484] [VersionFeed] The feed cache is not usable (signature does not verify); using the loader's own map" }; Fail = 'rows_feed_not_refused' }
+ 'rows_cl_refused'               = @{ Mut = { param($c) Set-Rows $c; $c.ml += '[16:51:04.160] [INFO ] [T:01484] [VersionFeed] CL-127004 from the feed is refused: it lacks 3 of the keys the loader needs' }; Fail = 'rows_feed_not_refused' }
+ 'rows_feed_warning'             = @{ Mut = { param($c) Set-Rows $c; $c.ml += '[16:51:04.160] [WARN ] [T:01484] [VersionFeed] something unexpected' }; Fail = 'rows_feed_not_refused' }
+ 'rows_too_few'                  = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA) }; Fail = 'rows_served_count' }
+ 'rows_none_served'              = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1) }; Fail = 'rows_served_count' }
+ 'rows_served_other_cl'          = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, ($rowsServedA -replace 'CL-127004', 'CL-128786'), ($rowsServedB -replace 'CL-127004', 'CL-128786')) }; Fail = 'rows_served_count' }
+ 'rows_served_line_not_used'     = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA, '[16:51:41.220] [INFO ] [T:75664] [ModLoader] [Map] Waila: refused: no row for CL-129402; the loader map, CL-127004 row cannot be checked on this build, so it is not used') }; Fail = 'rows_served_count' }
+ 'rows_reflected_no_row'         = @{ Mut = { param($c) Set-Rows $c; $c.ml += $rowsNoRow }; Fail = 'rows_no_reflected_no_row' }
+ 'rows_reflected_expected_key'   = @{ Mut = { param($c) Set-Rows $c -RowArgs ($rowsBaseArgs + @('-ExpectKeys', 'UCrFoo::Bar')); $c.ml += $rowsNoRow }; Fail = 'rows_no_reflected_no_row' }
+ # Not failures
+ 'rows_reflected_other_key_ok'   = @{ Mut = { param($c) Set-Rows $c -RowArgs ($rowsBaseArgs + @('-ExpectKeys', 'UCrBaz::Qux')); $c.ml += $rowsNoRow } }
+ 'rows_reflected_other_cl_ok'    = @{ Mut = { param($c) Set-Rows $c; $c.ml += ($rowsNoRow -replace 'CL-127004', 'CL-128786') } }
+ # Inputs the group needs
+ 'rows_cl_missing'               = @{ Mut = { param($c) Set-Rows $c -RowArgs @('-ExpectRows', '2', '-ExpectSeq', '41') }; Fail = 'rows_expected' }
+ 'rows_seq_missing'              = @{ Mut = { param($c) Set-Rows $c -RowArgs @('-ExpectRows', '2', '-ExpectedCl', '127004') }; Fail = 'rows_expected' }
+ # Rows not expected: the group is not run, so these lines change no verdict
+ 'rows_not_expected'             = @{ Mut = { param($c) $c.ml = @($c.ml) + @($rowsFeedK1, $rowsServedA, $rowsNoRow, '[16:51:41.310] [WARN ] [T:75664] [VersionFeed] something unexpected') } }
+ 'rows_zero_expected'            = @{ Mut = { param($c) $c.args = @('-ExpectRows', '0') } }
+}
+foreach ($k in $rowsCases.Keys) {
+    $r = New-Case $k $rowsCases[$k].Mut
+    $mustFail = $rowsCases[$k].ContainsKey('Fail')
+    $want = if ($mustFail) { 1 } else { 0 }
+    $failed = @($r.Out -split "`n" | Where-Object { $_ -match ' FAIL ' -and $_ -notmatch '^VERDICT' } | ForEach-Object { ($_ -split '\s+')[0] })
+    $problems = @()
+    if ($r.Exit -ne $want) { $problems += "exit $($r.Exit), want $want" }
+    if ($mustFail -and ($failed -notcontains $rowsCases[$k].Fail)) { $problems += "did not fail $($rowsCases[$k].Fail)" }
+    if ($mustFail -and $rowsCases[$k].Fail -ne 'rows_expected') {
+        # The case isolates the check it names: no check outside the rows group fails with it.
+        $others = @($failed | Where-Object { $_ -notlike 'rows_*' })
+        if ($others.Count -gt 0) { $problems += "also failed: $($others -join ',')" }
+    }
+    $ran = ($r.Out -match '(?m)^rows_expected\s')
+    if ($k -in 'rows_not_expected', 'rows_zero_expected') { if ($r.Out -match '(?m)^rows_') { $problems += 'the rows checks ran with no rows expected' } }
+    elseif (-not $ran) { $problems += 'the rows checks did not run' }
+    if ($k -eq 'rows_good' -and (@($r.Out -split "`n" | Where-Object { $_ -match '^rows_\w+\s+PASS ' }).Count -ne 5)) { $problems += 'rows_good lacks one of the five rows checks passing' }
+    if ($problems.Count -gt 0) { $bad++ }
+    '{0,-30} exit={1} want={2} {3}  failed: {4}{5}' -f $k, $r.Exit, $want, $(if ($problems.Count -eq 0) { 'OK ' } else { 'BAD' }), ($failed -join ','), $(if ($problems.Count -gt 0) { '  PROBLEMS: ' + ($problems -join ' | ') } else { '' })
 }
 
 # ---- client mode ---------------------------------------------------------------

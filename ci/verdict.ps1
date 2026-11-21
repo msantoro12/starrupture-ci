@@ -17,6 +17,8 @@
 #   modloader.log    loader log
 #   scanner.exit     exit code of sr-aobscan (0 = every required pattern OK)
 #   scanner.txt      sr-aobscan output
+#   With -ExpectRows (engine-test rows mode) the "rows served" checks are added on top of the
+#   ones above, judged from modloader.log: see the block under "rows served" below.
 #
 # ---- Client mode: expected files in -OutDir ---------------------------------------
 # Written by the launch script; this script decides nothing about how they were made.
@@ -121,6 +123,20 @@ param(
     [Parameter(Mandatory, ParameterSetName = 'Server')][string[]]$ExpectPlugins,
     # Same regex boot-server.ps1 waited for; re-checked here against the logs.
     [Parameter(ParameterSetName = 'Server')][string]$ReadyRegex = 'LogLoad: Took [\d.]+ seconds to LoadMap\(/Game/Chimera/Maps/ChimeraMain/ChimeraMain\)',
+    # "Rows served" check group (engine-test rows mode: the boot had a signed server version
+    # object map seeded as the loader's cache). Run only when -ExpectRows is above 0; every
+    # server verdict without it is unchanged. -ExpectedCl and -ExpectSeq are then required.
+    # Least number of log lines that say the loader served a row for the build's CL.
+    [Parameter(ParameterSetName = 'Server')][int]$ExpectRows = 0,
+    # The build's CL (digits), the CL of the exe the rows are for.
+    [Parameter(ParameterSetName = 'Server')][string]$ExpectedCl = '',
+    # The seq of the seeded file (its second line).
+    [Parameter(ParameterSetName = 'Server')][string]$ExpectSeq = '',
+    # The key the file is signed with: k1 (TEST KEY, a build compiled with VMAP_TRUST_TEST_KEY) or k2.
+    [Parameter(ParameterSetName = 'Server')][ValidateSet('k1', 'k2')][string]$ExpectKey = 'k1',
+    # Optional: the keys the file holds a row for. A "reflected (no row ...)" line fails only
+    # for one of these (matched as a substring of the line). Empty: any such line fails.
+    [Parameter(ParameterSetName = 'Server')][string[]]$ExpectKeys = @(),
     # Judge a client launch (see the file list above) instead of a server boot.
     [Parameter(Mandatory, ParameterSetName = 'Client')][switch]$Client
 )
@@ -1010,6 +1026,70 @@ Add-Check 'engine_hooks_installed' ($null -ne $hooks) $hooks
 # A failed preflight on a server logs these and lets the game start unmodified.
 $disabled = First-Match $ml 'Starting the game unmodified|mod loader disabled|Pattern preflight FAILED'
 Add-Check 'loader_not_disabled' ($null -eq $disabled -and $null -ne $ml -and $ml.Count -gt 0) $(if ($disabled) { "FOUND: $disabled" } elseif ($ml -and $ml.Count -gt 0) { 'no disable line' } else { '' })
+
+# ---- rows served (engine-test rows mode only) ----------------------------------
+# The boot had a signed server version object map seeded as the loader's cache. The loader must
+# have read it (its [VersionFeed] line names the seq and the key), refused nothing, and served
+# rows of the build's CL to the plugins. Runs only when -ExpectRows is above 0.
+if ($ExpectRows -gt 0) {
+    # ---- The loader's log wording this group matches: change it here and nowhere else ----
+    # {CL} stands for the build's CL, {SEQ} for the seeded file's seq.
+    # The group 1 of the match is the number of rows the loader took from the file: it must be above 0.
+    $RowsLoaded = if ($ExpectKey -ceq 'k1') { '\[VersionFeed\] Feed seq {SEQ} \(key k1, TEST KEY\): (\d+) rows from the feed' } else { '\[VersionFeed\] Feed seq {SEQ} \(key k2\): (\d+) rows from the feed' }
+    # Any [VersionFeed] line at WARN or ERROR level, or one that says a cache or a CL was refused.
+    $RowsRefusal = '\[VersionFeed\].*(feed cache is not usable|feed cache .* could not be read|from the feed is refused|fetched feed is refused|feed could not be fetched)'
+    $RowsRefusalLevel = '\[(WARN|ERROR)\s*\].*\[VersionFeed\]'
+    # The text of a served row: the loader names the row it used as "loader map, CL-<cl> row", for
+    # every kind of row (field, function, global; a function row without a pattern adds " (address
+    # on this exe)"). One entry per wording; add another here if the loader logs a different one.
+    $RowsServed = @(
+        @{ Kind = 'any'; Regex = 'loader map, CL-{CL} row' }
+    )
+    # A line that carries the served-row text but is not a plugin being served: a row that was
+    # not used, a row the game overruled (the loader's WARN "..., the game says ..."), and the
+    # loader's own entries (owner ModLoader), which the built-in table serves with or without the file.
+    $RowsNotUsed = 'cannot be checked|is not used|refused|reflected \(no row|the game says|\[Map\] ModLoader: '
+    # A plugin key that fell back to reflection because the file has no row for the CL. The loader
+    # may add "; the loader map, CL-<other> row agrees)" after the CL, so only the start is matched.
+    $RowsReflectedNoRow = 'reflected \(no row for CL-{CL}\b'
+    # ---------------------------------------------------------------------------------------
+    $inputsOk = ($ExpectedCl -cmatch '^[1-9][0-9]{0,8}$') -and ($ExpectSeq -cmatch '^[1-9][0-9]{0,12}$')
+    Add-Check 'rows_expected' $inputsOk $(if ($inputsOk) { "expecting seq $ExpectSeq (key $ExpectKey), at least $ExpectRows served-row lines for CL-$ExpectedCl" } else { '' })
+    $haveMl = ($null -ne $ml) -and $ml.Count -gt 0
+    if ($inputsOk) {
+        $cl = [regex]::Escape($ExpectedCl)
+        $seq = [regex]::Escape($ExpectSeq)
+        $loadedRe = $RowsLoaded.Replace('{SEQ}', $seq)
+        $loaded = First-Match $ml $loadedRe -Case
+        $loadedRows = 0
+        if ($loaded -and $loaded -cmatch $loadedRe) { $loadedRows = [int]$Matches[1] }
+        Add-Check 'rows_feed_loaded' ($null -ne $loaded -and $loadedRows -gt 0) $(if ($loaded -and $loadedRows -eq 0) { "0 rows taken from the file: $loaded" } else { $loaded })
+        $refused = First-Match $ml $RowsRefusal
+        if (-not $refused) { $refused = First-Match $ml $RowsRefusalLevel }
+        Add-Check 'rows_feed_not_refused' ($haveMl -and $null -eq $refused) $(if ($refused) { "FOUND: $refused" } elseif ($haveMl) { 'no [VersionFeed] refusal or warning line' } else { '' })
+        $served = @()
+        if ($ml) {
+            foreach ($l in $ml) {
+                if ($l -match $RowsNotUsed) { continue }
+                foreach ($p in $RowsServed) { if ($l -cmatch $p.Regex.Replace('{CL}', $cl)) { $served += $l; break } }
+            }
+        }
+        Add-Check 'rows_served_count' ($served.Count -ge $ExpectRows) $(if ($served.Count -gt 0 -or $haveMl) { "$($served.Count) served-row lines for CL-$ExpectedCl (need $ExpectRows)" + $(if ($served.Count -gt 0) { "; first: $($served[0])" } else { '' }) } else { '' })
+        $noRowRe = $RowsReflectedNoRow.Replace('{CL}', $cl)
+        $noRow = @()
+        if ($ml) {
+            foreach ($l in $ml) {
+                if ($l -cnotmatch $noRowRe) { continue }
+                $keyHit = ($ExpectKeys.Count -eq 0)
+                foreach ($k in $ExpectKeys) { if ($k -and $l.Contains($k)) { $keyHit = $true } }
+                if ($keyHit) { $noRow += $l }
+            }
+        }
+        Add-Check 'rows_no_reflected_no_row' ($haveMl -and $noRow.Count -eq 0) $(if ($noRow.Count -gt 0) { "$($noRow.Count) found, first: $($noRow[0])" } elseif ($haveMl) { 'no "reflected (no row for CL-' + $ExpectedCl + ')" line' + $(if ($ExpectKeys.Count -gt 0) { " for $($ExpectKeys.Count) expected key(s)" } else { '' }) } else { '' })
+    } else {
+        foreach ($n in 'rows_feed_loaded', 'rows_feed_not_refused', 'rows_served_count', 'rows_no_reflected_no_row') { Add-Check $n $false '' }
+    }
+}
 
 # ---- plugins -----------------------------------------------------------------
 foreach ($p in $ExpectPlugins) {

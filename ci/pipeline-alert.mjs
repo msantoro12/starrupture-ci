@@ -13,7 +13,8 @@
 // after the job ended, so an unread log is fetched again, up to --tries times (default 6), 10 s
 // apart. Best effort: a call that fails leaves the field blank and says why on stderr.
 // outside: the alert body for the failed jobs that are not part of a client check (the jobs
-// sr-watch runs itself and the compile check, sr-build-all.yml). No such job, no file.
+// sr-watch runs itself, the compile check, sr-build-all.yml, and the server check, sr-server-check.yml).
+// No such job, no file.
 // raise: comments on the open issue with that exact title, or opens it.
 //
 // Exit codes: 0 done; 2 usage error.

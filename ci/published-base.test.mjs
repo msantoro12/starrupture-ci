@@ -12,7 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXIT_ERROR, EXIT_HOLD, EXIT_OK, FEED_ASSET, RELEASE, fetchPublished, main, preserveFeed, takeBase } from './published-base.mjs';
+import { EXIT_ERROR, EXIT_HOLD, EXIT_OK, FEED_ASSET, RELEASE, SERVER_FEED_ASSET, fetchPublished, main, preserveFeed, takeBase } from './published-base.mjs';
 import { emit, exportFeed, parse } from './version-map.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -42,7 +42,9 @@ function scratch() {
 // An answer is { status, stdout, stderr }. A download writes `body` into --dir (nothing when body is null).
 function fakeGh({ api, body = K1_TEXT, download = { status: 0 } }) {
   const calls = [];
+  const all = [];
   const run = (args) => {
+    all.push(args);
     calls.push(args.slice(0, 2).join(' '));
     if (args[0] === 'api') {
       const n = calls.filter((c) => c.startsWith('api')).length;
@@ -50,14 +52,17 @@ function fakeGh({ api, body = K1_TEXT, download = { status: 0 } }) {
     }
     if (args[0] === 'release') {
       const dir = args[args.indexOf('--dir') + 1];
-      if (download.status === 0 && body !== null) writeFileSync(join(dir, FEED_ASSET), body);
+      if (download.status === 0 && body !== null) writeFileSync(join(dir, args[args.indexOf('--pattern') + 1]), body);
       return { stdout: '', stderr: '', ...download };
     }
     throw new Error(`unexpected gh call: ${args.join(' ')}`);
   };
-  return { run, calls };
+  return { run, calls, all };
 }
 const hasFeed = { status: 0, stdout: JSON.stringify({ assets: [{ name: FEED_ASSET }] }) };
+const hasServerFeed = { status: 0, stdout: JSON.stringify({ assets: [{ name: FEED_ASSET }, { name: SERVER_FEED_ASSET }] }) };
+const serverHeader = () => LF(readFileSync(join(here, 'fixtures', 'version-map', 'server.h'), 'utf8'));
+const serverFeed = () => LF(readFileSync(join(here, 'fixtures', 'version-map', 'server.feed.txt'), 'utf8'));
 const noSleep = { sleep: async () => {} };
 
 // ---- fetchPublished -----------------------------------------------------------------------------
@@ -70,6 +75,26 @@ test('fetchPublished: the file of the vmap-feed release is downloaded', async ()
     assert.equal(got.file, join(s.p('d'), FEED_ASSET));
     assert.equal(readFileSync(got.file, 'utf8'), K1_TEXT);
     assert.deepEqual(gh.calls, ['api repos/o/r/releases/tags/' + RELEASE, 'release download']);
+  } finally { s.done(); }
+});
+
+test('fetchPublished: the server file is asked for by its own name, and the client file on the same release is not taken for it', async () => {
+  const s = scratch();
+  try {
+    const gh = fakeGh({ api: [hasServerFeed], body: 'format\t1\n' });
+    const got = await fetchPublished({ dir: s.p('d'), repo: 'o/r', asset: SERVER_FEED_ASSET, run: gh.run, ...noSleep });
+    assert.equal(got.file, join(s.p('d'), SERVER_FEED_ASSET));
+    assert.deepEqual(gh.all[1], ['release', 'download', RELEASE, '--repo', 'o/r', '--pattern', SERVER_FEED_ASSET, '--dir', s.p('d'), '--clobber']);
+    // A release that carries only the client file has no server file: an answer (absent), not the client file.
+    const only = fakeGh({ api: [hasFeed] });
+    const none = await fetchPublished({ dir: s.p('e'), repo: 'o/r', asset: SERVER_FEED_ASSET, run: only.run, ...noSleep });
+    assert.equal(none.absent, `the ${RELEASE} release has no ${SERVER_FEED_ASSET}`);
+    assert.equal(only.calls.length, 1);
+    // Another release name is read from that release.
+    const other = fakeGh({ api: [hasServerFeed] });
+    await fetchPublished({ dir: s.p('f'), repo: 'o/r', release: 'vmap-feed-rehearsal', asset: SERVER_FEED_ASSET, run: other.run, ...noSleep });
+    assert.equal(other.all[0][1], 'repos/o/r/releases/tags/vmap-feed-rehearsal');
+    assert.equal(other.all[1][2], 'vmap-feed-rehearsal');
   } finally { s.done(); }
 });
 
@@ -162,6 +187,33 @@ test('takeBase: a file whose signature is refused is a hold, never a base', asyn
     assert.match(r.reasons[0], /^published base: the published file's signature was refused/);
     assert.match(r.reasons[0], /the import did not run/);
     assert.equal(readFileSync(header, 'utf8'), reducedHeader());
+  } finally { s.done(); }
+});
+
+test('takeBase: the server file is a base only when its signature verifies, and a client file is never a base of a server header', async () => {
+  const s = scratch();
+  try {
+    const header = s.write('h.h', serverHeader());
+    // An unsigned server file (the fixture) is refused, test key allowed or not: it is never a base.
+    for (const extraArgs of [[], TEST_KEY]) {
+      const gh = fakeGh({ api: [hasServerFeed], body: serverFeed() });
+      const r = await takeBase({ header, dir: s.p('d'), repo: 'o/r', asset: SERVER_FEED_ASSET, run: gh.run, extraArgs, ...noSleep });
+      assert.equal(r.ok, false);
+      assert.match(r.reasons[0], /^published base: the published file's signature was refused/);
+      assert.match(r.reasons[0], /the import did not run/);
+      assert.equal(gh.all[1][gh.all[1].indexOf('--pattern') + 1], SERVER_FEED_ASSET);
+      assert.equal(readFileSync(header, 'utf8'), serverHeader());
+    }
+    // A correctly signed client file under the server's name is a hold on the flavour: nothing of it reaches a server header.
+    const mixed = fakeGh({ api: [hasServerFeed], body: K1_TEXT });
+    const r = await takeBase({ header, dir: s.p('e'), repo: 'o/r', asset: SERVER_FEED_ASSET, run: mixed.run, extraArgs: TEST_KEY, ...noSleep });
+    assert.equal(r.ok, false);
+    assert.match(r.reasons.join(' | '), /not a server exe/);
+    assert.equal(readFileSync(header, 'utf8'), serverHeader());
+    // The same file as the client's is taken by a client header, as before.
+    const client = s.write('c.h', reducedHeader());
+    const ok = await takeBase({ header: client, dir: s.p('g'), repo: 'o/r', run: fakeGh({ api: [hasServerFeed], body: K1_TEXT }).run, extraArgs: TEST_KEY, ...noSleep });
+    assert.equal(ok.ok, true, JSON.stringify(ok));
   } finally { s.done(); }
 });
 
@@ -276,6 +328,26 @@ test('main: take writes the report and exits 0 (taken), 3 (hold, reasons on stde
       assert.equal(await main(argv, {}), EXIT_ERROR, argv.join(' '));
     }
   } finally { process.stderr.write = realWrite; s.done(); }
+});
+
+test('main: --asset and --release reach the fetch; anything else is a usage error that writes no report', async () => {
+  const s = scratch();
+  const quiet = process.stderr.write.bind(process.stderr);
+  process.stderr.write = () => true;
+  try {
+    const header = s.write('h.h', serverHeader());
+    const report = s.p('report.json');
+    const gh = fakeGh({ api: [hasServerFeed], body: serverFeed() });
+    const code = await main(['take', header, '--report', report, '--dir', s.p('d'), '--asset', SERVER_FEED_ASSET, '--release', 'vmap-feed-rehearsal'], { repo: 'o/r', run: gh.run, ...noSleep });
+    assert.equal(code, EXIT_HOLD, 'the unsigned fixture is refused');
+    assert.equal(gh.all[0][1], 'repos/o/r/releases/tags/vmap-feed-rehearsal');
+    assert.equal(gh.all[1][gh.all[1].indexOf('--pattern') + 1], SERVER_FEED_ASSET);
+    for (const bad of [['--asset', 'vmap-history.json'], ['--asset', '../version-map-server.v1.txt'], ['--release', 'a b'], ['--release', '../x']]) {
+      const none = s.p('none.json');
+      assert.equal(await main(['take', header, '--report', none, '--dir', s.p('d2'), ...bad], { repo: 'o/r', run: gh.run, ...noSleep }), EXIT_ERROR, bad.join(' '));
+      assert.equal(existsSync(none), false, 'a usage error writes no report');
+    }
+  } finally { process.stderr.write = quiet; s.done(); }
 });
 
 test('main: the first-publish flag reaches the take, and a run needs a repository', async () => {

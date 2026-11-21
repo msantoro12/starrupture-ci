@@ -1,0 +1,11 @@
+{
+  "exe": { "cl": 127004, "imageStamp": "0x2E3595FF", "imageSize": "0x0E2A8000" },
+  "patterns": [
+    { "key": "UCrMassPersistentIDSubsystem::GetOrAddIDForHandle", "kind": "function", "result": "OK", "rva": "0x05DF5410" },
+    { "key": "UCrMassPersistentIDSubsystem::SetIDHandlePair", "kind": "function", "result": "OK", "rva": "0x05DF77C0" },
+    { "key": "GWorld", "kind": "data", "result": "OK", "rva": "0x0E601F38" },
+    { "key": "ModLoader/GObjects (GUObjectArray.ObjObjects)", "kind": "any", "result": "OK", "rva": "0x0E5F8A10" },
+    { "key": "ModLoader/AActor::ProcessEvent caller", "kind": "infunction", "result": "OK", "rva": "0x016F4C00" },
+    { "key": "AActor::K2_GetActorLocation", "kind": "function", "result": "NOT_FOUND" }
+  ]
+}

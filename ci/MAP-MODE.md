@@ -1245,6 +1245,80 @@ resets the count of rejected attempts for that CL only. It lifts no other check.
 A manual `release.yml` dispatch (a loader release, not a version object map publish) stays outside the pipeline's
 checks: nothing here judges it.
 
+## Dedicated server
+
+`map-mode.mjs server` writes the dedicated server's version object map header (`flavour server`, see
+`VERSION-MAP.md`, "Dedicated server"). It never touches the client's header, and `write` refuses a server header.
+It makes rows only; reading the published server file as the base and publishing are separate steps.
+
+Inputs:
+
+- `--layout <layout.json>`: an `sr-aobscan --layout --json` report. A key that resolved becomes a field
+  row (`Class::Member`: offset, size, mask) or a size row (a class name alone). A key that did not
+  resolve (`NOMEMBER`, `NOTYPE`, ...) gets no row and is listed under `unplaced`.
+- `--scan <scan.json>`: an address-only `sr-aobscan --json` report. A kind 1 or kind 4 row becomes a
+  function or global row. `ModLoader/GObjects (GUObjectArray.ObjObjects)` becomes the scoped row when
+  `--client-feed` gives its fingerprint, and is left out, with a note, when it does not. Every other
+  scoped row is listed under `skipped`.
+- `--cl`, `--stamp`, `--size`, `--build-id`: the server exe. The layout report has no exe block, so the
+  build comes from the command line.
+- `--base <feed>`: a server feed to start from. Every line of it is kept; this is the preserve rule.
+- `--client-feed <feed>`: the client's feed, for the GObjects fingerprint only.
+- `--report <file>`: `written`, `added`, `problems`, `notes`, `unplaced`, `skipped` and `hotfix`, as JSON.
+
+Rules:
+
+- `FTransform::Translation` and `FTransform::Scale3D` get no row: the PDB sizes them as the SIMD
+  register, as for the client. The run says so in `notes`, and `complete` does not ask for them.
+- A row already in the file with other values is refused and nothing is written (exit 3).
+- The same CL with another stamp or size is a hotfix. Nothing is written for it, the existing build line
+  stays, and the report's `hotfix` names both exes.
+- The same inputs again change nothing, and the order of the input rows does not change the bytes.
+
+`complete <server header> --cl <CL> --keys <key list>` then checks that every key of the list has a row
+on that CL (`function` keys need a function or global row; `field` and `native` keys a field row). A
+bare name on a line, as in the layout scan's key file, is a field key. It takes the list from the file
+you give; it does not need `ci/server-keys.txt`. Exit 3 names the gaps.
+
+Example:
+
+```
+node ci/map-mode.mjs server server.h --cl 127004 --stamp 0x2E3595FF --size 0x0E2A8000 --build-id 25642172 \
+  --layout ci/fixtures/version-map/server-layout.json --scan ci/fixtures/version-map/server-scan.json \
+  --client-feed loader.feed.txt --report server-report.json
+node ci/map-mode.mjs complete server.h --cl 127004 --keys keys.txt
+node ci/version-map.mjs export-feed server.h --out server.feed.txt --server
+```
+
+That makes the header and feed in `ci/fixtures/version-map/` (`server.h`, `server.feed.txt`): three field
+rows and four function rows, with three keys not placed and one row not for the server file.
+
+### Publishing the server file
+
+`sr-server-check.yml` makes and signs the server file after the check. Three jobs, one after the other:
+
+1. `server-layout` (the check): `server-result.json` and `server-layout.json`.
+2. `server-map`: `map-mode.mjs server` writes the build line and the field and size rows from those two files, then
+   `published-base.mjs take --asset version-map-server.v1.txt` checks the signature of the published server file and
+   adds every line it has (the first server file has none to take). `map-mode.mjs complete --keys ci/server-keys.txt`
+   stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but only reported:
+   no scan makes function or global rows yet. `export-feed --server` cuts the unsigned file and `published-base.mjs
+   preserve` checks it keeps every published line. `decide.mjs identity --repo ModLoaderServer` checks the CL is not
+   served yet and the file changes what is served for it (skipped in a rehearsal). The chain's seq is made here, above
+   the published server file's own last seq (the client's seq is not used), and the file is signed once with the TEST
+   key (k1, secret `VMAP_SIGN_KEY_TEST`) as a dry run. Artifact `server-map-<build id>`.
+3. `server-publish` (environment `vmap-sign`): checks the chain's seq still rises above the live server file's, signs
+   with k2, and runs `vmap-publish.sh` with `VMAP_ASSET=version-map-server.v1.txt` and
+   `VMAP_HISTORY_REPO=ModLoaderServer`: the history entry is `ModLoaderServer:<CL>` in the shared `vmap-history.json`,
+   the server file goes first, the history last, and `verify` shows `key=k2`.
+
+The upload goes to the `vmap-feed-rehearsal` prerelease every time. The live `vmap-feed` release is written only by a
+hand dispatch of `sr-server-check.yml` from `main` with the `live` input on (owner's OK, every time); `sr-watch.yml`
+cannot set it. Without `live` the job reads the live release's assets before and after and fails if they differ. A
+live run also takes the default loader and scanner inputs only. The version identity check
+(`decide.mjs identity --repo ModLoaderServer`) runs in `server-map` and again before the release key is used, unless
+`rehearsal` is set.
+
 ## Alerts
 
 A stuck or failing update has to reach the owner through GitHub's own notifications, with
