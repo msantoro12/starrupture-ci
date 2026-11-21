@@ -150,7 +150,9 @@ without them. A table can hold at most 32 ids.
   caught on the base even when the derived class keeps its `sizeof`. Without
   `--sdk` there are no base links and the table is compare-only anyway.
 - Padding (`Pad_*`, `BitPad_*`) and members the Dumper predefines without a reflected
-  property (`UObject::Outer`, `UStruct::Size`, ...) have no row. Classes that
+  property (`UObject::Outer`, `UStruct::Size`, ...) have no row. A member whose
+  header comment carries `NOT AUTO-GENERATED PROPERTY` anywhere is hand-written
+  and has no row either (`ULevel::Actors`). Classes that
   exist only as Dumper predefines (`FName`, `FField`, `FProperty`, ...) have no
   entry.
 - Bit-fields share one offset; each has its own row with its own `boolMask`.

@@ -140,7 +140,7 @@ export function parseSdkHeaders(dir) {
         } else if (type === 'bool') {
           mask = 0xff;
         }
-        members.set(name, { offset: parseInt(off, 16), size: parseInt(size, 16) * count, mask, bits: !!bits, reflected: !rest.startsWith('NOT AUTO-GENERATED PROPERTY') });
+        members.set(name, { offset: parseInt(off, 16), size: parseInt(size, 16) * count, mask, bits: !!bits, reflected: !rest.includes('NOT AUTO-GENERATED PROPERTY') });
       }
     }
   }
