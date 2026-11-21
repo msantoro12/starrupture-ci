@@ -297,6 +297,15 @@ jobs:
           }
           "build_tag=$tag" >> $env:GITHUB_OUTPUT
 
+      - name: Look for a Server Release configuration
+        id: server
+        shell: pwsh
+        run: |
+          # A plugin built for the dedicated server lists "Server Release|x64"
+          # in its solution; one without it is built for the client only.
+          $has = Select-String -Path "${{ matrix.sln }}" -SimpleMatch 'Server Release|x64' -Quiet
+          "present=$("$has".ToLower())" >> $env:GITHUB_OUTPUT
+
       - name: Build Client Release
         shell: pwsh
         env:
@@ -319,6 +328,37 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: build/Client Release/Plugins/${{ matrix.dll }}
+          if-no-files-found: error
+          retention-days: 3
+
+      # Same properties as the client build. The Game SDK holds the client and
+      # the server headers side by side; the plugin's Shared.props picks the
+      # folder from the configuration. Runs even when the client build failed,
+      # so a server break shows next to it.
+      - name: Build Server Release
+        if: ${{ !cancelled() && steps.server.outputs.present == 'true' }}
+        shell: pwsh
+        env:
+          BUILD_TAG: ${{ steps.ver.outputs.build_tag }}
+        run: |
+          msbuild "${{ matrix.sln }}" `
+            /p:Configuration="Server Release" `
+            /p:Platform=x64 `
+            /p:PostBuildEventUseInBuild=false `
+            /p:ModLoaderBuildTag="$env:BUILD_TAG" `
+            /p:GameSDKRoot="${{ github.workspace }}\game-sdk" `
+            /p:PluginSDKInclude="${{ github.workspace }}\plugin-sdk\include" `
+            /m `
+            /p:CL_MP=true `
+            /nodeReuse:false `
+            /v:minimal
+
+      - name: Upload server build
+        if: ${{ steps.server.outputs.present == 'true' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ matrix.name }}-server
+          path: build/Server Release/Plugins/${{ matrix.dll }}
           if-no-files-found: error
           retention-days: 3
 
