@@ -22,10 +22,11 @@
 // <steam.json> is the baseline checked out from main. The updated state is
 // written only on a real build id change or a first-time seed.
 //
-// --rehearsal (sr-watch's rehearsal input): the alert and the client matrix are the public branch's
-// current build alone, whether or not it changed, and the state file is never written (dirty=false),
-// so the run can go through the chain on a build that is already handled. Nothing alerts when Steam
-// does not list public now.
+// --rehearsal (sr-watch's rehearsal input): the alert, the client matrix and the server matrix are the
+// public branch's current build alone, whether or not it changed, and the state file is never written
+// (dirty=false), so the run can go through the chain on a build that is already handled. Nothing alerts
+// when Steam does not list the client's public branch now; the server matrix is empty when Steam does
+// not list the server's public branch now.
 // Writes <out-dir>/pr-title.txt, pr-branch.txt and pr-body.md when the run
 // should raise an alert. Sets these step outputs when GITHUB_OUTPUT is set:
 //   changed=true|false   alert wanted (real change, or --force)
@@ -37,6 +38,10 @@
 //                        this poll, empty when Steam lists none); [] when there is no alert.
 //                        Only branches Steam lists now are in it: a branch that vanished stays
 //                        in the recorded state, but is neither checked nor paired
+//   server_matrix=<json> dedicated server builds for sr-server-check.yml, as
+//                        [{"branch":"public","buildid":"..."}]: the changed ones, or the recorded
+//                        ones on a forced run; [] when there is no alert or only the client changed.
+//                        Only the branches sr-server-check.yml can download are in it (SERVER_CHECK_BRANCHES)
 //
 // Failure policy: an API problem never raises an alert. Each request is
 // retried; an app that still fails is skipped for this run and its recorded
@@ -58,6 +63,10 @@ const APPS = [
   { id: '3809400', name: 'StarRupture Dedicated Server', short: 'server', branches: null },
 ];
 const CLIENT_APP = APPS[0].id;
+const SERVER_APP = APPS[1].id;
+// The server branches sr-server-check.yml can check: ci/download-server.ps1 installs the public branch
+// only. A server branch outside this list is still tracked and alerted on, but is not in server_matrix.
+const SERVER_CHECK_BRANCHES = ['public'];
 const NEWS_APP = '1631270';
 const ATTEMPTS = 3;
 const BACKOFF_MS = [5000, 20000];
@@ -190,6 +199,7 @@ const failed = [];
 const seeded = [];
 let dirty = false;
 let clientLive = null; // the branches Steam lists now for the client app; null when its poll failed
+let serverLive = null; // the same for the dedicated server app
 
 for (const app of APPS) {
   console.log(`Polling ${app.name} (${app.id})`);
@@ -202,6 +212,7 @@ for (const app of APPS) {
     continue;
   }
   if (app.id === CLIENT_APP) clientLive = current;
+  if (app.id === SERVER_APP) serverLive = current;
   const known = state.apps[app.id];
   if (!known) {
     // First sight of this app: record it, never alert on the baseline.
@@ -248,6 +259,16 @@ const clientMatrix = !alert
     : changes.length > 0
     ? changes.filter((c) => c.app.id === CLIENT_APP).map((c) => ({ branch: c.branch, buildid: c.now, other_buildid: otherBuildid(c.branch) }))
     : Object.entries(clientBranches).map(([branch, v]) => ({ branch, buildid: v.buildid, other_buildid: otherBuildid(branch) }));
+// The dedicated server's checkable branches, as the client matrix does it: the changed ones, every recorded one
+// Steam lists now on a forced run, and on a rehearsal the public build Steam lists now.
+const serverRecorded = Object.fromEntries(Object.entries(state.apps[SERVER_APP]?.branches ?? {}).filter(([b]) => !serverLive || serverLive[b]));
+const serverMatrix = !alert
+  ? []
+  : rehearsal
+    ? serverLive?.public ? [{ branch: 'public', buildid: serverLive.public.buildid }] : []
+    : changes.length > 0
+    ? changes.filter((c) => c.app.id === SERVER_APP && SERVER_CHECK_BRANCHES.includes(c.branch)).map((c) => ({ branch: c.branch, buildid: c.now }))
+    : Object.entries(serverRecorded).filter(([b]) => SERVER_CHECK_BRANCHES.includes(b)).map(([branch, v]) => ({ branch, buildid: v.buildid }));
 const lines = [];
 if (alert) {
   const news = await fetchNewestNews();
@@ -277,7 +298,7 @@ if (alert) {
       ? `Newest Steam news post: [${news.title}](${news.url}) (${iso(news.date)})`
       : 'Newest Steam news post: unavailable this run.',
     '',
-    'A compile check of every component below is running; its per-component result will be posted as a comment on this pull request. When a client branch changed, an offline check of the new client build follows as its own comment. Merging this PR means the update is handled: it records the new build ids on main. It says whether the tree compiles, not whether the mods work in game.',
+    'A compile check of every component below is running; its per-component result will be posted as a comment on this pull request. When a client branch changed, an offline check of the new client build follows as its own comment; when the dedicated server changed, an offline check of the new server build follows in its own job. Merging this PR means the update is handled: it records the new build ids on main. It says whether the tree compiles, not whether the mods work in game.',
     '',
     '### Update checklist',
     '',
@@ -285,7 +306,7 @@ if (alert) {
     '',
     '- [ ] **Loader (Client)**: compile check; offline check of the new client build (CL, pattern scan, SDK globals), posted as its own comment',
     '  - [ ] release: manual, needs owner\'s OK',
-    '- [ ] **Loader (Server)**: compile check; pattern scan (placeholder, scan tool not available yet)',
+    '- [ ] **Loader (Server)**: compile check; offline check of the new server build (CL, image stamp, field layout from its symbols), run by the server check and kept in its artifact',
     '  - [ ] release: manual, needs owner\'s OK',
     '- [ ] **BetterDrone**: rebuild against the current SDK',
     '  - [ ] release: manual, needs owner\'s OK',
@@ -319,6 +340,6 @@ const summary = [
 console.log(summary.join('\n'));
 if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join('\n') + '\n');
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `changed=${alert}\ndirty=${dirty && !rehearsal}\nclient_matrix=${JSON.stringify(clientMatrix)}\n`);
+  appendFileSync(process.env.GITHUB_OUTPUT, `changed=${alert}\ndirty=${dirty && !rehearsal}\nclient_matrix=${JSON.stringify(clientMatrix)}\nserver_matrix=${JSON.stringify(serverMatrix)}\n`);
 }
 for (const l of lines) console.log(l);
