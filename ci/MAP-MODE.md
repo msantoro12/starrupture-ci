@@ -1293,6 +1293,28 @@ node ci/version-map.mjs export-feed server.h --out server.feed.txt --server
 That makes the header and feed in `ci/fixtures/version-map/` (`server.h`, `server.feed.txt`): three field
 rows and four function rows, with three keys not placed and one row not for the server file.
 
+### Publishing the server file
+
+`sr-server-check.yml` makes and signs the server file after the check. Three jobs, one after the other:
+
+1. `server-layout` (the check): `server-result.json` and `server-layout.json`.
+2. `server-map`: `map-mode.mjs server` writes the build line and the field and size rows from those two files, then
+   `published-base.mjs take --asset version-map-server.v1.txt` checks the signature of the published server file and
+   adds every line it has (the first server file has none to take). `map-mode.mjs complete --keys ci/server-keys.txt`
+   stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but only reported:
+   no scan makes function or global rows yet. `export-feed --server` cuts the unsigned file and `published-base.mjs
+   preserve` checks it keeps every published line.
+3. `server-publish` (environment `vmap-sign`): takes its own seq above the server file's last one (the client's seq is
+   not used), signs with k2, and runs `vmap-publish.sh` with `VMAP_ASSET=version-map-server.v1.txt` and
+   `VMAP_HISTORY_REPO=ModLoaderServer`: the history entry is `ModLoaderServer:<CL>` in the shared `vmap-history.json`,
+   the server file goes first, the history last, and `verify` shows `key=k2`.
+
+The upload goes to the `vmap-feed-rehearsal` prerelease every time. The live `vmap-feed` release is written only by a
+hand dispatch of `sr-server-check.yml` from `main` with the `live` input on (owner's OK, every time); `sr-watch.yml`
+cannot set it. Without `live` the job reads the live release's assets before and after and fails if they differ. A
+live run also runs the version identity check (`decide.mjs identity --repo ModLoaderServer`) against the live server
+file and history.
+
 ## Alerts
 
 A stuck or failing update has to reach the owner through GitHub's own notifications, with
