@@ -1315,8 +1315,9 @@ rows and four function rows, with three keys not placed and one row not for the 
 The upload goes to the `vmap-feed-rehearsal` prerelease every time. The live `vmap-feed` release is written only by a
 hand dispatch of `sr-server-check.yml` from `main` with the `live` input on (owner's OK, every time); `sr-watch.yml`
 cannot set it. Without `live` the job reads the live release's assets before and after and fails if they differ. A
-live run also runs the version identity check (`decide.mjs identity --repo ModLoaderServer`) against the live server
-file and history.
+live run also takes the default loader and scanner inputs only. The version identity check
+(`decide.mjs identity --repo ModLoaderServer`) runs in `server-map` and again before the release key is used, unless
+`rehearsal` is set.
 
 ## Alerts
 

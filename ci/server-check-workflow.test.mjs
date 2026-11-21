@@ -72,7 +72,11 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
   assert.ok((wf.match(/persist-credentials: false/g) ?? []).length === (wf.match(/uses: actions\/checkout@/g) ?? []).length, 'no checkout keeps the token');
   // The job that holds the key checks out this repository's scripts only: no loader, no scanner, no input-named repository.
   assert.ok(!/repository:/.test(map + publish), 'the map and publish jobs take no other repository');
-  assert.ok(!/\$\{\{ inputs\./.test((map + publish).replace(/LIVE: .*\n|REHEARSAL: .*\n/g, '')), 'an input reaches those jobs through nothing but the two flags');
+  assert.ok(!/\$\{\{ inputs\./.test((map + publish).replace(/LIVE: .*\n|REHEARSAL: .*\n|SCANNER_DEFAULTS: .*\n/g, '')), 'an input reaches those jobs through nothing but the three flags');
+  const dflt = (name) => wf.match(new RegExp(`      ${name}:\\n(?:        .*\\n)*?        default: '([^']*)'`))[1];
+  const sd = publish.match(/SCANNER_DEFAULTS: (.*)\n/)[1];
+  for (const n of ['loader_repo', 'loader_ref', 'scanner_repo', 'scanner_ref']) assert.ok(sd.includes(`inputs.${n} == '${dflt(n)}'`), `a live run compares ${n} with its dispatch default`);
+  assert.match(stepOf(publish, 'Refuse a live publish that is not allowed'), /SCANNER_DEFAULTS" = true/);
 });
 
 test('no run block takes an expression: every input and output reaches a script through env', () => {
@@ -149,7 +153,7 @@ test('result: server-result.json carries the identity, only three files are uplo
 test('server-map: the version object map header from the result, on the verified published base, and a measurement it cannot place stops it', () => {
   assert.match(map, /\n {4}needs: server-layout\n/);
   assert.ok(map.includes('name: server-check-${{ needs.server-layout.outputs.build_id }}'), 'the artifact the layout job made');
-  assert.match(map, /\n {4}concurrency:\n {6}group: vmap-map-mode\n {6}cancel-in-progress: false\n/);
+  assert.match(map, /\n {4}concurrency:\n {6}group: sr-server-map\n {6}cancel-in-progress: false\n/);
   const header = stepOf(map, 'Write the build line and the layout rows into a server header');
   assert.ok(header.includes('map-mode.mjs server out/server.h') && header.includes('--layout chk/server-layout.json'));
   assert.ok(!/--scan|--client-feed|--base/.test(header), 'no scan, no client feed and no unverified base: the signed base is taken by published-base');
@@ -274,8 +278,8 @@ test('sr-watch: the extract and the client chain do not wait for the server chec
   assert.ok(!/needs:.*server-check/.test(job(watch, 'client-check')));
   assert.ok(wf.includes('group: sr-server-check\n') && !wf.includes('sr-client-rig') && !wf.includes('sr-watch\n'));
   assert.ok(!watch.slice(watch.indexOf('\n  planner-extract:\n')).includes('server-check'));
-  // The map and publish jobs share the client chain's groups, so a version map write never overlaps the client's.
-  assert.ok(read('.github', 'workflows', 'sr-client-check.yml').includes('group: vmap-map-mode\n') && read('.github', 'workflows', 'sr-client-check.yml').includes('group: vmap-publish\n'));
+  // The publish job shares the client chain's group (one vmap-history.json); the map job writes nothing shared and keeps its own.
+  assert.ok(read('.github', 'workflows', 'sr-client-check.yml').includes('group: vmap-publish\n') && !wf.includes('group: vmap-map-mode'));
 });
 
 test('ci/server-keys.txt: one key per line, a class or Class::Member, no duplicate', () => {

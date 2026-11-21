@@ -384,7 +384,7 @@ jobs:
       contents: read
     # One run at a time reads the published files (the client chain's group).
     concurrency:
-      group: vmap-map-mode
+      group: sr-server-map
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
@@ -602,6 +602,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       LIVE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-server-check.yml@') && github.event_name == 'workflow_dispatch' && inputs.live == true }}
       REHEARSAL: ${{ inputs.rehearsal == true }}
+      SCANNER_DEFAULTS: ${{ inputs.loader_repo == 'AlienXAXS/StarRupture-ModLoader' && inputs.loader_ref == 'main' && inputs.scanner_repo == 'msantoro12/StarRupture-ModLoader' && inputs.scanner_ref == 'ci/aobscan' }}
       VMAP_ASSET: version-map-server.v1.txt
       VMAP_HISTORY_REPO: ModLoaderServer
       STAGING_RELEASE: vmap-feed-rehearsal
@@ -627,6 +628,7 @@ jobs:
           set -euo pipefail
           [ "$REHEARSAL" != true ] || { echo "::error::live and rehearsal are both set: a rehearsal never writes the live release"; exit 2; }
           [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a live publish runs from main only (this run is on $GITHUB_REF)"; exit 2; }
+          [ "$SCANNER_DEFAULTS" = true ] || { echo "::error::a live publish takes the default loader and scanner inputs only"; exit 2; }
           echo "This run publishes to the LIVE vmap-feed release."
 
       # Read only: what the live release holds now (its asset list is read again after a staging upload), the
