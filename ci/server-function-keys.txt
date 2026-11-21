@@ -1,0 +1,39 @@
+# Function and global keys the dedicated server's plugins look up, one key per line, for sr-server-check.yml.
+# `map-mode.mjs complete --keys` reads them (a `function` line needs a function or global row on the build's CL).
+# The server's map job does not scan for addresses yet, so these rows come from scans of the server exe, and the run
+# only reports which of them the file still lacks; the field and size keys in server-keys.txt are what it gates on.
+# Not listed: the compiled SDK's by-name calls through UObject::ProcessEvent (they carry no address), and two names the
+# PDB has not settled (UpdatePause, FJsonObjectConverter::UStructToJsonObjectString). Add them when they have a row.
+#
+# Functions
+function FCrCraftingFragment::StaticStruct
+function FCrMassEntityReplicationHelper::FCrMassEntityReplicationHelper
+function FMassEntityManager::InternalGetFragmentDataPtr
+function FMassEntityManager::IsEntityValid
+function UCrBaseCoreSubsystem::GetBaseCoresRangedBuilding
+function UCrBuildingCustomNameSubsystem::GetBuildingCustomNameByReplicationHelper
+function UCrBuildingFunctionLibrary::AddTemperatureToEntity
+function UCrMassEnviroWaveSubsystem::AddEntitiesToWave
+function UCrMassEnviroWaveSubsystem::RemoveEntitiesFromWave
+function UCrMassPersistentIDSubsystem::GetOrAddIDForHandle
+function UCrMassPersistentIDSubsystem::SetIDHandlePair
+function UCrSaveSubsystem::GetSaveData
+function UCrSaveSubsystem::OnPreLoadMap
+function UMassSignalSubsystem::SignalEntities
+function UWorld::GetSubsystem<UMassEntitySubsystem>
+function UMassSignalSubsystem::SignalEntity
+function UObject::ProcessEvent
+function UCrDedicatedServerSettingsComp::ParseSettings
+function ACrGameModeBase::GetProfessionForNewPlayer
+function ACrGameModeBase::PreLogin
+function UCrSaveSubsystem::SaveNextSaveGame
+function UReplicationGraph::AddNetworkActor
+function UReplicationGraph::RemoveNetworkActor
+function FPaths::ProjectSavedDir
+function UCrSaveGameUtils::WriteUserFile
+function UCrSaveGameUtils::SaveGameInternal
+#
+# Globals
+function GWorld
+function GNames (NamePoolData)
+function ModLoader/GObjects (GUObjectArray.ObjObjects)
