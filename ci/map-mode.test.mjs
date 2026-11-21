@@ -13,9 +13,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateKeyPairSync } from 'node:crypto';
-import { addFunction, emit, exportFeed, keepPublished, parse, parseFeed, parseKeys, parseRowList } from './version-map.mjs';
+import { MapError, addFunction, emit, exportFeed, keepPublished, parse, parseFeed, parseKeys, parseRowList, preserveCheck } from './version-map.mjs';
 import { signFeed } from './vmap-sign.mjs';
-import { kindOf, mapMode, tupleOf } from './map-mode.mjs';
+import { kindOf, mapMode, serverCompleteness, serverMode, tupleOf } from './map-mode.mjs';
+import { parseLayoutReport } from './layout-table.mjs';
 import { selectRows } from './apply-proposals.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -1021,4 +1022,183 @@ test('the command line: --published must verify (exit 4, header untouched) and -
   assert.match(r.stderr, /--retired needs --published/);
   assert.equal(write('--published', join(dir, 'missing.txt')).status, 2);
   assert.equal(readFileSync(h, 'utf8'), header());
+});
+
+// ---- the dedicated server's file -----------------------------------------------------------------
+//
+// fixtures/version-map/server-layout.json and server-scan.json are the shape of what `sr-aobscan --layout
+// --json` and `sr-aobscan --json` write (numbers made up); server.h and server.feed.txt are what the
+// server command makes of them. loader.feed.txt is the client file the GObjects fp comes from.
+
+const FIXD = join(here, 'fixtures', 'version-map');
+const fixt = (name) => readFileSync(join(FIXD, name), 'utf8').replace(/\r\n/g, '\n');
+const SERVER_BUILD = { cl: 127004, stamp: '0x2E3595FF', size: '0x0E2A8000', buildId: '25642172' };
+const serverInput = (over = {}) => ({
+  build: SERVER_BUILD,
+  layout: parseLayoutReport(fixt('server-layout.json'), 'server-layout.json'),
+  scan: JSON.parse(fixt('server-scan.json')).patterns,
+  ...over,
+});
+const clientFeed = () => parseFeed(fixt('loader.feed.txt'));
+const GONE = ['AActor::K2_GetActorLocation', 'FGoneStruct', 'UCrMassPersistentIDSubsystem::GoneMember'];
+
+test('server: the layout and scan fixtures make the server fixtures, byte for byte', () => {
+  const out = serverMode(null, serverInput(), { clientFeed: clientFeed() });
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.text, fixt('server.h'));
+  assert.equal(exportFeed(out.map), fixt('server.feed.txt'));
+  assert.deepEqual(out.added, { builds: 1, fields: 3, functions: 4 });
+  assert.deepEqual(out.unplaced.map((u) => u.key).sort(), GONE);
+  assert.deepEqual(out.skipped, ['ModLoader/AActor::ProcessEvent caller']);
+  assert.equal(out.hotfix, null);
+  // The size row has offset 0 and mask 0; the member rows carry the measured offset and mask.
+  const f = (key) => out.map.fields.find((r) => r.key === key);
+  assert.deepEqual([f('FCrEnviroWaveSettings').offset, f('FCrEnviroWaveSettings').size, f('FCrEnviroWaveSettings').mask], [0, 44, 0]);
+  assert.deepEqual([f('UCrDedicatedServerSettingsComp::bStartNewGame').offset, f('UCrDedicatedServerSettingsComp::bStartNewGame').mask], [220, 255]);
+});
+
+test('server: the order of the layout and scan rows changes nothing', () => {
+  const want = serverMode(null, serverInput(), { clientFeed: clientFeed() }).text;
+  const rev = (a) => [...a].reverse();
+  const out = serverMode(null, serverInput({ layout: rev(serverInput().layout), scan: rev(serverInput().scan) }), { clientFeed: clientFeed() });
+  assert.equal(out.text, want);
+});
+
+test('server: the same run again changes nothing, and adds nothing', () => {
+  const first = serverMode(null, serverInput(), { clientFeed: clientFeed() });
+  const again = serverMode(first.text, serverInput(), { clientFeed: clientFeed() });
+  assert.deepEqual(again.problems, []);
+  assert.equal(again.text, first.text);
+  assert.deepEqual(again.added, { builds: 0, fields: 0, functions: 0 });
+});
+
+test('server: without a client row the GObjects row is left out, and the run says so', () => {
+  const out = serverMode(null, serverInput());
+  assert.equal(out.map.functions.some((r) => r.key === GO), false);
+  assert.equal(out.added.functions, 3);
+  assert.ok(out.notes.some((n) => n.includes(GO)), out.notes.join('\n'));
+  assert.ok(!out.text.includes('ModLoader/'), 'no other ModLoader/ row is written');
+  // A client feed that has no GObjects row is the same.
+  const noGo = parseFeed(fixt('loader.feed.txt').split('\n').filter((l) => !l.includes('GObjects')).join('\n'));
+  assert.equal(serverMode(null, serverInput(), { clientFeed: noGo }).map.functions.some((r) => r.key === GO), false);
+});
+
+test('server: a failing key gets no row, an absent row is never written, and only server kinds are taken', () => {
+  const out = serverMode(null, serverInput(), { clientFeed: clientFeed() });
+  assert.ok(!out.text.includes('GoneMember') && !out.text.includes('FGoneStruct') && !out.text.includes('K2_GetActorLocation'));
+  assert.ok(!out.text.includes('ProcessEvent caller'));
+  assert.ok(out.map.functions.every((r) => !r.absent && r.pattern === null));
+});
+
+test('server: every line of the base is kept and the new CL is added next to it', () => {
+  const base = parseFeed(fixt('server.feed.txt'), 'base', { server: true });
+  const next = { ...SERVER_BUILD, cl: 130000, stamp: '0x2F000001', size: '0x0E300000', buildId: '26300000' };
+  const out = serverMode(null, serverInput({ build: next, layout: null, scan: [{ key: 'GWorld', kind: 'data', result: 'OK', rva: '0x0E700000' }] }), { base, clientFeed: clientFeed() });
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(out.map.builds.map((b) => b.cl), [127004, 130000]);
+  assert.deepEqual(preserveCheck(parseFeed(exportFeed(out.map), 'next', { server: true }), base).violations, []);
+  assert.equal(out.added.builds, 1);
+  assert.equal(out.added.functions, 1);
+});
+
+test('server: the same CL with another exe is a hotfix: nothing is written for it, the build line stays', () => {
+  const first = serverMode(null, serverInput(), { clientFeed: clientFeed() });
+  const hot = { ...SERVER_BUILD, stamp: '0x2E3599AA', buildId: '25700000' };
+  const out = serverMode(first.text, serverInput({ build: hot, scan: [{ key: 'GWorld', kind: 'data', result: 'OK', rva: '0x0E700000' }] }), { clientFeed: clientFeed() });
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.text, first.text);
+  assert.equal(out.hotfix.cl, 127004);
+  assert.equal(out.hotfix.kept.stamp, '0x2E3595FF');
+  assert.equal(out.hotfix.seen.stamp, '0x2E3599AA');
+  assert.deepEqual(out.added, { builds: 0, fields: 0, functions: 0 });
+});
+
+test('server: a row already there with other values is refused, and nothing is written', () => {
+  const first = serverMode(null, serverInput(), { clientFeed: clientFeed() });
+  const moved = serverInput({ scan: [{ key: 'GWorld', kind: 'data', result: 'OK', rva: '0x0E601F40' }] });
+  const out = serverMode(first.text, moved, { clientFeed: clientFeed() });
+  assert.equal(out.map, null);
+  assert.equal(out.text, null);
+  assert.match(out.problems.join('\n'), /GWorld/);
+});
+
+test('server: a layout entry that is OK for a member but has no offset is a problem, and nothing is written', () => {
+  const layout = [{ key: 'UCrMassPersistentIDSubsystem::MaxID', result: 'OK', size: 4, boolMask: 0 }];
+  const out = serverMode(null, serverInput({ layout, scan: null }));
+  assert.equal(out.map, null);
+  assert.match(out.problems.join('\n'), /MaxID.*without an offset/);
+});
+
+test('server: a client header is refused; the write command refuses a server header', () => {
+  assert.throws(() => serverMode(header(), serverInput()), /server command writes a server header/);
+  assert.throws(() => mapMode(fixt('server.h'), base(), {}), MapError);
+});
+
+test('server: the build ids and numbers are checked', () => {
+  assert.throws(() => serverMode(null, serverInput({ build: { ...SERVER_BUILD, buildId: 'abc' } })), /not a Steam build id/);
+  assert.throws(() => serverMode(null, serverInput({ build: { ...SERVER_BUILD, stamp: 'zz' } })), MapError);
+});
+
+test('serverCompleteness: a key with no row on the CL is a gap; function keys need a function row, field keys a field row', () => {
+  const map = serverMode(null, serverInput(), { clientFeed: clientFeed() }).map;
+  const ok = parseKeys('function GWorld\nfunction UCrMassPersistentIDSubsystem::SetIDHandlePair\nfield UCrMassPersistentIDSubsystem::MaxID\nnative FCrEnviroWaveSettings\n');
+  assert.deepEqual(serverCompleteness(map, 127004, ok).missing, []);
+  const gap = parseKeys('function GWorld\nfunction AActor::K2_GetActorLocation\nfield UCrMassPersistentIDSubsystem::GoneMember\nfield UCrMassPersistentIDSubsystem::MaxID\n');
+  const r = serverCompleteness(map, 127004, gap);
+  assert.deepEqual(r.missing, ['AActor::K2_GetActorLocation', 'UCrMassPersistentIDSubsystem::GoneMember']);
+  assert.match(r.line, /^2 of 4 keys have no CL-127004 row in the server file/);
+  assert.equal(serverCompleteness(map, 130000, ok).missing.length, 4, 'another CL has no rows');
+});
+
+test('server and complete from the command line, then export-feed --server', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mapmode-server-'));
+  const h = join(dir, 'server.h');
+  const file = (n) => join(FIXD, n);
+  // The feed is read as the signer wrote it, LF only, whatever line ends the checkout gave the fixture.
+  writeFileSync(join(dir, 'client.feed.txt'), fixt('loader.feed.txt'));
+  const clientFeedFile = join(dir, 'client.feed.txt');
+  const server = (...extra) => spawnSync(process.execPath, [TOOL, 'server', h, '--cl', '127004', '--stamp', '0x2E3595FF', '--size', '0x0E2A8000', '--build-id', '25642172',
+    '--layout', file('server-layout.json'), '--scan', file('server-scan.json'), '--report', join(dir, 'report.json'), ...extra], { encoding: 'utf8', windowsHide: true });
+  const none = spawnSync(process.execPath, [TOOL, 'server', h, '--cl', '127004', '--stamp', '0x2E3595FF', '--size', '0x0E2A8000', '--build-id', '25642172'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(none.status, 2);
+  assert.match(none.stderr, /give --layout/);
+  // The header is made, with the exe's header flavour; the client feed gives the GObjects fp.
+  const made = server('--client-feed', clientFeedFile);
+  assert.equal(made.status, 0, made.stderr);
+  assert.equal(readFileSync(h, 'utf8'), fixt('server.h'));
+  assert.match(made.stdout, /1 build lines, 3 field rows, 4 function rows added; 3 keys not placed, 1 rows not for the server file/);
+  assert.match(made.stdout, /no row: FGoneStruct \(NOTYPE\)/);
+  const report = JSON.parse(readFileSync(join(dir, 'report.json'), 'utf8'));
+  assert.equal(report.written, true);
+  assert.deepEqual(report.skipped, ['ModLoader/AActor::ProcessEvent caller']);
+  assert.equal(report.hotfix, null);
+  // The same run again leaves the file as it is.
+  assert.equal(server('--client-feed', clientFeedFile).status, 0);
+  assert.equal(readFileSync(h, 'utf8'), fixt('server.h'));
+  // complete: a key list gives the keys; a bare name is a field key (the layout scan key file).
+  writeFileSync(join(dir, 'keys.txt'), ['# the layout key file lists bare names', 'FCrEnviroWaveSettings', 'function GWorld', 'field UCrMassPersistentIDSubsystem::MaxID', ''].join(String.fromCharCode(10)));
+  const done = spawnSync(process.execPath, [TOOL, 'complete', h, '--cl', '127004', '--keys', join(dir, 'keys.txt')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(done.status, 0, done.stdout + done.stderr);
+  assert.match(done.stdout, /all 3 keys have a CL-127004 row in the server file/);
+  writeFileSync(join(dir, 'keys2.txt'), 'function GWorld\nfunction AActor::K2_GetActorLocation\nFGoneStruct\n');
+  const gap = spawnSync(process.execPath, [TOOL, 'complete', h, '--cl', '127004', '--keys', join(dir, 'keys.txt'), '--keys', join(dir, 'keys2.txt')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(gap.status, 3);
+  assert.match(gap.stderr, /missing: AActor::K2_GetActorLocation/);
+  assert.match(gap.stderr, /missing: FGoneStruct/);
+  // The export, with the flag.
+  const feed = spawnSync(process.execPath, [join(here, 'version-map.mjs'), 'export-feed', h, '--out', join(dir, 'feed.txt'), '--server'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(feed.status, 0, feed.stderr);
+  assert.equal(readFileSync(join(dir, 'feed.txt'), 'utf8'), fixt('server.feed.txt'));
+  // The write command refuses the server header and says which command writes it.
+  const input = join(dir, 'in.json');
+  writeFileSync(input, JSON.stringify(base()));
+  const wrong = spawnSync(process.execPath, [TOOL, 'write', h, '--input', input], { encoding: 'utf8', windowsHide: true });
+  assert.equal(wrong.status, 2);
+  assert.match(wrong.stderr, /the server command writes it/);
+  // A client header is refused by the server command.
+  writeFileSync(join(dir, 'client.h'), header());
+  const client = spawnSync(process.execPath, [TOOL, 'server', join(dir, 'client.h'), '--cl', '127004', '--stamp', '0x2E3595FF', '--size', '0x0E2A8000', '--build-id', '25642172', '--scan', file('server-scan.json')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(client.status, 2);
+  assert.match(client.stderr, /server command writes a server header/);
+  assert.equal(readFileSync(join(dir, 'client.h'), 'utf8'), header());
 });

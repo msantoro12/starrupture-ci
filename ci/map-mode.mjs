@@ -4,6 +4,9 @@
 //
 //   node ci/map-mode.mjs complete <header> --cl <CL> [--report <write report>]   (exit 3 when a key with an earlier row has none on CL)
 //   node ci/map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true] [--published <signed feed> [--retired <file>]]
+//   node ci/map-mode.mjs server <server header> --cl <CL> --stamp <hex> --size <hex> --build-id <id> (--layout <layout.json> | --scan <scan.json>)
+//        [--base <feed>] [--client-feed <feed>] [--report <file>]     (the dedicated server's header; see "Dedicated server" in ci/MAP-MODE.md)
+//   node ci/map-mode.mjs complete <server header> --cl <CL> --keys <keys.txt> [--report <file>]
 //
 // The header is the loader's version_map.generated.h. The input is what the
 // runner collected for one new build (see ci/MAP-MODE.md for the shape): for
@@ -54,9 +57,11 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
-  EXIT_BAD_SIGNATURE, EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, SignatureRefused, addAbsent, addBuild, addFunction, buildMismatch, checkMap, emit, isGlobalKind, keepPublished, parse, parseKeys,
-  parseRowList, readPublished, replaceBuild, unionKeys,
+  EXIT_BAD_SIGNATURE, EXIT_ERROR, EXIT_OK, EXIT_VIOLATION, KIND, MapError, SERVER_SCOPED_KEY, SignatureRefused, addAbsent, addBuild, addField, addFunction, buildMismatch, checkMap, emit, emptyMap, importPublished, isGlobalKind,
+  keepPublished, parse, parseFeed, parseKeys, parseRowList, parseSignedFeedRows, readPublished, replaceBuild, unionKeys,
 } from './version-map.mjs';
+import { ParseError } from './layout-diff.mjs';
+import { parseLayoutReport } from './layout-table.mjs';
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const hex8 = (n) => '0x' + n.toString(16).toUpperCase().padStart(8, '0');
@@ -274,7 +279,7 @@ export function writeRows(map, input, { keep = () => false } = {}) {
   const { cl, rows, patches, ranks } = readObservations(input);
   const plan = planRows(rows, { cl });
   const problems = [...plan.problems];
-  if (map.flavour !== 'loader') throw new MapError('map mode writes the loader map; this header is a plugin map');
+  if (map.flavour !== 'loader') throw new MapError(`map mode writes the loader map; this header is a ${map.flavour} map${map.flavour === 'server' ? ' (the server command writes it)' : ''}`);
   const next = parse(emit(map), 'the header');
   if (!next.builds.some((b) => b.cl === cl)) {
     const b = input.build;
@@ -500,6 +505,110 @@ export function completeness(map, cl, absences = []) {
   return { missing, line };
 }
 
+// ---- The dedicated server -------------------------------------------------------
+
+// The fp of the client's row for the one scoped key a server file carries: the fp is the
+// request's fingerprint, not a property of the exe. The newest client build that has the key
+// decides. Returns { fp } or { note } (no client row, or two fps on the newest build).
+function clientFp(clientFeed, key) {
+  const rows = (clientFeed?.functions ?? []).filter((r) => r.key === key && !r.absent && r.kind === KIND.ANY);
+  if (!rows.length) return { note: `${key}: no client row to take its fp from; left out` };
+  const newest = Math.max(...rows.map((r) => r.cl));
+  const fps = [...new Set(rows.filter((r) => r.cl === newest).map((r) => r.fp))];
+  return fps.length === 1 ? { fp: fps[0] } : { note: `${key}: the client's CL-${newest} rows have ${fps.length} fps; left out` };
+}
+
+// Writes one dedicated-server build into a server header. headerText: the header, or null for a new
+// one. input: { build: { cl, stamp, size, buildId }, layout: the entries of an `sr-aobscan --layout --json`
+// report or null, scan: the rows of an address-only `sr-aobscan --json` report or null }.
+//   - a layout entry that resolved becomes a field row (a member key, `Class::Member`) or a size row
+//     (a class name alone: offset 0, mask 0); one that did not is listed under `unplaced`, with no row;
+//   - a scan row of kind 1 or 4 becomes an address-only function row; the scoped GObjects row (kind 6)
+//     takes its fp from the client feed and is left out without one; every other scoped row is not a
+//     server row (`skipped`); a row that did not resolve is listed under `unplaced`;
+//   - base (a parsed server feed, the published file): every line of it is kept (importPublished);
+//   - the same CL with another stamp or size is a hotfix: nothing is written for it, the existing build
+//     line stays, and `hotfix` says so.
+// A row already there with other values is a refusal, as for the client. Returns
+// { map, text, added: { builds, fields, functions }, unplaced, skipped, hotfix, notes, problems }.
+export function serverMode(headerText, input, { base = null, clientFeed = null } = {}) {
+  const b = input.build ?? {};
+  const cl = numberOf(b.cl, 'build.cl', { lo: 1 });
+  const stamp = numberOf(b.stamp, 'build.stamp', { lo: 1 });
+  const size = numberOf(b.size, 'build.size', { lo: 1 });
+  if (!/^\d+$/.test(String(b.buildId ?? ''))) throw new MapError(`build.buildId ${JSON.stringify(b.buildId)} is not a Steam build id`);
+  const out = { map: null, text: null, added: { builds: 0, fields: 0, functions: 0 }, unplaced: [], skipped: [], hotfix: null, notes: [], problems: [] };
+  let map = headerText === null ? emptyMap('server', cl) : parse(headerText, 'the header');
+  if (map.flavour !== 'server') throw new MapError(`the server command writes a server header; this one is a ${map.flavour} map`);
+  if (base) {
+    const merged = importPublished(map, base);
+    if (!merged.map) return { ...out, problems: merged.conflicts.map((c) => `base: ${c}`) };
+    map = merged.map;
+  }
+  const old = map.builds.find((x) => x.cl === cl);
+  if (old && (old.stamp !== stamp || old.size !== size)) {
+    out.hotfix = { cl, kept: { stamp: hex8(old.stamp), size: hex8(old.size), source: old.source }, seen: { stamp: hex8(stamp), size: hex8(size), source: `server steam_build ${b.buildId}` } };
+    out.notes.push(`CL-${cl} is in the file with another exe (stamp ${hex8(old.stamp)}, size ${hex8(old.size)}); the exe seen now (stamp ${hex8(stamp)}, size ${hex8(size)}) is a hotfix: nothing is written for it`);
+    return { ...out, map, text: emit(map) };
+  }
+  const attempt = (fn) => {
+    try { return fn(); } catch (e) {
+      if (!(e instanceof MapError)) throw e;
+      out.problems.push(e.message);
+      return false;
+    }
+  };
+  if (!old && attempt(() => addBuild(map, { cl, stamp, size, source: `server steam_build ${b.buildId}` }))) out.added.builds++;
+  for (const k of [...(input.layout ?? [])].sort((x, y) => cmp(x.key, y.key))) {
+    if (k.result !== 'OK') { out.unplaced.push({ key: k.key, result: k.result }); continue; }
+    const member = k.key.includes('::');
+    if (member && !Number.isInteger(k.offset)) { out.problems.push(`${k.key}: the layout entry is OK without an offset`); continue; }
+    const row = { key: k.key, cl, offset: member ? k.offset : 0, size: k.size, mask: member ? (k.boolMask ?? 0) : 0 };
+    if (attempt(() => addField(map, row))) out.added.fields++;
+  }
+  for (const r of [...(input.scan ?? [])].filter((x) => typeof x?.key === 'string').sort((x, y) => cmp(x.key, y.key))) {
+    if (r.result !== undefined && r.result !== 'OK') { out.unplaced.push({ key: r.key, result: r.result }); continue; }
+    const kind = r.kind === undefined ? KIND.FUNCTION_START : attempt(() => kindOf(r.kind));
+    if (kind === false) continue;
+    let fp = 0;
+    if (!isGlobalKind(kind)) {
+      if (r.key !== SERVER_SCOPED_KEY) { out.skipped.push(r.key); continue; }
+      const found = clientFp(clientFeed, r.key);
+      if (found.note) { out.notes.push(found.note); continue; }
+      fp = found.fp;
+    }
+    const rva = attempt(() => numberOf(r.rva, `${r.key}: rva`, { lo: 1 }));
+    if (rva === false) continue;
+    if (attempt(() => addFunction(map, { key: r.key, kind, fp, cl, pattern: null, resultOffset: 0, followRel32At: -1, followRipDispAt: -1, rva }))) out.added.functions++;
+  }
+  if (out.problems.length) return out;
+  return { ...out, map, text: emit(map) };
+}
+
+// The keys of a key list (union of parseKeys results) that have no row on `cl` in a server header:
+// a function key needs a function row, a native or field key (a member, or a class name for its
+// size) a field row. A server file has no absent rows, so a key with no row is a gap, and `required`
+// marks nothing more here. Returns { missing: [key], line }.
+export function serverCompleteness(map, cl, keys) {
+  const fn = (key) => map.functions.some((r) => r.key === key && r.cl === cl);
+  const field = (key) => map.fields.some((r) => r.key === key && r.cl === cl);
+  const missing = [...new Set([...[...keys.functions].filter((k) => !fn(k)), ...[...keys.native.keys(), ...keys.fields].filter((k) => !field(k))])].sort(cmp);
+  const total = keys.functions.size + keys.native.size + keys.fields.size;
+  const shown = missing.slice(0, 5).join(', ') + (missing.length > 5 ? `, +${missing.length - 5} more` : '');
+  return { missing, line: missing.length ? `${missing.length} of ${total} keys have no CL-${cl} row in the server file: ${shown}` : `all ${total} keys have a CL-${cl} row in the server file` };
+}
+
+// A server key list is the layout scan's key file (one name per line: a class name, or Class::Member) or a
+// plain key list (function / native / field lines), or both mixed. A bare name is a field key.
+const layoutKeyLines = (text) => text.split(/\r?\n/).map((l) => (/^\s*(#|$)|^\s*(function|required|native|field) /.test(l) ? l : `field ${l.trim()}`)).join('\n');
+
+// A feed file as rows: the unsigned text export-feed writes, or a signed file (its seq and sig lines
+// are dropped, the signature is not checked here: the step that fetched it verified it).
+function readFeedFile(path, what, opts = {}) {
+  const text = readFileSync(path, 'utf8');
+  return text.split('\n')[1]?.startsWith('seq\t') ? parseSignedFeedRows(text, `${what} ${path}`, opts) : parseFeed(text, `${what} ${path}`, opts);
+}
+
 // ---- Command line -------------------------------------------------------------
 
 export function main(argv) {
@@ -515,7 +624,12 @@ export function main(argv) {
     try {
       // --report is the write report when it exists: its absences count as accounted for. The result is merged into it.
       const written = o.report && existsSync(o.report) ? JSON.parse(readFileSync(o.report, 'utf8').replace(/^\uFEFF/, '')) : {};
-      const out = completeness(parse(readFileSync(header, 'utf8'), 'the header'), numberOf(o.cl, '--cl', { lo: 1 }), Array.isArray(written.absences) ? written.absences : []);
+      const map = parse(readFileSync(header, 'utf8'), 'the header');
+      const cl = numberOf(o.cl, '--cl', { lo: 1 });
+      // A server header with a key list: each key of the list needs a row on the CL (a server file has no absent rows).
+      const out = map.flavour === 'server' && o.keys.length
+        ? serverCompleteness(map, cl, unionKeys(o.keys.map((p) => parseKeys(layoutKeyLines(readFileSync(p, 'utf8')), p))))
+        : completeness(map, cl, Array.isArray(written.absences) ? written.absences : []);
       if (o.report) writeFileSync(o.report, JSON.stringify({ ...written, ...out }, null, 2) + '\n');
       for (const k of out.missing) process.stderr.write(`missing: ${k}\n`);
       process.stdout.write(`${out.line}\n`);
@@ -541,10 +655,46 @@ export function main(argv) {
       return EXIT_ERROR;
     }
   }
+  if (cmd === 'server' && header && o.cl) {
+    try {
+      if (!o.layout && !o.scan) throw new MapError('give --layout <layout.json> or --scan <scan.json>, or both');
+      let scan = null;
+      if (o.scan) {
+        scan = JSON.parse(readFileSync(o.scan, 'utf8').replace(/^﻿/, '')).patterns;
+        if (!Array.isArray(scan)) throw new MapError(`${o.scan} has no patterns array (not an sr-aobscan --json output?)`);
+      }
+      const input = {
+        build: { cl: o.cl, stamp: o.stamp, size: o.size, buildId: o['build-id'] },
+        layout: o.layout ? parseLayoutReport(readFileSync(o.layout, 'utf8'), o.layout) : null,
+        scan,
+      };
+      const out = serverMode(existsSync(header) ? readFileSync(header, 'utf8') : null, input, {
+        base: o.base ? readFeedFile(o.base, 'the base', { server: true }) : null,
+        clientFeed: o['client-feed'] ? readFeedFile(o['client-feed'], 'the client feed') : null,
+      });
+      const report = { written: !!out.map, added: out.added, problems: out.problems, notes: out.notes, unplaced: out.unplaced, skipped: out.skipped, hotfix: out.hotfix };
+      if (o.report) writeFileSync(o.report, JSON.stringify(report, null, 2) + '\n');
+      if (!out.map) {
+        for (const p of out.problems) process.stderr.write(`refused: ${p}\n`);
+        return EXIT_VIOLATION;
+      }
+      writeFileSync(header, out.text);
+      for (const n of out.notes) process.stdout.write(`note: ${n}\n`);
+      for (const u of out.unplaced) process.stdout.write(`no row: ${u.key} (${u.result})\n`);
+      process.stdout.write(`map-mode server: ${out.added.builds} build lines, ${out.added.fields} field rows, ${out.added.functions} function rows added; ${out.unplaced.length} keys not placed, ${out.skipped.length} rows not for the server file${out.hotfix ? '; a hotfix exe: nothing written for it' : ''}\n`);
+      return EXIT_OK;
+    } catch (e) {
+      if (!(e instanceof MapError) && !(e instanceof ParseError) && !(e instanceof SyntaxError) && e.code !== 'ENOENT') throw e;
+      process.stderr.write(`map-mode: ${e.message}\n`);
+      return EXIT_ERROR;
+    }
+  }
   if (cmd !== 'write' || !header || !o.input) {
     process.stderr.write('usage: map-mode.mjs write <header> --input <observations.json> [--keys <keys.txt>]... [--report <file>] [--remeasure true] [--published <signed feed> [--retired <file>]]\n'
       + '       map-mode.mjs assemble <scans.json> --out <observations.json> [--carry <carry.json> --base <header>]\n'
-      + '       map-mode.mjs complete <header> --cl <CL> [--report <write report>]\n');
+      + '       map-mode.mjs complete <header> --cl <CL> [--report <write report>] [--keys <keys.txt>]...   (--keys: a server header only)\n'
+      + '       map-mode.mjs server <server header> --cl <CL> --stamp <hex> --size <hex> --build-id <Steam build id> (--layout <layout.json> | --scan <scan.json>)\n'
+      + '                         [--base <feed>] [--client-feed <feed>] [--report <file>]\n');
     return EXIT_ERROR;
   }
   try {

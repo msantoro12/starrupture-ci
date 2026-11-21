@@ -12,7 +12,7 @@
 // parsed map and writes it back, and refuses any header that is not exactly
 // what it would write itself.
 //
-//   node ci/version-map.mjs init <header> --flavour plugin|loader --built-cl <CL>
+//   node ci/version-map.mjs init <header> --flavour plugin|loader|server --built-cl <CL>
 //   node ci/version-map.mjs add-build <header> --cl <CL> --stamp <hex> --size <hex> --source <text>
 //   node ci/version-map.mjs add-function <header> --key <key> --cl <CL> --rva <hex>
 //        (--pattern <aob> | --rva-only) [--result-offset <n>] [--follow-rel32-at <n>]
@@ -26,7 +26,7 @@
 //   node ci/version-map.mjs remove-key <header> --key <key>
 //   node ci/version-map.mjs prune <header> --keep <CL>[,<CL>...]
 //   node ci/version-map.mjs check <header> [--keys <keys.txt>]...
-//   node ci/version-map.mjs export-feed <header> --out <file>
+//   node ci/version-map.mjs export-feed <header> --out <file> [--server]   (--server: the dedicated server's header)
 //   node ci/version-map.mjs import-published <header> --published <signed feed> [--retired <file>] [--changed <file>]
 //   node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retired <file>] [--changed <file>]
 //   node ci/version-map.mjs restore-published <header> --published <signed feed> --cl <CL> [--retired <file>]
@@ -47,7 +47,8 @@
 // has). prune keeps the builds listed and drops every other build with all its rows.
 // check reads the header (any header off the format fails) and, with --keys,
 // applies the coverage rule over the union of the key lists given.
-// export-feed writes the loader map as the feed: tab-separated, LF, unsigned.
+// export-feed writes the loader map as the feed: tab-separated, LF, unsigned. A server header (flavour
+// server, see "Dedicated server" in ci/VERSION-MAP.md) is exported the same way, with --server.
 // import-published makes the published feed part of the header: it adds every build line and row the
 // signed feed has and the header lacks, so the next export carries them. The feed is read only after
 // its signature verifies (--allow-test-key accepts the TEST key, for test runs). A row both hold with
@@ -84,7 +85,15 @@ export const FEED_MAX_BYTES = 1040000;
 export const EXIT_OK = 0;
 export const EXIT_VIOLATION = 3;
 export const EXIT_ERROR = 2;
-export const FLAVOURS = ['plugin', 'loader'];
+export const FLAVOURS = ['plugin', 'loader', 'server'];
+
+// The dedicated server's header (see "Dedicated server" in ci/VERSION-MAP.md): the loader map's
+// layout with this line after the format line, so a server header is never read as the client's.
+export const SERVER_MARK = '// Dedicated server exe: one build line per CL, address-only function rows.';
+// A server build line's source: the Steam build id of the server app.
+const RE_SERVER_SOURCE = /^server steam_build [0-9]+$/;
+// The one scoped key a server file may carry: an address inside a global, not a plugin's request.
+export const SERVER_SCOPED_KEY = 'ModLoader/GObjects (GUObjectArray.ObjObjects)';
 
 // PluginScanKind; the loader's PatternKind uses the same numbers. FUNCTION_START
 // and DATA read a global key, which names one game symbol; the others read a
@@ -155,10 +164,11 @@ const fnId = (r) => `${r.key}\n${r.fp}\n${r.cl}`;
 const fieldId = (r) => `${r.key}\n${r.cl}`;
 
 export function validate(map, { feed = false } = {}) {
-  need(FLAVOURS.includes(map.flavour), `flavour must be plugin or loader, not ${map.flavour}`);
-  if (feed) need(map.flavour === 'loader' && map.builtCL === null, 'a feed is a loader map without a built CL');
+  need(FLAVOURS.includes(map.flavour), `flavour must be plugin, loader or server, not ${map.flavour}`);
+  if (feed) need(map.flavour !== 'plugin' && map.builtCL === null, 'a feed is a loader or server map without a built CL');
   else need(isInt(map.builtCL, 1, U32), `built CL ${map.builtCL} is not a CL`);
   const plugin = map.flavour === 'plugin';
+  const server = map.flavour === 'server';
   const builds = new Set();
   for (const b of map.builds) {
     need(isInt(b.cl, 1, U32), `build CL ${b.cl} is not a CL`);
@@ -167,6 +177,7 @@ export function validate(map, { feed = false } = {}) {
     need(!plugin || b.cl === map.builtCL, `build CL-${b.cl}: a plugin map holds its built CL-${map.builtCL} only; the loader's map holds every other build`);
     need(isInt(b.stamp, 0, U32) && isInt(b.size, 1, U32), `build CL-${b.cl}: the stamp and the image size must be 32-bit, the size not 0`);
     need(isText(b.source), `build CL-${b.cl}: the source must be printable ASCII without quotes or backslashes`);
+    need(!server || (b.stamp !== 0 && RE_SERVER_SOURCE.test(b.source)), `build CL-${b.cl}: a server build has the server exe's image stamp (not 0) and the source "server steam_build <build id>"`);
   }
   const rows = (list, what, id) => {
     need(list.length <= MAX_ROWS, `more than ${MAX_ROWS} ${what} rows`);
@@ -182,6 +193,7 @@ export function validate(map, { feed = false } = {}) {
   rows(map.fields, 'field', fieldId);
   const absentFields = map.absentFields ?? [];
   need(!plugin || absentFields.length === 0, "absent field rows are the loader map's only");
+  need(!server || absentFields.length === 0, 'a server file has no absent field rows');
   rows(absentFields, 'absent field', fieldId);
   const fieldIds = new Set(map.fields.map(fieldId));
   for (const r of absentFields) need(!fieldIds.has(fieldId(r)), `${rowName(r)}: a field row and an absent field row`);
@@ -208,6 +220,11 @@ export function validate(map, { feed = false } = {}) {
         need(isInt(r.fp, 1, U32), `${rowName(r)}: a scoped row needs the fp of the request it was verified with, and an fp is never 0`);
       }
       need(typeof r.absent === 'boolean', `${rowName(r)}: absent must be true or false`);
+    }
+    if (server) {
+      need(!r.absent, `${rowName(r)}: a server file has no absent rows`);
+      need(r.pattern === null && r.resultOffset === 0 && r.followRel32At === -1 && r.followRipDispAt === -1 && r.rva !== 0, `${rowName(r)}: a server function row is address-only: no pattern, no offsets, an rva`);
+      need(isGlobalKind(r.kind) || (r.key === SERVER_SCOPED_KEY && r.kind === KIND.ANY), `${rowName(r)}: a server file has global keys (kind 1 or 4) and the one scoped key ${SERVER_SCOPED_KEY} (kind 6)`);
     }
     if (r.absent) {
       need(r.pattern === null && r.rva === 0 && r.resultOffset === 0 && r.followRel32At === -1 && r.followRipDispAt === -1, `${rowName(r)}: an absent row has no pattern, rva or offsets`);
@@ -278,6 +295,7 @@ export function emit(map) {
   const out = [
     '// Generated by starrupture-ci ci/version-map.mjs. Do not edit by hand.',
     '// Format: ci/VERSION-MAP.md in starrupture-ci.',
+    ...(map.flavour === 'server' ? [SERVER_MARK] : []),
     '#pragma once',
     '#include <array>',
     '#include <cstdint>',
@@ -355,7 +373,7 @@ export function parse(text, where = 'header') {
   text = text.replace(/\r\n/g, '\n');
   const lines = text.split('\n');
   const plugin = lines.includes('#include "plugin_interface.h"');
-  const map = { flavour: plugin ? 'plugin' : 'loader', builtCL: 0, builds: [], functions: [], fields: [], absentFields: [] };
+  const map = { flavour: plugin ? 'plugin' : lines.includes(SERVER_MARK) ? 'server' : 'loader', builtCL: 0, builds: [], functions: [], fields: [], absentFields: [] };
   let section = null;
   let key = null;
   lines.forEach((line, i) => {
@@ -440,7 +458,8 @@ export function buildMismatch(old, b) {
 export function addBuild(map, b) {
   const old = map.builds.find((x) => x.cl === b.cl);
   if (old) {
-    const why = buildMismatch(old, b);
+    // A server label is `server steam_build <id>`, with no branch word: only the exe is compared.
+    const why = map.flavour === 'server' ? (old.stamp !== b.stamp || old.size !== b.size ? 'another image stamp or size' : null) : buildMismatch(old, b);
     need(why === null, `build CL-${b.cl} is already in the table with other values: ${why}`);
     return false;
   }
@@ -452,7 +471,7 @@ export function addBuild(map, b) {
 // A verified row. In the loader map it replaces an absent row for the same key,
 // fp and CL: CI has now placed the key there.
 export function addFunction(map, r) {
-  const loader = map.flavour === 'loader';
+  const loader = map.flavour !== 'plugin';
   need(loader || (r.kind === undefined && r.fp === undefined), 'a plugin map has no kinds or fingerprints (--kind, --fp)');
   const row = {
     key: r.key, kind: loader ? r.kind : 0, fp: r.fp ?? 0, cl: r.cl, absent: false, pattern: r.pattern,
@@ -565,7 +584,7 @@ const FEED_COLUMNS = { build: 5, function: 12, absent: 8, field: 7 };
 const canon = (row) => JSON.stringify(Object.keys(row).sort().map((k) => [k, row[k]]));
 
 export function exportFeed(map) {
-  need(map.flavour === 'loader', "export-feed reads the loader's map; a plugin map has no feed");
+  need(map.flavour !== 'plugin', "export-feed reads the loader's or the server's map; a plugin map has no feed");
   validate(map, { feed: map.builtCL === null });
   const build = new Map(map.builds.map((b) => [b.cl, b]));
   const or = (s) => s ?? '-';
@@ -586,10 +605,10 @@ export function exportFeed(map) {
 // Reads a feed export-feed wrote, strictly: loosely into the model, then
 // exported again, and any byte of difference is an error naming the first line.
 // No CRLF: the feed is bytes as signed, not a checkout.
-export function parseFeed(text, where = 'feed') {
+export function parseFeed(text, where = 'feed', { server = false } = {}) {
   const lines = text.split('\n');
   need(lines[0] === `format\t${FEED_FORMAT}`, `${where}:1: not a format ${FEED_FORMAT} feed; found ${JSON.stringify(lines[0])}`);
-  const map = { flavour: 'loader', builtCL: null, builds: [], functions: [], fields: [], absentFields: [] };
+  const map = { flavour: server ? 'server' : 'loader', builtCL: null, builds: [], functions: [], fields: [], absentFields: [] };
   const dec = (s) => (/^-?\d+$/.test(s) ? Number(s) : NaN);
   const hx = (s) => (/^0x[0-9A-F]+$/.test(s) ? parseInt(s, 16) : NaN);
   const orNull = (s) => (s === '-' ? null : s);
@@ -650,7 +669,7 @@ export class SignatureRefused extends MapError {}
 // Throws SignatureRefused when the signature does not verify (or is a TEST key without
 // allowTestKey), MapError when a verified file is not a feed this tool reads. There is no
 // reading of an unverified file. keys: the trusted public keys (vmap-sign's PUBLIC_KEYS by default).
-export function readPublished(bytes, { keys, allowTestKey = false, where = 'the published feed' } = {}) {
+export function readPublished(bytes, { keys, allowTestKey = false, where = 'the published feed', server = false } = {}) {
   let r;
   try {
     r = verifyFeed(bytes, { keys });
@@ -658,14 +677,14 @@ export function readPublished(bytes, { keys, allowTestKey = false, where = 'the 
     throw new SignatureRefused(`${where}: ${e.message}`);
   }
   if (r.test && !allowTestKey) throw new SignatureRefused(`${where}: signed with the TEST key ${r.keyId}`);
-  return parseSignedFeedRows(bytes, where);
+  return parseSignedFeedRows(bytes, where, { server });
 }
 
 // The rows of a signed feed file, with no signature check: for a file a step of the same run already
 // verified (vmap-sign.mjs verify). [format, seq, ...rows, sig, '']: the rows alone are what export-feed wrote.
-export function parseSignedFeedRows(bytes, where = 'the published feed') {
+export function parseSignedFeedRows(bytes, where = 'the published feed', { server = false } = {}) {
   const lines = (Buffer.isBuffer(bytes) ? bytes.toString('utf8') : bytes).split('\n');
-  return parseFeed([lines[0], ...lines.slice(2, -2), ''].join('\n'), where);
+  return parseFeed([lines[0], ...lines.slice(2, -2), ''].join('\n'), where, { server });
 }
 
 const ROW_LIST_KINDS = ['function', 'field', 'build'];
@@ -698,7 +717,7 @@ const differsIn = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])]
 // against a verified one included), unless changed lists it: then the header's row stands and it is
 // in `kept`. Retired rows are not added. With any conflict `map` is null: nothing is merged.
 export function importPublished(base, published, { retired = NO_ROWS, changed = NO_ROWS } = {}) {
-  need(base.flavour === 'loader', "the published feed is the loader map's");
+  need(base.flavour !== 'plugin', "the published feed is the loader map's or the server's");
   const map = parse(emit(base), 'the header');
   const added = { builds: 0, functions: 0, fields: 0 };
   const conflicts = [];
@@ -952,7 +971,7 @@ export function checkMap(map, keys) {
 
 // ---- Command line -----------------------------------------------------------
 
-const FLAGS = new Set(['rva-only', 'allow-test-key']);
+const FLAGS = new Set(['rva-only', 'allow-test-key', 'server']);
 const LISTS = new Set(['keys']);
 
 function parseArgs(argv) {
@@ -1073,11 +1092,14 @@ export function main(argv) {
     process.stdout.write(`${file}: ${map.builds.length} builds, ${map.functions.length} function rows, ${map.fields.length} field rows; ${opt.keys ? `${problems.length} coverage problems` : 'format only'}\n`);
     return problems.length ? EXIT_VIOLATION : EXIT_OK;
   } else if (cmd === 'export-feed') {
-    only(opt, ['out'], cmd);
+    only(opt, ['out', 'server'], cmd);
     need(typeof opt.out === 'string', '--out is required');
     const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
     need(!same(resolve(opt.out), resolve(file)), '--out must not be the header');
-    const text = exportFeed(load());
+    const map = load();
+    // The flag names what the file is for, so a server header never goes out as the client's file or the other way round.
+    need((map.flavour === 'server') === (opt.server === true), map.flavour === 'server' ? `${file} is a server header: give --server` : `--server needs a server header; ${file} is a ${map.flavour} map`);
+    const text = exportFeed(map);
     writeFileSync(opt.out, text);
     process.stderr.write(`version-map: ${opt.out}: feed format ${FEED_FORMAT}, ${text.split('\n').length - 1} lines, ${Buffer.byteLength(text)} bytes\n`);
   } else if (['import-published', 'check-preserve', 'restore-published', 'carry-keys'].includes(cmd)) {

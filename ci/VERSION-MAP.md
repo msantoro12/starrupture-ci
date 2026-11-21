@@ -344,6 +344,43 @@ published rows it did not measure or measured as absent; only a different measur
 `changed-rows.txt` entry. What a run does with the base, and what to do when it holds, is in
 `MAP-MODE.md` ("The published feed as the base").
 
+## Dedicated server
+
+The dedicated server is its own exe, so it gets its own header (`server.h`) and its own feed file.
+The client's header and feed are not touched.
+
+Steps:
+
+1. `node ci/version-map.mjs init server.h --flavour server --built-cl <CL>` makes the header.
+2. `add-build` takes the server exe. Its `--source` reads `server steam_build <build id>`, and the stamp
+   and size are the server exe's own.
+3. `add-function` takes address-only rows (`--rva-only`): kind 1 for a function start, kind 4 for a
+   global. `add-field` takes member offsets and class sizes as it does for the client.
+4. `node ci/version-map.mjs export-feed server.h --out feed.txt --server` writes the feed. The same
+   `format 1` text, the same order for any input order, and the same size cap. The flag has to match
+   the header: a server header without `--server`, or `--server` on another header, is refused.
+
+What is different from the client's file:
+
+- One server exe per CL. A server CL may equal a client CL with another stamp or size; the server
+  file takes it, the client file still refuses it.
+- Function rows are address-only. The one scoped row is `ModLoader/GObjects (GUObjectArray.ObjObjects)`
+  (kind 6); its fingerprint is copied from the client's row for the same key.
+- No absent rows and no absent fields. A key with no row is a key with no row.
+- No `ModLoader/` row other than that GObjects row.
+
+Example, the server fixture (`ci/fixtures/version-map/server.h`, its feed `server.feed.txt`):
+
+```
+node ci/version-map.mjs init server.h --flavour server --built-cl 127004
+node ci/version-map.mjs add-build server.h --cl 127004 --stamp 0x2E3595FF --size 0x0E2A8000 --source "server steam_build 25642172"
+node ci/version-map.mjs add-function server.h --key GWorld --cl 127004 --rva 0x0E601F38 --rva-only --kind 4
+node ci/version-map.mjs add-field server.h --key UCrMassPersistentIDSubsystem::MaxID --cl 127004 --offset 0xD0 --size 0x4
+node ci/version-map.mjs export-feed server.h --out server.feed.txt --server
+```
+
+`map-mode.mjs server` fills the same header from the scanner's output (`MAP-MODE.md`, "Dedicated server").
+
 ## What never goes in
 
 No PDB names, no types, no bytes of the exe: only the components' own key text,
