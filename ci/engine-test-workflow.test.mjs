@@ -85,15 +85,24 @@ test('rows verdict: the rows arguments are passed in rows mode only, from the se
   assert.match(s, /ROWS_SEQ: \$\{\{ steps\.rows\.outputs\.rows_seq \}\}/);
   assert.match(s, /ROWS_KEY: \$\{\{ steps\.rows\.outputs\.rows_key \}\}/);
   assert.match(s, /ROWS_CL: \$\{\{ steps\.rows\.outputs\.rows_cl \}\}/);
-  assert.match(s, /if \(\$env:MODE -eq 'rows'\) \{\n\s+\$rows = @\{ ExpectRows = \[int\]\$env:ROWS_EXPECT; ExpectedCl = \$env:ROWS_CL; ExpectSeq = \$env:ROWS_SEQ; ExpectKey = \$env:ROWS_KEY \}/);
+  assert.match(s, /if \(\$env:MODE -eq 'rows'\) \{\n(?:\s+if .*\n)?\s+\$rows = @\{ ExpectRows = \[int\]\$env:ROWS_EXPECT; ExpectedCl = \$env:ROWS_CL; ExpectSeq = \$env:ROWS_SEQ; ExpectKey = \$env:ROWS_KEY \}/);
   assert.match(s, /-ReadyRegex \$env:READY_REGEX @rows\n/);
 });
 
 test('rows mode publishes nothing: read-only token, no release or upload of the seeded file', () => {
   assert.match(wf, /\npermissions:\n {2}contents: read\n/);
-  assert.ok(!/gh release|gh api|action-gh-release|softprops|vmap-feed|releases\/upload/.test(wf.replace(/#.*\n/g, '\n').replace(/'rows_url'[^\n]*\n/g, '')), 'no release step');
+  assert.ok(!/gh release|gh api|action-gh-release|softprops|vmap-feed|releases\/upload/.test(wf.replace(/#.*\n/g, '\n')), 'no release step');
   // The only artifacts are our build outputs and the trimmed logs; the seeded file stays in RUNNER_TEMP.
   const uploads = [...wf.matchAll(/upload-artifact@[^\n]*\n\s+with:\n\s+name: ([^\n]+)\n/g)].map((m) => m[1]);
   assert.deepEqual(uploads, ['engine-test-build', 'engine-test-logs-${{ inputs.mode }}']);
   assert.match(step(engine, 'Seed the signed server rows as the loader\'s cache'), /Join-Path \$env:RUNNER_TEMP 'version-map-server\.staged\.txt'/);
+});
+
+test('rows inputs: a blank or zero rows_expect and a missing URL fail before the build, and again before the verdict', () => {
+  const s = step(build, 'Check the rows inputs');
+  assert.match(s, /if: \$\{\{ inputs\.mode == 'rows' \}\}\n/);
+  assert.ok(build.indexOf('- name: Check the rows inputs') < build.indexOf('- name: Check out the loader'), 'the first step of the build job');
+  assert.match(s, /\[int\]::TryParse\(\$env:ROWS_EXPECT, \[ref\]\$n\) -or \$n -lt 1\) \{ throw/);
+  assert.match(s, /\$env:ROWS_URL -notmatch '\^https:/);
+  assert.match(step(engine, 'Verdict'), /if \(\[int\]\$env:ROWS_EXPECT -lt 1\) \{ throw/);
 });

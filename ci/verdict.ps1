@@ -1034,20 +1034,24 @@ Add-Check 'loader_not_disabled' ($null -eq $disabled -and $null -ne $ml -and $ml
 if ($ExpectRows -gt 0) {
     # ---- The loader's log wording this group matches: change it here and nowhere else ----
     # {CL} stands for the build's CL, {SEQ} for the seeded file's seq.
-    $RowsLoaded = if ($ExpectKey -ceq 'k1') { '\[VersionFeed\] Feed seq {SEQ} \(key k1, TEST KEY\)' } else { '\[VersionFeed\] Feed seq {SEQ} \(key k2\)' }
+    # The group 1 of the match is the number of rows the loader took from the file: it must be above 0.
+    $RowsLoaded = if ($ExpectKey -ceq 'k1') { '\[VersionFeed\] Feed seq {SEQ} \(key k1, TEST KEY\): (\d+) rows from the feed' } else { '\[VersionFeed\] Feed seq {SEQ} \(key k2\): (\d+) rows from the feed' }
     # Any [VersionFeed] line at WARN or ERROR level, or one that says a cache or a CL was refused.
     $RowsRefusal = '\[VersionFeed\].*(feed cache is not usable|feed cache .* could not be read|from the feed is refused|fetched feed is refused|feed could not be fetched)'
     $RowsRefusalLevel = '\[(WARN|ERROR)\s*\].*\[VersionFeed\]'
-    # One entry per kind of row the loader logs when it serves a row of this CL to a plugin.
-    # Field rows: VERIFIED, "loader map, CL-<cl> row". The wording for function and global rows is
-    # not confirmed yet, so only field rows count until an entry for them is added to this list.
+    # The text of a served row: the loader names the row it used as "loader map, CL-<cl> row", for
+    # every kind of row (field, function, global; a function row without a pattern adds " (address
+    # on this exe)"). One entry per wording; add another here if the loader logs a different one.
     $RowsServed = @(
-        @{ Kind = 'field'; Regex = 'loader map, CL-{CL} row' }
+        @{ Kind = 'any'; Regex = 'loader map, CL-{CL} row' }
     )
-    # A line that carries the served-row text but says the row was not used does not count.
-    $RowsNotUsed = 'cannot be checked|is not used|refused|reflected \(no row'
-    # A plugin key that fell back to reflection because the file has no row for the CL.
-    $RowsReflectedNoRow = 'reflected \(no row for CL-{CL}\)'
+    # A line that carries the served-row text but is not a plugin being served: a row that was
+    # not used, a row the game overruled (the loader's WARN "..., the game says ..."), and the
+    # loader's own entries (owner ModLoader), which the built-in table serves with or without the file.
+    $RowsNotUsed = 'cannot be checked|is not used|refused|reflected \(no row|the game says|\[Map\] ModLoader: '
+    # A plugin key that fell back to reflection because the file has no row for the CL. The loader
+    # may add "; the loader map, CL-<other> row agrees)" after the CL, so only the start is matched.
+    $RowsReflectedNoRow = 'reflected \(no row for CL-{CL}\b'
     # ---------------------------------------------------------------------------------------
     $inputsOk = ($ExpectedCl -cmatch '^[1-9][0-9]{0,8}$') -and ($ExpectSeq -cmatch '^[1-9][0-9]{0,12}$')
     Add-Check 'rows_expected' $inputsOk $(if ($inputsOk) { "expecting seq $ExpectSeq (key $ExpectKey), at least $ExpectRows served-row lines for CL-$ExpectedCl" } else { '' })
@@ -1057,7 +1061,9 @@ if ($ExpectRows -gt 0) {
         $seq = [regex]::Escape($ExpectSeq)
         $loadedRe = $RowsLoaded.Replace('{SEQ}', $seq)
         $loaded = First-Match $ml $loadedRe -Case
-        Add-Check 'rows_feed_loaded' ($null -ne $loaded) $loaded
+        $loadedRows = 0
+        if ($loaded -and $loaded -cmatch $loadedRe) { $loadedRows = [int]$Matches[1] }
+        Add-Check 'rows_feed_loaded' ($null -ne $loaded -and $loadedRows -gt 0) $(if ($loaded -and $loadedRows -eq 0) { "0 rows taken from the file: $loaded" } else { $loaded })
         $refused = First-Match $ml $RowsRefusal
         if (-not $refused) { $refused = First-Match $ml $RowsRefusalLevel }
         Add-Check 'rows_feed_not_refused' ($haveMl -and $null -eq $refused) $(if ($refused) { "FOUND: $refused" } elseif ($haveMl) { 'no [VersionFeed] refusal or warning line' } else { '' })

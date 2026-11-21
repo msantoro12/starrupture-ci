@@ -100,9 +100,9 @@ foreach ($k in $cases.Keys) {
 # and must fail the check it names.
 $rowsFeedK1 = "[16:51:04.150] [INFO ] [T:01484] [VersionFeed] Feed seq 41 (key k1, TEST KEY): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)"
 $rowsFeedK2 = "[16:51:04.150] [INFO ] [T:01484] [VersionFeed] Feed seq 41 (key k2): 12 rows from the feed, 0 discarded (0 clashed with the loader's map on this exe, 0 absent rows filled, 0 scoped rows without fp dropped)"
-$rowsServedA = '[16:51:41.200] [INFO ] [T:75664] [Map] Waila: UWorld::GameState: loader map, CL-127004 row, offset 0x1B0'
-$rowsServedB = '[16:51:41.210] [INFO ] [T:75664] [Map] Waila: AActor: loader map, CL-127004 row, size 0x2A8'
-$rowsNoRow = '[16:51:41.300] [INFO ] [T:75664] [Map] Waila: UCrFoo::Bar: reflected (no row for CL-127004)'
+$rowsServedA = '[16:51:41.200] [INFO ] [T:75664] [ModLoader] [Map] Waila: UWorld::GameState: loader map, CL-127004 row (0x1B0/0x8)'
+$rowsServedB = '[16:51:41.210] [INFO ] [T:75664] [ModLoader] [Map] Waila: UCrFoo::Run: loader map, CL-127004 row (address on this exe)'
+$rowsNoRow = '[16:51:41.300] [INFO ] [T:75664] [ModLoader] [Map] Waila: UCrFoo::Bar: reflected (no row for CL-127004; the loader map, CL-126000 row agrees)'
 $rowsBaseArgs = @('-ExpectRows', '2', '-ExpectedCl', '127004', '-ExpectSeq', '41', '-ExpectKey', 'k1')
 function Set-Rows($c, [string[]]$Lines = @($rowsFeedK1, $rowsServedA, $rowsServedB), [string[]]$RowArgs = $rowsBaseArgs) {
     $c.ml = @($c.ml) + @($Lines)
@@ -116,13 +116,17 @@ $rowsCases = [ordered]@{
  'rows_feed_wrong_seq'           = @{ Mut = { param($c) Set-Rows $c @(($rowsFeedK1 -replace 'seq 41', 'seq 40'), $rowsServedA, $rowsServedB) }; Fail = 'rows_feed_loaded' }
  'rows_feed_release_key_on_test' = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK2, $rowsServedA, $rowsServedB) }; Fail = 'rows_feed_loaded' }
  'rows_feed_test_key_on_release' = @{ Mut = { param($c) Set-Rows $c -RowArgs @('-ExpectRows', '2', '-ExpectedCl', '127004', '-ExpectSeq', '41', '-ExpectKey', 'k2') }; Fail = 'rows_feed_loaded' }
+ 'rows_feed_zero_rows'           = @{ Mut = { param($c) Set-Rows $c @(($rowsFeedK1 -replace ': 12 rows from the feed', ': 0 rows from the feed'), $rowsServedA, $rowsServedB) }; Fail = 'rows_feed_loaded' }
+ 'rows_loader_entries_only'      = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, ($rowsServedA -replace 'Waila: UWorld::GameState', 'ModLoader: GWorld'), ($rowsServedB -replace 'Waila: UCrFoo::Run', 'ModLoader: GNames')) }; Fail = 'rows_served_count' }
+ 'rows_game_overrules_row'       = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA, '[16:51:41.220] [WARN ] [T:75664] [ModLoader] [Map] Waila: UWorld::Levels: the loader map, CL-127004 row says 0x70, the game says 0x78; the game wins') }; Fail = 'rows_served_count' }
+ 'rows_reflected_no_row_plain'   = @{ Mut = { param($c) Set-Rows $c; $c.ml += ($rowsNoRow -replace '; the loader map, CL-126000 row agrees\)', ')') }; Fail = 'rows_no_reflected_no_row' }
  'rows_cache_unusable'           = @{ Mut = { param($c) Set-Rows $c; $c.ml += "[16:51:04.160] [INFO ] [T:01484] [VersionFeed] The feed cache is not usable (signature does not verify); using the loader's own map" }; Fail = 'rows_feed_not_refused' }
  'rows_cl_refused'               = @{ Mut = { param($c) Set-Rows $c; $c.ml += '[16:51:04.160] [INFO ] [T:01484] [VersionFeed] CL-127004 from the feed is refused: it lacks 3 of the keys the loader needs' }; Fail = 'rows_feed_not_refused' }
  'rows_feed_warning'             = @{ Mut = { param($c) Set-Rows $c; $c.ml += '[16:51:04.160] [WARN ] [T:01484] [VersionFeed] something unexpected' }; Fail = 'rows_feed_not_refused' }
  'rows_too_few'                  = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA) }; Fail = 'rows_served_count' }
  'rows_none_served'              = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1) }; Fail = 'rows_served_count' }
  'rows_served_other_cl'          = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, ($rowsServedA -replace 'CL-127004', 'CL-128786'), ($rowsServedB -replace 'CL-127004', 'CL-128786')) }; Fail = 'rows_served_count' }
- 'rows_served_line_not_used'     = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA, '[16:51:41.220] [INFO ] [T:75664] [Map] Waila: refused: no row for CL-129402; the loader map, CL-127004 row cannot be checked on this build, so it is not used') }; Fail = 'rows_served_count' }
+ 'rows_served_line_not_used'     = @{ Mut = { param($c) Set-Rows $c @($rowsFeedK1, $rowsServedA, '[16:51:41.220] [INFO ] [T:75664] [ModLoader] [Map] Waila: refused: no row for CL-129402; the loader map, CL-127004 row cannot be checked on this build, so it is not used') }; Fail = 'rows_served_count' }
  'rows_reflected_no_row'         = @{ Mut = { param($c) Set-Rows $c; $c.ml += $rowsNoRow }; Fail = 'rows_no_reflected_no_row' }
  'rows_reflected_expected_key'   = @{ Mut = { param($c) Set-Rows $c -RowArgs ($rowsBaseArgs + @('-ExpectKeys', 'UCrFoo::Bar')); $c.ml += $rowsNoRow }; Fail = 'rows_no_reflected_no_row' }
  # Not failures

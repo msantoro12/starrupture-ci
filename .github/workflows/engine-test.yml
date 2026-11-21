@@ -71,6 +71,19 @@ jobs:
     outputs:
       required_cl: ${{ steps.cl.outputs.required_cl }}
     steps:
+      - name: Check the rows inputs
+        if: ${{ inputs.mode == 'rows' }}
+        shell: pwsh
+        env:
+          ROWS_URL: ${{ inputs.rows_url }}
+          ROWS_EXPECT: ${{ inputs.rows_expect }}
+        run: |
+          # Fail before anything is built: a blank or zero rows_expect would switch the "rows served"
+          # checks off, and rows mode would pass having checked nothing.
+          if ($env:ROWS_URL -notmatch '^https://[^\s]+$') { throw 'rows mode needs rows_url: the https URL of the signed server file' }
+          $n = 0
+          if (-not [int]::TryParse($env:ROWS_EXPECT, [ref]$n) -or $n -lt 1) { throw "rows_expect must be a whole number of at least 1 (got '$($env:ROWS_EXPECT)')" }
+
       - name: Check out the loader (with its pinned Game SDK)
         uses: actions/checkout@v7.0.1
         with:
@@ -288,7 +301,7 @@ jobs:
           if (-not $exe) { throw 'Shipping exe not found' }
           $dir = $exe.DirectoryName
           $tmp = Join-Path $env:RUNNER_TEMP 'version-map-server.staged.txt'
-          Invoke-WebRequest -Uri $env:ROWS_URL -OutFile $tmp -UseBasicParsing -MaximumRedirection 5
+          Invoke-WebRequest -Uri $env:ROWS_URL -OutFile $tmp -UseBasicParsing -MaximumRedirection 5 -TimeoutSec 120
           $bytes = [IO.File]::ReadAllBytes($tmp)
           if ($bytes.Length -eq 0 -or $bytes.Length -gt 1MB) { throw "the file is $($bytes.Length) bytes: the loader reads at most 1 MiB" }
           $text = [Text.Encoding]::UTF8.GetString($bytes)
@@ -384,6 +397,7 @@ jobs:
           # Rows mode adds the "rows served" checks; every other mode runs the verdict as before.
           $rows = @{}
           if ($env:MODE -eq 'rows') {
+            if ([int]$env:ROWS_EXPECT -lt 1) { throw 'rows_expect must be at least 1' }
             $rows = @{ ExpectRows = [int]$env:ROWS_EXPECT; ExpectedCl = $env:ROWS_CL; ExpectSeq = $env:ROWS_SEQ; ExpectKey = $env:ROWS_KEY }
             $keys = @($env:ROWS_KEYS -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             if ($keys.Count -gt 0) { $rows.ExpectKeys = $keys }
