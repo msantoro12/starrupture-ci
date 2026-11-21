@@ -346,8 +346,8 @@ published rows it did not measure or measured as absent; only a different measur
 
 ## Dedicated server
 
-The dedicated server is its own exe, so it gets its own header (`server.h`) and its own feed file.
-The client's header and feed are not touched.
+The dedicated server is its own exe, so its version object map gets its own header (`server.h`) and
+its own feed file. The client's header and feed are not touched.
 
 Steps:
 
@@ -368,6 +368,8 @@ What is different from the client's file:
   (kind 6); its fingerprint is copied from the client's row for the same key.
 - No absent rows and no absent fields. A key with no row is a key with no row.
 - No `ModLoader/` row other than that GObjects row.
+- A server feed does not merge into a client header (`import-published`), and a client feed does not
+  merge into a server header: the build lines tell them apart.
 
 Example, the server fixture (`ci/fixtures/version-map/server.h`, its feed `server.feed.txt`):
 

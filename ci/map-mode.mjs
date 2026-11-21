@@ -61,6 +61,7 @@ import {
   keepPublished, parse, parseFeed, parseKeys, parseRowList, parseSignedFeedRows, readPublished, replaceBuild, unionKeys,
 } from './version-map.mjs';
 import { ParseError } from './layout-diff.mjs';
+import { REFLECTED_SIZE_KEYS } from './field-rows.mjs';
 import { parseLayoutReport } from './layout-table.mjs';
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -561,6 +562,8 @@ export function serverMode(headerText, input, { base = null, clientFeed = null }
   if (!old && attempt(() => addBuild(map, { cl, stamp, size, source: `server steam_build ${b.buildId}` }))) out.added.builds++;
   for (const k of [...(input.layout ?? [])].sort((x, y) => cmp(x.key, y.key))) {
     if (k.result !== 'OK') { out.unplaced.push({ key: k.key, result: k.result }); continue; }
+    // The PDB sizes these as the SIMD register, not the reflected struct, as for the client: no row.
+    if (REFLECTED_SIZE_KEYS.has(k.key)) { out.notes.push(`${k.key}: the PDB size is the register's; no row`); continue; }
     const member = k.key.includes('::');
     if (member && !Number.isInteger(k.offset)) { out.problems.push(`${k.key}: the layout entry is OK without an offset`); continue; }
     const row = { key: k.key, cl, offset: member ? k.offset : 0, size: k.size, mask: member ? (k.boolMask ?? 0) : 0 };
@@ -588,10 +591,11 @@ export function serverMode(headerText, input, { base = null, clientFeed = null }
 // The keys of a key list (union of parseKeys results) that have no row on `cl` in a server header:
 // a function key needs a function row, a native or field key (a member, or a class name for its
 // size) a field row. A server file has no absent rows, so a key with no row is a gap, and `required`
-// marks nothing more here. Returns { missing: [key], line }.
+// marks nothing more here. FTransform::Translation and Scale3D are never written (see serverMode), so
+// they are not asked for. Returns { missing: [key], line }.
 export function serverCompleteness(map, cl, keys) {
   const fn = (key) => map.functions.some((r) => r.key === key && r.cl === cl);
-  const field = (key) => map.fields.some((r) => r.key === key && r.cl === cl);
+  const field = (key) => REFLECTED_SIZE_KEYS.has(key) || map.fields.some((r) => r.key === key && r.cl === cl);
   const missing = [...new Set([...[...keys.functions].filter((k) => !fn(k)), ...[...keys.native.keys(), ...keys.fields].filter((k) => !field(k))])].sort(cmp);
   const total = keys.functions.size + keys.native.size + keys.fields.size;
   const shown = missing.slice(0, 5).join(', ') + (missing.length > 5 ? `, +${missing.length - 5} more` : '');

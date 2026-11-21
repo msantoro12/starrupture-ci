@@ -1202,3 +1202,17 @@ test('server and complete from the command line, then export-feed --server', () 
   assert.match(client.stderr, /server command writes a server header/);
   assert.equal(readFileSync(join(dir, 'client.h'), 'utf8'), header());
 });
+
+test('server: FTransform::Translation and Scale3D get no row (the PDB size is the register), with a note, and complete does not ask for them', () => {
+  const layout = [
+    ...serverInput().layout,
+    { key: 'FTransform::Translation', result: 'OK', offset: 32, size: 32, boolMask: 0 },
+    { key: 'FTransform::Scale3D', result: 'OK', offset: 64, size: 32, boolMask: 0 },
+  ];
+  const out = serverMode(null, serverInput({ layout }), { clientFeed: clientFeed() });
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.text, fixt('server.h'));
+  assert.deepEqual(out.notes, ["FTransform::Scale3D: the PDB size is the register's; no row", "FTransform::Translation: the PDB size is the register's; no row"].sort());
+  const keys = parseKeys('field FTransform::Translation\nfield UCrMassPersistentIDSubsystem::MaxID\n');
+  assert.deepEqual(serverCompleteness(out.map, 127004, keys).missing, []);
+});

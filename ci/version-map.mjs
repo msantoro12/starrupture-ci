@@ -718,6 +718,9 @@ const differsIn = (a, b) => [...new Set([...Object.keys(a), ...Object.keys(b)])]
 // in `kept`. Retired rows are not added. With any conflict `map` is null: nothing is merged.
 export function importPublished(base, published, { retired = NO_ROWS, changed = NO_ROWS } = {}) {
   need(base.flavour !== 'plugin', "the published feed is the loader map's or the server's");
+  // A server feed does not merge into a client header, nor the reverse: its builds all carry the server label, or none does.
+  need(published.builds.every((b) => RE_SERVER_SOURCE.test(b.source) === (base.flavour === 'server')),
+    base.flavour === 'server' ? 'the published feed has a build that is not a server exe; this header is a server map' : `the published feed is the server's file (server steam_build lines); this header is a ${base.flavour} map`);
   const map = parse(emit(base), 'the header');
   const added = { builds: 0, functions: 0, fields: 0 };
   const conflicts = [];

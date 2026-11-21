@@ -1247,8 +1247,8 @@ checks: nothing here judges it.
 
 ## Dedicated server
 
-`map-mode.mjs server` writes the dedicated server's header (`flavour server`, see `VERSION-MAP.md`,
-"Dedicated server"). It never touches the client's header, and `write` refuses a server header.
+`map-mode.mjs server` writes the dedicated server's version object map header (`flavour server`, see
+`VERSION-MAP.md`, "Dedicated server"). It never touches the client's header, and `write` refuses a server header.
 It makes rows only; reading the published server file as the base and publishing are separate steps.
 
 Inputs:
@@ -1268,6 +1268,8 @@ Inputs:
 
 Rules:
 
+- `FTransform::Translation` and `FTransform::Scale3D` get no row: the PDB sizes them as the SIMD
+  register, as for the client. The run says so in `notes`, and `complete` does not ask for them.
 - A row already in the file with other values is refused and nothing is written (exit 3).
 - The same CL with another stamp or size is a hotfix. Nothing is written for it, the existing build line
   stays, and the report's `hotfix` names both exes.

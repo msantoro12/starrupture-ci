@@ -270,7 +270,7 @@ test('export-feed refuses a feed over its size cap', () => {
   for (let i = 1; i <= fits; i++) map.functions.push(row(i));
   assert.ok(Buffer.byteLength(exportFeed(map)) <= FEED_MAX_BYTES);
   map.functions.push(row(fits + 1));
-  assert.throws(() => exportFeed(map), MapError);
+  assert.throws(() => exportFeed(map), /over the 1040000 the export allows/);
   // The cap (1,040,000 bytes) is under the loader's own cap of 1,048,576, and the refusal names the size.
   assert.equal(FEED_MAX_BYTES, 1040000);
   assert.ok(FEED_MAX_BYTES < 1048576, 'the cap is under the loader cap, with room for the seq and sig lines');
@@ -1218,7 +1218,7 @@ test('the server export refuses a file over FEED_MAX_BYTES', () => {
   const map = withServerBuild();
   const per = `field\tAAAAAAAAAAAAAAAAAAAA::Member0000000\t127004\t0x8\t0x4\t0x0\n`.length;
   for (let i = 0; i < Math.ceil(FEED_MAX_BYTES / per) + 10; i++) map.fields.push({ key: `AAAAAAAAAAAAAAAAAAAA::Member${String(i).padStart(7, '0')}`, cl: 127004, offset: 8, size: 4, mask: 0, member: null });
-  assert.throws(() => exportFeed(map), MapError);
+  assert.throws(() => exportFeed(map), /over the 1040000 the export allows/);
 });
 
 test('the server file is signed and read like the client file: a TEST key is accepted only when asked', () => {
@@ -1255,4 +1255,22 @@ test('the server header compiles as C++20', { skip: !compiler && 'no g++ or clan
     const r = spawnSync(compiler, ['-std=c++20', '-fsyntax-only', '-Wall', '-Wextra', '-Werror', '-I', dir, src], { encoding: 'utf8', windowsHide: true });
     assert.equal(r.status, 0, r.stderr);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a server feed does not merge into a client header, nor a client feed into a server header', () => {
+  const serverFeed = parseFeed(fixture('server.feed.txt'), 'server feed', { server: true });
+  const clientFeed = parseFeed(fixture('loader.feed.txt'), 'client feed');
+  assert.throws(() => importPublished(parse(fixture('loader.h')), serverFeed), /the published feed is the server's file.*this header is a loader map/);
+  assert.throws(() => importPublished(parse(fixture('server.h')), clientFeed), /not a server exe; this header is a server map/);
+  // The same flavour merges as before.
+  assert.ok(importPublished(parse(fixture('server.h')), serverFeed).map);
+  assert.ok(importPublished(parse(fixture('loader.h')), clientFeed).map);
+  // On the command line: a signed client file into the server header exits 2 and leaves the header alone.
+  const s = scratch({ 'server.h': fixture('server.h'), 'k1.txt': k1Fixture() });
+  try {
+    const r = run('import-published', s.path('server.h'), '--published', s.path('k1.txt'), '--allow-test-key');
+    assert.equal(r.code, 2, r.err);
+    assert.match(r.err, /not a server exe; this header is a server map/);
+    assert.equal(readFileSync(s.path('server.h'), 'utf8'), fixture('server.h'));
+  } finally { s.done(); }
 });
