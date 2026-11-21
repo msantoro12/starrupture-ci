@@ -26,11 +26,19 @@ jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: version-map-client.v1.txt
+            title: The version-map feed on the loader's Latest release is behind
+          - asset: version-map-server.v1.txt
+            title: The server version object map on the loader's Latest release is behind
     env:
       GH_TOKEN: ${{ github.token }}
       LOADER_REPO: ${{ inputs.loader_repo || 'AlienXAXS/StarRupture-ModLoader' }}
-      FEED_ASSET: version-map-client.v1.txt
-      ISSUE_TITLE: The version-map feed on the loader's Latest release is behind
+      FEED_ASSET: ${{ matrix.asset }}
+      ISSUE_TITLE: ${{ matrix.title }}
     steps:
       - name: Check out
         uses: actions/checkout@v7.0.1
