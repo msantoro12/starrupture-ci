@@ -1,0 +1,348 @@
+name: SR server check
+
+# Offline check of a new StarRupture dedicated server build (Steam app 3809400). It downloads the
+# server anonymously (no Steam login, no secret, public branch only: ci/download-server.ps1), finds
+# the shipping exe and the PDB next to it, and measures them without running anything:
+#   - the exe's identity: ProductVersion CL, PE TimeDateStamp, SizeOfImage and SHA-256
+#   - sr-aobscan --layout reads every key of ci/server-keys.txt (class sizes and member offsets the
+#     server plugins read) from that PDB
+# The result is the artifact server-check-<build id>: server-result.json, server-layout.json and
+# layout-keys.txt, the inputs the server's part of the version object map is made from. Nothing is
+# published here and nothing is commented on a pull request; the job summary shows the numbers.
+#
+# The scanner is the one the client check builds (Client Release): --layout is handled before any
+# client-only code and reads the PDB alone. A Server Release scanner (functions and globals) does not
+# compile on the loader's current code, so it is not built here.
+#
+# Trust: the scanner is built from the same two owners the client check allows (msantoro12 and
+# AlienXAXS) and runs on a runner that holds no secret.
+# Game files only live on the runner: never cached, never uploaded.
+# No pull_request trigger.
+
+on:
+  workflow_call:
+    inputs:
+      buildid:
+        description: 'Build id the watcher saw (compared with what Steam installs; blank: no comparison)'
+        type: string
+        default: ''
+      rehearsal:
+        description: 'Rehearsal (only sr-watch passes true, from its rehearsal input): the check on a build that is already handled; shown in the job summary'
+        type: boolean
+        default: false
+      loader_repo:
+        type: string
+        default: 'AlienXAXS/StarRupture-ModLoader'
+      loader_ref:
+        type: string
+        default: 'main'
+      scanner_repo:
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
+      scanner_ref:
+        type: string
+        default: 'ci/aobscan'
+  workflow_dispatch:
+    inputs:
+      buildid:
+        description: 'Build id the watcher saw (compared with what Steam installs; blank: no comparison)'
+        type: string
+        default: ''
+      rehearsal:
+        description: 'Rehearsal: the check on a build that is already handled; shown in the job summary'
+        type: boolean
+        default: false
+      loader_repo:
+        description: 'Loader repository the scanner is built in (the released line: AlienXAXS main)'
+        type: string
+        default: 'AlienXAXS/StarRupture-ModLoader'
+      loader_ref:
+        description: 'Loader branch the scanner is built in'
+        type: string
+        default: 'main'
+      scanner_repo:
+        description: 'Repository holding the scanner branch (only tools/AobScan is taken from it)'
+        type: string
+        default: 'msantoro12/StarRupture-ModLoader'
+      scanner_ref:
+        description: 'Branch of the scanner repository holding tools/AobScan'
+        type: string
+        default: 'ci/aobscan'
+
+permissions: {}
+
+jobs:
+  # ---- sr-aobscan, built the way the client check builds it (no secrets) ----
+  build-scanner:
+    name: build-scanner
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      scanner_sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - name: Check the loader repository
+        shell: pwsh
+        env:
+          LOADER_REPO: ${{ inputs.loader_repo }}
+          SCANNER_REPO: ${{ inputs.scanner_repo }}
+        run: |
+          if ($env:LOADER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
+            throw "loader_repo '$($env:LOADER_REPO)' is not allowed"
+          }
+          if ($env:SCANNER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
+            throw "scanner_repo '$($env:SCANNER_REPO)' is not allowed"
+          }
+
+      - name: Check out the loader (with its pinned Game SDK)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.loader_repo }}
+          ref: ${{ inputs.loader_ref }}
+          path: loader
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check out tools/AobScan
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.scanner_repo }}
+          ref: ${{ inputs.scanner_ref }}
+          path: scanner-src
+          sparse-checkout: tools/AobScan
+          persist-credentials: false
+
+      - name: Lay the scanner over the loader
+        shell: pwsh
+        run: Copy-Item -Recurse -Force scanner-src\tools\AobScan loader\tools\
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+
+      - name: Build sr-aobscan (Client Release)
+        shell: pwsh
+        working-directory: loader
+        run: |
+          msbuild "tools\AobScan\AobScan.vcxproj" `
+            /p:Configuration="Client Release" `
+            /p:Platform=x64 `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Hash the scanner
+        id: hash
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash loader\build\tools\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sr-aobscan-client.exe SHA-256 $h"
+          "sha256=$h" >> $env:GITHUB_OUTPUT
+
+      - name: Upload the scanner
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-check-scanner-${{ inputs.buildid }}
+          path: loader/build/tools/sr-aobscan-client.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---- Download the server, read its identity, read its layout ------------
+  check:
+    name: check
+    needs: build-scanner
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    # One server download and layout scan at a time. It is not the client rig's group: no Steam client
+    # session is used here.
+    concurrency:
+      group: sr-server-check
+      cancel-in-progress: false
+    outputs:
+      cl: ${{ steps.exe.outputs.cl }}
+      build_id: ${{ steps.dl.outputs.build_id }}
+      image_stamp: ${{ steps.exe.outputs.image_stamp }}
+      image_size: ${{ steps.exe.outputs.image_size }}
+      exe_sha256: ${{ steps.exe.outputs.exe_sha256 }}
+    env:
+      EXPECTED_BUILDID: ${{ inputs.buildid }}
+      SCANNER_SHA256: ${{ needs.build-scanner.outputs.scanner_sha256 }}
+    steps:
+      - name: Check out the scripts and the key list
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the scanner
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server-check-scanner-${{ inputs.buildid }}
+          path: scanner
+
+      - name: Check the scanner is the one build-scanner made
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash scanner\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($h -ne $env:SCANNER_SHA256) { throw "sr-aobscan-client.exe hash $h is not the one build-scanner made ($($env:SCANNER_SHA256))" }
+          "sr-aobscan-client.exe SHA-256 $h"
+
+      - name: Download the dedicated server
+        id: dl
+        shell: pwsh
+        run: ./ci/download-server.ps1
+
+      - name: Read the server exe
+        id: exe
+        shell: pwsh
+        env:
+          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
+          BUILD_ID: ${{ steps.dl.outputs.build_id }}
+        run: |
+          $found = @(Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter 'StarRuptureServerEOS-Win64-Shipping.exe' |
+            Where-Object { $_.FullName -notmatch '\\Engine\\' })
+          if ($found.Count -ne 1) { throw "expected one StarRuptureServerEOS-Win64-Shipping.exe under $($env:INSTALL_DIR), found $($found.Count)" }
+          $exe = $found[0]
+          $pdb = [IO.Path]::ChangeExtension($exe.FullName, '.pdb')
+          if (-not (Test-Path -LiteralPath $pdb)) { throw "no PDB next to the exe ($([IO.Path]::GetFileName($pdb)))" }
+          "exe: $($exe.FullName.Substring($env:INSTALL_DIR.Length))"
+          'PDB: {0} ({1:N2} GB)' -f [IO.Path]::GetFileName($pdb), ((Get-Item -LiteralPath $pdb).Length / 1GB)
+
+          $pv = [string]$exe.VersionInfo.ProductVersion
+          if ($pv -notmatch 'CL-(\d+)$') { throw "ProductVersion '$pv' does not end in a CL number" }
+          $cl = $Matches[1]
+
+          # The PE header: TimeDateStamp at +8 of the PE signature, SizeOfImage at +56 of the optional header (+24).
+          $fs = [IO.File]::OpenRead($exe.FullName)
+          try {
+            $br = [IO.BinaryReader]::new($fs)
+            $fs.Position = 0x3C
+            $pe = $br.ReadInt32()
+            $fs.Position = $pe
+            if ($br.ReadUInt32() -ne 0x00004550) { throw 'the exe has no PE signature' }
+            $fs.Position = $pe + 8
+            $stamp = $br.ReadUInt32()
+            $fs.Position = $pe + 24 + 56
+            $size = $br.ReadUInt32()
+          } finally { $fs.Dispose() }
+          $sha = (Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $hexStamp = '0x{0:X8}' -f $stamp
+          $hexSize = '0x{0:X8}' -f $size
+          "ProductVersion=$pv CL=$cl PE stamp $hexStamp image size $hexSize"
+          "SHA-256=$sha"
+          "Installed build id $($env:BUILD_ID)"
+          if ($env:EXPECTED_BUILDID -and $env:EXPECTED_BUILDID -ne $env:BUILD_ID) {
+            Write-Host "::warning::The watcher saw build $($env:EXPECTED_BUILDID); Steam installed $($env:BUILD_ID). The result is for the installed build."
+          }
+
+          "cl=$cl" >> $env:GITHUB_OUTPUT
+          "product_version=$pv" >> $env:GITHUB_OUTPUT
+          "image_stamp=$hexStamp" >> $env:GITHUB_OUTPUT
+          "image_size=$hexSize" >> $env:GITHUB_OUTPUT
+          "exe_sha256=$sha" >> $env:GITHUB_OUTPUT
+          "exe_path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+          "pdb_name=$([IO.Path]::GetFileName($pdb))" >> $env:GITHUB_OUTPUT
+
+      - name: Read the layout keys from the PDB
+        id: layout
+        shell: pwsh
+        env:
+          EXE_PATH: ${{ steps.exe.outputs.exe_path }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          # The key file the scan reads is the one uploaded: blank lines and # lines are the scanner's to skip.
+          Copy-Item ci\server-keys.txt out\layout-keys.txt
+          $keyCount = @(Get-Content out\layout-keys.txt | Where-Object { $_.Trim() -and -not $_.TrimStart().StartsWith('#') }).Count
+          "key_count=$keyCount" >> $env:GITHUB_OUTPUT
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $ErrorActionPreference = 'Continue'
+          & scanner\sr-aobscan-client.exe $env:EXE_PATH --layout out\layout-keys.txt --json > out\server-layout.json
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          "sr-aobscan --layout: $keyCount keys, exit $code, $([int]$sw.Elapsed.TotalSeconds) s"
+          "exit_code=$code" >> $env:GITHUB_OUTPUT
+          # The scanner's exit code is judged by the next step; the runner would otherwise end this one with it.
+          exit 0
+
+      # Exit 0: every key resolved. Exit 1: a key did not (a class renamed or gone from this build): the
+      # check passes with a warning, and the rows for that key are not made. Anything else fails the check.
+      - name: Write the result and judge it
+        id: result
+        if: ${{ !cancelled() && steps.exe.outcome == 'success' }}
+        shell: pwsh
+        env:
+          LAYOUT_EXIT: ${{ steps.layout.outputs.exit_code }}
+          KEY_COUNT: ${{ steps.layout.outputs.key_count }}
+          BUILD_ID: ${{ steps.dl.outputs.build_id }}
+          PRODUCT_VERSION: ${{ steps.exe.outputs.product_version }}
+          CL: ${{ steps.exe.outputs.cl }}
+          IMAGE_STAMP: ${{ steps.exe.outputs.image_stamp }}
+          IMAGE_SIZE: ${{ steps.exe.outputs.image_size }}
+          EXE_SHA256: ${{ steps.exe.outputs.exe_sha256 }}
+          PDB_NAME: ${{ steps.exe.outputs.pdb_name }}
+          REHEARSAL: ${{ inputs.rehearsal }}
+        run: |
+          $problems = [Collections.Generic.List[string]]::new()
+          $rows = 0
+          $summary = $null
+          if ($env:LAYOUT_EXIT -notmatch '^\d+$') { $problems.Add('the layout scan did not run') }
+          elseif ([int]$env:LAYOUT_EXIT -gt 1) { $problems.Add("sr-aobscan --layout failed (exit $($env:LAYOUT_EXIT))") }
+          if (Test-Path out\server-layout.json) {
+            try {
+              $layout = Get-Content out\server-layout.json -Raw | ConvertFrom-Json
+              $rows = @($layout.keys).Count
+              $summary = $layout.summary
+            } catch { $problems.Add("server-layout.json is not JSON: $($_.Exception.Message)") }
+          } else { $problems.Add('no server-layout.json') }
+          if ($summary -and $rows -ne [int]$env:KEY_COUNT) { $problems.Add("the layout has $rows rows for $($env:KEY_COUNT) keys") }
+
+          $result = [ordered]@{
+            schema        = 1
+            buildId       = $env:BUILD_ID
+            requestedBuildId = $env:EXPECTED_BUILDID
+            productVersion = $env:PRODUCT_VERSION
+            cl            = [int]$env:CL
+            imageStamp    = $env:IMAGE_STAMP
+            imageSize     = $env:IMAGE_SIZE
+            exeSha256     = $env:EXE_SHA256
+            pdbName       = $env:PDB_NAME
+            scannerSha256 = $env:SCANNER_SHA256
+            keyCount      = [int]$env:KEY_COUNT
+            layoutRows    = $rows
+            layoutExit    = $(if ($env:LAYOUT_EXIT -match '^\d+$') { [int]$env:LAYOUT_EXIT } else { $null })
+          }
+          $result | ConvertTo-Json | Set-Content out\server-result.json -Encoding utf8
+
+          $md = @(
+            '### Server check',
+            '',
+            "- Build $($env:BUILD_ID), CL-$($env:CL)$(if ($env:REHEARSAL -eq 'true') { ' (rehearsal: a build that is already handled)' })",
+            "- PE stamp $($env:IMAGE_STAMP), image size $($env:IMAGE_SIZE), SHA-256 ``$($env:EXE_SHA256)``",
+            "- PDB $($env:PDB_NAME)",
+            "- Layout: $($env:KEY_COUNT) keys, $rows rows$(if ($summary) { ", $($summary.ok) resolved, $($summary.failing) failing" }), exit $($env:LAYOUT_EXIT)"
+          )
+          $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          $md | Write-Host
+
+          foreach ($f in 'server-result.json', 'server-layout.json', 'layout-keys.txt') {
+            if (-not (Test-Path "out\$f")) { $problems.Add("out\$f was not written") }
+          }
+          if ($summary -and $summary.failing -gt 0) {
+            Write-Host "::warning title=Layout keys::$($summary.failing) of $($env:KEY_COUNT) keys did not resolve on this build."
+          }
+          foreach ($p in $problems) { Write-Host "::error::$p" }
+          if ($problems.Count) { exit 1 }
+
+      # Only the three files below leave the runner: no game file, no PDB, no log.
+      - name: Upload the result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-check-${{ steps.dl.outputs.build_id || inputs.buildid }}
+          path: |
+            out/server-result.json
+            out/server-layout.json
+            out/layout-keys.txt
+          if-no-files-found: warn
+          retention-days: 14
