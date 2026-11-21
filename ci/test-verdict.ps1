@@ -281,6 +281,9 @@ $clientCases = [ordered]@{
  'layout_missing_classes'  = @{ Mut = { param($c) $c.ml = $c.ml -replace '0 missing', '2 missing' };                        Fail = 'layout_ok' }
  'layout_line_missing'     = @{ Mut = { param($c) Drop $c 'SDK CL 127004 against' };                                       Fail = 'layout_ok' }
  'layout_plugins_off'      = @{ Mut = { param($c) $c.ml += "$($err)[init] Layout mismatch -- plugins are switched off for this session" }; Fail = 'plugins_not_switched_off' }
+ 'layout_not_run'          = @{ Mut = { param($c) $c.ml += "$($err)[init] The game did not finish starting within 120 seconds, so the layout check could not run -- plugins are switched off for this session" }; Fail = 'layout_ok' }
+ 'layout_not_run_off'      = @{ Mut = { param($c) $c.ml += "$($err)[init] The game did not finish starting within 120 seconds, so the layout check could not run -- plugins are switched off for this session" }; Fail = 'plugins_not_switched_off' }
+ 'layout_mismatch_line'    = @{ Mut = { param($c) $c.ml += "$($err)[init] Layout mismatch -- plugins are switched off for this session" }; Fail = 'layout_ok' }
  'compat_report_line'      = @{ Mut = { param($c) $c.ml += "$($sig)[LayoutCheck] Compatibility report written to ModLoader\compat-report-128786.json" }; Fail = 'compat_report_ok' }
  'compat_report_listed'    = @{ Mut = { param($c) $c.boot.compat_reports = @('compat-report-128786.json') };               Fail = 'compat_report_ok' }
  # Crashes
@@ -358,6 +361,10 @@ $extra = {
     if ($r.Exit -eq 0 -and $j.verdict -ne 'PASS') { $bad += 'verdict.json says not PASS' }
     if ($r.Exit -ne 0 -and ($j.verdict -ne 'FAIL' -or $j.reason -notmatch '^\d+ of \d+ checks failed, first: ')) { $bad += "verdict.json reason: $($j.reason)" }
     if ($k -notin 'set_missing', 'set_no_expect', 'set_names_one_plugin' -and @($j.plugins).Count -ne 9) { $bad += "verdict.json lists $(@($j.plugins).Count) plugins" }
+    if ($k -in 'layout_not_run', 'layout_mismatch_line') {
+        $want = if ($k -eq 'layout_not_run') { 'FOUND \(did not finish starting\)' } else { 'FOUND \(layout mismatch\)' }
+        if ((Get-Content -LiteralPath (Join-Path $r.Dir 'verdict.txt') -Raw) -notmatch "layout_ok\s+FAIL\s+$want") { $bad += "layout_ok reason is not $want" }
+    }
     if ($k -eq 'good') {
         $w = & $row 'WAILA'
         if ($w.state -ne 'ok' -or $w.logVersion -ne 'v0.20.0' -or $w.expected -ne 'v0.20.0') { $bad += 'WAILA row wrong' }

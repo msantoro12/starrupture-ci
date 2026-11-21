@@ -758,12 +758,16 @@ function Invoke-ClientVerdict {
         $layMoved = [int]$Matches[3] -gt 0
         $layOk = ([int]$Matches[2] -gt 0) -and ([int]$Matches[4] -eq 0)
     }
+    # Two safe-off lines, two reasons: a layout that really changed, and a game that did not
+    # finish starting in time, so the check never ran (loaders before the startup wording
+    # print the first line for both).
     $layBad = First-Match $ml 'Layout mismatch'
+    $layNotRun = First-Match $ml 'did not finish starting within \d+ seconds.*plugins are switched off for this session'
     $layChanged = First-Match $ml 'Layout changed on this build'
     $layExplained = $layMoved -and $null -ne $layChanged -and $compat.Parsed -gt 0 -and $compat.Changes -gt 0 -and $compat.Bad.Count -eq 0
-    $layPass = $layOk -and $null -eq $layBad -and ($layExplained -or (-not $layMoved -and $null -eq $layChanged))
+    $layPass = $layOk -and $null -eq $layBad -and $null -eq $layNotRun -and ($layExplained -or (-not $layMoved -and $null -eq $layChanged))
     Add-Check 'layout_ok' $layPass $(
-        if ($layBad) { "FOUND: $layBad" } elseif ($layChanged -and -not $layExplained) { "FOUND: $layChanged" }
+        if ($layBad) { "FOUND (layout mismatch): $layBad" } elseif ($layNotRun) { "FOUND (did not finish starting): $layNotRun" } elseif ($layChanged -and -not $layExplained) { "FOUND: $layChanged" }
         elseif ($layExplained) { "$lay; " + ($compat.Notes -join '; ') } else { $lay })
 
     # ---- no update traffic ----
