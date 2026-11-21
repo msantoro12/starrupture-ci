@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addAbsentField, addBuild, addField, addFunction, carriedFieldKeys, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
+  FEED_MAX_BYTES, MapError, SignatureRefused, addAbsent, addAbsentField, addBuild, addField, addFunction, carriedFieldKeys, buildIdOf, checkMap, clOfBuild, emit, emptyMap, exportFeed, feedDelta, holdsCl, importPublished, parse,
   parseFeed, parseKeys, parseRowList, preserveCheck, prune, readPublished, removeKey, replaceBuild, restorePublished, unionKeys,
 } from './version-map.mjs';
 import { signFeed } from './vmap-sign.mjs';
@@ -605,6 +605,15 @@ test('clOfBuild: the CL of a Steam build id comes from the build rows, in either
   assert.equal(clOfBuild(m, 26271156), 129402);
   assert.equal(clOfBuild(m, '26271157'), null, 'a build the map has not measured');
   for (const odd of ['', undefined, null, 'public', '12 34', '1e3']) assert.equal(clOfBuild(m, odd), null, String(odd));
+});
+
+test('clOfBuild: a dedicated server build row (`server steam_build <id>`) is found by its Steam build id too', () => {
+  const m = emptyMap('server', 127004);
+  addBuild(m, { cl: 129402, stamp: 3, size: 4, source: 'server steam_build 26271156' });
+  assert.equal(buildIdOf('server steam_build 26271156'), '26271156');
+  assert.equal(clOfBuild(m, '26271156'), 129402);
+  assert.equal(clOfBuild(m, '26271157'), null);
+  for (const odd of ['server steam_build', 'server  steam_build 1', 'a server steam_build 1', 'server 1']) assert.equal(buildIdOf(odd), odd === 'server 1' ? '1' : null, odd);
 });
 
 test('holdsCl: the build row and the number of present function rows of one CL; an absent row does not count', () => {

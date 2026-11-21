@@ -2551,7 +2551,7 @@ test('one seq: next-seq runs once, in the chain, and the TEST signature, the pro
   assert.ok(pub.includes('--key-id k2 --last-seq "$last_seq" --seq "$CHAIN_SEQ"'));
   assert.ok(pub.includes('verify version-map-client.v1.txt --last-seq "$last_seq" --expect-seq "$CHAIN_SEQ"'));
   assert.ok(pub.includes('bash tool/ci/vmap-publish.sh entry') && readFileSync(join(here, 'vmap-publish.sh'), 'utf8').includes('--seq "$CHAIN_SEQ" --out vmap-history.json'), 'the history entry is built by the shared routine, with the chain seq');
-  assert.ok(readFileSync(join(here, 'vmap-publish.sh'), 'utf8').includes('verify published/version-map-client.v1.txt --expect-seq "$CHAIN_SEQ"'), 'the check of the published copy is the shared routine\'s');
+  assert.ok(readFileSync(join(here, 'vmap-publish.sh'), 'utf8').includes('verify "published/$asset" --expect-seq "$CHAIN_SEQ"'), 'the check of the published copy is the shared routine\'s');
   assert.ok(!/next-seq/.test(pub));
 });
 
@@ -4888,7 +4888,7 @@ test('shared routine (workflow text): the live and the rehearsal steps call ONE 
   const at = (s) => feed.indexOf(s);
   assert.ok(at('vmap-history.mjs check') > 0 && at('vmap-sign.mjs unique') > 0, 'the duplicate checks are in the routine');
   assert.ok(at('vmap-history.mjs check') < at('base64 -w0 vmap-history.json') && at('vmap-sign.mjs unique') < at('base64 -w0 vmap-history.json'), 'the checks come before anything is printed or uploaded');
-  assert.ok(at('base64 -w0 vmap-history.json') < at('gh release upload "$target" version-map-client.v1.txt'), 'the restore line comes before the feed upload');
+  assert.ok(at('base64 -w0 vmap-history.json') < at('gh release upload "$target" "$asset"'), 'the restore line comes before the feed upload');
   assert.ok(!feed.includes('vmap-history.json --clobber "'), 'the feed phase never uploads the history');
   assert.ok(routine.indexOf('  feed)') < routine.indexOf('  verify)') && routine.indexOf('  verify)') < routine.indexOf('  history)'), 'phases in order');
   assert.ok(routine.slice(routine.indexOf('  history)')).includes('gh release upload "$target" vmap-history.json --clobber'), 'the history is uploaded in the last phase');

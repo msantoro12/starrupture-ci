@@ -5,8 +5,10 @@
 // check-preserve.
 //
 //   node ci/published-base.mjs take <header> --report <file> [--dir <dir>] [--first-publish true] [--check-report <file>]
-//       Fetches version-map-client.v1.txt from the vmap-feed release of $GH_REPO (3 tries, 5 s and
-//       15 s apart), verifies its signature and adds every build line and row the header lacks.
+//       [--asset <name>] [--release <tag>]
+//       Fetches version-map-client.v1.txt (--asset: version-map-server.v1.txt, the dedicated server's file)
+//       from the vmap-feed release (--release) of $GH_REPO (3 tries, 5 s and 15 s apart), verifies its
+//       signature and adds every build line and row the header lacks.
 //       --check-report: the report an earlier job wrote for the same run; when it says hold (or is
 //       missing or unreadable) that hold stands and nothing is fetched again.
 //       --first-publish true: no release, or no file on it, is not a hold (a first publish has no
@@ -31,6 +33,7 @@ const LISTS = ['--retired', join(here, 'retired-rows.txt'), '--changed', join(he
 
 export const RELEASE = 'vmap-feed';
 export const FEED_ASSET = 'version-map-client.v1.txt';
+export const SERVER_FEED_ASSET = 'version-map-server.v1.txt';
 export const EXIT_OK = 0;
 export const EXIT_HOLD = 3;
 export const EXIT_ERROR = 2;
@@ -46,25 +49,26 @@ const gh = (args) => {
 
 // What `gh` says about the release and its file, with retries. Returns { file }, { absent: why } (the
 // release or the file is not there: an answer, not a failure) or { error: why } (could not be read).
-export async function fetchPublished({ dir, repo = process.env.GH_REPO, run = gh, sleep = wait, backoff = BACKOFF_MS } = {}) {
+// release and asset: the client's file on vmap-feed unless the caller names another (the server's file).
+export async function fetchPublished({ dir, repo = process.env.GH_REPO, release = RELEASE, asset = FEED_ASSET, run = gh, sleep = wait, backoff = BACKOFF_MS } = {}) {
   if (!repo) throw new Error('GH_REPO is not set');
   let last = '';
   for (let i = 0; i <= backoff.length; i++) {
     if (i > 0) await sleep(backoff[i - 1]);
-    const rel = run(['api', `repos/${repo}/releases/tags/${RELEASE}`]);
+    const rel = run(['api', `repos/${repo}/releases/tags/${release}`]);
     if (rel.status !== 0) {
-      if (/HTTP 404/.test(rel.stderr)) return { absent: `the ${RELEASE} release does not exist` };
-      last = `cannot read the ${RELEASE} release: ${clip(rel.stderr)}`;
+      if (/HTTP 404/.test(rel.stderr)) return { absent: `the ${release} release does not exist` };
+      last = `cannot read the ${release} release: ${clip(rel.stderr)}`;
       continue;
     }
     let assets;
-    try { assets = JSON.parse(rel.stdout).assets ?? []; } catch { last = `the ${RELEASE} release answer is not JSON`; continue; }
-    if (!assets.some((a) => a.name === FEED_ASSET)) return { absent: `the ${RELEASE} release has no ${FEED_ASSET}` };
+    try { assets = JSON.parse(rel.stdout).assets ?? []; } catch { last = `the ${release} release answer is not JSON`; continue; }
+    if (!assets.some((a) => a.name === asset)) return { absent: `the ${release} release has no ${asset}` };
     mkdirSync(dir, { recursive: true });
-    const dl = run(['release', 'download', RELEASE, '--repo', repo, '--pattern', FEED_ASSET, '--dir', dir, '--clobber']);
-    const file = join(dir, FEED_ASSET);
-    if (dl.status !== 0) { last = `cannot download ${FEED_ASSET}: ${clip(dl.stderr)}`; continue; }
-    if (!existsSync(file) || statSync(file).size === 0) { last = `${FEED_ASSET} downloaded empty`; continue; }
+    const dl = run(['release', 'download', release, '--repo', repo, '--pattern', asset, '--dir', dir, '--clobber']);
+    const file = join(dir, asset);
+    if (dl.status !== 0) { last = `cannot download ${asset}: ${clip(dl.stderr)}`; continue; }
+    if (!existsSync(file) || statSync(file).size === 0) { last = `${asset} downloaded empty`; continue; }
     return { file };
   }
   return { error: last, tries: backoff.length + 1 };
@@ -96,7 +100,8 @@ function judge(step, what, { code, err }, okNote) {
   return hold(step, `published base: ${what} could not run (exit ${code}): ${clip(head || err)}`);
 }
 
-// Takes the published file as the base of `header` (written in place only when nothing conflicts).
+// Takes the published file as the base of `header` (written in place only when nothing conflicts). deps: repo,
+// release and asset (see fetchPublished), and the fakes the tests give it.
 export async function takeBase({ header, dir, firstPublish = false, checkReport, extraArgs = [], ...deps }) {
   if (checkReport !== undefined) {
     let earlier = null;
@@ -131,7 +136,7 @@ function parseArgs(argv) {
   return a;
 }
 
-const USAGE = 'usage: published-base.mjs take <header> --report f [--dir d] [--first-publish true] [--check-report f]\n'
+const USAGE = 'usage: published-base.mjs take <header> --report f [--dir d] [--first-publish true] [--check-report f] [--asset name] [--release tag]\n'
   + '       published-base.mjs preserve <feed> --published f --report f';
 
 export async function main(argv, deps = {}) {
@@ -140,7 +145,12 @@ export async function main(argv, deps = {}) {
     const [cmd, ...rest] = argv;
     const a = parseArgs(rest);
     if (!a.report || a.pos.length !== 1 || (cmd !== 'take' && cmd !== 'preserve')) throw new Error(USAGE);
-    if (cmd === 'take') report = await takeBase({ header: a.pos[0], dir: a.dir ?? 'published-base', firstPublish: a['first-publish'] === 'true', checkReport: a['check-report'], ...deps });
+    if (cmd === 'take') {
+      const asset = a.asset ?? FEED_ASSET;
+      if (asset !== FEED_ASSET && asset !== SERVER_FEED_ASSET) throw new Error(`--asset is ${FEED_ASSET} or ${SERVER_FEED_ASSET}`);
+      if (a.release !== undefined && !/^[A-Za-z0-9._-]+$/.test(a.release)) throw new Error('--release is a release tag');
+      report = await takeBase({ header: a.pos[0], dir: a.dir ?? 'published-base', firstPublish: a['first-publish'] === 'true', checkReport: a['check-report'], asset, release: a.release ?? RELEASE, ...deps });
+    }
     else {
       if (!a.published) throw new Error(USAGE);
       report = preserveFeed({ feed: a.pos[0], published: a.published, ...deps });

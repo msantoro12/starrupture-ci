@@ -421,9 +421,10 @@ function addRow(list, row, what, id) {
 }
 
 // The Steam build id in a source label: `<branch> <buildid>` (older rows) or
-// `steam_build <buildid>`. Null when the label has no such trailing number.
+// `steam_build <buildid>` or, in the dedicated server's file, `server steam_build <buildid>`. Null when the
+// label has no such trailing number.
 export function buildIdOf(source) {
-  const m = /^\S+ (\d+)$/.exec(String(source ?? ''));
+  const m = /^(?:server )?\S+ (\d+)$/.exec(String(source ?? ''));
   return m ? m[1] : null;
 }
 
