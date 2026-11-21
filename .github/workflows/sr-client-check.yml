@@ -2163,7 +2163,26 @@ jobs:
           if ($metas[0].gameSdkRepo -notmatch '^(msantoro12|AlienXAXS)/StarRupture-Game-SDK$') { throw 'plugin.json does not name an allowed Game SDK repository' }
           Get-Source $metas[0].gameSdkRepo $metas[0].gameSdk $sdk
           $loaderTable = Join-Path $work 'loader-table.h'
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core/core/layout_table.generated.h" -OutFile $loaderTable -TimeoutSec 60
+          # The loader keeps one layout table per game build, core/layout_table_<CL>.generated.h, <CL> being the
+          # kBuiltCL of its version map. A loader from before that has core/layout_table.generated.h alone, so a
+          # table that is not there (404) falls back to that name; any other failure stops the step.
+          function Get-LoaderFile([string]$url, [string]$out) {
+            try { Invoke-WebRequest -Uri $url -OutFile $out -TimeoutSec 60; $true }
+            catch {
+              $resp = $_.Exception.PSObject.Properties['Response']
+              if ($resp -and $resp.Value -and [int]$resp.Value.StatusCode -eq 404) { $false } else { throw }
+            }
+          }
+          $loaderCore = "https://raw.githubusercontent.com/$($metas[0].loaderRepo)/$($metas[0].loaderInterface)/StarRupture-ModLoader-Core"
+          $tableUrls = @()
+          $loaderMap = Join-Path $work 'loader-version-map.h'
+          if ((Get-LoaderFile "$loaderCore/hooks/game/version_map.generated.h" $loaderMap) -and (Get-Content $loaderMap -Raw) -match 'kBuiltCL\s*=\s*(\d+)\s*;') {
+            $tableUrls += "$loaderCore/core/layout_table_$($Matches[1]).generated.h"
+          }
+          $tableUrls += "$loaderCore/core/layout_table.generated.h"
+          $haveTable = $false
+          foreach ($url in $tableUrls) { if (Get-LoaderFile $url $loaderTable) { $haveTable = $true; Write-Host "layout table: $url"; break } }
+          if (-not $haveTable) { throw "the loader at $($metas[0].loaderInterface) has no layout table (tried: $($tableUrls -join ', '))" }
           node $lt keys $loaderTable --out "$work\keys-ModLoader.txt" --uses-out "$work\uses-ModLoader.txt"; Invoke-Native 'keys (loader)'
           if ($native.ContainsKey('ModLoader')) { Add-Content "$work\keys-ModLoader.txt" $native['ModLoader'] }
           $components.Add('ModLoader')
