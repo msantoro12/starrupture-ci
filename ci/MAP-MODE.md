@@ -1302,7 +1302,11 @@ rows and four function rows, with three keys not placed and one row not for the 
    `published-base.mjs take --asset version-map-server.v1.txt` checks the signature of the published server file and
    adds every line it has (the first server file has none to take). `map-mode.mjs complete --keys ci/server-keys.txt`
    stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but only reported:
-   no scan makes function or global rows yet. `export-feed --server` cuts the unsigned file and `published-base.mjs
+   no scan makes function or global rows yet. The job also fails with `server build <CL> is missing loader rows: <keys>;
+   the server would start with its plugins off` unless the file carries the 8 rows in `ci/server-required-rows.txt`
+   (the loader's field rows and the Game-SDK global rows). CL 127004, the loader's own baseline, is skipped. The global
+   rows need the Loader's server scanner leg, which is not built yet, so until it lands every new server build stops
+   here. `export-feed --server` cuts the unsigned file and `published-base.mjs
    preserve` checks it keeps every published line. `decide.mjs identity --repo ModLoaderServer` checks the CL is not
    served yet and the file changes what is served for it (skipped in a rehearsal). The chain's seq is made here, above
    the published server file's own last seq (the client's seq is not used), and the file is signed once with the TEST
