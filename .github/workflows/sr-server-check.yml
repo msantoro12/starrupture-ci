@@ -25,9 +25,9 @@ name: SR server check
 # shows the numbers.
 #
 # Two scanners are built from one tree: Client Release for --layout (handled before any client-only code,
-# it reads the PDB alone) and Server Release (sr-aobscan-server.exe) for the address scan. The Server
-# Release build needs the scanner branch to carry the server rows (the default ci/aobscan does not yet, so
-# a rehearsal of this leg names scanner_ref explicitly); without it the scanner job fails, on purpose.
+# it reads the PDB alone) and Server Release (sr-aobscan-server.exe) for the address scan. The server
+# scanner is in the Loader's scanner branch, the default scanner_ref (ci/aobscan-server-rows); the client
+# check keeps ci/aobscan. A live publish takes the default inputs only (SCANNER_DEFAULTS pins the ref).
 #
 # Trust: the scanner is built from the same two owners the client check allows (msantoro12 and
 # AlienXAXS) and runs on a runner that holds no secret. Only the two jobs after it hold one: server-map the TEST key
@@ -58,7 +58,7 @@ on:
         default: 'msantoro12/StarRupture-ModLoader'
       scanner_ref:
         type: string
-        default: 'ci/aobscan'
+        default: 'ci/aobscan-server-rows'
     secrets:
       VMAP_SIGN_KEY_TEST:
         description: 'TEST signing key (k1) for the server map dry run; pass it by name. Used by server-map only'
@@ -91,7 +91,7 @@ on:
       scanner_ref:
         description: 'Branch of the scanner repository holding tools/AobScan'
         type: string
-        default: 'ci/aobscan'
+        default: 'ci/aobscan-server-rows'
       live:
         description: 'Publish to the LIVE vmap-feed release (the owner sets it; main only). Off: the signed file and history go to the vmap-feed-rehearsal prerelease and the live release is checked unchanged'
         type: boolean
@@ -690,7 +690,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       LIVE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-server-check.yml@') && github.event_name == 'workflow_dispatch' && inputs.live == true }}
       REHEARSAL: ${{ inputs.rehearsal == true }}
-      SCANNER_DEFAULTS: ${{ inputs.loader_repo == 'AlienXAXS/StarRupture-ModLoader' && inputs.loader_ref == 'main' && inputs.scanner_repo == 'msantoro12/StarRupture-ModLoader' && inputs.scanner_ref == 'ci/aobscan' }}
+      SCANNER_DEFAULTS: ${{ inputs.loader_repo == 'AlienXAXS/StarRupture-ModLoader' && inputs.loader_ref == 'main' && inputs.scanner_repo == 'msantoro12/StarRupture-ModLoader' && inputs.scanner_ref == 'ci/aobscan-server-rows' }}
       VMAP_ASSET: version-map-server.v1.txt
       VMAP_HISTORY_REPO: ModLoaderServer
       STAGING_RELEASE: vmap-feed-rehearsal

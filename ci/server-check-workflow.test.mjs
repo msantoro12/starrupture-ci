@@ -79,6 +79,10 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
   const sd = publish.match(/SCANNER_DEFAULTS: (.*)\n/)[1];
   for (const n of ['loader_repo', 'loader_ref', 'scanner_repo', 'scanner_ref']) assert.ok(sd.includes(`inputs.${n} == '${dflt(n)}'`), `a live run compares ${n} with its dispatch default`);
   assert.match(stepOf(publish, 'Refuse a live publish that is not allowed'), /SCANNER_DEFAULTS" = true/);
+  // The server check's scanner branch: one ref in both inputs and in the live pin; the client check keeps its own.
+  const refOf = (text) => text.match(/      scanner_ref:\n(?:        .*\n)*?        default: '([^']*)'/)[1];
+  assert.deepEqual([refOf(call), refOf(dispatch), sd.match(/inputs\.scanner_ref == '([^']*)'/)[1]], ['ci/aobscan-server-rows', 'ci/aobscan-server-rows', 'ci/aobscan-server-rows'], 'both defaults and the SCANNER_DEFAULTS pin carry one ref');
+  assert.match(read('.github', 'workflows', 'sr-client-check.yml'), /      scanner_ref:\n(?:        .*\n)*?        default: 'ci\/aobscan'\n/, 'the client check still defaults to ci/aobscan');
 });
 
 test('no run block takes an expression: every input and output reaches a script through env', () => {
