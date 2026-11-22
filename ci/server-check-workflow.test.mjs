@@ -82,11 +82,11 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
 });
 
 test('no run block takes an expression: every input and output reaches a script through env', () => {
-  assert.equal(runSteps(windows).length, 9, 'every run step of the Windows jobs was found');
-  assert.equal(runSteps(map).length, 11, 'every run step of server-map was found');
+  assert.equal(runSteps(windows).length, 11, 'every run step of the Windows jobs was found');
+  assert.equal(runSteps(map).length, 12, 'every run step of server-map was found');
   assert.equal(runSteps(publish).length, 9, 'every run step of server-publish was found');
   for (const r of runSteps(wf)) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
-  assert.match(wf, /\n {4}env:\n {6}EXPECTED_BUILDID: \$\{\{ inputs\.buildid \}\}\n {6}SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.scanner_sha256 \}\}\n/);
+  assert.match(wf, /\n {4}env:\n {6}EXPECTED_BUILDID: \$\{\{ inputs\.buildid \}\}\n {6}SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.scanner_sha256 \}\}\n {6}SERVER_SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.server_scanner_sha256 \}\}\n/);
 });
 
 test('shells and status functions: the Windows jobs name pwsh, the Ubuntu jobs run bash, and a status function sits only in an if', () => {
@@ -100,14 +100,18 @@ test('shells and status functions: the Windows jobs name pwsh, the Ubuntu jobs r
   for (const line of wf.split('\n')) if (/\b(?:cancelled|always|failure|success)\(\)/.test(line)) assert.match(line, /^\s+if: /, line);
 });
 
-test('scanner: built Client Release like the client check, and the check refuses any other hash', () => {
+test('scanner: built Client Release (layout) and Server Release (address scan) from one tree, and the check refuses any other hash for either', () => {
   const build = job(wf, 'server-scanner');
   assert.ok(build.includes('/p:Configuration="Client Release"') && build.includes('tools\\AobScan\\AobScan.vcxproj'));
+  assert.ok(build.includes('/p:Configuration="Server Release"'), 'the address scanner is built Server Release');
+  assert.ok(build.includes('loader/build/tools/sr-aobscan-client.exe\n            loader/build/tools/sr-aobscan-server.exe'), 'both exes are uploaded');
+  assert.match(build, /server_scanner_sha256: \$\{\{ steps\.hash\.outputs\.server_sha256 \}\}/);
   assert.match(build, /sparse-checkout: tools\/AobScan/);
   assert.match(build, /scanner_sha256: \$\{\{ steps\.hash\.outputs\.sha256 \}\}/);
   const check = job(wf, 'server-layout');
   assert.match(check, /needs: server-scanner/);
   assert.ok(check.includes('is not the one server-scanner made'));
+  assert.ok(check.includes('sr-aobscan-server.exe hash $s is not the one server-scanner made'), 'the server scanner is hash-checked too');
 });
 
 test('download: the unchanged anonymous script, public branch only, with no login, key or argument', () => {
@@ -129,6 +133,18 @@ test('identity: CL from ProductVersion, PE stamp and image size as hex strings, 
   assert.ok(check.includes('::warning::The watcher saw build'), 'a build id that differs from the installed one is a warning, not a failure');
 });
 
+test('scan: the server exe is scanned by the Server Release scanner through env only, exit 0 and 1 are judged by the result step, and its JSON is uploaded', () => {
+  const check = job(wf, 'server-layout');
+  const scan = stepOf(check, 'Scan the server exe for the function and global addresses');
+  assert.ok(scan.includes('& scanner\\sr-aobscan-server.exe $env:EXE_PATH --json > out\\server-scan.json'));
+  assert.ok(!scan.slice(scan.indexOf('run: |')).includes('${{'), 'no expression inside the run block');
+  assert.ok(scan.includes('EXE_PATH: ${{ steps.exe.outputs.exe_path }}') && scan.includes('          exit 0\n'), 'the exit code is judged by the result step');
+  assert.ok(check.includes('elseif ([int]$env:SCAN_EXIT -notin 0, 1)'), 'exit 0 and 1 pass, anything else fails');
+  assert.ok(check.includes('SCAN_EXIT: ${{ steps.scan.outputs.exit_code }}'));
+  assert.ok(check.includes("'no server-scan.json'") && check.includes('server-scan.json is not JSON'));
+  assert.ok(check.indexOf('- name: Scan the server exe') < check.indexOf('- name: Write the result'), 'the scan runs before the result step');
+});
+
 test('layout: the committed key list is the one scanned and the one uploaded, and a failing key is a warning', () => {
   const check = job(wf, 'server-layout');
   assert.ok(check.includes('Copy-Item ci\\server-keys.txt out\\layout-keys.txt'));
@@ -138,15 +154,15 @@ test('layout: the committed key list is the one scanned and the one uploaded, an
   assert.ok(check.includes('$summary.failing -gt 0') && check.includes('::warning title=Layout keys::'));
 });
 
-test('result: server-result.json carries the identity, only three files are uploaded, and the build id is handed on', () => {
+test('result: server-result.json carries the identity, only four files are uploaded, and the build id is handed on', () => {
   const check = job(wf, 'server-layout');
-  for (const k of ['schema        = 1', 'buildId', 'cl            =', 'imageStamp', 'imageSize', 'exeSha256', 'pdbName', 'scannerSha256', 'keyCount', 'layoutRows', 'layoutExit']) {
+  for (const k of ['schema        = 1', 'buildId', 'cl            =', 'imageStamp', 'imageSize', 'exeSha256', 'pdbName', 'scannerSha256', 'serverScannerSha256', 'keyCount', 'layoutRows', 'layoutExit', 'scanExit']) {
     assert.ok(check.includes(k), k);
   }
   const up = check.slice(check.lastIndexOf('- name: Upload the result'));
   assert.match(up, /name: server-check-\$\{\{ steps\.dl\.outputs\.build_id \|\| inputs\.buildid \}\}\n/);
   const paths = up.slice(up.indexOf('path: |\n') + 8, up.indexOf('if-no-files-found')).split('\n').map((l) => l.trim()).filter(Boolean);
-  assert.deepEqual(paths, ['out/server-result.json', 'out/server-layout.json', 'out/layout-keys.txt']);
+  assert.deepEqual(paths, ['out/server-result.json', 'out/server-layout.json', 'out/layout-keys.txt', 'out/server-scan.json']);
   assert.ok(!/upload-artifact[^\n]*\n(?:.*\n)*?\s+path: .*(?:install_dir|srds|\.pdb|\.exe)/.test(check), 'no game file, PDB or log leaves the runner');
   assert.ok(check.includes('GITHUB_STEP_SUMMARY'));
   assert.match(check, /\n {4}outputs:\n {6}build_id: \$\{\{ steps\.dl\.outputs\.build_id \}\}\n/, 'the installed build id is what the next jobs name the artifact by');
@@ -174,9 +190,14 @@ test('server-map: the version object map header from the result, on the verified
   assert.match(map, /\n {4}needs: server-layout\n/);
   assert.ok(map.includes('name: server-check-${{ needs.server-layout.outputs.build_id }}'), 'the artifact the layout job made');
   assert.match(map, /\n {4}concurrency:\n {6}group: sr-server-map\n {6}cancel-in-progress: false\n/);
-  const header = stepOf(map, 'Write the build line and the layout rows into a server header');
+  const header = stepOf(map, 'Write the build line, the layout rows and the scan rows into a server header');
   assert.ok(header.includes('map-mode.mjs server out/server.h') && header.includes('--layout chk/server-layout.json'));
-  assert.ok(!/--scan|--client-feed|--base/.test(header), 'no scan, no client feed and no unverified base: the signed base is taken by published-base');
+  assert.ok(header.includes('--scan out/server-scan-rows.json'), 'the function and global rows come from the converted scan');
+  assert.ok(!/--client-feed|--base/.test(header), 'no client feed and no unverified base: the signed base is taken by published-base');
+  const conv = stepOf(map, 'Make the function and global rows from the scan');
+  assert.ok(conv.includes('server-scan-rows.mjs chk/server-scan.json --result chk/server-result.json --keys tool/ci/server-function-keys.txt') && conv.includes('--out out/server-scan-rows.json'));
+  assert.ok(conv.includes('>> "$GITHUB_STEP_SUMMARY"'), 'the converter summary is appended to the job summary');
+  assert.ok(map.indexOf('- name: Make the function and global rows from the scan') < map.indexOf('- name: Write the build line'), 'the rows are made before the header step reads them');
   const take = stepOf(map, 'Take the published server file as the base');
   assert.ok(take.includes('published-base.mjs take out/server.h --asset version-map-server.v1.txt'), 'the verified base (the signature is checked before a row is used)');
   assert.ok(take.includes('exit 2'), 'a hold stops the job');

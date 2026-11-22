@@ -1083,6 +1083,17 @@ test('server: without a client row the GObjects row is left out, and the run say
   assert.equal(serverMode(null, serverInput(), { clientFeed: noGo }).map.functions.some((r) => r.key === GO), false);
 });
 
+test('server: a GObjects scan row that carries its own fp is written with it, no client feed needed', () => {
+  const scan = [{ key: GO, kind: 'any', result: 'OK', fp: '0xD7B4F6BF', rva: '0x0D3A1A50' }];
+  const out = serverMode(null, serverInput({ layout: null, scan }));
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(out.map.functions.map((r) => [r.key, r.kind, r.fp, r.rva]), [[GO, 6, 0xD7B4F6BF, 0x0D3A1A50]]);
+  // A bad fp is a problem and nothing is written.
+  const bad = serverMode(null, serverInput({ layout: null, scan: [{ ...scan[0], fp: '0x0' }] }));
+  assert.equal(bad.map, null);
+  assert.match(bad.problems.join(' '), /fp/);
+});
+
 test('server: a failing key gets no row, an absent row is never written, and only server kinds are taken', () => {
   const out = serverMode(null, serverInput(), { clientFeed: clientFeed() });
   assert.ok(!out.text.includes('GoneMember') && !out.text.includes('FGoneStruct') && !out.text.includes('K2_GetActorLocation'));

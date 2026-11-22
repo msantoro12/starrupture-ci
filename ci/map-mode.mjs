@@ -525,7 +525,7 @@ function clientFp(clientFeed, key) {
 //   - a layout entry that resolved becomes a field row (a member key, `Class::Member`) or a size row
 //     (a class name alone: offset 0, mask 0); one that did not is listed under `unplaced`, with no row;
 //   - a scan row of kind 1 or 4 becomes an address-only function row; the scoped GObjects row (kind 6)
-//     takes its fp from the client feed and is left out without one; every other scoped row is not a
+//     takes the row's own fp, else the client feed's, and is left out without one; every other scoped row is not a
 //     server row (`skipped`); a row that did not resolve is listed under `unplaced`;
 //   - base (a parsed server feed, the published file): every line of it is kept (importPublished);
 //   - the same CL with another stamp or size is a hotfix: nothing is written for it, the existing build
@@ -576,9 +576,16 @@ export function serverMode(headerText, input, { base = null, clientFeed = null }
     let fp = 0;
     if (!isGlobalKind(kind)) {
       if (r.key !== SERVER_SCOPED_KEY) { out.skipped.push(r.key); continue; }
-      const found = clientFp(clientFeed, r.key);
-      if (found.note) { out.notes.push(found.note); continue; }
-      fp = found.fp;
+      // The server scanner reports the fp of the request itself; a report without one (the layout-less
+      // fixtures) takes it from the client feed, as before.
+      if (r.fp !== undefined) {
+        fp = attempt(() => numberOf(r.fp, `${r.key}: fp`, { lo: 1 }));
+        if (fp === false) continue;
+      } else {
+        const found = clientFp(clientFeed, r.key);
+        if (found.note) { out.notes.push(found.note); continue; }
+        fp = found.fp;
+      }
     }
     const rva = attempt(() => numberOf(r.rva, `${r.key}: rva`, { lo: 1 }));
     if (rva === false) continue;
