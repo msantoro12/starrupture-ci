@@ -35,5 +35,6 @@ function UCrSaveGameUtils::SaveGameInternal
 #
 # Globals
 function GWorld
+function FName::AppendString
 function GNames (NamePoolData)
 function ModLoader/GObjects (GUObjectArray.ObjObjects)

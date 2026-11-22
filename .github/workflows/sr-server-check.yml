@@ -506,6 +506,25 @@ jobs:
           case "$code" in 0|3) ;; *) echo "::error::map-mode complete exited $code on the function key list"; exit 2 ;; esac
           { echo "### Server function and global keys"; echo; sed 's/^/    /' function-keys.txt; echo; echo "Reported only: no scan makes these rows yet."; } >> "$GITHUB_STEP_SUMMARY"
 
+      # The loader's own rows (ci/server-required-rows.txt): a new server build without them starts with its plugins off.
+      # The function and global rows need the server scanner leg, which is not built yet, so a new build stops here until it lands.
+      # Not asked of the loader's own baseline CL (127004): the loader is built for it and needs no rows there.
+      - name: Check the server file carries the loader's rows
+        env:
+          CL: ${{ steps.res.outputs.cl }}
+          BASELINE_CL: '127004'
+        run: |
+          set -uo pipefail
+          if [ "$CL" = "$BASELINE_CL" ]; then echo "CL-$CL is the loader's own baseline; its rows are not required."; exit 0; fi
+          code=0
+          node tool/ci/map-mode.mjs complete out/server.h --cl "$CL" --keys tool/ci/server-required-rows.txt > required-rows.txt 2>&1 || code=$?
+          cat required-rows.txt
+          case "$code" in
+            0) ;;
+            3) echo "::error::server build $CL is missing loader rows: $(sed -n 's/^missing: //p' required-rows.txt | paste -sd, - | sed 's/,/, /g'); the server would start with its plugins off"; exit 2 ;;
+            *) echo "::error::map-mode complete exited $code on the required rows"; exit 2 ;;
+          esac
+
       - name: Export the server file and check it keeps every published line
         env:
           FIRST_PUBLISH: ${{ steps.live.outputs.first_publish }}
