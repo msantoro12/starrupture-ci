@@ -385,8 +385,8 @@ node ci/version-map.mjs export-feed server.h --out server.feed.txt --server
 
 A server file for a new server build has to carry the loader's own rows, or the server starts with its plugins off:
 the four field rows the loader reads (`ACrCrafter::CraftComponent`, `UWorld::GameState`, `UWorld::LineBatchers`,
-`UWorld::NetDriver`) and the four Game-SDK global rows (`ModLoader/GObjects (GUObjectArray.ObjObjects)`,
-`GNames (NamePoolData)`, `FName::AppendString`, `GWorld`). `ci/server-required-rows.txt` lists them and the `server-map`
+`UWorld::NetDriver`) and the three Game-SDK global rows (`ModLoader/GObjects (GUObjectArray.ObjObjects)`,
+`FName::AppendString`, `GWorld`; the loader only logs GNames). `ci/server-required-rows.txt` lists them and the `server-map`
 job fails, naming the missing keys, when the new build lacks one. The loader's own baseline CL is not checked. The global
 rows need the server scanner leg, which is not built yet, so until it lands every new server build stops at this check.
 
