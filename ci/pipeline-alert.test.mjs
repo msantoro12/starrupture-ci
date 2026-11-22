@@ -103,6 +103,17 @@ test('raise: opens the issue labelled and assigned, or comments on the open one 
   assert.ok(again.some((c) => c.includes("select(.title == env.TITLE)")) && process.env.TITLE === 'T');
 });
 
+test('raise: a server build issue is keyed by its title, so a second raise for the same build comments instead of opening another', () => {
+  const title = 'SR watch: new dedicated server build 25642172';
+  const first = [];
+  assert.equal(raise({ title, bodyFile: 's.md', owner: 'msantoro12', call: (a) => { first.push(a.join(' ')); return ''; } }), null);
+  assert.ok(first.some((c) => c.startsWith(`issue create --title ${title} `) && c.includes('--assignee msantoro12')));
+  const again = [];
+  assert.equal(raise({ title, bodyFile: 's.md', owner: 'msantoro12', call: (a) => { again.push(a.join(' ')); return a[1] === 'list' ? '41\n' : ''; } }), 41);
+  assert.ok(again.some((c) => c.startsWith('issue comment 41')));
+  assert.ok(!again.some((c) => c.startsWith('issue create')));
+});
+
 test('sr-watch: a failed poll or compile check reaches the alert issue of each changed client branch, with its cause', () => {
   const a = watchWf.slice(watchWf.indexOf('\n  alert:\n'));
   assert.match(a, /needs: \[poll, build, server-check\]/);

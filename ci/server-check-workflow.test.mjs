@@ -150,6 +150,24 @@ test('result: server-result.json carries the identity, only three files are uplo
   assert.match(check, /\n {4}outputs:\n {6}build_id: \$\{\{ steps\.dl\.outputs\.build_id \}\}\n/, 'the installed build id is what the next jobs name the artifact by');
 });
 
+test('server build alert: a new server build raises one issue per build id through the shared raise, and a server-only PR gets the stale timer', () => {
+  const poll = watch.slice(watch.indexOf('\n  poll:\n'), watch.indexOf('\n  build:\n'));
+  const step = section(poll, '      - name: Alert on a new server build\n', '      # The build was skipped because');
+  assert.ok(step.length > 0, 'the step exists in the poll job, before the stale-PR step');
+  assert.match(step, /if: steps\.poll\.outputs\.changed == 'true' && steps\.pr\.outputs\.skip != 'true' && inputs\.rehearsal != true && startsWith\(steps\.poll\.outputs\.server_matrix, '\[\{'\)/);
+  assert.ok(step.includes('SERVER_MATRIX: ${{ steps.poll.outputs.server_matrix }}'));
+  assert.ok(step.includes('node ci/pipeline-alert.mjs raise --title "SR watch: new dedicated server build $id" --body-file "$RUNNER_TEMP/server-build.md" --owner "$OWNER"'));
+  assert.match(step, /a new dedicated server build, \$id,/);
+  assert.match(step, /in rehearsal: the live path is closed/);
+  assert.match(step, /server headers dump is manual until a server dump leg exists/);
+  assert.ok(!/test.branch/i.test(step), 'no mention of the test branch');
+  assert.ok(!step.slice(step.indexOf('run: |')).includes('${{'), 'no expression inside the run block');
+  const stale = section(poll, '      - name: Alert on a stale game-update PR\n', '      # A planner data extract');
+  assert.ok(stale.includes('SERVER_MATRIX: ${{ steps.poll.outputs.server_matrix }}'));
+  assert.ok(stale.includes('JSON.parse(e.SERVER_MATRIX)'));
+  assert.ok(stale.includes('"server_" + x.branch'));
+});
+
 test('server-map: the version object map header from the result, on the verified published base, and a measurement it cannot place stops it', () => {
   assert.match(map, /\n {4}needs: server-layout\n/);
   assert.ok(map.includes('name: server-check-${{ needs.server-layout.outputs.build_id }}'), 'the artifact the layout job made');
