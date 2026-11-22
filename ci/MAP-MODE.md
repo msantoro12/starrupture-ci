@@ -1308,8 +1308,8 @@ rows and four function rows, with three keys not placed and one row not for the 
    the server would start with its plugins off` unless the file carries the 7 rows in `ci/server-required-rows.txt`
    (the loader's field rows and the Game-SDK global rows). CL 127004, the loader's own baseline, is skipped. A new
    server build whose scan did not find one of the global rows stops here. The scanner is built from the loader
-   branch `ci/aobscan-server-rows`; the default `scanner_ref` (`ci/aobscan`) has no server scanner, so a rehearsal passes
-   `scanner_ref=ci/aobscan-server-rows` and the default fails at the Server Release build. `export-feed --server` cuts the unsigned file and `published-base.mjs
+   branch `ci/aobscan-server-rows`; the default `scanner_ref` of the server check is that
+   branch (the client check keeps `ci/aobscan`). `export-feed --server` cuts the unsigned file and `published-base.mjs
    preserve` checks it keeps every published line. `decide.mjs identity --repo ModLoaderServer` checks the CL is not
    served yet and the file changes what is served for it (skipped in a rehearsal). The chain's seq is made here, above
    the published server file's own last seq (the client's seq is not used), and the file is signed once with the TEST
