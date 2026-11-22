@@ -39,7 +39,9 @@ FCrMassTemperatureFragment::LastUpdateTime
 FCrMassActorReplicationHelper::Actor
 FCrCraftingFragment::CraftingMultiplier
 UMassSignalSubsystem::CachedWorld
+ACrCrafter::CraftComponent
 UWorld::GameState
+UWorld::LineBatchers
 UWorld::NetDriver
 UObject::InternalIndex
 UObject::OuterPrivate

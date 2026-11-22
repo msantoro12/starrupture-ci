@@ -10,7 +10,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { addBuild, addField, addFunction, emit, emptyMap } from './version-map.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -81,7 +83,7 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
 
 test('no run block takes an expression: every input and output reaches a script through env', () => {
   assert.equal(runSteps(windows).length, 9, 'every run step of the Windows jobs was found');
-  assert.equal(runSteps(map).length, 10, 'every run step of server-map was found');
+  assert.equal(runSteps(map).length, 11, 'every run step of server-map was found');
   assert.equal(runSteps(publish).length, 9, 'every run step of server-publish was found');
   for (const r of runSteps(wf)) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
   assert.match(wf, /\n {4}env:\n {6}EXPECTED_BUILDID: \$\{\{ inputs\.buildid \}\}\n {6}SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.scanner_sha256 \}\}\n/);
@@ -303,4 +305,58 @@ test('ci/server-function-keys.txt: function lines only, no duplicate, the three 
   const r = spawnSync(process.execPath, [join(here, 'map-mode.mjs'), 'complete', join(here, 'fixtures', 'version-map', 'server.h'), '--cl', '127004', '--keys', join(here, 'server-function-keys.txt')], { encoding: 'utf8', windowsHide: true });
   assert.equal(r.status, 3, r.stderr + r.stdout);
   assert.match(r.stdout + r.stderr, new RegExp(`of ${keys.length} keys have no CL-127004 row`));
+});
+
+// ---- The loader's required rows (ci/server-required-rows.txt) ----
+
+const LOADER_FIELDS = ['ACrCrafter::CraftComponent', 'UWorld::GameState', 'UWorld::LineBatchers', 'UWorld::NetDriver'];
+const LOADER_GLOBALS = ['ModLoader/GObjects (GUObjectArray.ObjObjects)', 'GNames (NamePoolData)', 'FName::AppendString', 'GWorld'];
+
+test('ci/server-required-rows.txt: the loader\'s four field keys and four SDK globals, and the layout and function lists carry the keys the scans make', () => {
+  const lines = read('ci', 'server-required-rows.txt').split('\n').filter((l) => l.trim() && !l.trim().startsWith('#'));
+  assert.deepEqual(lines, [...LOADER_FIELDS.map((k) => `field ${k}`), ...LOADER_GLOBALS.map((k) => `function ${k}`)]);
+  const layout = read('ci', 'server-keys.txt').split('\n').map((l) => l.trim());
+  for (const k of LOADER_FIELDS) assert.ok(layout.includes(k), `${k} is a layout key`);
+  const functions = read('ci', 'server-function-keys.txt').split('\n').filter((l) => l.startsWith('function ')).map((l) => l.slice('function '.length));
+  for (const k of LOADER_GLOBALS) assert.ok(functions.includes(k), `${k} is a function key`);
+});
+
+test('server-map: the required-rows step runs after the layout check, skips the baseline CL, names the missing keys, and server-publish needs server-map', () => {
+  const step = stepOf(map, "Check the server file carries the loader's rows");
+  assert.ok(map.indexOf("- name: Check the server file carries the loader's rows") > map.indexOf('- name: Check every layout key has a row'));
+  assert.ok(map.indexOf("- name: Check the server file carries the loader's rows") < map.indexOf('- name: Sign with the TEST key as a dry run'));
+  assert.match(step, /BASELINE_CL: '127004'/);
+  assert.match(step, /--keys tool\/ci\/server-required-rows\.txt/);
+  assert.match(step, /server build \$CL is missing loader rows: .*; the server would start with its plugins off/);
+  assert.ok(!/continue-on-error/.test(step), 'a miss fails the job');
+  assert.match(publish, /needs\.server-map\.result == 'success'/);
+});
+
+test('required rows: a header with all eight passes; one missing two names them and exits 3', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'required-rows-'));
+  try {
+    const cl = 130000;
+    const make = (skip) => {
+      const m = emptyMap('server', 127004);
+      addBuild(m, { cl, stamp: 1, size: 2, source: 'server steam_build 1' });
+      for (const k of LOADER_FIELDS.filter((x) => !skip.includes(x))) addField(m, { key: k, cl, offset: 8, size: 8, mask: 0 });
+      for (const k of LOADER_GLOBALS.filter((x) => !skip.includes(x))) addFunction(m, k.includes('/') ? { key: k, kind: 6, fp: 0x12345678, cl, pattern: null, rva: 0x1000 } : { key: k, kind: 1, fp: 0, cl, pattern: null, rva: 0x1000 });
+      return emit(m);
+    };
+    const run = (text) => {
+      const file = join(dir, `h${text.length}.h`);
+      writeFileSync(file, text);
+      return spawnSync(process.execPath, [join(here, 'map-mode.mjs'), 'complete', file, '--cl', String(cl), '--keys', join(here, 'server-required-rows.txt')], { encoding: 'utf8', windowsHide: true });
+    };
+    const ok = run(make([]));
+    assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+    assert.match(ok.stdout, /all 8 keys have a CL-130000 row/);
+    const bad = run(make(['UWorld::LineBatchers', 'GWorld']));
+    assert.equal(bad.status, 3, bad.stderr + bad.stdout);
+    assert.match(bad.stderr, /missing: GWorld\n/);
+    assert.match(bad.stderr, /missing: UWorld::LineBatchers\n/);
+    assert.match(bad.stdout, /^2 of 8 keys have no CL-130000 row/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
