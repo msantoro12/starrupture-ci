@@ -217,6 +217,29 @@ jobs:
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
+      # A new public build of the dedicated server (app 3809400) is loud once: the game-update PR is
+      # bot-made and assigns nobody, and a server check that passes raises no alert, so without this
+      # step the build would pass unnoticed. One issue per server build id (the title carries the id;
+      # the step runs only when the PR step did not skip, so a repeated poll of the same build does not
+      # comment again). Same script and label as the alert job below.
+      - name: Alert on a new server build
+        if: steps.poll.outputs.changed == 'true' && steps.pr.outputs.skip != 'true' && inputs.rehearsal != true && startsWith(steps.poll.outputs.server_matrix, '[{')
+        env:
+          SERVER_MATRIX: ${{ steps.poll.outputs.server_matrix }}
+          PR: ${{ steps.pr.outputs.number }}
+          OWNER: msantoro12
+        run: |
+          set -euo pipefail
+          for id in $(node -e 'let m = []; try { m = JSON.parse(process.env.SERVER_MATRIX); } catch {} console.log(m.map((x) => String(x.buildid)).filter((x) => /^[0-9]+$/.test(x)).join(" "))'); do
+            cat > "$RUNNER_TEMP/server-build.md" <<EOF
+          @$OWNER a new dedicated server build, $id, is out on Steam (app 3809400).
+          The pipeline is running the server check on it in rehearsal: the live path is closed, so nothing is published. The server headers dump is manual until a server dump leg exists.
+          Game-update PR: ${PR:+$GITHUB_SERVER_URL/$GH_REPO/pull/$PR}
+          Runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-watch.yml
+          EOF
+            node ci/pipeline-alert.mjs raise --title "SR watch: new dedicated server build $id" --body-file "$RUNNER_TEMP/server-build.md" --owner "$OWNER"
+          done
+
       # The build was skipped because its game-update PR is open. If that PR's head
       # has been the same build for longer than STALE_HOURS (its last commit: the PR
       # step makes a new one at every refresh) and the client chain has not passed
@@ -228,12 +251,14 @@ jobs:
       # that title, open or closed, says it was raised, and it is not raised again.
       # If the issues cannot be read, nothing is posted. The issue is labelled
       # pipeline-alert and assigned to the owner, so GitHub notifies him. A PR with
-      # no client branch has no chain to pass and is not stale. NOW_EPOCH is for
+      # no client or server branch has no chain to pass and is not stale. A server build counts as the
+      # branch server_<branch>, which no label ever clears: it stays stale until the PR is merged or closed. NOW_EPOCH is for
       # tests; unset here.
       - name: Alert on a stale game-update PR
         if: steps.pr.outputs.skip == 'true'
         env:
           MATRIX: ${{ steps.poll.outputs.client_matrix }}
+          SERVER_MATRIX: ${{ steps.poll.outputs.server_matrix }}
           STALE_HOURS: '6'
           OWNER: msantoro12
         run: |
@@ -248,12 +273,14 @@ jobs:
             // The PR step pushes one fresh commit per refresh, so the last commit is when this build arrived.
             const since = Date.parse((pr.commits || []).slice(-1)[0]?.committedDate) || Date.parse(pr.createdAt);
             const hours = (Number(e.NOW) * 1000 - since) / 3600000;
-            let branches = [];
-            try { branches = JSON.parse(e.MATRIX).map((x) => x.branch); } catch {}
+            // A server build has no chain label, so its entry stays missing until the PR is merged or closed.
+            let rows = [];
+            try { rows = JSON.parse(e.MATRIX); } catch {}
+            try { rows = rows.concat(JSON.parse(e.SERVER_MATRIX).map((x) => ({ ...x, branch: "server_" + x.branch }))); } catch {}
+            const branches = rows.map((x) => x.branch);
             const have = new Set(pr.labels.map((l) => l.name));
             const missing = branches.filter((b) => /^[A-Za-z0-9_.]+$/.test(b) && !have.has("chain-passed-" + b));
-            let ids = {};
-            try { ids = Object.fromEntries(JSON.parse(e.MATRIX).map((x) => [x.branch, x.buildid])); } catch {}
+            const ids = Object.fromEntries(rows.map((x) => [x.branch, x.buildid]));
             const pairs = missing.map((b) => b + "=" + (/^[0-9]+$/.test(String(ids[b])) ? ids[b] : "unknown"));
             if (hours >= Number(e.STALE_HOURS) && missing.length) console.log(pr.number + " " + Math.floor(hours) + " " + pairs.join(","));
           ')"
@@ -288,9 +315,11 @@ jobs:
               echo "Already raised for $b (PR #$number, build ${pair#*=}); not again."
               continue
             fi
+            what="the client chain has not passed for \`$b\`: the PR has no \`chain-passed-$b\` label"
+            case "$b" in server_*) what="the dedicated server build is still not merged" ;; esac
             cat > "$RUNNER_TEMP/stale.md" <<EOF
           $MARKER
-          @$OWNER game-update PR #$number ($title) has held its current build for $hours hours and the client chain has not passed for \`$b\`: the PR has no \`chain-passed-$b\` label. The chain last ran when the PR was opened, refreshed by a new build, or forced, so the cause is in the earlier alerts on this issue, the PR's "Client build check" comment, or the latest runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-watch.yml
+          @$OWNER game-update PR #$number ($title) has held its current build for $hours hours and $what. The chain last ran when the PR was opened, refreshed by a new build, or forced, so the cause is in the earlier alerts on this issue, the PR's "Client build check" comment, or the latest runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-watch.yml
           PR: $GITHUB_SERVER_URL/$GH_REPO/pull/$number
           Once the cause is fixed: \`gh workflow run sr-watch.yml --ref main -f force=true\`. This is raised once for this PR and build; a new build on the PR raises it again.
           EOF
