@@ -381,7 +381,7 @@ node ci/version-map.mjs add-field server.h --key UCrMassPersistentIDSubsystem::M
 node ci/version-map.mjs export-feed server.h --out server.feed.txt --server
 ```
 
-`map-mode.mjs server` fills the same header from the scanner's output (`MAP-MODE.md`, "Dedicated server").
+`map-mode.mjs server` fills the same header from the scanner's output (`MAP-MODE.md`, "Dedicated server"): the field and size rows from `--layout`, and the function and global rows from `--scan`, which `ci/server-scan-rows.mjs` makes from `sr-aobscan-server --json`. The server scanner is the Server Release build of the loader's `tools/AobScan`; the default `scanner_ref` (`ci/aobscan`) does not have it, so a rehearsal passes `scanner_ref=ci/aobscan-server-rows`.
 
 A server file for a new server build has to carry the loader's own rows, or the server starts with its plugins off:
 the four field rows the loader reads (`ACrCrafter::CraftComponent`, `UWorld::GameState`, `UWorld::LineBatchers`,

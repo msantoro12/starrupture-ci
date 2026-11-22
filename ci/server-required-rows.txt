@@ -2,7 +2,7 @@
 # Without them the server starts with its plugins off ("This server game build is not fully known", or "GObjects or FName::AppendString was not found").
 # Field keys are the loader's kLoaderFieldKeys; the three globals are the ones the loader needs (GNames is not: it only logs it) from map rows on a server CL other than the one it was built for.
 # `map-mode.mjs complete --keys` reads this file; the server-map job fails when a key has no row on the new CL. Not checked on the loader's own baseline CL.
-# The function and global rows come from the server scanner leg, which is not built yet: until it lands, every new build stops here.
+# The function and global rows come from the server scan (sr-aobscan-server, ci/server-scan-rows.mjs): a new build whose scan did not find one stops here.
 field ACrCrafter::CraftComponent
 field UWorld::GameState
 field UWorld::LineBatchers

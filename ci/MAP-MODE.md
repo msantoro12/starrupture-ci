@@ -1297,16 +1297,19 @@ rows and four function rows, with three keys not placed and one row not for the 
 
 `sr-server-check.yml` makes and signs the server file after the check. Three jobs, one after the other:
 
-1. `server-layout` (the check): `server-result.json` and `server-layout.json`.
-2. `server-map`: `map-mode.mjs server` writes the build line and the field and size rows from those two files, then
+1. `server-layout` (the check): `server-result.json`, `server-layout.json` and `server-scan.json` (the Server Release scanner, `sr-aobscan-server --json`, on the server exe).
+2. `server-map`: `ci/server-scan-rows.mjs` turns `server-scan.json` into function and global rows for the keys of
+   `ci/server-function-keys.txt` (and refuses a report for another exe or another target); `map-mode.mjs server` writes
+   the build line, the field and size rows and those rows from those files, then
    `published-base.mjs take --asset version-map-server.v1.txt` checks the signature of the published server file and
    adds every line it has (the first server file has none to take). `map-mode.mjs complete --keys ci/server-keys.txt`
    stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but only reported:
-   no scan makes function or global rows yet. The job also fails with `server build <CL> is missing loader rows: <keys>;
+   a key the scanner does not know has no row. The job also fails with `server build <CL> is missing loader rows: <keys>;
    the server would start with its plugins off` unless the file carries the 7 rows in `ci/server-required-rows.txt`
-   (the loader's field rows and the Game-SDK global rows). CL 127004, the loader's own baseline, is skipped. The global
-   rows need the Loader's server scanner leg, which is not built yet, so until it lands every new server build stops
-   here. `export-feed --server` cuts the unsigned file and `published-base.mjs
+   (the loader's field rows and the Game-SDK global rows). CL 127004, the loader's own baseline, is skipped. A new
+   server build whose scan did not find one of the global rows stops here. The scanner is built from the loader
+   branch `ci/aobscan-server-rows`; the default `scanner_ref` (`ci/aobscan`) has no server scanner, so a rehearsal passes
+   `scanner_ref=ci/aobscan-server-rows` and the default fails at the Server Release build. `export-feed --server` cuts the unsigned file and `published-base.mjs
    preserve` checks it keeps every published line. `decide.mjs identity --repo ModLoaderServer` checks the CL is not
    served yet and the file changes what is served for it (skipped in a rehearsal). The chain's seq is made here, above
    the published server file's own last seq (the client's seq is not used), and the file is signed once with the TEST
