@@ -6,12 +6,15 @@ name: SR server check
 #   - the exe's identity: ProductVersion CL, PE TimeDateStamp, SizeOfImage and SHA-256
 #   - sr-aobscan --layout reads every key of ci/server-keys.txt (class sizes and member offsets the
 #     server plugins read) from that PDB
-# The result is the artifact server-check-<build id>: server-result.json, server-layout.json and
-# layout-keys.txt, the inputs the server's part of the version object map is made from.
+#   - sr-aobscan-server --json scans the exe for the loader's function and global addresses (GObjects,
+#     GNames, FName::AppendString, GWorld, ProcessEvent, SignalEntity)
+# The result is the artifact server-check-<build id>: server-result.json, server-layout.json, layout-keys.txt
+# and server-scan.json, the inputs the server's part of the version object map is made from.
 #
 # Two jobs follow the check (ci/MAP-MODE.md, "Dedicated server"):
-#   - server-map writes the server's version object map header from that artifact (the build line and the
-#     field and size rows), on top of the published server file, cuts the unsigned server file from it, checks
+#   - server-map writes the server's version object map header from that artifact (the build line, the
+#     field and size rows and the function and global rows of ci/server-function-keys.txt that the scan
+#     found: ci/server-scan-rows.mjs), on top of the published server file, cuts the unsigned server file from it, checks
 #     its version identity and signs it once with the TEST key (k1, secret VMAP_SIGN_KEY_TEST) as a dry run
 #   - server-publish signs that file with the release key (k2, secret VMAP_SIGN_KEY, environment vmap-sign) and
 #     uploads it with the shared routine (ci/vmap-publish.sh)
@@ -21,9 +24,10 @@ name: SR server check
 # release before and after and fails if it changed. Nothing is commented on a pull request; the job summary
 # shows the numbers.
 #
-# The scanner is the one the client check builds (Client Release): --layout is handled before any
-# client-only code and reads the PDB alone. A Server Release scanner (functions and globals) does not
-# compile on the loader's current code, so it is not built here.
+# Two scanners are built from one tree: Client Release for --layout (handled before any client-only code,
+# it reads the PDB alone) and Server Release (sr-aobscan-server.exe) for the address scan. The Server
+# Release build needs the scanner branch to carry the server rows (the default ci/aobscan does not yet, so
+# a rehearsal of this leg names scanner_ref explicitly); without it the scanner job fails, on purpose.
 #
 # Trust: the scanner is built from the same two owners the client check allows (msantoro12 and
 # AlienXAXS) and runs on a runner that holds no secret. Only the two jobs after it hold one: server-map the TEST key
@@ -105,6 +109,7 @@ jobs:
       contents: read
     outputs:
       scanner_sha256: ${{ steps.hash.outputs.sha256 }}
+      server_scanner_sha256: ${{ steps.hash.outputs.server_sha256 }}
     steps:
       - name: Check the loader repository
         shell: pwsh
@@ -154,19 +159,34 @@ jobs:
             /m /p:CL_MP=true /nodeReuse:false /v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Hash the scanner
+      - name: Build sr-aobscan-server (Server Release)
+        shell: pwsh
+        working-directory: loader
+        run: |
+          msbuild "tools\AobScan\AobScan.vcxproj" `
+            /p:Configuration="Server Release" `
+            /p:Platform=x64 `
+            /m /p:CL_MP=true /nodeReuse:false /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Hash the scanners
         id: hash
         shell: pwsh
         run: |
           $h = (Get-FileHash loader\build\tools\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "sr-aobscan-client.exe SHA-256 $h"
           "sha256=$h" >> $env:GITHUB_OUTPUT
+          $s = (Get-FileHash loader\build\tools\sr-aobscan-server.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sr-aobscan-server.exe SHA-256 $s"
+          "server_sha256=$s" >> $env:GITHUB_OUTPUT
 
-      - name: Upload the scanner
+      - name: Upload the scanners
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-check-scanner-${{ inputs.buildid }}
-          path: loader/build/tools/sr-aobscan-client.exe
+          path: |
+            loader/build/tools/sr-aobscan-client.exe
+            loader/build/tools/sr-aobscan-server.exe
           if-no-files-found: error
           retention-days: 1
 
@@ -188,6 +208,7 @@ jobs:
     env:
       EXPECTED_BUILDID: ${{ inputs.buildid }}
       SCANNER_SHA256: ${{ needs.server-scanner.outputs.scanner_sha256 }}
+      SERVER_SCANNER_SHA256: ${{ needs.server-scanner.outputs.server_scanner_sha256 }}
     steps:
       - name: Check out the scripts and the key list
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -201,12 +222,15 @@ jobs:
           name: server-check-scanner-${{ inputs.buildid }}
           path: scanner
 
-      - name: Check the scanner is the one server-scanner made
+      - name: Check the scanners are the ones server-scanner made
         shell: pwsh
         run: |
           $h = (Get-FileHash scanner\sr-aobscan-client.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($h -ne $env:SCANNER_SHA256) { throw "sr-aobscan-client.exe hash $h is not the one server-scanner made ($($env:SCANNER_SHA256))" }
           "sr-aobscan-client.exe SHA-256 $h"
+          $s = (Get-FileHash scanner\sr-aobscan-server.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($s -ne $env:SERVER_SCANNER_SHA256) { throw "sr-aobscan-server.exe hash $s is not the one server-scanner made ($($env:SERVER_SCANNER_SHA256))" }
+          "sr-aobscan-server.exe SHA-256 $s"
 
       - name: Download the dedicated server
         id: dl
@@ -282,7 +306,25 @@ jobs:
           $ErrorActionPreference = 'Stop'
           "sr-aobscan --layout: $keyCount keys, exit $code, $([int]$sw.Elapsed.TotalSeconds) s"
           "exit_code=$code" >> $env:GITHUB_OUTPUT
-          # The scanner's exit code is judged by the next step; the runner would otherwise end this one with it.
+          # The scanner's exit code is judged by the result step; the runner would otherwise end this one with it.
+          exit 0
+
+      # The loader's own address scan of the server exe: the function and global rows ci/server-scan-rows.mjs turns into
+      # server file rows. The report is the scanner's stdout; the result step judges its exit code and that it is JSON.
+      - name: Scan the server exe for the function and global addresses
+        id: scan
+        shell: pwsh
+        env:
+          EXE_PATH: ${{ steps.exe.outputs.exe_path }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $ErrorActionPreference = 'Continue'
+          & scanner\sr-aobscan-server.exe $env:EXE_PATH --json > out\server-scan.json
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          "sr-aobscan-server: exit $code, $([int]$sw.Elapsed.TotalSeconds) s"
+          "exit_code=$code" >> $env:GITHUB_OUTPUT
           exit 0
 
       # Exit 0: every key resolved. Exit 1: a key did not (a class renamed or gone from this build): the
@@ -294,6 +336,7 @@ jobs:
         env:
           LAYOUT_EXIT: ${{ steps.layout.outputs.exit_code }}
           KEY_COUNT: ${{ steps.layout.outputs.key_count }}
+          SCAN_EXIT: ${{ steps.scan.outputs.exit_code }}
           BUILD_ID: ${{ steps.dl.outputs.build_id }}
           PRODUCT_VERSION: ${{ steps.exe.outputs.product_version }}
           CL_NUMBER: ${{ steps.exe.outputs.cl }}
@@ -306,6 +349,7 @@ jobs:
           $problems = [Collections.Generic.List[string]]::new()
           $rows = 0
           $summary = $null
+          $scanSummary = $null
           if ($env:LAYOUT_EXIT -notmatch '^-?\d+$') { $problems.Add('the layout scan did not run') }
           elseif ([int]$env:LAYOUT_EXIT -notin 0, 1) { $problems.Add("sr-aobscan --layout failed (exit $($env:LAYOUT_EXIT))") }
           if (Test-Path out\server-layout.json) {
@@ -316,6 +360,15 @@ jobs:
             } catch { $problems.Add("server-layout.json is not JSON: $($_.Exception.Message)") }
           } else { $problems.Add('no server-layout.json') }
           if ($summary -and $rows -ne [int]$env:KEY_COUNT) { $problems.Add("the layout has $rows rows for $($env:KEY_COUNT) keys") }
+
+          # Exit 0: no required row failed. Exit 1: one did (the report lists it and the converter leaves it out;
+          # ci/server-required-rows.txt decides in server-map whether that stops the build). Anything else did not scan.
+          if ($env:SCAN_EXIT -notmatch '^-?\d+$') { $problems.Add('the address scan did not run') }
+          elseif ([int]$env:SCAN_EXIT -notin 0, 1) { $problems.Add("sr-aobscan-server failed (exit $($env:SCAN_EXIT))") }
+          if (Test-Path out\server-scan.json) {
+            try { $scanSummary = (Get-Content out\server-scan.json -Raw | ConvertFrom-Json).summary }
+            catch { $problems.Add("server-scan.json is not JSON: $($_.Exception.Message)") }
+          } else { $problems.Add('no server-scan.json') }
 
           $result = [ordered]@{
             schema        = 1
@@ -328,9 +381,11 @@ jobs:
             exeSha256     = $env:EXE_SHA256
             pdbName       = $env:PDB_NAME
             scannerSha256 = $env:SCANNER_SHA256
+            serverScannerSha256 = $env:SERVER_SCANNER_SHA256
             keyCount      = [int]$env:KEY_COUNT
             layoutRows    = $rows
             layoutExit    = $(if ($env:LAYOUT_EXIT -match '^-?\d+$') { [int]$env:LAYOUT_EXIT } else { $null })
+            scanExit      = $(if ($env:SCAN_EXIT -match '^-?\d+$') { [int]$env:SCAN_EXIT } else { $null })
           }
           $result | ConvertTo-Json | Set-Content out\server-result.json -Encoding utf8
 
@@ -340,12 +395,13 @@ jobs:
             "- Build $($env:BUILD_ID), CL-$($env:CL_NUMBER)$(if ($env:REHEARSAL -eq 'true') { ' (rehearsal: a build that is already handled)' })",
             "- PE stamp $($env:IMAGE_STAMP), image size $($env:IMAGE_SIZE), SHA-256 ``$($env:EXE_SHA256)``",
             "- PDB $($env:PDB_NAME)",
-            "- Layout: $($env:KEY_COUNT) keys, $rows rows$(if ($summary) { ", $($summary.ok) resolved, $($summary.failing) failing" }), exit $($env:LAYOUT_EXIT)"
+            "- Layout: $($env:KEY_COUNT) keys, $rows rows$(if ($summary) { ", $($summary.ok) resolved, $($summary.failing) failing" }), exit $($env:LAYOUT_EXIT)",
+            "- Address scan: $(if ($scanSummary) { "$($scanSummary.ok) of $($scanSummary.total) rows found, $($scanSummary.missing) missing, $($scanSummary.ambiguous) ambiguous" } else { 'no report' }), exit $($env:SCAN_EXIT)"
           )
           $md -join "`n" | Add-Content $env:GITHUB_STEP_SUMMARY -Encoding utf8
           $md | Write-Host
 
-          foreach ($f in 'server-result.json', 'server-layout.json', 'layout-keys.txt') {
+          foreach ($f in 'server-result.json', 'server-layout.json', 'layout-keys.txt', 'server-scan.json') {
             if (-not (Test-Path "out\$f")) { $problems.Add("out\$f was not written") }
           }
           if ($summary -and $summary.failing -gt 0) {
@@ -354,7 +410,7 @@ jobs:
           foreach ($p in $problems) { Write-Host "::error::$p" }
           if ($problems.Count) { exit 1 }
 
-      # Only the three files below leave the runner: no game file, no PDB, no log.
+      # Only the four files below leave the runner: no game file, no PDB, no log.
       - name: Upload the result
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -364,15 +420,18 @@ jobs:
             out/server-result.json
             out/server-layout.json
             out/layout-keys.txt
+            out/server-scan.json
           if-no-files-found: warn
           retention-days: 14
 
   # ---- The server's part of the version object map: the build line and the field and size rows ----
-  # Made from the server-check artifact alone (no scan of addresses yet). The published server file is the base:
+  # Made from the server-check artifact alone. The published server file is the base:
   # ci/published-base.mjs verifies its signature and adds every line it has. A key the layout could not place, a
   # row that differs from a published one, a published line the new file lost, or a version identity that changes
-  # nothing served for the CL (not checked in a rehearsal) stops the job. Function and global keys
-  # (ci/server-function-keys.txt) are only reported: no scan makes their rows yet. The chain's one seq is made here,
+  # nothing served for the CL (not checked in a rehearsal) stops the job. The function and global rows come from the
+  # scan report (ci/server-scan-rows.mjs keeps the keys of ci/server-function-keys.txt, and only when the report is
+  # for this exe); keys of that list with no row are reported, and the loader's own rows (ci/server-required-rows.txt)
+  # stop a new build when missing. The chain's one seq is made here,
   # above the published server file's own, and the file is signed with the TEST key once to prove the path.
   server-map:
     name: server-map
@@ -447,7 +506,16 @@ jobs:
           echo "first_publish=$first" >> "$GITHUB_OUTPUT"
           if [ "$first" = true ]; then echo "No server file is published yet: this is a first publish."; fi
 
-      - name: Write the build line and the layout rows into a server header
+      # The report must be for the exe this run read (CL, PE stamp, image size) and for the server target; else nothing is made.
+      - name: Make the function and global rows from the scan
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          node tool/ci/server-scan-rows.mjs chk/server-scan.json --result chk/server-result.json --keys tool/ci/server-function-keys.txt \
+            --out out/server-scan-rows.json --summary out/server-scan-summary.md
+          cat out/server-scan-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the build line, the layout rows and the scan rows into a server header
         env:
           CL: ${{ steps.res.outputs.cl }}
           BUILD_ID: ${{ steps.res.outputs.build_id }}
@@ -457,7 +525,7 @@ jobs:
           set -euo pipefail
           mkdir -p out
           node tool/ci/map-mode.mjs server out/server.h --cl "$CL" --stamp "$IMAGE_STAMP" --size "$IMAGE_SIZE" --build-id "$BUILD_ID" \
-            --layout chk/server-layout.json --report out/map-report.json
+            --layout chk/server-layout.json --scan out/server-scan-rows.json --report out/map-report.json
 
       - name: Take the published server file as the base
         env:
@@ -494,7 +562,7 @@ jobs:
           node tool/ci/map-mode.mjs complete out/server.h --cl "$CL" --keys tool/ci/server-keys.txt --report out/complete-report.json \
             || { echo "::error::a layout key has no row for CL-$CL in the server header (the keys are listed above); nothing was made from this run"; exit 2; }
 
-      # Reported, not gating: the rows for these come from scans of the server exe, which this job does not run.
+      # Reported, not gating: the scan finds the globals and the loader's own function rows; the other function keys have no scanner row yet.
       - name: Report the function and global keys with no row yet
         env:
           CL: ${{ steps.res.outputs.cl }}
@@ -504,10 +572,10 @@ jobs:
           node tool/ci/map-mode.mjs complete out/server.h --cl "$CL" --keys tool/ci/server-function-keys.txt --report out/function-keys.json > function-keys.txt 2>&1 || code=$?
           cat function-keys.txt
           case "$code" in 0|3) ;; *) echo "::error::map-mode complete exited $code on the function key list"; exit 2 ;; esac
-          { echo "### Server function and global keys"; echo; sed 's/^/    /' function-keys.txt; echo; echo "Reported only: no scan makes these rows yet."; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### Server function and global keys"; echo; sed 's/^/    /' function-keys.txt; echo; echo "Reported only: the scan makes the rows of the keys the loader's scanner knows; the others have no scanner row yet."; } >> "$GITHUB_STEP_SUMMARY"
 
       # The loader's own rows (ci/server-required-rows.txt): a new server build without them starts with its plugins off.
-      # The function and global rows need the server scanner leg, which is not built yet, so a new build stops here until it lands.
+      # The function and global rows come from the scan (sr-aobscan-server): a new build whose scan did not find one stops here.
       # Not asked of the loader's own baseline CL (127004): the loader is built for it and needs no rows there.
       - name: Check the server file carries the loader's rows
         env:
@@ -592,6 +660,7 @@ jobs:
             out/server-chain.json
             out/identity.json
             out/map-report.json
+            out/server-scan-rows.json
             out/base.json
             out/preserve.json
             out/complete-report.json
