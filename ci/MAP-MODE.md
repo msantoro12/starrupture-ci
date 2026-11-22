@@ -1303,7 +1303,7 @@ rows and four function rows, with three keys not placed and one row not for the 
    adds every line it has (the first server file has none to take). `map-mode.mjs complete --keys ci/server-keys.txt`
    stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but only reported:
    no scan makes function or global rows yet. The job also fails with `server build <CL> is missing loader rows: <keys>;
-   the server would start with its plugins off` unless the file carries the 8 rows in `ci/server-required-rows.txt`
+   the server would start with its plugins off` unless the file carries the 7 rows in `ci/server-required-rows.txt`
    (the loader's field rows and the Game-SDK global rows). CL 127004, the loader's own baseline, is skipped. The global
    rows need the Loader's server scanner leg, which is not built yet, so until it lands every new server build stops
    here. `export-feed --server` cuts the unsigned file and `published-base.mjs

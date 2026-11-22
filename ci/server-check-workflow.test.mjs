@@ -328,9 +328,9 @@ test('ci/server-function-keys.txt: function lines only, no duplicate, the three 
 // ---- The loader's required rows (ci/server-required-rows.txt) ----
 
 const LOADER_FIELDS = ['ACrCrafter::CraftComponent', 'UWorld::GameState', 'UWorld::LineBatchers', 'UWorld::NetDriver'];
-const LOADER_GLOBALS = ['ModLoader/GObjects (GUObjectArray.ObjObjects)', 'GNames (NamePoolData)', 'FName::AppendString', 'GWorld'];
+const LOADER_GLOBALS = ['ModLoader/GObjects (GUObjectArray.ObjObjects)', 'FName::AppendString', 'GWorld'];
 
-test('ci/server-required-rows.txt: the loader\'s four field keys and four SDK globals, and the layout and function lists carry the keys the scans make', () => {
+test('ci/server-required-rows.txt: the loader\'s four field keys and three SDK globals (no GNames), and the layout and function lists carry the keys the scans make', () => {
   const lines = read('ci', 'server-required-rows.txt').split('\n').filter((l) => l.trim() && !l.trim().startsWith('#'));
   assert.deepEqual(lines, [...LOADER_FIELDS.map((k) => `field ${k}`), ...LOADER_GLOBALS.map((k) => `function ${k}`)]);
   const layout = read('ci', 'server-keys.txt').split('\n').map((l) => l.trim());
@@ -350,7 +350,7 @@ test('server-map: the required-rows step runs after the layout check, skips the 
   assert.match(publish, /needs\.server-map\.result == 'success'/);
 });
 
-test('required rows: a header with all eight passes; one missing two names them and exits 3', () => {
+test('required rows: a header with all seven passes; one missing two names them and exits 3', () => {
   const dir = mkdtempSync(join(tmpdir(), 'required-rows-'));
   try {
     const cl = 130000;
@@ -368,12 +368,12 @@ test('required rows: a header with all eight passes; one missing two names them 
     };
     const ok = run(make([]));
     assert.equal(ok.status, 0, ok.stderr + ok.stdout);
-    assert.match(ok.stdout, /all 8 keys have a CL-130000 row/);
+    assert.match(ok.stdout, /all 7 keys have a CL-130000 row/);
     const bad = run(make(['UWorld::LineBatchers', 'GWorld']));
     assert.equal(bad.status, 3, bad.stderr + bad.stdout);
     assert.match(bad.stderr, /missing: GWorld\n/);
     assert.match(bad.stderr, /missing: UWorld::LineBatchers\n/);
-    assert.match(bad.stdout, /^2 of 8 keys have no CL-130000 row/);
+    assert.match(bad.stdout, /^2 of 7 keys have no CL-130000 row/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
