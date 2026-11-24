@@ -1,0 +1,9 @@
+format	1
+kind	declared-features
+game_cl	200
+loader	1.23.2
+plugin	Best Builder	1.2.0
+feature	Best Builder	grid	on	Grid snapping
+feature	Best Builder	copy	on	Copy and paste
+plugin	WAILA	2.0.0
+feature	WAILA	tooltip	off	Block tooltip
