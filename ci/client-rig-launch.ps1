@@ -14,6 +14,10 @@
 #   boot.json         process facts for the shipping exe
 #   dll-hashes.json   sha256 before the first launch and after the last stop
 #   modloader.log, proxy.log, autoupdate.log   the loader's logs of the last attempt, scrubbed
+#   declared-features-<CL>.v1.txt   the loader's dump of the plugins and features it ran (ModLoader\Logs\declared-features.v1.txt),
+#                     copied when the loader wrote one, named for the game CL its game_cl line holds; boot.json's
+#                     declared_features names it, or says null (a loader that does not write the dump yet). Not judged
+#                     by the verdict: a missing dump is no failure. The catalog leg of sr-client-check.yml reads it.
 #
 #   attempt1\         only when attempt 1 ended on that dialog (below): the loader's logs of that
 #                     attempt, the Steam client log lines of its time window, the tail of the
@@ -219,6 +223,12 @@ function Read-Shared([string]$path) {
     try { (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
 }
 
+# The upload name of a declared-features dump: declared-features-<CL>.v1.txt, from its game_cl line, or $null
+# when the text has no valid game_cl (a CL has no leading zero and at most 10 digits).
+function Get-DeclaredFeaturesName([string]$Text) {
+    if ($Text -cmatch '(?m)^game_cl\t([1-9][0-9]{0,9})\r?$') { "declared-features-$($Matches[1]).v1.txt" } else { $null }
+}
+
 if ($Check) {
     "Windows visible to this session: $(@([RigWin]::Snapshot()).Count)"
     $steamErr = 'pid=10 visible=True class=#32770 title=[Steam Error] children=[Static=Application load error 6:0000065432 | Button=OK]'
@@ -297,6 +307,10 @@ if ($Check) {
     if ((Get-LogWindow $steamLog ([datetime]'2026-11-20 13:00:00')) -match '\S') { throw 'a log window after the last line is not empty' }
     if ((Get-LogWindow $steamLog ([datetime]'2026-11-20 11:00:00') 2).Count -ne 2) { throw 'the log window is not capped' }
     if (((Get-Tail "a`nb`nc`nd" 2) -join ',') -ne 'c,d') { throw 'the tail is wrong' }
+    if ((Get-DeclaredFeaturesName "format`t1`nkind`tdeclared-features`ngame_cl`t129402`nloader`t1.26.1`n") -ne 'declared-features-129402.v1.txt') { throw 'the dump name is wrong' }
+    foreach ($bad in '', "format`t1`n", "game_cl`t0129402`n", "game_cl`t12345678901`n", "game_cl`t12 3`n", "game_cl`t../1`n", "xgame_cl`t1`n") {
+        if ($null -ne (Get-DeclaredFeaturesName $bad)) { throw "a dump with no valid game_cl was named: $bad" }
+    }
     'Check passed.'
     exit 0
 }
@@ -821,13 +835,23 @@ function Invoke-Launch {
     }
     # The verdict judges a compatibility report by what it says, so it needs the file itself.
     foreach ($f in $compatFiles) { [IO.File]::WriteAllText((Join-Path $OutDir $f.Name), (Scrub (Read-Shared $f.FullName)), (New-Object Text.UTF8Encoding $false)) }
+    # The loader's dump of its declared features, when it wrote one: one file per live build, named for the game CL
+    # inside it. A loader that does not write the dump yet leaves none, and that is recorded, not failed.
+    $declared = $null
+    $dumpPath = Join-Path $script:mlLogs 'declared-features.v1.txt'
+    if (-not $PayloadScript -and (Test-Path -LiteralPath $dumpPath)) {
+        $dumpText = Read-Shared $dumpPath
+        $declared = Get-DeclaredFeaturesName $dumpText
+        if ($declared) { [IO.File]::WriteAllText((Join-Path $OutDir $declared), (Scrub $dumpText), (New-Object Text.UTF8Encoding $false)) }
+        else { Say 'The loader wrote declared-features.v1.txt but it has no valid game_cl line; it was not kept' }
+    }
     Write-AttemptEvidence 'attempt1'
     $boot = [ordered]@{
         label = 'client'; started_utc = $last.started_utc; launched_args = $GameArgs
         process_found = [bool]$last.process_found; process_found_s = $last.process_found_s
         exited_early = [bool]$last.exited_early; exit_code = $last.exit_code; alive_at_end = $aliveAtEnd
         boot_finished_s = $last.boot_finished_s; peak_working_set_mb = $last.peak_working_set_mb
-        crash_files = @($crashFiles); crash_dialog = $dialogTitle; compat_reports = @($compat)
+        crash_files = @($crashFiles); crash_dialog = $dialogTitle; compat_reports = @($compat); declared_features = $declared
         relaunches = $attempts.Count - 1
         attempts = @($attempts | ForEach-Object { [ordered]@{ n = $_.n; seconds = $_.seconds; end = $_.end; steam_load_error = $_.load_error } })
     }

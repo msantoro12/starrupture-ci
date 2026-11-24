@@ -14,11 +14,15 @@
 //
 //   node ci/catalog-from-dumps.mjs <dump>... --out <catalog-in.json>
 //        [--published <published-plugin-catalog.v1.txt>] [--verdict <path>]
+//        [--expect-plugins <plugin-names.json>]
 //
 // With --published, prints `changed` or `unchanged` (rows compared, seq and signature
 // ignored; a missing published file is `changed`) and writes it to --verdict. Exit 0 either way.
 // An off list only ever holds game CLs whose dump says off; `*` is never written, since a dump
 // cannot prove a feature off on a future build.
+// With --expect-plugins (the rig's plugin list, ci/plugin-names.json), a plugin of that list with no
+// plugin row in any dump is a rig gap: one `rig gap:` line on stderr per plugin, exit 0 and nothing
+// written for it. The catalog never holds a row the loader did not dump.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isMain } from './layout-diff.mjs';
@@ -139,6 +143,17 @@ export function mergeDumps(dumps) {
   return { input: { plugins: out }, warnings };
 }
 
+// names: the rig's plugin list (ci/plugin-names.json), input: mergeDumps' input. Returns the names of the
+// list with no plugin row in the dumps (matched on Name or LogName, case-insensitive), in list order.
+export function rigGaps(names, input) {
+  need(Array.isArray(names), 'the plugin list is not an array');
+  const have = new Set(input.plugins.map((p) => p.name.toLowerCase()));
+  return names.filter((n) => {
+    need(n && typeof n.Name === 'string', 'a plugin list entry has no Name');
+    return ![n.Name, n.LogName].some((x) => typeof x === 'string' && have.has(x.toLowerCase()));
+  }).map((n) => n.Name);
+}
+
 // published: text of the published catalog, or null. Returns 'changed' or 'unchanged'.
 export function verdict(input, published) {
   if (published == null) return 'changed';
@@ -149,20 +164,23 @@ export function verdict(input, published) {
 
 export function main(argv) {
   const dumps = [];
-  let out, published, verdictPath;
+  let out, published, verdictPath, expectPlugins;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--out' || a === '--published' || a === '--verdict') {
+    if (a === '--out' || a === '--published' || a === '--verdict' || a === '--expect-plugins') {
       need(argv[i + 1] !== undefined, `${a} needs a value`);
-      if (a === '--out') out = argv[++i]; else if (a === '--published') published = argv[++i]; else verdictPath = argv[++i];
+      if (a === '--out') out = argv[++i]; else if (a === '--published') published = argv[++i]; else if (a === '--verdict') verdictPath = argv[++i]; else expectPlugins = argv[++i];
     } else { need(!a.startsWith('--'), `unknown option ${a}`); dumps.push(a); }
   }
-  need(dumps.length && out, 'usage: catalog-from-dumps.mjs <dump>... --out <catalog-in.json> [--published <file>] [--verdict <path>]');
+  need(dumps.length && out, 'usage: catalog-from-dumps.mjs <dump>... --out <catalog-in.json> [--published <file>] [--verdict <path>] [--expect-plugins <plugin-names.json>]');
   need(!verdictPath || published, '--verdict needs --published');
   const { input, warnings } = mergeDumps(dumps.map((f) => parseDump(readFileSync(f, 'utf8'))));
   buildCatalog(input); // every catalog limit, before anything is written
   writeFileSync(out, `${JSON.stringify(input, null, 2)}\n`);
   for (const w of warnings) process.stderr.write(`catalog-from-dumps: warning: ${w}\n`);
+  if (expectPlugins) {
+    for (const g of rigGaps(JSON.parse(readFileSync(expectPlugins, 'utf8')), input)) process.stderr.write(`catalog-from-dumps: rig gap: ${g} has no plugin row in any dump\n`);
+  }
   if (published) {
     const v = verdict(input, existsSync(published) ? readFileSync(published, 'utf8') : null);
     process.stdout.write(`${v}\n`);
