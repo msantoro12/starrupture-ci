@@ -8,16 +8,17 @@
 // k1 or k2, before it parses anything.
 //
 //   node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2
-//        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>] [--kind feed|catalog]
+//        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>] [--kind feed|catalog|mod-index]
 //   node ci/vmap-sign.mjs next-seq [--last-seq <n>] [--now <unix seconds>]
 //   node ci/vmap-sign.mjs unique <feed>     (exit 2 when a build or a row is listed twice)
 //   node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>]
-//        [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>] [--kind feed|catalog]
+//        [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>] [--kind feed|catalog|mod-index]
 //
 // --kind (default feed) picks the file kind: feed is the version map; catalog is the plugin catalog
 // (ci/plugin-catalog.mjs). Both use the format 1 envelope; the catalog's third line `kind<TAB>plugin-catalog` is
 // signed with the rest, the catalog verifier requires it and the feed verifier refuses it, so a file of one kind
-// never verifies as the other.
+// never verifies as the other. mod-index is the loader's mod index (ci/mod-index.mjs): `kind<TAB>mod-index`, then the
+// index JSON byte for byte; the same refusals keep it apart from the other two.
 //
 // The private key comes from an environment variable (default VMAP_SIGN_KEY,
 // a PEM) or a file, and is never printed. `seq` is the UTC second of signing,
@@ -37,6 +38,7 @@ import { createPrivateKey, createPublicKey, sign as edSign, verify as edVerify }
 import { readFileSync, writeFileSync } from 'node:fs';
 import { isMain } from './layout-diff.mjs';
 import { FEED_FORMAT, FEED_MAX_BYTES } from './version-map.mjs';
+import { MOD_INDEX_FORMAT_LINE, MOD_INDEX_MAX_BYTES, ModIndexError, checkRows as modIndexCheckRows } from './mod-index.mjs';
 import { CATALOG_MAX_BYTES, CatalogError, parseCatalog } from './plugin-catalog.mjs';
 
 export const EXIT_OK = 0;
@@ -101,6 +103,9 @@ const noDuplicateRows = (lines) => {
 const catalogRows = (lines) => {
   try { parseCatalog(lines.join('\n')); } catch (e) { if (e instanceof CatalogError) throw new SignError(e.message); throw e; }
 };
+const modIndexRows = (lines) => {
+  try { modIndexCheckRows(lines); } catch (e) { if (e instanceof ModIndexError) throw new SignError(e.message); throw e; }
+};
 const feedRows = (lines) => {
   need(!lines.some((l) => l.startsWith('kind\t')), 'the file carries a kind line: it is not a version map feed');
   noDuplicateRows(lines);
@@ -109,8 +114,9 @@ const feedRows = (lines) => {
 const kinds = () => ({
   feed: { header: `format\t${FEED_FORMAT}`, max: FEED_MAX_BYTES, rows: feedRows, label: `format ${FEED_FORMAT} feed`, enc: 'latin1' },
   catalog: { header: `format\t${FEED_FORMAT}`, max: CATALOG_MAX_BYTES, rows: catalogRows, label: 'plugin catalog', enc: 'utf8' },
+  'mod-index': { header: MOD_INDEX_FORMAT_LINE, max: MOD_INDEX_MAX_BYTES, rows: modIndexRows, label: 'mod index', enc: 'utf8' },
 });
-function kindOf(kind) { need(kind === 'feed' || kind === 'catalog', "the kind is 'feed' or 'catalog'"); return kinds()[kind]; }
+function kindOf(kind) { need(typeof kind === 'string' && Object.hasOwn(kinds(), kind), "the kind is 'feed', 'catalog' or 'mod-index'"); return kinds()[kind]; }
 
 // The seq to sign now: the UTC second, raised to last + 1 when the clock has not passed the last seq.
 export function nextSeq(lastSeq = 0, now = Math.floor(Date.now() / 1000)) {
@@ -126,7 +132,7 @@ export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Ma
   const k = kindOf(kind);
   need(keyId === 'k1' || keyId === 'k2', "the key ID is 'k1' or 'k2'");
   need(Number.isSafeInteger(lastSeq) && lastSeq >= 0, 'the last seq is a non-negative integer');
-  need(Buffer.byteLength(unsigned) <= k.max, `the ${kind === 'feed' ? 'feed' : 'catalog'} is over ${k.max} bytes`);
+  need(Buffer.byteLength(unsigned) <= k.max, `the ${kind === 'feed' ? 'feed' : kind === 'catalog' ? 'catalog' : k.label} is over ${k.max} bytes`);
   const lines = unsigned.split('\n');
   need(lines[0] === k.header && lines[lines.length - 1] === '', kind === 'feed' ? `expected an unsigned format ${FEED_FORMAT} feed from export-feed` : `expected an unsigned ${k.label} starting ${JSON.stringify(k.header)}`);
   need(!lines.some((l) => l.startsWith('seq\t') || l.startsWith('sig\t') || l.includes('\r')), 'the feed already has a seq or sig line, or a CR');
