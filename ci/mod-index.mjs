@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The signed mod index: the loader's mod-index/index.json, carried byte for byte inside the signed envelope.
-// The JSON is opaque here: it must be one JSON object, UTF-8 with LF line ends and a final LF.
+// The JSON is opaque here: it must be one JSON object or array (the loader's index.json is an array), UTF-8 with LF line ends and a final LF.
 //
 //   format<TAB>1
 //   seq<TAB><n>                       added by the signer (ci/vmap-sign.mjs --kind mod-index)
@@ -25,7 +25,7 @@ export class ModIndexError extends Error {}
 const need = (cond, msg) => { if (!cond) throw new ModIndexError(msg); };
 
 // body: the index JSON as text. Throws ModIndexError when it cannot be carried: a CR, no final LF, a line that would
-// pass for the signer's seq or sig line, or JSON that is not one object. The size cap is the whole file's, checked by
+// pass for the signer's seq or sig line, or JSON that is not one object or array. The size cap is the whole file's, checked by
 // the signer and verifier; here a body that alone is over it is refused too.
 export function checkBody(body) {
   need(typeof body === 'string' && body.length > 0, 'the mod index is empty');
@@ -35,7 +35,7 @@ export function checkBody(body) {
   need(!body.split('\n').some((l) => l.startsWith('sig\t') || l.startsWith('seq\t')), 'the mod index has a line starting with sig or seq and a TAB');
   let json;
   try { json = JSON.parse(body); } catch (e) { throw new ModIndexError(`the mod index is not valid JSON: ${e.message}`); }
-  need(json !== null && typeof json === 'object' && !Array.isArray(json), 'the mod index is not a JSON object');
+  need(json !== null && typeof json === 'object', 'the mod index is not a JSON object or array');
 }
 
 // Reads index.json as bytes: a UTF-8 BOM or bytes that are not UTF-8 would not survive a text round trip.
