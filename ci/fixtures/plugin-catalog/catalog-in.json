@@ -1,0 +1,1 @@
+{"plugins":[{"name":"WAILA","version":"1.2.3","features":[{"id":"tooltip","title":"Block tooltip","off":[130045,"127004",130045]},{"id":"badge","title":"Health badge","off":"*"}]},{"name":"Codex","version":"2.0.0-dev.1","features":[{"id":"pins","title":"Pin collapse","off":"-"}]}]}

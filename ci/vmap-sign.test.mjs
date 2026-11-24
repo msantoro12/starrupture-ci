@@ -265,3 +265,13 @@ test('unique: the command line refuses a feed that lists a build twice and accep
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /lists build .* twice/);
 });
+
+test('the default kind is the version map feed, byte for byte, and refuses a file carrying a catalog kind line', () => {
+  const k = pair();
+  const plain = signFeed(unsigned(), k.pem, { keyId: 'k1', now: NOW });
+  assert.deepEqual(signFeed(unsigned(), k.pem, { keyId: 'k1', now: NOW, kind: 'feed' }), plain);
+  assert.equal(plain.text.split('\n')[0], 'format\t1');
+  assert.equal(verifyFeed(plain.text, { keys: KEYS(k.hex), now: NOW, kind: 'feed' }).seq, NOW);
+  const withKind = unsigned().replace('format\t1\n', 'format\t1\nkind\tplugin-catalog\n');
+  assert.match(reasons(() => signFeed(withKind, k.pem, { keyId: 'k1', now: NOW })), /kind line/);
+});

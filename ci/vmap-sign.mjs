@@ -8,11 +8,16 @@
 // k1 or k2, before it parses anything.
 //
 //   node ci/vmap-sign.mjs sign <unsigned-feed> --out <file> --key-id k1|k2
-//        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>]
+//        [--key-env <NAME> | --key-file <pem>] [--last-seq <n>] [--now <unix seconds>] [--seq <n>] [--kind feed|catalog]
 //   node ci/vmap-sign.mjs next-seq [--last-seq <n>] [--now <unix seconds>]
 //   node ci/vmap-sign.mjs unique <feed>     (exit 2 when a build or a row is listed twice)
 //   node ci/vmap-sign.mjs verify <signed-feed> [--last-seq <n>] [--now <unix seconds>]
-//        [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>]
+//        [--pub <keyId>=<64 hex>]... [--allow-test-key] [--expect-seq <n>] [--kind feed|catalog]
+//
+// --kind (default feed) picks the file kind: feed is the version map; catalog is the plugin catalog
+// (ci/plugin-catalog.mjs). Both use the format 1 envelope; the catalog's third line `kind<TAB>plugin-catalog` is
+// signed with the rest, the catalog verifier requires it and the feed verifier refuses it, so a file of one kind
+// never verifies as the other.
 //
 // The private key comes from an environment variable (default VMAP_SIGN_KEY,
 // a PEM) or a file, and is never printed. `seq` is the UTC second of signing,
@@ -32,6 +37,7 @@ import { createPrivateKey, createPublicKey, sign as edSign, verify as edVerify }
 import { readFileSync, writeFileSync } from 'node:fs';
 import { isMain } from './layout-diff.mjs';
 import { FEED_FORMAT, FEED_MAX_BYTES } from './version-map.mjs';
+import { CATALOG_MAX_BYTES, CatalogError, parseCatalog } from './plugin-catalog.mjs';
 
 export const EXIT_OK = 0;
 export const EXIT_REFUSED = 3;
@@ -88,6 +94,24 @@ const noDuplicateRows = (lines) => {
   need(dups.length === 0, `the feed lists ${dups[0]} twice (${dups.length} duplicate row${dups.length === 1 ? '' : 's'}); the loader refuses such a feed`);
 };
 
+// The two kinds of signed file. Both use the format 1 envelope and the same keys, so the kind line
+// (`kind<TAB>plugin-catalog`, signed with the rest) is what tells them apart: the catalog verifier requires it and
+// the feed verifier refuses a file that carries it. rows(lines) throws SignError for a row the kind refuses; enc is
+// how the signed bytes are read (the feed is ASCII, the catalog UTF-8).
+const catalogRows = (lines) => {
+  try { parseCatalog(lines.join('\n')); } catch (e) { if (e instanceof CatalogError) throw new SignError(e.message); throw e; }
+};
+const feedRows = (lines) => {
+  need(!lines.some((l) => l.startsWith('kind\t')), 'the file carries a kind line: it is not a version map feed');
+  noDuplicateRows(lines);
+};
+// A function, not a constant: version-map.mjs and this file import each other, so FEED_FORMAT is not set at load time.
+const kinds = () => ({
+  feed: { header: `format\t${FEED_FORMAT}`, max: FEED_MAX_BYTES, rows: feedRows, label: `format ${FEED_FORMAT} feed`, enc: 'latin1' },
+  catalog: { header: `format\t${FEED_FORMAT}`, max: CATALOG_MAX_BYTES, rows: catalogRows, label: 'plugin catalog', enc: 'utf8' },
+});
+function kindOf(kind) { need(kind === 'feed' || kind === 'catalog', "the kind is 'feed' or 'catalog'"); return kinds()[kind]; }
+
 // The seq to sign now: the UTC second, raised to last + 1 when the clock has not passed the last seq.
 export function nextSeq(lastSeq = 0, now = Math.floor(Date.now() / 1000)) {
   need(Number.isSafeInteger(lastSeq) && lastSeq >= 0, 'the last seq is a non-negative integer');
@@ -98,14 +122,15 @@ export function nextSeq(lastSeq = 0, now = Math.floor(Date.now() / 1000)) {
 
 // unsigned: the export-feed text. Returns the signed text. seq: sign exactly this
 // seq (computed once by nextSeq) instead of computing one here.
-export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Math.floor(Date.now() / 1000), seq: given } = {}) {
+export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Math.floor(Date.now() / 1000), seq: given, kind = 'feed' } = {}) {
+  const k = kindOf(kind);
   need(keyId === 'k1' || keyId === 'k2', "the key ID is 'k1' or 'k2'");
   need(Number.isSafeInteger(lastSeq) && lastSeq >= 0, 'the last seq is a non-negative integer');
-  need(Buffer.byteLength(unsigned) <= FEED_MAX_BYTES, `the feed is over ${FEED_MAX_BYTES} bytes`);
+  need(Buffer.byteLength(unsigned) <= k.max, `the ${kind === 'feed' ? 'feed' : 'catalog'} is over ${k.max} bytes`);
   const lines = unsigned.split('\n');
-  need(lines[0] === `format\t${FEED_FORMAT}` && lines[lines.length - 1] === '', `expected an unsigned format ${FEED_FORMAT} feed from export-feed`);
+  need(lines[0] === k.header && lines[lines.length - 1] === '', kind === 'feed' ? `expected an unsigned format ${FEED_FORMAT} feed from export-feed` : `expected an unsigned ${k.label} starting ${JSON.stringify(k.header)}`);
   need(!lines.some((l) => l.startsWith('seq\t') || l.startsWith('sig\t') || l.includes('\r')), 'the feed already has a seq or sig line, or a CR');
-  noDuplicateRows(lines);
+  k.rows(lines);
   let seq;
   if (given === undefined) seq = nextSeq(lastSeq, now);
   else {
@@ -120,7 +145,8 @@ export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Ma
 
 // signed: Buffer or string. keys: { id: { hex, test } }. Returns { keyId, seq, test };
 // throws SignError with the reason otherwise.
-export function verifyFeed(signed, { keys = PUBLIC_KEYS, lastSeq = null, now = Math.floor(Date.now() / 1000) } = {}) {
+export function verifyFeed(signed, { keys = PUBLIC_KEYS, lastSeq = null, now = Math.floor(Date.now() / 1000), kind = 'feed' } = {}) {
+  const k = kindOf(kind);
   const bytes = Buffer.isBuffer(signed) ? signed : Buffer.from(signed);
   need(bytes.length <= LOADER_CAP_BYTES, `the file is ${bytes.length} bytes, over the loader's ${LOADER_CAP_BYTES}`);
   need(bytes.length > 0 && bytes[bytes.length - 1] === 0x0a, 'the file does not end in LF');
@@ -134,15 +160,16 @@ export function verifyFeed(signed, { keys = PUBLIC_KEYS, lastSeq = null, now = M
   need(signature.length === 64, 'the signature is not 64 bytes');
   const body = bytes.subarray(0, sigStart);
   need(edVerify(null, body, publicKeyFromHex(key.hex), signature), 'the signature does not verify');
-  const lines = body.toString('latin1').split('\n');
-  need(lines[0] === `format\t${FEED_FORMAT}`, `not a format ${FEED_FORMAT} feed`);
+  const lines = body.toString(k.enc).split('\n');
+  need(lines[0] === k.header, `not a ${k.label}`);
+  need(kind === 'feed' || bytes.length <= k.max, `the file is ${bytes.length} bytes, over the ${k.label} cap ${k.max}`);
   const sm = SEQ_LINE.exec(lines[1] ?? '');
   need(sm, 'the second line is not a seq line');
   const seq = Number(sm[1]);
   need(Number.isSafeInteger(seq), 'seq is too large');
   need(seq <= now + MAX_SEQ_AHEAD, `seq ${seq} is more than a day ahead of the clock (${now})`);
   if (lastSeq !== null) need(seq > lastSeq, `seq ${seq} does not rise above ${lastSeq}`);
-  noDuplicateRows(lines);
+  k.rows(lines);
   return { keyId: m[1], seq, test: !!key.test };
 }
 
@@ -168,7 +195,7 @@ const USAGE = 'usage: vmap-sign.mjs sign|verify <feed> [options] | next-seq [opt
 export function main(argv) {
   const [cmd, ...args] = argv;
   if (cmd === 'sign') {
-    const { opt, rest } = options(args, ['out', 'key-id', 'key-env', 'key-file', 'last-seq', 'now', 'seq']);
+    const { opt, rest } = options(args, ['out', 'key-id', 'key-env', 'key-file', 'last-seq', 'now', 'seq', 'kind']);
     need(rest.length === 1 && opt.out && opt['key-id'], USAGE);
     need(!(opt['key-env'] && opt['key-file']), 'give --key-env or --key-file, not both');
     const pem = opt['key-file'] ? readFileSync(opt['key-file'], 'utf8') : process.env[opt['key-env'] ?? 'VMAP_SIGN_KEY'];
@@ -178,6 +205,7 @@ export function main(argv) {
       lastSeq: opt['last-seq'] === undefined ? 0 : int(opt['last-seq'], '--last-seq'),
       now: opt.now === undefined ? undefined : int(opt.now, '--now'),
       seq: opt.seq === undefined ? undefined : int(opt.seq, '--seq'),
+      kind: opt.kind,
     });
     writeFileSync(opt.out, text);
     process.stdout.write(`signed ${opt.out}: seq ${seq}, key ${opt['key-id']}, ${Buffer.byteLength(text)} bytes\n`);
@@ -198,7 +226,7 @@ export function main(argv) {
     return EXIT_OK;
   }
   if (cmd === 'verify') {
-    const { opt, rest } = options(args, ['last-seq', 'now', 'pub', 'expect-seq'], ['pub'], ['allow-test-key']);
+    const { opt, rest } = options(args, ['last-seq', 'now', 'pub', 'expect-seq', 'kind'], ['pub'], ['allow-test-key']);
     need(rest.length === 1, USAGE);
     let keys = PUBLIC_KEYS;
     if (opt.pub) {
@@ -215,6 +243,7 @@ export function main(argv) {
         keys,
         lastSeq: opt['last-seq'] === undefined ? null : int(opt['last-seq'], '--last-seq'),
         now: opt.now === undefined ? undefined : int(opt.now, '--now'),
+        kind: opt.kind,
       });
       need(!r.test || opt['allow-test-key'], `the feed is signed with the TEST key ${r.keyId}; pass --allow-test-key to accept it`);
       if (expect !== undefined) need(r.seq === expect, `the feed carries seq ${r.seq}, not the expected ${expect}`);

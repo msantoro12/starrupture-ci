@@ -1,0 +1,7 @@
+format	1
+kind	plugin-catalog
+plugin	Codex	2.0.0-dev.1
+feature	Codex	pins	-	Pin collapse
+plugin	WAILA	1.2.3
+feature	WAILA	badge	*	Health badge
+feature	WAILA	tooltip	127004,130045	Block tooltip
