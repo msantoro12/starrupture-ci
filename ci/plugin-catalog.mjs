@@ -13,7 +13,9 @@
 //   feature<TAB><plugin><TAB><id><TAB><off><TAB><title>   after its plugin row
 //   sig<TAB><keyId><TAB><base64>                  added by the signer, last
 // off: `-` (on everywhere), `*` (off on every build) or a comma list of game CLs, digits only.
-// Limits (the whole file is refused on any breach): name and id [A-Za-z0-9_-]{1,64};
+// Limits (the whole file is refused on any breach): plugin name 1 to 64 bytes, words of
+// [A-Za-z0-9_-] joined by single spaces ("Best Builder"; no leading, trailing or doubled
+// space); feature id [A-Za-z0-9_-]{1,64}, no spaces;
 // version [0-9A-Za-z._+-]{1,32}; title 1 to 80 UTF-8 bytes, no control characters;
 // file at most 256 KiB, 200 plugins, 2000 feature rows; a plugin or (plugin, id) twice,
 // compared without regard to case; a feature row before its plugin row; an unknown
@@ -36,7 +38,8 @@ export const CATALOG_KIND_LINE = 'kind\tplugin-catalog';
 export const CATALOG_MAX_BYTES = 256 * 1024;
 export const MAX_PLUGINS = 200;
 export const MAX_FEATURES = 2000;
-const NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const NAME = /^[A-Za-z0-9_-]+( [A-Za-z0-9_-]+)*$/; // plus the 64-byte cap, checked by the caller
+const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const VERSION = /^[0-9A-Za-z._+-]{1,32}$/;
 const CL = /^[0-9]+$/;
 
@@ -81,7 +84,7 @@ export function parseCatalog(text) {
     const at = `line ${i + 1}`;
     if (f[0] === 'plugin') {
       need(f.length === 3, `${at}: a plugin row is plugin, name, version`);
-      need(NAME.test(f[1]), `${at}: plugin name ${JSON.stringify(f[1])} is not [A-Za-z0-9_-]{1,64}`);
+      need(f[1].length <= 64 && NAME.test(f[1]), `${at}: plugin name ${JSON.stringify(f[1])} is not 1 to 64 bytes of [A-Za-z0-9_-] words joined by single spaces`);
       need(VERSION.test(f[2]), `${at}: version ${JSON.stringify(f[2])} is not [0-9A-Za-z._+-]{1,32}`);
       need(!plugins.has(f[1].toLowerCase()), `${at}: plugin ${f[1]} is listed twice`);
       need(plugins.size < MAX_PLUGINS, `the catalog has more than ${MAX_PLUGINS} plugins`);
@@ -90,7 +93,7 @@ export function parseCatalog(text) {
       need(f.length === 5, `${at}: a feature row is feature, plugin, id, off, title`);
       const p = [...plugins.values()].find((q) => q.name === f[1]);
       need(p, `${at}: feature ${f[2]} comes before its plugin row ${f[1]}`);
-      need(NAME.test(f[2]), `${at}: feature id ${JSON.stringify(f[2])} is not [A-Za-z0-9_-]{1,64}`);
+      need(ID.test(f[2]), `${at}: feature id ${JSON.stringify(f[2])} is not [A-Za-z0-9_-]{1,64}`);
       const key = `${p.name.toLowerCase()}\t${f[2].toLowerCase()}`;
       need(!seen.has(key), `${at}: feature ${p.name} ${f[2]} is listed twice`);
       seen.add(key);
