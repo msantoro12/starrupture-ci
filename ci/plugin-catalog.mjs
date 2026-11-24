@@ -12,11 +12,12 @@
 //   plugin<TAB><name><TAB><version>
 //   feature<TAB><plugin><TAB><id><TAB><off><TAB><title>   after its plugin row
 //   sig<TAB><keyId><TAB><base64>                  added by the signer, last
-// off: `-` (on everywhere), `*` (off on every build) or a comma list of game CLs, digits only.
+// off: `-` (on everywhere), `*` (off on every build) or a comma list of game CLs: digits only,
+// no leading zero ("0" alone is fine), at most 10 digits. A seq has no leading zero either.
 // Limits (the whole file is refused on any breach): plugin name 1 to 64 bytes, words of
 // [A-Za-z0-9_-] joined by single spaces ("Best Builder"; no leading, trailing or doubled
 // space); feature id [A-Za-z0-9_-]{1,64}, no spaces;
-// version [0-9A-Za-z._+-]{1,32}; title 1 to 80 UTF-8 bytes, no control characters;
+// version [0-9A-Za-z._+-]{1,32}; title 1 to 80 UTF-8 bytes, no control characters (U+0000-U+001F, U+007F-U+009F);
 // file at most 256 KiB, 200 plugins, 2000 feature rows; a plugin or (plugin, id) twice,
 // compared without regard to case; a feature row before its plugin row; an unknown
 // row type or a wrong field count. Rows are written sorted by plugin, then id.
@@ -41,7 +42,8 @@ export const MAX_FEATURES = 2000;
 const NAME = /^[A-Za-z0-9_-]+( [A-Za-z0-9_-]+)*$/; // plus the 64-byte cap, checked by the caller
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const VERSION = /^[0-9A-Za-z._+-]{1,32}$/;
-const CL = /^[0-9]+$/;
+const CL = /^(0|[1-9][0-9]{0,9})$/; // no leading zeros, at most 10 digits
+export const isCl = (c) => typeof c === 'string' && CL.test(c);
 
 export class CatalogError extends Error {}
 const need = (cond, msg) => { if (!cond) throw new CatalogError(msg); };
@@ -54,7 +56,7 @@ function checkTitle(t, what) {
   return t;
 }
 function checkOff(off, what) {
-  need(typeof off === 'string' && (off === '-' || off === '*' || (off.split(',').every((c) => CL.test(c)))), `${what}: off ${JSON.stringify(off)} is not -, * or a comma list of CL numbers`);
+  need(typeof off === 'string' && (off === '-' || off === '*' || (off.split(',').every(isCl))), `${what}: off ${JSON.stringify(off)} is not -, * or a comma list of CL numbers`);
   if (off === '-' || off === '*') return off;
   need(new Set(off.split(',')).size === off.split(',').length, `${what}: off lists a CL twice`);
   return off;
@@ -114,7 +116,7 @@ export function buildCatalog(input) {
       let off = ft?.off ?? '-';
       if (Array.isArray(off)) {
         const cls = [...new Set(off.map(String))];
-        need(cls.every((c) => CL.test(c)), `feature ${p.name} ${ft.id}: off has a value that is not a CL number`);
+        need(cls.every(isCl), `feature ${p.name} ${ft.id}: off has a value that is not a CL number`);
         off = cls.length ? cls.sort((a, b) => Number(a) - Number(b) || cmp(a, b)).join(',') : '-';
       }
       rows.push(['feature', p.name, ft?.id, off, ft?.title].join('\t'));

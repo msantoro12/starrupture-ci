@@ -191,6 +191,25 @@ test('REFUSED: a bad off token; - * and CL lists pass', () => {
   assert.match(reasons(() => buildCatalog({ plugins: [{ name: 'A', version: '1', features: [{ id: 'x', title: 'T', off: ['12a'] }] }] })), /off/);
 });
 
+test('REFUSED: a CL with a leading zero or over 10 digits; 0 and 10 digits pass', () => {
+  const off = (o) => cat('plugin\tA\t1', `feature\tA\tx\t${o}\tT`);
+  for (const ok of ['0', '0,5', '1234567890', '9999999999']) assert.equal(parseCatalog(off(ok)).plugins[0].features[0].off, ok);
+  for (const bad of ['012', '00', '1,012', '12345678901']) assert.match(reasons(() => parseCatalog(off(bad))), /off/, bad);
+  const build = (o) => buildCatalog({ plugins: [{ name: 'A', version: '1', features: [{ id: 'x', title: 'T', off: o }] }] });
+  assert.match(build([0, 5]), /\t0,5\t/);
+  assert.match(build([7, '0']), /\t0,7\t/);
+  assert.match(reasons(() => build(['007'])), /CL number/);
+  assert.match(reasons(() => build(['012', 5])), /CL number/);
+  assert.match(reasons(() => build(['12345678901'])), /CL number/);
+  assert.match(reasons(() => build([12345678901])), /CL number/);
+});
+
+test('REFUSED: a seq line with a leading zero or zero', () => {
+  const seq = (s) => `format\t1\nseq\t${s}\nkind\tplugin-catalog\n`;
+  for (const s of ['01', '007', '0']) assert.ok(reasons(() => parseCatalog(seq(s))), s);
+  assert.equal(parseCatalog(seq('10')).seq, 10);
+});
+
 test('REFUSED: oversize', () => {
   const k = pair();
   const pad = (n) => { const base = cat('plugin\tA\t1'); return base + 'x'.repeat(n - Buffer.byteLength(base) - 1) + '\n'; };
