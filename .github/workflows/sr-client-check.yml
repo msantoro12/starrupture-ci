@@ -93,7 +93,7 @@ on:
         default: 'ci/aobscan'
       plugins:
         type: string
-        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release'
+        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere'
       plugin_sdk_repo:
         type: string
         default: 'AlienXAXS/StarRupture-Plugin-SDK'
@@ -164,6 +164,9 @@ on:
       VMAP_SIGN_KEY:
         description: 'Release signing key (k2, environment vmap-sign); pass it by name. Only the publish job reads it'
         required: false
+      SR_READ_TOKEN_GOODSTUFFSOFTWARE:
+        description: 'Read-only token for the GoodStuffSoftware plugin repositories on the plugin list (fine-grained, Contents read, only those repositories); pass it by name. Without it such a plugin is reported as not fetched and the others are unaffected'
+        required: false
       SR_DEPLOYKEY_MODLOADER:
         description: 'Write deploy key of the loader fork (environment fork-push); pass it by name'
         required: false
@@ -232,7 +235,7 @@ on:
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
-        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release'
+        default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere'
       plugin_sdk_repo:
         description: 'Plugin SDK repository the plugins build against (msantoro12 or AlienXAXS)'
         type: string
@@ -625,6 +628,8 @@ jobs:
           PLUGINS: ${{ inputs.plugins }}
           # Authenticates the read-only releases lookup (unauthenticated calls share the runner address's limit); the job has no permissions.
           GH_TOKEN: ${{ github.token }}
+          # Optional: reads the one private repository of GoodStuffSoftware that is listed; empty when the secret is not set.
+          SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
           PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
           GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
           EXCLUDE: ${{ inputs.plugin_exclude }}
@@ -654,13 +659,37 @@ jobs:
           # reported for review (the `review` output) and changes nothing that is scanned or predicted.
           # Such a plugin is never built from source here.
           $names = @(Get-Content -LiteralPath 'tool/ci/plugin-names.json' -Raw | ConvertFrom-Json | ForEach-Object { $_ })
-          $trusted = @('msantoro12', 'AlienXAXS')
+          # Who may be listed, from ci/plugin-owners.json: trusted owners (any StarRupture-Plugin-* repo, unpinned),
+          # pinned owners (other authors, only @latest-release at the reviewed Pin) and restricted owners, which are
+          # trusted but only for the repositories their pattern allows (an owner's other repositories are not plugins).
+          $owners = Get-Content -LiteralPath 'tool/ci/plugin-owners.json' -Raw | ConvertFrom-Json
+          $restricted = @{}
+          foreach ($o in @($owners.restricted.PSObject.Properties)) { $restricted[$o.Name] = [string]$o.Value }
+          $trusted = @(@($owners.trusted) + @($restricted.Keys))
+          $allowed = @($trusted + @($owners.pinned))
           $review = [Collections.Generic.List[string]]::new()
           $list = [Collections.Generic.List[object]]::new()
           $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          # A restricted owner's repository may be private. SR_READ_TOKEN_GOODSTUFFSOFTWARE (optional; a fine-grained token
+          # that reads only that repository) is used for that owner's repositories alone, for git through its environment
+          # (no extra git arguments) around the one call, and never reaches a later step. Without it, or when it cannot read
+          # the repository, only that plugin is not fetched.
+          $readToken = $env:SR_READ_TOKEN_GOODSTUFFSOFTWARE
+          Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $readBasic = if ($readToken) { [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$readToken")) } else { '' }
+          if ($readBasic) { Write-Host "::add-mask::$readBasic" }
+          function Set-ReadAuth([string]$repo) {
+            if ($readBasic -and $repo -like 'GoodStuffSoftware/*') {
+              $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/GoodStuffSoftware/.extraheader'; $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $readBasic"
+            }
+          }
+          function Clear-ReadAuth { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
+          function Get-ApiHeaders([string]$repo) { if ($readToken -and $repo -like 'GoodStuffSoftware/*') { @{ Authorization = "Bearer $readToken"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' } } else { $api } }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
-            if ($p -notmatch '^(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
+            if ($p -notmatch '^([A-Za-z0-9-]+)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$' -or $Matches[1] -cnotin $allowed) { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
             $owner = $Matches[1]; $short = $Matches[2]; $repo = "$($Matches[1])/$short"; $ref = $Matches[3]
+            if ($restricted.ContainsKey($owner) -and $short -cnotmatch $restricted[$owner]) { throw "plugin '$p': $owner is allowed only for the repositories matching $($restricted[$owner])" }
             $e = [ordered]@{ name = ($short -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
                              release = ''; dll = ''; asset = ''; assetSha256 = ''; error = ''; hosted = ($owner -eq 'msantoro12') }
             if ($ref -eq 'latest-release') { try {
@@ -676,12 +705,13 @@ jobs:
                 if ($pinDigest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw "${repo}: the Pin digest '$pinDigest' is not sha256:<64 lower-case hex digits>" }
                 $relPath = "tags/$pinTag"
               }
-              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$relPath" -Headers $api -TimeoutSec 60 }
+              try { $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/$relPath" -Headers (Get-ApiHeaders $repo) -TimeoutSec 60 }
               catch { throw "$repo has no $(if ($pin) { "release $pinTag" } else { 'latest release' }) ($($_.Exception.Message))" }
               $tag = [string]$rel.tag_name
               if ($tag -notmatch '^[A-Za-z0-9._-]+$') { throw "$repo's latest release tag '$tag' is not a plain tag name" }
               if ($pin -and $tag -cne $pinTag) { throw "$repo's release for the Pin is tagged '$tag', not '$pinTag'" }
-              $tagRefs = @(git ls-remote "https://github.com/$repo" "refs/tags/$tag" "refs/tags/$tag^{}")
+              Set-ReadAuth $repo
+              try { $tagRefs = @(git ls-remote "https://github.com/$repo" "refs/tags/$tag" "refs/tags/$tag^{}") } finally { Clear-ReadAuth }
               if ($LASTEXITCODE -ne 0) { throw "git ls-remote $repo failed (exit $LASTEXITCODE)" }
               # An annotated tag's commit is on its peeled line.
               $line = @(@($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag^{}" }) + @($tagRefs | Where-Object { ($_ -split '\s+')[1] -eq "refs/tags/$tag" })) | Select-Object -First 1
@@ -731,8 +761,17 @@ jobs:
           # pushes only on top of it.
           foreach ($e in @($list | Where-Object { $_.source -eq 'build' -and -not $_.sha })) {
             if ($e.ref -match '^[0-9a-f]{40}$') { $e.sha = $e.ref; continue }
-            $refs = @(git ls-remote "https://github.com/$($e.repo)" "refs/heads/$($e.ref)" "refs/tags/$($e.ref)" "refs/tags/$($e.ref)^{}")
-            if ($LASTEXITCODE -ne 0) { throw "git ls-remote $($e.repo) failed (exit $LASTEXITCODE)" }
+            Set-ReadAuth $e.repo
+            try { $refs = @(git ls-remote "https://github.com/$($e.repo)" "refs/heads/$($e.ref)" "refs/tags/$($e.ref)" "refs/tags/$($e.ref)^{}") } finally { Clear-ReadAuth }
+            if ($LASTEXITCODE -ne 0) {
+              # A restricted owner's repository can be private: when it cannot be read, that plugin alone is not fetched (the check job reports it BUILD-FAILED).
+              if ($e.repo -like 'GoodStuffSoftware/*') {
+                $e.error = "not fetched: $($e.repo) is private and SR_READ_TOKEN_GOODSTUFFSOFTWARE is not set or cannot read it"
+                Write-Host "::warning title=Plugin $($e.name)::$($e.error)"
+                continue
+              }
+              throw "git ls-remote $($e.repo) failed (exit $LASTEXITCODE)"
+            }
             $hit = foreach ($want in "refs/heads/$($e.ref)", "refs/tags/$($e.ref)^{}", "refs/tags/$($e.ref)") {
               $line = $refs | Where-Object { ($_ -split '\s+')[1] -eq $want } | Select-Object -First 1
               if ($line) { ($line -split '\s+')[0]; break }
@@ -1706,11 +1745,19 @@ jobs:
           LOADER_REPO: ${{ inputs.loader_repo }}
           LOADER_REF: ${{ inputs.loader_ref }}
           GH_TOKEN: ${{ github.token }}
+          SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
         run: |
           $ErrorActionPreference = 'Stop'
           # The token only reads public repositories' commit ids; the build below never sees it.
           $token = $env:GH_TOKEN
           Remove-Item Env:GH_TOKEN
+          # The optional read token of the restricted owner is used only to fetch that owner's repository, through git's
+          # environment around that one fetch; it is out of the environment before the build runs.
+          $readToken = $env:SR_READ_TOKEN_GOODSTUFFSOFTWARE
+          Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $readBasic = if ($readToken) { [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$readToken")) } else { '' }
+          if ($readBasic) { Write-Host "::add-mask::$readBasic" }
           function Invoke-Native([string]$what) {
             if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" }
           }
@@ -1718,7 +1765,11 @@ jobs:
           function Get-Source([string]$repo, [string]$rev, [string]$dir) {
             git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
             git -C $dir config core.autocrlf false
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            if ($readBasic -and $repo -like 'GoodStuffSoftware/*') {
+              $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/GoodStuffSoftware/.extraheader'; $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $readBasic"
+            }
+            try { git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev } finally { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
+            Invoke-Native "fetching $repo $rev"
             git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
             (git -C $dir rev-parse HEAD)
           }
@@ -1740,6 +1791,7 @@ jobs:
               }
               # Built the way the plugins job builds one, from the planned commit.
               $work = Join-Path $env:RUNNER_TEMP "third\$($p.name)"
+              if (-not $p.sha) { throw "no commit was planned: $($p.error)" }
               $sha = Get-Source $p.repo $p.sha "$work\src"
               if ($sha -ne $p.sha) { throw "checked out $sha, not the planned commit $($p.sha)" }
               $psdk = Get-Source $env:PLUGIN_SDK_REPO $env:PLUGIN_SDK_REF "$work\plugin-sdk"
@@ -2003,6 +2055,7 @@ jobs:
           sparse-checkout: |
             ci/client-rig-set.ps1
             ci/plugin-names.json
+            ci/plugin-owners.json
             .github/sr-pipeline/rig-branches.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
@@ -2114,6 +2167,7 @@ jobs:
           REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
           PLAN: ${{ needs.plugin-plan.outputs.matrix }}
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+          SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
         run: |
           # The keys each component reads: the loader's own layout table, each
           # built plugin's used Game-SDK classes (ci/layout-table.mjs gen over
@@ -2131,9 +2185,20 @@ jobs:
           }
           function Get-Cl($e) { if ([string]$e.VersionInfo.ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' } }
           function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
+          # The optional read token of the restricted owner reaches git only through its environment, around the one
+          # fetch of that owner's repository (see the build step of the plugin check).
+          $readToken = $env:SR_READ_TOKEN_GOODSTUFFSOFTWARE
+          Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $readBasic = if ($readToken) { [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$readToken")) } else { '' }
+          if ($readBasic) { Write-Host "::add-mask::$readBasic" }
           function Get-Source([string]$repo, [string]$rev, [string]$dir) {
             git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            if ($readBasic -and $repo -like 'GoodStuffSoftware/*') {
+              $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/GoodStuffSoftware/.extraheader'; $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $readBasic"
+            }
+            try { git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev } finally { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
+            Invoke-Native "fetching $repo $rev"
             git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
           }
           $exe = Find-Exe $env:INSTALL_DIR
@@ -2386,6 +2451,7 @@ jobs:
           PLAN: ${{ needs.plugin-plan.outputs.matrix }}
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
           APPLY_CONFIDENCE: ${{ inputs.apply_confidence || 'high' }}
+          SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
         run: |
           # Per plugin with failing patterns: apply the proposals at or above
           # APPLY_CONFIDENCE to its source (ci/apply-proposals.mjs), rebuild it
@@ -2410,10 +2476,22 @@ jobs:
           }
           # Source at an exact commit, bytes as committed (no CRLF rewrite), so
           # the auto-apply job re-creates the same tree on Linux.
+          # The optional read token of the restricted owner reaches git only through its environment, around the one
+          # fetch of that owner's repository (see the build step of the plugin check); it is out of the environment
+          # before msbuild runs. A fix whose source cannot be fetched costs only that plugin's fix.
+          $readToken = $env:SR_READ_TOKEN_GOODSTUFFSOFTWARE
+          Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $readBasic = if ($readToken) { [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$readToken")) } else { '' }
+          if ($readBasic) { Write-Host "::add-mask::$readBasic" }
           function Get-Source([string]$repo, [string]$rev, [string]$dir) {
             git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
             git -C $dir config core.autocrlf false
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            if ($readBasic -and $repo -like 'GoodStuffSoftware/*') {
+              $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/GoodStuffSoftware/.extraheader'; $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $readBasic"
+            }
+            try { git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev } finally { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
+            Invoke-Native "fetching $repo $rev"
             git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
           }
           $exe = Find-Exe $env:INSTALL_DIR
@@ -2970,10 +3048,13 @@ jobs:
             const table = JSON.parse(fs.readFileSync("tool/ci/plugin-names.json", "utf8"));
             const built = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop())
               .map((repo) => table.find((t) => t.Repo === repo)?.LogName ?? repo.replace(/^StarRupture-Plugin-/, ""));
+            // A plugin not in plugin-names.json yet (no release to rig) may report a name that is not its repo name
+            // (Best Builder for StarRupture-Plugin-BestBuilder). Its scan file is named after the plan name, so the stem counts too.
+            const planNames = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop().replace(/^StarRupture-Plugin-/, ""));
             for (const f of fs.readdirSync("res").filter((n) => /^plugin-.*\.json$/.test(n)).sort()) {
               const name = JSON.parse(fs.readFileSync("res/" + f, "utf8")).plugin?.name;
               if (!name) continue;
-              const tracked = built.includes(name);
+              const tracked = built.includes(name) || planNames.includes(f.replace(/^plugin-|\.json$/g, ""));
               scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
             }
             // Key sources (res/keysrc.json, from the check job; the step above named the ones that failed, and those are left out here):

@@ -252,6 +252,25 @@ test('map step: plugins that report another name than their repo (Waila, AxRuptu
   assert.deepEqual(tracked, { ModLoader: true, AxRuptureTimer: true, BetterCheats: true, MiniMap: true, Waila: true });
 });
 
+test('map step: a plugin with a spaced PluginInfo name that is not in plugin-names.json yet (Best Builder) is tracked by its scan file name', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const script = wf.match(/node -e '\n(\s+const fs = require\("fs"\);\n[\s\S]*?)\n\s+' "\$buildid"/)[1];
+  const dir = mkdtempSync(join(tmpdir(), 'map-step-'));
+  mkdirSync(join(dir, 'res'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
+  writeFileSync(join(dir, 'res', 'scanner.json'), '{}');
+  writeFileSync(join(dir, 'res', 'plugin-BestBuilder.json'), JSON.stringify({ plugin: { name: 'Best Builder' } }));
+  writeFileSync(join(dir, 'res', 'plugin-MiniMap.json'), JSON.stringify({ plugin: { name: 'MiniMap' } }));
+  const plugins = 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere';
+  const r = spawnSync(process.execPath, ['-e', script, '1'], { cwd: dir, env: { ...process.env, PLUGINS: plugins, LOADER_REF: 'v1' }, encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, r.stderr);
+  const scans = JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans;
+  const tracked = Object.fromEntries(scans.map((s) => [s.owner, s.tracked]));
+  assert.deepEqual(tracked, { ModLoader: true, 'Best Builder': true, MiniMap: false }, 'MiniMap is not in this PLUGINS, so it stays untracked');
+});
+
 // ------------------------------------------------------------ candidate chain and the loader push
 
 const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
@@ -1600,13 +1619,17 @@ const PIN_DIGEST = MINIMAP.Pin.Digest;
 const MINIMAP_REPO = 'LetMeInside/StarRupture-Plugin-MiniMap';
 // latest: the tag the API names as MiniMap's newest release. pinDigest: the digest its assets carry at the pinned tag.
 // pinAssets: 'client' (the client DLL beside a zip), 'zip' (no DLL) or 'two' (two client DLLs).
-const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = PIN_DIGEST, pinAssets = 'client' }) => {
+// private: git refuses every GoodStuffSoftware repository unless the read token's header is set around the call.
+// readToken: the value of SR_READ_TOKEN_GOODSTUFFSOFTWARE ('' = the secret is not set).
+const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = PIN_DIGEST, pinAssets = 'client', private: isPrivate = false, readToken = '', acceptToken = readToken }) => {
   const dir = mkdtempSync(join(tmpdir(), 'plan-'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   writeFileSync(join(dir, 'tool', 'ci', 'plugin-names.json'), JSON.stringify(names));
+  copyFileSync(join(here, 'plugin-owners.json'), join(dir, 'tool', 'ci', 'plugin-owners.json'));
   writeFileSync(join(dir, 'plan.ps1'), '\ufeff' + runOf(job('plugin-plan'), 'Check the plugin list'));
   const out = join(dir, 'github-output.txt');
   const uris = join(dir, 'uris.txt');
+  const left = join(dir, 'left-in-env.txt');
   const assets = {
     client: "@(@{ name = 'MiniMap-Client.dll'; state = 'uploaded'; digest = $digest; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-Client.dll\" }, @{ name = 'MiniMap-v1.zip'; state = 'uploaded'; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-v1.zip\" })",
     zip: "@(@{ name = 'MiniMap-v1.zip'; state = 'uploaded'; browser_download_url = \"https://github.com/$owner/$repo/releases/download/$tag/MiniMap-v1.zip\" })",
@@ -1629,13 +1652,16 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
     '  [pscustomobject]@{ tag_name = $tag; assets = @($assets | ForEach-Object { [pscustomobject]$_ }) }',
     '}',
     // The tag's commit: one line for the ref asked about.
-    'function git { $global:LASTEXITCODE = 0; ("a" * 40) + [char]9 + $args[2] }',
+    `function git { $global:LASTEXITCODE = 0; if (${isPrivate ? '$true' : '$false'} -and $args[1] -like '*GoodStuffSoftware*' -and $env:GIT_CONFIG_VALUE_0 -cne 'AUTHORIZATION: basic ${Buffer.from(`x-access-token:${acceptToken}`).toString('base64')}') { $global:LASTEXITCODE = 128; return }; ("a" * 40) + [char]9 + $args[2] }`,
     `$env:GITHUB_OUTPUT = '${out}'`,
+    readToken ? `$env:SR_READ_TOKEN_GOODSTUFFSOFTWARE = '${readToken}'` : 'Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue',
     "$env:GH_TOKEN = 'x'; $env:PLUGIN_SDK_REPO = 'AlienXAXS/StarRupture-Plugin-SDK'; $env:GAME_SDK_REPO = 'AlienXAXS/StarRupture-Game-SDK'",
     "$env:EXCLUDE = ''; $env:TEST_AUTOPILOT = 'false'; $env:PUBLISH = 'false'; $env:MAP_MODE = 'true'",
     `$env:PLUGINS = '${plugins}'`,
     `Set-Location '${dir}'`,
     "& (Join-Path (Get-Location) 'plan.ps1')",
+    // What the step leaves in the environment for the steps after it.
+    `Set-Content -LiteralPath '${left}' -Value ((@('SR_READ_TOKEN_GOODSTUFFSOFTWARE', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0') | Where-Object { Test-Path "Env:$_" }) -join ' ')`,
   ].join('\n'));
   const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(dir, 'run.ps1')], { encoding: 'utf8', windowsHide: true });
   const read = (f) => {
@@ -1644,7 +1670,7 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
     return b[0] === 0xff && b[1] === 0xfe ? b.toString('utf16le').slice(1) : b.toString('utf8'); // Windows PowerShell 5.1 writes UTF-16 with >>
   };
   const outputs = Object.fromEntries(read(out).split(/\r?\n/).filter(Boolean).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
-  return { r, text: `${r.stdout}\n${r.stderr}`, outputs, matrix: outputs.matrix ? JSON.parse(outputs.matrix) : null, uris: read(uris).split(/\r?\n/).filter(Boolean) };
+  return { r, text: `${r.stdout}\n${r.stderr}`, outputs, matrix: outputs.matrix ? JSON.parse(outputs.matrix) : null, uris: read(uris).split(/\r?\n/).filter(Boolean), leftInEnv: read(left).trim() };
 };
 const PLAN_PLUGINS = `${MINIMAP_REPO}@latest-release AlienXAXS/StarRupture-Plugin-WAILA@latest-release`;
 const planEntry = (p, name) => p.matrix.find((e) => e.name === name);
@@ -1712,6 +1738,79 @@ test('B1 plan: another author\'s plugin without a usable Pin is not fetched at a
   assert.match(branch.text.replace(/\s+/g, ' '), /allowed only as owner\/repo@latest-release, which is its reviewed release/);
 });
 
+const BB_REPO = 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder';
+
+test('plan: GoodStuffSoftware is trusted for a StarRupture-Plugin-* repository, unpinned, and never hosted', { skip: !powershell }, () => {
+  const p = planRun({ plugins: `${BB_REPO}@feat/build-anywhere ${BB_REPO.replace('BestBuilder', 'Other')}@latest-release` });
+  assert.equal(p.r.status, 0, p.text);
+  const b = planEntry(p, 'BestBuilder');
+  assert.equal(b.source, 'build');
+  assert.equal(b.sha, 'a'.repeat(40));
+  assert.equal(b.ref, 'feat/build-anywhere');
+  assert.equal(b.error, '');
+  assert.equal(b.hosted, false, 'built by the check job, never an artifact');
+  const o = planEntry(p, 'Other');
+  assert.equal(o.source, 'release');
+  assert.equal(o.release, 'v2.0.0', 'a trusted owner follows its latest release, no Pin');
+});
+
+test('plan: another repository of GoodStuffSoftware is refused, as is an unknown owner', { skip: !powershell }, () => {
+  for (const entry of ['GoodStuffSoftware/website@main', 'GoodStuffSoftware/sr-perftuner@main', 'GoodStuffSoftware/website@latest-release', 'GoodStuffSoftware/StarRupture-Plugin-/x@main', 'SomeoneElse/StarRupture-Plugin-X@main']) {
+    const p = planRun({ plugins: entry });
+    assert.notEqual(p.r.status, 0, entry);
+    // PowerShell 7 colours the error and wraps it behind a gutter ("| "); read the message without either.
+    assert.match(p.text.replace(/\x1B\[[0-9;]*m/g, '').replace(/\s*\|\s+/g, ' ').replace(/\s+/g, ' '), /is not owner\/repo@ref from an allowed owner/, entry);
+  }
+});
+
+const BB_TOKEN = 'ghs_testtoken123';
+
+test('plan: a private GoodStuffSoftware plugin without the read token is not fetched, and the other plugins and the plan are unaffected', { skip: !powershell }, () => {
+  const p = planRun({ plugins: `${BB_REPO}@feat/build-anywhere AlienXAXS/StarRupture-Plugin-WAILA@main ${MINIMAP_REPO}@latest-release`, private: true });
+  assert.equal(p.r.status, 0, p.text);
+  const b = planEntry(p, 'BestBuilder');
+  assert.equal(b.sha, '', 'no commit was resolved');
+  assert.match(b.error, /not fetched: GoodStuffSoftware\/StarRupture-Plugin-BestBuilder is private and SR_READ_TOKEN_GOODSTUFFSOFTWARE is not set or cannot read it/);
+  assert.equal(planEntry(p, 'WAILA').sha, 'a'.repeat(40), 'another plugin is resolved as usual');
+  assert.equal(planEntry(p, 'WAILA').error, '');
+  assert.equal(planEntry(p, 'MiniMap').release, PIN_TAG);
+  assert.equal(p.matrix.length, 3, 'the whole plan is still there');
+});
+
+test('plan: a token that cannot read the repository degrades the same way, one plugin only', { skip: !powershell }, () => {
+  const p = planRun({ plugins: `${BB_REPO}@main AlienXAXS/StarRupture-Plugin-WAILA@main`, private: true, readToken: BB_TOKEN, acceptToken: 'another' });
+  assert.equal(p.r.status, 0, p.text);
+  assert.match(planEntry(p, 'BestBuilder').error, /not fetched/);
+  assert.equal(planEntry(p, 'WAILA').sha, 'a'.repeat(40));
+});
+
+test('plan: with the read token the private repository resolves, the token never leaves the step and is not shown', { skip: !powershell }, () => {
+  const p = planRun({ plugins: `${BB_REPO}@feat/build-anywhere AlienXAXS/StarRupture-Plugin-WAILA@main`, private: true, readToken: BB_TOKEN });
+  assert.equal(p.r.status, 0, p.text);
+  const b = planEntry(p, 'BestBuilder');
+  assert.equal(b.sha, 'a'.repeat(40));
+  assert.equal(b.error, '');
+  assert.equal(p.leftInEnv, '', 'neither the token nor git\'s header variables stay in the environment');
+  assert.ok(!p.text.includes(BB_TOKEN), 'the token is not printed');
+});
+
+test('GoodStuffSoftware read token: optional under workflow_call, passed by name by both callers, and never used for another owner', () => {
+  assert.match(call, /\n {6}SR_READ_TOKEN_GOODSTUFFSOFTWARE:\n {8}description: [^\n]+\n {8}required: false\n/);
+  assert.ok(watch.includes('\n      SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}\n'));
+  const refresh = readFileSync(join(here, '..', '.github', 'workflows', 'sr-layout-refresh.yml'), 'utf8').replace(/\r\n/g, '\n');
+  assert.ok(refresh.includes('\n      SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}\n'));
+  assert.ok(!/secrets: inherit/.test(watch + refresh));
+  // Only the steps that fetch a plugin's source read it, each into a variable of its own step.
+  const readers = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /secrets\.SR_READ_TOKEN_GOODSTUFFSOFTWARE/.test(job(n)));
+  assert.deepEqual(readers.sort(), ['check', 'plugin-plan']);
+  const stepsReading = wf.split('\n      - name: ').filter((s) => /secrets\.SR_READ_TOKEN_GOODSTUFFSOFTWARE/.test(s)).map((s) => s.slice(0, s.indexOf('\n')));
+  assert.equal(stepsReading.length, 4, stepsReading.join(' | '));
+  for (const s of wf.split('\n      - name: ').filter((x) => /secrets\.SR_READ_TOKEN_GOODSTUFFSOFTWARE/.test(x))) {
+    assert.ok(s.includes('Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE'), `${s.slice(0, 40)}: out of the environment before anything else runs`);
+    assert.ok(!/\$readToken/.test(s) || /\$repo -like 'GoodStuffSoftware\/\*'/.test(s), `${s.slice(0, 40)}: used for GoodStuffSoftware repositories only`);
+  }
+});
+
 test('B1 plan: the job reads the pins from the repository, with a read-only token, and outputs the review list', () => {
   const j = job('plugin-plan');
   assert.match(j, /\n {4}permissions:\n {6}contents: read\n/);
@@ -1750,7 +1849,7 @@ test('S1 check: the rig\'s own set is resolved, fetched through the rig\'s cache
   // no facts were read and no refusal was declared to the rigs (run 44620381883).
   const script = readFileSync(join(here, 'client-rig-set.ps1'), 'utf8').replace(/\r\n/g, '\n');
   const reads = [...script.matchAll(/Join-Path \$PSScriptRoot '([^']+)'/g)].map((m) => join('ci', m[1].replace(/\\/g, '/')).replace(/\\/g, '/'));
-  assert.deepEqual(reads.sort(), ['.github/sr-pipeline/rig-branches.json', 'ci/plugin-names.json']);
+  assert.deepEqual(reads.sort(), ['.github/sr-pipeline/rig-branches.json', 'ci/plugin-names.json', 'ci/plugin-owners.json']);
   for (const f of reads) assert.ok(tool.includes(`            ${f}\n`), `the rig tool checkout lists ${f}`);
   const res = stepText(j, names[1]);
   assert.ok(res.includes('-Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER'));
@@ -1867,7 +1966,7 @@ test('N2 alert: a hold that staged no candidate is not "ready"', { skip: !bash }
 // ------------------------------------------------------------ the bases are the released line
 
 const DEFAULT_PLUGINS = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls']
-  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release';
+  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere';
 const defaultOf = (section, input) => section.match(new RegExp(`\\n {6}${input}:\\n(?: {8}description: [^\\n]*\\n)? {8}type: string\\n {8}default: '([^']*)'\\n`))?.[1];
 
 test('bases: both triggers default to AlienX main for the loader, both SDKs and the nine plugins; only the scanner overlay is the fork\'s', () => {
@@ -1904,8 +2003,8 @@ test('bases: no workflow, script or doc reads a default base from the stale gss 
   for (const [name, text] of Object.entries(texts)) assert.ok(!/gss\/(loader|plugin|sdk)-work/.test(withoutKeySources(text)), `${name} still names a gss work branch`);
   // The nine default plugins are AlienX's, every one a branch ref, so plugin-plan resolves each to a commit before any plugin code runs.
   const entries = defaultOf(call, 'plugins').split(' ');
-  assert.equal(entries.length, 11);
-  assert.deepEqual(entries.slice(9), ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', 'LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release']);
+  assert.equal(entries.length, 12);
+  assert.deepEqual(entries.slice(9), ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', 'LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release', 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere']);
   assert.equal(entries.filter((e) => /^AlienXAXS\/StarRupture-Plugin-[A-Za-z]+@main$/.test(e)).length, 9);
 });
 
@@ -3937,7 +4036,7 @@ test('refresh workflow: it calls the client check for the public build in map mo
   const j = refreshJob('refresh');
   assert.match(j, /\n {4}uses: \.\/\.github\/workflows\/sr-client-check\.yml\n/);
   assert.deepEqual(mapOf(j, 'with'), { branch: 'public', map_mode: 'true', refresh_layout: 'true' });
-  assert.deepEqual(mapOf(j, 'secrets'), { STEAM_CI_USERNAME: '${{ secrets.STEAM_CI_USERNAME }}', STEAM_CI_LOGIN_CACHE: '${{ secrets.STEAM_CI_LOGIN_CACHE }}' }, 'the Steam login by name and no other secret');
+  assert.deepEqual(mapOf(j, 'secrets'), { STEAM_CI_USERNAME: '${{ secrets.STEAM_CI_USERNAME }}', STEAM_CI_LOGIN_CACHE: '${{ secrets.STEAM_CI_LOGIN_CACHE }}', SR_READ_TOKEN_GOODSTUFFSOFTWARE: '${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}' }, 'the Steam login and the plugin read token by name and no other secret');
   assert.ok(!/\n {4}(runs-on|environment|steps):/.test(j), 'a call job has no runner, environment or steps');
   // Nothing wider than the caller sr-watch already uses for the same called workflow, and nothing it cannot give.
   const perms = (text) => text.match(/\n {4}permissions:\n((?: {6}\S[^\n]*\n)+)/)[1].split('\n').filter(Boolean).map((l) => l.trim().replace(/\s+#.*$/, ''));

@@ -250,6 +250,20 @@ test('row sets whose fp neither the current nor the previous release carries are
   assert.equal(out.pruned, 2);
 });
 
+test('a plugin whose reported name has a space (Best Builder) is an owner, and a name that could break a row is not', () => {
+  const key = 'Best Builder/ACrPlayerControllerBase::FindDeconstructibleTarget.HeatGate';
+  const input = base();
+  input.components.push({ owner: 'Best Builder', releases: [release('v1.0.0', 'current', [ok(key, 'infunction', 0x1c00000, { fp: FP_A })])] });
+  const out = mapMode(header(), input);
+  assert.deepEqual(out.problems, []);
+  assert.ok(rowsOf(out.text).find((r) => r.key === key), 'the row of the spaced name is written');
+  for (const owner of ['Best  Builder', ' Best', 'Best ', 'Best\tBuilder', 'Best\nBuilder', 'Best/Builder', 'Best,Builder']) {
+    const bad = base();
+    bad.components.push({ owner, releases: [release('v1.0.0', 'current', [ok('X/y', 'function', 0x1c00000)])] });
+    assert.throws(() => mapMode(header(), bad), /is not a plugin name/, JSON.stringify(owner));
+  }
+});
+
 test('without the previous release scanned, no row set of that owner is pruned', () => {
   const input = base();
   input.components[1].releases.pop(); // BetterCheats: current only, as the client check feeds it today
