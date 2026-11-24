@@ -114,6 +114,8 @@ function proposalOf(row) {
 
 // ---- The observations ---------------------------------------------------------
 
+// An owner is the name a plugin reports, so it may hold single spaces ('Best Builder') but no comma, slash, tab or
+// newline, and no leading, trailing or doubled space (the key text of version-map.mjs allows exactly that).
 // Every row of the input as { owner, rank, fpAware, tracked, ... }, normalized
 // and in a fixed order. Throws MapError on a malformed input.
 export function readObservations(input) {
@@ -124,7 +126,7 @@ export function readObservations(input) {
   const owners = new Set();
   const ranks = new Map(); // owner -> Set of the ranks its input holds
   for (const c of input.components || []) {
-    if (typeof c.owner !== 'string' || !c.owner || /[,/\s]/.test(c.owner)) throw new MapError(`owner ${JSON.stringify(c.owner)} is not a plugin name`);
+    if (typeof c.owner !== 'string' || !c.owner || /[,/]|[^\S ]|^ | $|  /.test(c.owner)) throw new MapError(`owner ${JSON.stringify(c.owner)} is not a plugin name`);
     if (owners.has(c.owner)) throw new MapError(`owner ${c.owner} is given twice`);
     owners.add(c.owner);
     ranks.set(c.owner, new Set());
