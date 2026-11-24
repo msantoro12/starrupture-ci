@@ -186,7 +186,8 @@ test('sr-watch leg: the existing poll only, a needs-free plan job that cannot fa
   assert.match(mod, /\n {4}if: \$\{\{ needs\.mod-index-plan\.outputs\.state == 'changed' \}\}\n/);
   assert.ok(mod.includes('uses: ./.github/workflows/sr-mod-index.yml'));
   assert.ok(!/\n {4}with:|live|loader_ref|continue-on-error/.test(mod), 'no live, no inputs, and no continue-on-error (a call job cannot carry it)');
-  assert.match(mod, /\n {4}secrets:\n {6}VMAP_SIGN_KEY: \$\{\{ secrets\.VMAP_SIGN_KEY \}\}\n$/, 'the one secret, by name');
+  assert.match(mod, /\n {4}secrets:\n {6}VMAP_SIGN_KEY: \$\{\{ secrets\.VMAP_SIGN_KEY \}\}\n\n/, 'the secret, by name');
+  assert.equal((mod.match(/secrets\./g) ?? []).length, 1, 'only one secret');
   assert.match(mod, /\n {4}permissions:\n {6}contents: write\n/);
   // Nothing waits for the leg: no other job lists it in needs, so it can hold neither the chain nor the alert job.
   const others = watch.replace(plan, '').replace(mod, '');
