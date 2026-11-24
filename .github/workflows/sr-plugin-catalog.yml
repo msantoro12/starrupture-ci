@@ -6,10 +6,10 @@ name: SR plugin catalog
 # ci/plugin-catalog-publish.sh, which verifies it with `vmap-sign.mjs verify --kind catalog` before anything is
 # uploaded and requires a seq above the one on the target release.
 #
-# The target is the vmap-feed-rehearsal prerelease ALWAYS, unless the `live` input is set, and it is signed with
-# the TEST key (k1, secret VMAP_SIGN_KEY_TEST) there. `live` is a dispatch input of this workflow only (a
-# workflow_call caller cannot set it), needs main, signs with the release key (k2, secret VMAP_SIGN_KEY,
-# environment vmap-sign) and is the owner's switch: nothing in this repository turns it on. A run without it reads
+# The target is the vmap-feed-rehearsal prerelease ALWAYS, unless the `live` input is set. Both targets are signed
+# with the release key (k2, secret VMAP_SIGN_KEY, environment vmap-sign), as the server map's staging path is.
+# `live` is a dispatch input of this workflow only (a workflow_call caller cannot set it), needs main and is the
+# owner's switch: nothing in this repository turns it on. A run without it reads
 # the live vmap-feed release before and after and fails if it changed; a live run fails if any asset but
 # plugin-catalog.v1.txt changed. No pull_request, push or schedule trigger; nothing calls this workflow yet.
 
@@ -21,11 +21,8 @@ on:
         type: string
         required: true
     secrets:
-      VMAP_SIGN_KEY_TEST:
-        description: 'TEST signing key (k1) for a staging run; pass it by name'
-        required: false
       VMAP_SIGN_KEY:
-        description: 'Release signing key (k2, environment vmap-sign) for a live run; pass it by name'
+        description: 'Release signing key (k2, environment vmap-sign); pass it by name'
         required: false
   workflow_dispatch:
     inputs:
@@ -105,20 +102,7 @@ jobs:
           bash tool/ci/plugin-catalog-publish.sh last-seq "$TARGET" "$KIND" > last-seq.txt
           echo "The catalog on $TARGET has seq $(cat last-seq.txt)."
 
-      - name: Sign with the TEST key and verify
-        if: ${{ env.LIVE != 'true' }}
-        env:
-          VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
-        run: |
-          set -euo pipefail
-          [ -n "$VMAP_SIGN_KEY_TEST" ] || { echo "::error::the VMAP_SIGN_KEY_TEST secret is not set"; exit 2; }
-          last_seq="$(cat last-seq.txt)"
-          seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$last_seq")"
-          node tool/ci/vmap-sign.mjs sign catalog.unsigned.txt --kind catalog --out plugin-catalog.v1.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq" --seq "$seq"
-          node tool/ci/vmap-sign.mjs verify plugin-catalog.v1.txt --kind catalog --allow-test-key --last-seq "$last_seq" --expect-seq "$seq"
-
       - name: Sign with the release key and verify
-        if: ${{ env.LIVE == 'true' }}
         env:
           VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
         run: |

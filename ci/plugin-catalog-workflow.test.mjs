@@ -67,15 +67,12 @@ test('default target is the rehearsal prerelease; the live release is named only
   assert.ok(wf.indexOf('Choose the staging prerelease') < wf.indexOf('Publish the catalog'));
 });
 
-test('keys: the TEST key signs a staging run and the release key a live run, each read once and only in its own step', () => {
-  assert.deepEqual([...wf.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]), ['VMAP_SIGN_KEY_TEST', 'VMAP_SIGN_KEY'], 'two secrets, each read once');
+test('keys: both targets sign with the release key (as the server map staging does), read once, in one step', () => {
+  assert.deepEqual([...wf.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]), ['VMAP_SIGN_KEY'], 'one secret, read once');
   assert.ok(!wf.includes('inherit'));
-  const test_ = stepOf('Sign with the TEST key and verify');
-  assert.ok(test_.includes("if: ${{ env.LIVE != 'true' }}\n") && test_.includes('VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}') && !/secrets\.VMAP_SIGN_KEY\b/.test(test_));
-  assert.ok(test_.includes('--kind catalog --out plugin-catalog.v1.txt --key-id k1 --key-env VMAP_SIGN_KEY_TEST --last-seq "$last_seq" --seq "$seq"'));
-  assert.ok(test_.includes('verify plugin-catalog.v1.txt --kind catalog --allow-test-key --last-seq "$last_seq" --expect-seq "$seq"'));
+  assert.ok(!/VMAP_SIGN_KEY_TEST|allow-test-key|key-id k1/.test(wf), 'no test key anywhere');
   const rel = stepOf('Sign with the release key and verify');
-  assert.ok(rel.includes("if: ${{ env.LIVE == 'true' }}\n") && rel.includes('VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}') && !/VMAP_SIGN_KEY_TEST|allow-test-key|key-id k1/.test(rel));
+  assert.ok(!rel.includes('if:') && rel.includes('VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}'));
   assert.ok(rel.includes('--kind catalog --out plugin-catalog.v1.txt --key-id k2 --last-seq "$last_seq" --seq "$seq"'));
   assert.ok(rel.includes('verify plugin-catalog.v1.txt --kind catalog --last-seq "$last_seq" --expect-seq "$seq"'));
   assert.ok(!/echo .*\$VMAP_SIGN_KEY|printenv|\benv\b *\|/.test(wf), 'a key is never printed');
@@ -84,13 +81,13 @@ test('keys: the TEST key signs a staging run and the release key a live run, eac
 });
 
 test('seq: its own, read from the target release before signing, then raised; the build comes first and takes the repository file only', () => {
-  const order = ['Build the unsigned catalog', 'Read the seq on the target release', 'Sign with the TEST key and verify', 'Publish the catalog', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
+  const order = ['Build the unsigned catalog', 'Read the seq on the target release', 'Sign with the release key and verify', 'Publish the catalog', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
   assert.deepEqual(order, [...order].sort((a, b) => a - b), 'build, read seq, sign, publish, check');
   assert.ok(order.every((i) => i > 0));
   assert.ok(stepOf('Build the unsigned catalog').includes('node tool/ci/plugin-catalog.mjs build "tool/$CATALOG_JSON" --out catalog.unsigned.txt'));
   assert.ok(stepOf('Build the unsigned catalog').includes("''|/*|*..*|*\\\\*"), 'an absolute path, a parent path or a backslash is refused');
   assert.ok(stepOf('Read the seq on the target release').includes('plugin-catalog-publish.sh last-seq "$TARGET" "$KIND" > last-seq.txt'));
-  for (const name of ['Sign with the TEST key and verify', 'Sign with the release key and verify']) {
+  for (const name of ['Sign with the release key and verify']) {
     const s = stepOf(name);
     assert.ok(s.includes('seq="$(node tool/ci/vmap-sign.mjs next-seq --last-seq "$last_seq")"'), name);
     assert.ok(!/vmap-history|vmap-publish\.sh/.test(s), 'the catalog has no history');
