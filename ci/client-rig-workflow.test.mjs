@@ -328,11 +328,13 @@ test('order: verdict before upload, leak gate before upload, upload only when th
   assert.match(upload, /retention-days: [1-7]\n/);
   const files = [...upload.matchAll(/^\s+out\/([\w.-]+)$/gm)].map((m) => m[1]).sort();
   assert.deepEqual(files, ['autoupdate.log', 'boot.json', 'dll-hashes.json', 'modloader.log', 'proxy.log', 'set.json', 'verdict.json', 'verdict.txt']);
-  // Named files, and the two wildcards: the compat reports (their names carry the build) and the
+  // Named files, and the wildcards: the compat reports and the feature dump (their names carry the build) and the
   // attempt1 evidence folder (the files in it are named by the launch, and the leak gate reads them).
   assert.match(upload, /^\s+out\/compat-report-\*\.json$/m);
   assert.match(upload, /^\s+out\/attempt1\/\*$/m);
-  assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:')).replace('out/compat-report-*.json', '').replace('out/attempt1/*', '')), 'named files, no other wildcard');
+  // The loader's feature dump, one file per game build (the plugin catalog leg of the client check reads it).
+  assert.match(upload, /^\s+out\/declared-features-\*\.v1\.txt$/m);
+  assert.ok(!/path: out\/?\s*\n/.test(upload) && !/\*/.test(upload.slice(upload.indexOf('path:')).replace('out/compat-report-*.json', '').replace('out/declared-features-*.v1.txt', '').replace('out/attempt1/*', '')), 'named files, no other wildcard');
   // The gate scans what would be uploaded, for the account name, the login values and the IDs.
   const gate = step('Leak gate');
   assert.match(gate, /\.\/ci\/leak-gate\.ps1 -Path out -AllowMissing\n\s+exit \$LASTEXITCODE$/);

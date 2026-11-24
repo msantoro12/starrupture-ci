@@ -34,6 +34,10 @@ name: SR client rig
 # again, out/attempt1/ also holds what the launch kept of that attempt (the loader's logs,
 # the Steam client and game log lines of its time window, the dialog's text), scrubbed. It is
 # evidence only: the verdict does not read it. The leak gate reads it like everything under out/.
+# When the loader wrote its declared-features dump (ModLoader\Logs\declared-features.v1.txt), out/ also
+# holds declared-features-<game CL>.v1.txt, uploaded with the logs; the verdict does not read it, and a
+# loader that writes none is no failure (boot.json says null). The plugin catalog leg of
+# sr-client-check.yml reads it.
 
 on:
   workflow_dispatch:
@@ -448,6 +452,7 @@ jobs:
             out/set.json
             out/boot.json
             out/compat-report-*.json
+            out/declared-features-*.v1.txt
             out/attempt1/*
           retention-days: 3
           if-no-files-found: warn

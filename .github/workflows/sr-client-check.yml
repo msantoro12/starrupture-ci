@@ -4678,6 +4678,154 @@ jobs:
             }
           '
 
+  # ---- Plugin catalog leg: the rigs' feature dumps, to the rehearsal prerelease -----
+  # The loader writes declared-features.v1.txt (the features each running plugin declares, on or off for
+  # the running build) and the rig copies it to its logs artifact as declared-features-<game CL>.v1.txt.
+  # catalog-plan collects the dumps of the rigs that passed, builds the catalog input from them with
+  # ci/catalog-from-dumps.mjs against the catalog the vmap-feed-rehearsal prerelease holds now, and keeps
+  # the dumps and the input as the audit artifact catalog-input-<branch> (14 days, as map-mode-<branch>).
+  # catalog calls sr-plugin-catalog.yml on that artifact only when the plugin rows changed; that workflow
+  # signs with the release key and publishes to the rehearsal prerelease. Nothing here sets its `live`
+  # input, which a call cannot reach: the live release is never touched by this leg.
+  # It runs for a public, publish-on, non-test run whose public rig passed (the second rig's dump is
+  # added when that rig passed too), after publish, and never alters the feed. A rig loader that does
+  # not write the dump yet (the candidate loader is built from a branch without the dump code) leaves no
+  # dump: the plan ends green with a note and nothing is published. A plugin of ci/plugin-names.json with no
+  # rows in any dump is named as a rig gap in the job summary and never written by hand. No schedule and
+  # no trigger of its own; it is not an alert input, since it holds no gate.
+  catalog-plan:
+    name: plugin catalog plan
+    needs: [map-mode, publish, rig-branch, rig-other]
+    if: ${{ !cancelled() && inputs.test_autopilot != true && inputs.proof_run != true && inputs.publish == true && inputs.branch == 'public' && needs.map-mode.result == 'success' && needs.map-mode.outputs.test == 'false' && needs.publish.result != 'failure' && needs.rig-branch.result == 'success' && needs.rig-branch.outputs.verdict == 'PASS' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.plan.outputs.state }}
+      artifact: ${{ steps.plan.outputs.artifact }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      STAGING_RELEASE: vmap-feed-rehearsal
+      AUDIT_ARTIFACT: catalog-input-${{ inputs.branch }}
+    steps:
+      - name: Check out the tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the logs of the rig of this branch
+        if: ${{ needs.rig-branch.outputs.artifact != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.rig-branch.outputs.artifact }}
+          path: rigs/branch
+
+      - name: Download the logs of the rig of the other branch
+        if: ${{ needs.rig-other.result == 'success' && needs.rig-other.outputs.verdict == 'PASS' && needs.rig-other.outputs.artifact != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.rig-other.outputs.artifact }}
+          path: rigs/other
+
+      - name: Collect the feature dumps
+        id: dumps
+        run: |
+          set -euo pipefail
+          mkdir dumps
+          n=0
+          for d in rigs/branch rigs/other; do
+            [ -d "$d" ] || continue
+            for f in "$d"/declared-features-*.v1.txt; do
+              [ -f "$f" ] || continue
+              cp "$f" "dumps/$(basename "$d")-$(basename "$f")"
+              n=$((n + 1))
+            done
+          done
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "$n feature dump(s) from the rigs that passed."
+
+      - name: Read the catalog the rehearsal prerelease holds
+        if: ${{ steps.dumps.outputs.count != '0' }}
+        run: |
+          set -euo pipefail
+          mkdir published
+          if gh release view "$STAGING_RELEASE" --json assets --jq '.assets[].name' > assets.txt 2> view.err; then
+            if grep -qx plugin-catalog.v1.txt assets.txt; then
+              gh release download "$STAGING_RELEASE" --pattern plugin-catalog.v1.txt --dir published --clobber
+              echo "The rehearsal prerelease holds a catalog."
+            else
+              echo "The rehearsal prerelease holds no catalog yet."
+            fi
+          elif grep -q 'not found' view.err; then
+            echo "The rehearsal prerelease does not exist yet."
+          else
+            cat view.err >&2; exit 2
+          fi
+
+      - name: Build the catalog input and compare
+        id: plan
+        env:
+          DUMP_COUNT: ${{ steps.dumps.outputs.count }}
+          OTHER_BRANCH: ${{ needs.map-mode.outputs.other_branch }}
+        run: |
+          set -euo pipefail
+          skip() {
+            echo "state=skip" >> "$GITHUB_OUTPUT"
+            echo "### Plugin catalog: $1" >> "$GITHUB_STEP_SUMMARY"
+            echo "$2" >> "$GITHUB_STEP_SUMMARY"
+            echo "$2"
+            exit 0
+          }
+          if [ "$DUMP_COUNT" = 0 ]; then
+            skip "no dump" "No dump: the rigs' loader writes no declared-features file yet (the candidate loader is built from a branch without the dump code), so the plugin catalog is neither built nor published."
+          fi
+          # A catalog is rebuilt from the dumps of this run alone, so one built from fewer builds than the run covers
+          # would drop the other build's rows from the published catalog and flip back on the next full run.
+          expected=1
+          case "$OTHER_BRANCH" in ''|none) ;; *) expected=2 ;; esac
+          if [ "$DUMP_COUNT" -lt "$expected" ]; then
+            skip "partial dumps" "Partial dumps: $DUMP_COUNT of $expected builds gave a dump (the other rig did not pass or its loader wrote none), so nothing is published; a catalog from some builds would drop the rows of the others."
+          fi
+          node tool/ci/catalog-from-dumps.mjs dumps/* --out catalog-in.json --published published/plugin-catalog.v1.txt --verdict verdict.txt --expect-plugins tool/ci/plugin-names.json 2> generator.err \
+            || { cat generator.err >&2; exit 2; }
+          cat generator.err
+          state="$(cat verdict.txt)"
+          case "$state" in changed|unchanged) ;; *) echo "::error::the catalog generator said '$state'"; exit 2 ;; esac
+          { echo "plugin catalog: $state"; echo; cat generator.err; } > notes.txt
+          { echo "### Plugin catalog: $state"; echo; sed 's/^/- /' generator.err; } >> "$GITHUB_STEP_SUMMARY"
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "artifact=$AUDIT_ARTIFACT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the dumps and the catalog input
+        if: ${{ steps.plan.outputs.state == 'changed' || steps.plan.outputs.state == 'unchanged' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: catalog-input-${{ inputs.branch }}
+          path: |
+            dumps/
+            catalog-in.json
+            verdict.txt
+            notes.txt
+            published/plugin-catalog.v1.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  catalog:
+    name: plugin catalog
+    needs: [catalog-plan]
+    if: ${{ !cancelled() && needs.catalog-plan.result == 'success' && needs.catalog-plan.outputs.state == 'changed' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/sr-plugin-catalog.yml
+    with:
+      catalog_artifact: ${{ needs.catalog-plan.outputs.artifact }}
+    secrets:
+      VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
+
   # ---- Alert: a failed, stuck or held run reaches the owner through GitHub ----
   # One issue per branch, opened on the first problem and commented on for every
   # later one (the same mechanism as vmap-watchdog.yml). The issue carries the
