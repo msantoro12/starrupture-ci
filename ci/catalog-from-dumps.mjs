@@ -6,7 +6,7 @@
 // Dump: UTF-8, LF, TAB-separated.
 //   format<TAB>1
 //   kind<TAB>declared-features
-//   game_cl<TAB><digits>
+//   game_cl<TAB><digits>   no leading zero, at most 10 digits
 //   loader<TAB><version>
 //   plugin<TAB><name><TAB><version>                         one per running plugin
 //   feature<TAB><plugin><TAB><id><TAB>on|off<TAB><title>    after its plugin row
@@ -22,7 +22,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isMain } from './layout-diff.mjs';
-import { buildCatalog, parseCatalog } from './plugin-catalog.mjs';
+import { buildCatalog, isCl, parseCatalog } from './plugin-catalog.mjs';
 
 export class DumpError extends Error {}
 const need = (cond, msg) => { if (!cond) throw new DumpError(msg); };
@@ -42,7 +42,7 @@ export function parseDump(text) {
   need(head(0, 'format') === '1', 'the dump format is not 1');
   need(head(1, 'kind') === 'declared-features', 'the dump kind is not declared-features');
   const cl = head(2, 'game_cl');
-  need(/^[0-9]+$/.test(cl), `game_cl ${JSON.stringify(cl)} is not digits`);
+  need(isCl(cl), `game_cl ${JSON.stringify(cl)} is not a CL number (digits, no leading zero, at most 10)`);
   const loader = head(3, 'loader');
   need(loader.length > 0, 'the loader version is empty');
   const byName = new Map(); // lower-case name -> plugin

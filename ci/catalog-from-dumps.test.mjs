@@ -84,10 +84,14 @@ test('same game CL: identical dumps merge, different content is refused', () => 
 test('parseDump refuses what it should', () => {
   const ok = dump(1, 'plugin\tP\t1');
   assert.equal(reasons(() => parseDump(ok)), null);
+  assert.equal(reasons(() => parseDump(dump(0, 'plugin	P	1'))), null);
+  assert.equal(reasons(() => parseDump(dump('1234567890', 'plugin	P	1'))), null);
   const bad = {
     'wrong format': ok.replace('format\t1', 'format\t2'),
     'bad kind': ok.replace('declared-features', 'plugin-catalog'),
     'non-digit CL': ok.replace('game_cl\t1', 'game_cl\t1x'),
+    'leading-zero CL': ok.replace('game_cl	1', 'game_cl	012'),
+    'CL over 10 digits': ok.replace('game_cl	1', 'game_cl	12345678901'),
     'no trailing LF': ok.slice(0, -1),
     CR: ok.replace(/\n/g, '\r\n'),
     'feature before plugin': dump(1, 'feature\tP\ta\ton\tA', 'plugin\tP\t1'),
