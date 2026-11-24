@@ -1,8 +1,9 @@
 name: SR plugin catalog
 
 # Builds, signs and publishes the plugin catalog (plugin-catalog.v1.txt, grammar in ci/plugin-catalog.mjs): the
-# one job reads a JSON file of this repository (`catalog_json`, the shape `ci/plugin-catalog.mjs build` takes),
-# builds the unsigned catalog from it, signs it under the catalog's own seq and publishes it with
+# one job reads a JSON file of this repository (`catalog_json`, the shape `ci/plugin-catalog.mjs build` takes) or
+# the catalog-in.json of an artifact of the calling run (`catalog_artifact`, a call only; the client check's rig
+# leg passes the one it built from the rigs' feature dumps), builds the unsigned catalog from it, signs it under the catalog's own seq and publishes it with
 # ci/plugin-catalog-publish.sh, which verifies it with `vmap-sign.mjs verify --kind catalog` before anything is
 # uploaded and requires a seq above the one on the target release.
 #
@@ -11,15 +12,22 @@ name: SR plugin catalog
 # `live` is a dispatch input of this workflow only (a workflow_call caller cannot set it), needs main and is the
 # owner's switch: nothing in this repository turns it on. A run without it reads
 # the live vmap-feed release before and after and fails if it changed; a live run fails if any asset but
-# plugin-catalog.v1.txt changed. No pull_request, push or schedule trigger; nothing calls this workflow yet.
+# plugin-catalog.v1.txt changed. No pull_request, push or schedule trigger; the only caller is the catalog job of
+# sr-client-check.yml, which never sets `live`.
 
 on:
   workflow_call:
     inputs:
       catalog_json:
-        description: 'Path in this repository of the JSON file the catalog is built from'
+        description: 'Path in this repository of the JSON file the catalog is built from (give this or catalog_artifact, not both)'
         type: string
-        required: true
+        required: false
+        default: ''
+      catalog_artifact:
+        description: 'Name of an artifact of the calling run that holds catalog-in.json, the JSON the catalog is built from (give this or catalog_json, not both)'
+        type: string
+        required: false
+        default: ''
     secrets:
       VMAP_SIGN_KEY:
         description: 'Release signing key (k2, environment vmap-sign); pass it by name'
@@ -53,6 +61,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       LIVE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-plugin-catalog.yml@') && github.event_name == 'workflow_dispatch' && inputs.live == true }}
       CATALOG_JSON: ${{ inputs.catalog_json }}
+      CATALOG_ARTIFACT: ${{ inputs.catalog_artifact }}
       STAGING_RELEASE: vmap-feed-rehearsal
     steps:
       - name: Check out the tools and the catalog input
@@ -60,6 +69,20 @@ jobs:
         with:
           path: tool
           persist-credentials: false
+
+      - name: Check which catalog input is given
+        run: |
+          set -euo pipefail
+          if [ -n "$CATALOG_JSON" ] && [ -n "$CATALOG_ARTIFACT" ]; then echo "::error::give catalog_json or catalog_artifact, not both"; exit 2; fi
+          if [ -z "$CATALOG_JSON" ] && [ -z "$CATALOG_ARTIFACT" ]; then echo "::error::give catalog_json or catalog_artifact"; exit 2; fi
+          case "$CATALOG_ARTIFACT" in *[!A-Za-z0-9._-]*) echo "::error::catalog_artifact is a plain artifact name"; exit 2 ;; esac
+
+      - name: Download the catalog input of the calling run
+        if: ${{ inputs.catalog_artifact != '' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.catalog_artifact }}
+          path: catalog-in
 
       - name: Refuse a live publish that is not allowed
         if: ${{ env.LIVE == 'true' }}
@@ -91,9 +114,15 @@ jobs:
       - name: Build the unsigned catalog
         run: |
           set -euo pipefail
-          case "$CATALOG_JSON" in ''|/*|*..*|*\\*) echo "::error::catalog_json is a path inside this repository"; exit 2 ;; esac
-          [ -f "tool/$CATALOG_JSON" ] || { echo "::error::$CATALOG_JSON is not a file of this repository"; exit 2; }
-          node tool/ci/plugin-catalog.mjs build "tool/$CATALOG_JSON" --out catalog.unsigned.txt
+          if [ -n "$CATALOG_ARTIFACT" ]; then
+            input=catalog-in/catalog-in.json
+            [ -f "$input" ] || { echo "::error::the artifact $CATALOG_ARTIFACT has no catalog-in.json"; exit 2; }
+          else
+            case "$CATALOG_JSON" in ''|/*|*..*|*\\*) echo "::error::catalog_json is a path inside this repository"; exit 2 ;; esac
+            [ -f "tool/$CATALOG_JSON" ] || { echo "::error::$CATALOG_JSON is not a file of this repository"; exit 2; }
+            input="tool/$CATALOG_JSON"
+          fi
+          node tool/ci/plugin-catalog.mjs build "$input" --out catalog.unsigned.txt
 
       # The catalog's own seq: the one on the target release (0 when it holds none), not the version map's.
       - name: Read the seq on the target release

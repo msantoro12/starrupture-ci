@@ -28,10 +28,12 @@ const runSteps = [
   ...[...wf.matchAll(/\n +run: (?!\|).*/g)].map((m) => m[0]),
 ];
 
-test('triggers: workflow_call and workflow_dispatch only, each with catalog_json; live on dispatch only', () => {
+test('triggers: workflow_call and workflow_dispatch only; catalog_json required on dispatch, either input on a call; live on dispatch only', () => {
   const on = section(wf, '\non:\n', '\npermissions:');
   assert.deepEqual([...on.matchAll(/^ {2}([a-z_]+):\n/gm)].map((m) => m[1]), ['workflow_call', 'workflow_dispatch']);
-  for (const s of [call, dispatch]) assert.match(s, /catalog_json:\n(?:.*\n)*?\s+type: string\n\s+required: true\n/, 'catalog_json: a required string');
+  assert.match(dispatch, /catalog_json:\n(?:.*\n)*?\s+type: string\n\s+required: true\n/, 'catalog_json: a required string on dispatch');
+  assert.ok(!/catalog_artifact/.test(dispatch), 'a dispatch builds from a file of the repository only');
+  for (const k of ['catalog_json', 'catalog_artifact']) assert.match(call, new RegExp(`${k}:\\n(?:.*\\n)*?\\s+type: string\\n\\s+required: false\\n\\s+default: ''\\n`), `${k}: an optional string on a call`);
   assert.match(dispatch, /\n {6}live:\n(?:.*\n)*?\s+type: boolean\n\s+default: false\n/, 'live: a boolean, off by default');
   assert.ok(!/\blive:/.test(call), 'a workflow_call caller cannot set live: it is not an input there');
   assert.ok(!/pull_request|schedule:|push:/.test(on), 'no trigger a stranger can pull, no schedule, no push');
@@ -81,11 +83,17 @@ test('keys: both targets sign with the release key (as the server map staging do
 });
 
 test('seq: its own, read from the target release before signing, then raised; the build comes first and takes the repository file only', () => {
-  const order = ['Build the unsigned catalog', 'Read the seq on the target release', 'Sign with the release key and verify', 'Publish the catalog', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
-  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'build, read seq, sign, publish, check');
+  const order = ['Check which catalog input is given', 'Download the catalog input of the calling run', 'Build the unsigned catalog', 'Read the seq on the target release', 'Sign with the release key and verify', 'Publish the catalog', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'check input, download, build, read seq, sign, publish, check');
   assert.ok(order.every((i) => i > 0));
-  assert.ok(stepOf('Build the unsigned catalog').includes('node tool/ci/plugin-catalog.mjs build "tool/$CATALOG_JSON" --out catalog.unsigned.txt'));
-  assert.ok(stepOf('Build the unsigned catalog').includes("''|/*|*..*|*\\\\*"), 'an absolute path, a parent path or a backslash is refused');
+  const build = stepOf('Build the unsigned catalog');
+  assert.ok(build.includes('node tool/ci/plugin-catalog.mjs build "$input" --out catalog.unsigned.txt'));
+  assert.ok(build.includes('input=catalog-in/catalog-in.json') && build.includes('input="tool/$CATALOG_JSON"'), 'the input is the downloaded artifact file or a file of the repository');
+  assert.ok(build.includes("''|/*|*..*|*\\\\*"), 'an absolute path, a parent path or a backslash is refused');
+  const pick = stepOf('Check which catalog input is given');
+  assert.ok(pick.includes('not both') && pick.includes('exit 2') && pick.includes('*[!A-Za-z0-9._-]*'), 'exactly one input, the artifact name plain');
+  const dl = stepOf('Download the catalog input of the calling run');
+  assert.ok(dl.includes("if: ${{ inputs.catalog_artifact != '' }}") && dl.includes('name: ${{ inputs.catalog_artifact }}') && dl.includes('path: catalog-in') && !/run-id|github-token|repository:/.test(dl), 'an artifact of this run only');
   assert.ok(stepOf('Read the seq on the target release').includes('plugin-catalog-publish.sh last-seq "$TARGET" "$KIND" > last-seq.txt'));
   for (const name of ['Sign with the release key and verify']) {
     const s = stepOf(name);
@@ -115,16 +123,16 @@ test('trust and shape: no secret but the two keys, contents: write in the one jo
   for (const r of runSteps) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
   assert.ok((wf.match(/persist-credentials: false/g) ?? []).length === (wf.match(/uses: actions\/checkout@/g) ?? []).length, 'no checkout keeps the token');
   assert.ok(!/repository:/.test(wf), 'no other repository is checked out');
-  assert.match(wf, /\n {6}CATALOG_JSON: \$\{\{ inputs\.catalog_json \}\}\n/, 'the input reaches the scripts through env');
+  assert.match(wf, /\n {6}CATALOG_JSON: \$\{\{ inputs\.catalog_json \}\}\n {6}CATALOG_ARTIFACT: \$\{\{ inputs\.catalog_artifact \}\}\n/, 'the inputs reach the scripts through env');
   assert.match(wf, /\n {4}runs-on: ubuntu-latest\n/);
   assert.ok(!/shell:|\bpwsh\b|Get-|\$env:/.test(wf), 'bash only');
   for (const line of wf.split('\n')) if (/\b(?:cancelled|always|failure|success)\(\)/.test(line)) assert.match(line, /^\s+if: /, line);
 });
 
-test('text: no attribution line, version object map wording, and no other workflow calls this one yet', () => {
+test('text: no attribution line, version object map wording, and only the client check calls this one (ci/catalog-rig-leg-workflow.test.mjs pins that call)', () => {
   assert.ok(!/Co-Authored|Generated with/.test(wf));
   assert.ok(!/\bthe feed\b/i.test(wf), 'version object map, not the feed');
-  for (const f of readdirSync(join(here, '..', '.github', 'workflows')).filter((n) => n.endsWith('.yml') && n !== 'sr-plugin-catalog.yml')) {
+  for (const f of readdirSync(join(here, '..', '.github', 'workflows')).filter((n) => n.endsWith('.yml') && n !== 'sr-plugin-catalog.yml' && n !== 'sr-client-check.yml')) {
     assert.ok(!read('.github', 'workflows', f).includes('sr-plugin-catalog.yml'), `${f} does not call or dispatch it`);
   }
 });

@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeDumps, parseDump } from './catalog-from-dumps.mjs';
+import { mergeDumps, parseDump, rigGaps } from './catalog-from-dumps.mjs';
 import { buildCatalog } from './plugin-catalog.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -140,4 +140,39 @@ test('the command line writes the input, and the verdict follows the published r
   r = run(d1, d2, '--out', join(dir, 'x.json'));
   assert.equal(r.status, 2);
   assert.match(r.stderr, /kind is not declared-features/);
+});
+
+test('rigGaps names the plugins of the rig list that no dump has a row for, matched on Name or LogName', () => {
+  const { input } = merged(fx('build-100.txt'), fx('build-200.txt')); // Best Builder, WAILA
+  const names = [
+    { Name: 'WAILA', LogName: 'Waila' },
+    { Name: 'RuptureTimer', LogName: 'AxRuptureTimer' },
+    { Name: 'Best Builder' },
+    { Name: 'Codex', LogName: 'Codex' },
+  ];
+  assert.deepEqual(rigGaps(names, input), ['RuptureTimer', 'Codex']);
+  assert.deepEqual(rigGaps([{ Name: 'Other', LogName: 'waila' }], input), [], 'the log name matches, in any case');
+  assert.deepEqual(rigGaps([], input), []);
+  assert.ok(reasons(() => rigGaps({}, input)), 'a list that is not an array is refused');
+  assert.ok(reasons(() => rigGaps([{ LogName: 'x' }], input)), 'an entry with no Name is refused');
+});
+
+test('--expect-plugins reports each rig gap on stderr, exits 0 and writes nothing for the gap', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfd-'));
+  const run = (...args) => spawnSync(process.execPath, [join(here, 'catalog-from-dumps.mjs'), ...args], { encoding: 'utf8', windowsHide: true });
+  const d1 = join(dir, 'a.txt'), out = join(dir, 'in.json'), names = join(dir, 'names.json');
+  writeFileSync(d1, fx('build-100.txt'));
+  writeFileSync(names, JSON.stringify([{ Name: 'Best Builder' }, { Name: 'Codex', LogName: 'Codex' }, { Name: 'MiniMap' }]));
+  let r = run(d1, '--out', out, '--expect-plugins', names);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /rig gap: Codex has no plugin row in any dump\n/);
+  assert.match(r.stderr, /rig gap: MiniMap has no plugin row in any dump\n/);
+  assert.ok(!/rig gap: Best Builder/.test(r.stderr));
+  assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')).plugins.map((p) => p.name), ['Best Builder', 'WAILA'], 'rows only for the plugins the dump has');
+
+  r = run(d1, '--out', out, '--expect-plugins', join(dir, 'missing.json'));
+  assert.equal(r.status, 2, 'an unreadable list stops the run');
+  r = run(d1, '--out', out, '--expect-plugins');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--expect-plugins needs a value/);
 });

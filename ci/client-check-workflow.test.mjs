@@ -2685,7 +2685,8 @@ test('publish gates (unattended): the public run of sr-watch publishes on its ow
   assert.match(pub, /\n {4}environment: vmap-sign\n/);
   assert.deepEqual([...new Set([...pub.matchAll(/secrets\.([A-Z_]+)/g)].map((m) => m[1]))], ['VMAP_SIGN_KEY']);
   const holders = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /secrets\.VMAP_SIGN_KEY(?!_TEST)/.test(job(n)));
-  assert.deepEqual(holders, ['publish']);
+  // The catalog job only passes the key by name to the catalog workflow (ci/catalog-rig-leg-workflow.test.mjs pins that call).
+  assert.deepEqual(holders, ['publish', 'catalog']);
   // sr-watch passes the release key by name (a called job reads an environment secret only that way); only the publish job reads it.
   assert.ok(watch.slice(watch.indexOf('  client-check:\n')).includes('\n      VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}\n'));
   // The gates are written down in the order they apply, and the old "not wired" wording is gone.
@@ -2994,7 +2995,8 @@ test('feed gate: no job of the feed path, and not the rig, can reach the release
   const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8');
   assert.ok(!/VMAP_SIGN_KEY/.test(rig));
   const holders = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /secrets\.VMAP_SIGN_KEY(?!_TEST)/.test(job(n)));
-  assert.deepEqual(holders, ['publish']);
+  // The catalog job only passes the key by name to the catalog workflow (ci/catalog-rig-leg-workflow.test.mjs pins that call).
+  assert.deepEqual(holders, ['publish', 'catalog']);
 });
 
 // The plan job's script, run against a fake `gh` and the fixture feed and header.
