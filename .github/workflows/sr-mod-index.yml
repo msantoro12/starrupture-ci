@@ -1,11 +1,12 @@
 name: SR mod index
 
 # Builds, signs and publishes the signed mod index (mod-index.v1.txt, the loader's mod-index/index.json carried byte
-# for byte inside the signed envelope; grammar in ci/mod-index.mjs). The one job reads index.json of the loader
-# repository (AlienXAXS/StarRupture-ModLoader) at `loader_ref` (default main) through the contents API with the job
-# token, checks it with the loader's own builder (.github/vmap/build-mod-index.mjs, read from the same ref; ci/mod-index.mjs
-# builds it only when the loader has no such file at that ref), and ends green without a publish when the index is
-# missing at the ref or its body equals the one the target release holds. Otherwise it signs the index under the mod
+# for byte inside the signed envelope; grammar in ci/mod-index.mjs). The first job reads index.json of the loader
+# repository (AlienXAXS/StarRupture-ModLoader) at `loader_ref` (default main) through the contents API, checks it with
+# the loader's own builder (.github/vmap/build-mod-index.mjs, read from the same ref) and ends green without a publish
+# when the index is missing at the ref or its body equals the one the target release holds. The loader's code runs in
+# its own job (loader-check), which holds no secret, no environment and a read-only token, and hands the signing job
+# index.json only; the signing job builds the signer's input itself with ci/mod-index.mjs. It then signs the index under the mod
 # index's own seq and publishes it with ci/plugin-catalog-publish.sh (4th argument mod-index), which verifies it with
 # `vmap-sign.mjs verify --kind mod-index` before anything is uploaded and requires a seq above the one on the target.
 #
@@ -43,8 +44,87 @@ on:
 permissions: {}
 
 jobs:
+  # The loader repository's code runs here and nowhere else: no secret, no environment, a read-only token, and the job
+  # ends with that code so nothing it does can reach a later step. Only index.json crosses to the signing job.
+  loader-check:
+    name: loader-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.read.outputs.state }}
+      ref: ${{ steps.ref.outputs.ref }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LOADER_REPO: AlienXAXS/StarRupture-ModLoader
+      LOADER_REF: ${{ inputs.loader_ref }}
+    steps:
+      - name: Check the loader ref
+        id: ref
+        run: |
+          set -euo pipefail
+          case "$LOADER_REF" in
+            ''|-*|*..*|*[!A-Za-z0-9._/-]*) echo "::error::loader_ref is a branch, tag or commit name of the loader repository"; exit 2 ;;
+          esac
+          echo "ref=$LOADER_REF" >> "$GITHUB_OUTPUT"
+
+      # The loader's index.json at the ref, byte for byte. A 404 (no mod-index/index.json there yet, or no such ref)
+      # ends the run green: there is nothing to sign.
+      - name: Read the loader's mod index
+        id: read
+        run: |
+          set -euo pipefail
+          if gh api -H "Accept: application/vnd.github.raw+json" "repos/$LOADER_REPO/contents/mod-index/index.json?ref=$LOADER_REF" > index.json 2> index.err; then
+            echo "state=present" >> "$GITHUB_OUTPUT"
+          elif grep -q 'HTTP 404' index.err; then
+            echo "state=missing" >> "$GITHUB_OUTPUT"
+            echo "No mod-index/index.json at $LOADER_REPO@$LOADER_REF: nothing to publish."
+            echo "### Mod index: no mod-index/index.json at $LOADER_REPO@$LOADER_REF, so nothing was published." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat index.err >&2; exit 2
+          fi
+
+      - name: Fetch the loader's builder
+        if: ${{ steps.read.outputs.state == 'present' }}
+        run: |
+          set -euo pipefail
+          mkdir loader-build
+          if gh api -H "Accept: application/vnd.github.raw+json" "repos/$LOADER_REPO/contents/.github/vmap/build-mod-index.mjs?ref=$LOADER_REF" > loader-build/build-mod-index.mjs 2> build.err; then
+            echo "The loader's builder is at $LOADER_REPO@$LOADER_REF."
+          elif grep -q 'HTTP 404' build.err; then
+            rm -rf loader-build
+            echo "::notice::$LOADER_REPO@$LOADER_REF has no .github/vmap/build-mod-index.mjs; the signing job checks the index with ci/mod-index.mjs only"
+          else
+            cat build.err >&2; exit 2
+          fi
+
+      - name: Hand index.json to the signing job
+        if: ${{ steps.read.outputs.state == 'present' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mod-index-input
+          path: index.json
+          retention-days: 1
+          if-no-files-found: error
+
+      # Last step: the loader's own builder checks the index (exit 3 refuses it). Its output is not used, only its verdict.
+      - name: Check the mod index with the loader's builder
+        if: ${{ steps.read.outputs.state == 'present' }}
+        run: |
+          set -euo pipefail
+          [ -f loader-build/build-mod-index.mjs ] || { echo "No loader builder to run."; exit 0; }
+          set +e
+          env -i PATH="$PATH" node loader-build/build-mod-index.mjs index.json --out loader-build/checked.txt
+          rc=$?
+          set -e
+          [ "$rc" = 0 ] || { echo "::error::the loader's builder refuses the mod index (exit $rc)"; exit 2; }
+          echo "The loader's builder accepted the mod index."
+
   mod-index-publish:
     name: mod-index-publish
+    needs: [loader-check]
+    if: ${{ needs.loader-check.outputs.state == 'present' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: vmap-sign
@@ -57,8 +137,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       LIVE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-mod-index.yml@') && github.event_name == 'workflow_dispatch' && inputs.live == true }}
-      LOADER_REPO: AlienXAXS/StarRupture-ModLoader
-      LOADER_REF: ${{ inputs.loader_ref }}
+      LOADER_REF: ${{ needs.loader-check.outputs.ref }}
       STAGING_RELEASE: vmap-feed-rehearsal
     steps:
       - name: Check out the tools
@@ -67,18 +146,12 @@ jobs:
           path: tool
           persist-credentials: false
 
-      - name: Check the loader ref
-        run: |
-          set -euo pipefail
-          case "$LOADER_REF" in
-            ''|-*|*..*|*[!A-Za-z0-9._/-]*) echo "::error::loader_ref is a branch, tag or commit name of the loader repository"; exit 2 ;;
-          esac
-
       - name: Refuse a live publish that is not allowed
         if: ${{ env.LIVE == 'true' }}
         run: |
           set -euo pipefail
           [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a live publish runs from main only (this run is on $GITHUB_REF)"; exit 2; }
+          [[ "$LOADER_REF" = main || "$LOADER_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::a live publish reads the loader's main or a full commit, not $LOADER_REF"; exit 2; }
           echo "This run publishes to the LIVE vmap-feed release."
 
       - name: Choose the live release
@@ -101,43 +174,17 @@ jobs:
             || { if grep -q 'HTTP 404' snapshot.err; then echo '[]' > live-assets.before.json; else cat snapshot.err >&2; exit 2; fi; }
           echo "The live release holds $(node -p "JSON.parse(require('fs').readFileSync('live-assets.before.json','utf8')).length") assets."
 
-      # The loader's index.json at the ref, byte for byte. A 404 (no mod-index/index.json there yet, or no such ref)
-      # ends the run green: there is nothing to sign.
-      - name: Read the loader's mod index
-        run: |
-          set -euo pipefail
-          if gh api -H "Accept: application/vnd.github.raw+json" "repos/$LOADER_REPO/contents/mod-index/index.json?ref=$LOADER_REF" > index.json 2> index.err; then
-            echo "STATE=present" >> "$GITHUB_ENV"
-          elif grep -q 'HTTP 404' index.err; then
-            echo "STATE=missing" >> "$GITHUB_ENV"
-            echo "No mod-index/index.json at $LOADER_REPO@$LOADER_REF: nothing to publish."
-            echo "### Mod index: no mod-index/index.json at $LOADER_REPO@$LOADER_REF, so nothing was published." >> "$GITHUB_STEP_SUMMARY"
-          else
-            cat index.err >&2; exit 2
-          fi
+      # index.json as the first job read it, and the signer's input built from it here with our own builder (it refuses
+      # a CR, a missing final LF, invalid JSON or more than 256 KB). The loader's code never ran in this job.
+      - name: Take the loader's mod index
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mod-index-input
 
-      # The loader's own builder checks the index (exit 3 refuses it) and writes the signer's input. It is the loader
-      # repository's code, so it runs with no environment of this job (no token) and must leave the tools as checked out.
-      - name: Check the mod index with the loader's builder
-        if: ${{ env.STATE == 'present' }}
+      - name: Build the signer's input
         run: |
           set -euo pipefail
-          mkdir loader-build
-          if gh api -H "Accept: application/vnd.github.raw+json" "repos/$LOADER_REPO/contents/.github/vmap/build-mod-index.mjs?ref=$LOADER_REF" > loader-build/build-mod-index.mjs 2> build.err; then
-            set +e
-            env -i PATH="$PATH" node loader-build/build-mod-index.mjs index.json --out mod-index.unsigned.txt
-            rc=$?
-            set -e
-            [ "$rc" = 0 ] || { echo "::error::the loader's builder refuses the mod index (exit $rc)"; exit 2; }
-            [ -z "$(git -C tool status --porcelain)" ] || { echo "::error::the loader's builder changed the tools"; exit 2; }
-            echo "The loader's builder accepted the mod index."
-          elif grep -q 'HTTP 404' build.err; then
-            echo "::notice::$LOADER_REPO@$LOADER_REF has no .github/vmap/build-mod-index.mjs; building with ci/mod-index.mjs instead"
-            node tool/ci/mod-index.mjs build index.json --out mod-index.unsigned.txt
-          else
-            cat build.err >&2; exit 2
-          fi
-          [ -s mod-index.unsigned.txt ] || { echo "::error::no unsigned mod index was written"; exit 2; }
+          node tool/ci/mod-index.mjs build index.json --out mod-index.unsigned.txt
           echo "STATE=built" >> "$GITHUB_ENV"
 
       # The mod index's own seq: the one on the target release (0 when it holds none). The routine verifies the file

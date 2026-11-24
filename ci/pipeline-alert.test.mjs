@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXTRACT_JOB_NAME, causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise } from './pipeline-alert.mjs';
+import { EXTRACT_JOB_NAME, MOD_INDEX_JOB_PREFIX, causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise } from './pipeline-alert.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(join(here, 'fixtures', 'live-run-1', n), 'utf8');
@@ -133,6 +133,12 @@ test('causes: the planner data extract job, which cannot fail the run, is not a 
   assert.ok(!gh.calls.some((c) => c.includes('jobs/7/')), 'nothing is read for it');
   const same = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: fakeGh({ jobs: LIVE_JOBS }).call });
   assert.deepEqual(same.map((j) => j.id), LIVE_JOBS.map((j) => j.id), 'an alert with only real causes is unchanged');
+});
+
+test('causes: the optional mod index leg, which nothing waits for, is not a cause', async () => {
+  const gh = fakeGh({ jobs: [LIVE_JOBS[0], { id: 8, name: `${MOD_INDEX_JOB_PREFIX} / mod-index-publish`, step: 'Publish the mod index' }, { id: 9, name: MOD_INDEX_JOB_PREFIX, step: '' }, LIVE_JOBS[1]] });
+  const jobs = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: gh.call });
+  assert.deepEqual(jobs.map((j) => j.id), [LIVE_JOBS[0].id, LIVE_JOBS[1].id]);
 });
 
 test('sr-watch: the extract job is named EXTRACT_JOB_NAME and cannot fail the run', () => {

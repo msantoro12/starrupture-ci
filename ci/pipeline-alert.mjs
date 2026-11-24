@@ -63,6 +63,9 @@ export function causeText(job) {
 // The watcher's planner data extract job. It cannot fail the run (continue-on-error in sr-watch.yml), so it is no cause of an alert.
 export const EXTRACT_JOB_NAME = 'planner data extract';
 
+// The optional mod index leg of sr-watch.yml (its jobs are named "mod index", "mod index plan" and "mod index / <job>"). Nothing waits for it, so it is no cause of an alert.
+export const MOD_INDEX_JOB_PREFIX = 'mod index';
+
 // The jobs of a client check are listed as "client-check (<branch>) / <job>"; they have their own alert.
 export const inClientCheck = (name) => /^client-check \(/.test(String(name ?? ''));
 
@@ -87,7 +90,7 @@ export async function collectCauses({ repo, run, tries = 6, wait = 10000, call =
   const listed = call(['api', `repos/${repo}/actions/runs/${run}/jobs?per_page=100`, '--paginate',
     '--jq', '.jobs[] | select(.conclusion == "failure") | {id, name, step: ([.steps[] | select(.conclusion == "failure")][0].name // "")}'], 'jobs list');
   const jobs = String(listed ?? '').split('\n').filter((l) => l.trim()).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
-    .filter((j) => j.name !== EXTRACT_JOB_NAME);
+    .filter((j) => j.name !== EXTRACT_JOB_NAME && !j.name.startsWith(MOD_INDEX_JOB_PREFIX));
   for (const j of jobs) {
     const ann = call(['api', `repos/${repo}/check-runs/${j.id}/annotations`], `annotations of job ${j.id}`);
     let rows = [];

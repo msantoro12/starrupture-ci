@@ -25,6 +25,14 @@ const stepIn = (text, name) => {
   const next = text.indexOf('\n      - ', at + 1);
   return text.slice(at, next < 0 ? undefined : next);
 };
+const jobText = (name) => {
+  const at = wf.indexOf(`\n  ${name}:\n`);
+  assert.ok(at > 0, `job ${name} exists`);
+  const next = wf.slice(at + 1).search(/\n {2}[a-z][\w-]*:\n/);
+  return next < 0 ? wf.slice(at) : wf.slice(at, at + 1 + next);
+};
+const loaderJob = jobText('loader-check');
+const pubJob = jobText('mod-index-publish');
 const stepOf = (name) => stepIn(wf, name);
 // A job runs to the next job key (two-space indent) or the end of the file.
 const watchJob = (name) => {
@@ -55,6 +63,7 @@ test('live: needs this workflow as the top-level run, a dispatch and live true, 
   assert.equal((wf.match(/inputs\.live/g) ?? []).length, 1, 'no other expression reads the live input');
   const gate = stepOf('Refuse a live publish that is not allowed');
   assert.ok(gate.includes("if: ${{ env.LIVE == 'true' }}\n") && gate.includes('"$GITHUB_REF" = refs/heads/main') && gate.includes('exit 2'));
+  assert.ok(gate.includes('"$LOADER_REF" = main') && gate.includes('^[0-9a-f]{40}$'), 'a live run reads the loader main or a full commit only');
   assert.ok(wf.indexOf('Refuse a live publish') < wf.indexOf('Choose the live release'), 'refused before the live target is chosen');
   assert.ok(wf.indexOf('Refuse a live publish') < wf.indexOf('Sign with the release key'), 'refused before the release key is used');
   assert.ok(!/(?:vmap-sign\.mjs|plugin-catalog-publish\.sh)[^\n]*\bvmap-feed\b/.test(wf), 'no script call names the live release; the choose step does');
@@ -89,32 +98,46 @@ test('keys: both targets sign with the release key, read once, in one step', () 
   assert.ok(rel.includes('sign mod-index.unsigned.txt --kind mod-index --out mod-index.v1.txt --key-id k2 --last-seq "$last_seq" --seq "$seq"'));
   assert.ok(rel.includes('verify mod-index.v1.txt --kind mod-index --last-seq "$last_seq" --expect-seq "$seq"'));
   assert.ok(!/echo .*\$VMAP_SIGN_KEY|printenv|\benv\b *\|/.test(wf), 'a key is never printed');
-  assert.match(wf, /\n {4}environment: vmap-sign\n/);
+  assert.match(pubJob, /\n {4}environment: vmap-sign\n/);
   assert.deepEqual([...wf.matchAll(/\n\s+environment: (.*)/g)].map((m) => m[1]), ['vmap-sign']);
 });
 
-test('the loader repository: index.json and the builder are read through the contents API at loader_ref with the job token; the builder gets no environment', () => {
-  assert.match(wf, /\n {6}LOADER_REPO: AlienXAXS\/StarRupture-ModLoader\n {6}LOADER_REF: \$\{\{ inputs\.loader_ref \}\}\n/);
+test('the loader repository: its code runs in its own job with no secret, no environment and a read-only token, last; only index.json crosses', () => {
+  assert.match(loaderJob, /\n {6}LOADER_REPO: AlienXAXS\/StarRupture-ModLoader\n {6}LOADER_REF: \$\{\{ inputs\.loader_ref \}\}\n/);
   assert.ok(!/repository:/.test(wf), 'no other repository is checked out');
+  assert.match(loaderJob, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.ok(!/environment:|secrets\.|VMAP_SIGN_KEY|uses: actions\/checkout/.test(loaderJob), 'the loader job has no environment, no secret and no checkout of this repository');
+  assert.ok(!/inputs\.live|contents: write/.test(loaderJob));
   const ref = stepOf('Check the loader ref');
   assert.ok(ref.includes('*..*') && ref.includes('-*') && ref.includes('[!A-Za-z0-9._/-]') && ref.includes('exit 2'));
   const idx = stepOf("Read the loader's mod index");
   assert.ok(idx.includes('contents/mod-index/index.json?ref=$LOADER_REF') && idx.includes('application/vnd.github.raw+json'));
+  const fetch = stepOf("Fetch the loader's builder");
+  assert.ok(fetch.includes('contents/.github/vmap/build-mod-index.mjs?ref=$LOADER_REF'));
+  assert.ok(fetch.includes('HTTP 404') && fetch.includes('::notice::'), 'only a 404 means no loader builder, and it says so; any other error stops');
   const build = stepOf("Check the mod index with the loader's builder");
-  assert.ok(build.includes('contents/.github/vmap/build-mod-index.mjs?ref=$LOADER_REF'));
-  assert.ok(build.includes('env -i PATH="$PATH" node loader-build/build-mod-index.mjs index.json --out mod-index.unsigned.txt'), "the loader's code runs with no environment of this job");
-  assert.ok(build.includes('git -C tool status --porcelain'), 'it must leave the tools as they were checked out');
-  assert.ok(build.includes('node tool/ci/mod-index.mjs build index.json --out mod-index.unsigned.txt'), "our builder is the fallback when the loader's is absent");
-  assert.ok(build.includes('::notice::') && build.indexOf('::notice::') < build.indexOf('node tool/ci/mod-index.mjs build'), 'the fallback says so');
-  assert.ok(build.includes('HTTP 404'), 'only a 404 falls back; any other error stops');
+  assert.ok(build.includes('env -i PATH="$PATH" node loader-build/build-mod-index.mjs index.json --out loader-build/checked.txt'), "the loader's code runs with no environment of this job");
+  const steps = [...loaderJob.matchAll(/\n {6}- (?:name|uses): (.*)/g)].map((m) => m[1]);
+  assert.equal(steps[steps.length - 1], "Check the mod index with the loader's builder", "the loader's code is the last step of its job");
+  assert.ok(loaderJob.includes('actions/upload-artifact@') && loaderJob.includes('path: index.json'), 'index.json is all that crosses');
+  assert.ok(!/loader-build|checked\.txt|build-mod-index/.test(pubJob), "the loader's builder and its output never reach the signing job");
+  assert.ok(pubJob.includes('actions/download-artifact@'));
+  const own = stepOf("Build the signer's input");
+  assert.ok(own.includes('node tool/ci/mod-index.mjs build index.json --out mod-index.unsigned.txt') && own.includes('STATE=built'), "the signing job builds the signer's input itself from index.json");
+  assert.ok(pubJob.indexOf('- name: Take the loader') < pubJob.indexOf("- name: Build the signer's input"));
+  assert.match(pubJob, /\n {4}needs: \[loader-check\]\n {4}if: \$\{\{ needs\.loader-check\.outputs\.state == 'present' \}\}\n/);
 });
 
 test('a missing index.json at the ref ends green with a note; nothing after it runs', () => {
   const idx = stepOf("Read the loader's mod index");
-  assert.ok(idx.includes('grep -q \'HTTP 404\' index.err') && idx.includes('STATE=missing') && idx.includes('GITHUB_STEP_SUMMARY'));
+  assert.ok(idx.includes('grep -q \'HTTP 404\' index.err') && idx.includes('state=missing') && idx.includes('GITHUB_STEP_SUMMARY'));
   assert.ok(!/exit 2/.test(idx.slice(idx.indexOf('HTTP 404'), idx.indexOf('else\n'))), 'the 404 branch does not fail');
-  for (const n of ["Check the mod index with the loader's builder", 'Compare with the published mod index', 'Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move']) {
-    assert.match(stepOf(n), /\n\s+if: \$\{\{ env\.STATE == '(?:present|built|go)' \}\}\n/, `${n} runs only past the missing-index stop`);
+  for (const n of ["Fetch the loader's builder", 'Hand index.json to the signing job', "Check the mod index with the loader's builder"]) {
+    assert.match(stepOf(n), /\n\s+if: \$\{\{ steps\.read\.outputs\.state == 'present' \}\}\n/, `${n} runs only when the index exists`);
+  }
+  for (const n of ["Build the signer's input", 'Compare with the published mod index', 'Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move']) {
+    if (n === "Build the signer's input") continue;
+    assert.match(stepOf(n), /\n\s+if: \$\{\{ env\.STATE == '(?:built|go)' \}\}\n/, `${n} runs only past the missing-index stop`);
   }
 });
 
@@ -129,9 +152,9 @@ test('an unchanged index ends green without signing or publishing; the published
   for (const n of ['Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move']) {
     assert.ok(stepOf(n).includes("if: ${{ env.STATE == 'go' }}"), `${n} runs only for a changed index`);
   }
-  const order = ['Check the loader ref', 'Read the live release', "Read the loader's mod index", "Check the mod index with the loader's builder", 'Compare with the published mod index', 'Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
+  const order = ['Check the loader ref', "Read the loader's mod index", "Check the mod index with the loader's builder", 'Read the live release', "Build the signer's input", 'Compare with the published mod index', 'Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
   assert.ok(order.every((i) => i > 0));
-  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'live assets read, index read, built, compared, signed, published, live assets checked');
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'index read and checked, live assets read, built, compared, signed, published, live assets checked');
   assert.ok(!/vmap-history|vmap-publish\.sh/.test(wf.replace(/#.*\n/g, '')), 'no history file and not the version map routine');
 });
 
@@ -146,12 +169,13 @@ test('the live release is read before and after; a staging run leaves it equal, 
   assert.ok(wf.indexOf('- name: Read the live release') < wf.indexOf('- name: Publish the mod index'));
 });
 
-test('trust and shape: contents: write in the one job, no input in a run block, no other repository', () => {
+test('trust and shape: contents: write in the signing job only, no input in a run block, no other repository', () => {
   assert.match(wf, /\npermissions: \{\}\n/);
-  assert.match(wf, /\n {4}permissions:\n {6}contents: write\n/);
+  assert.match(pubJob, /\n {4}permissions:\n {6}contents: write\n/);
+  assert.equal((wf.match(/contents: write/g) ?? []).length, 1, 'only the signing job writes');
   assert.ok(!/(?:pull-requests|issues|actions|checks|id-token|packages):/.test(wf), 'asks for no other permission');
-  assert.match(wf, /\n {4}concurrency:\n {6}group: vmap-publish\n {6}cancel-in-progress: false\n/);
-  assert.equal((wf.slice(wf.indexOf('\njobs:\n')).match(/\n {2}[a-z][\w-]*:\n/g) ?? []).length, 1, 'one job');
+  assert.match(pubJob, /\n {4}concurrency:\n {6}group: vmap-publish\n {6}cancel-in-progress: false\n/);
+  assert.deepEqual([...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]), ['loader-check', 'mod-index-publish'], 'two jobs: the loader check, then the signing job');
   assert.ok(runSteps.length >= 8, 'every run step was found');
   for (const r of runSteps) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
   assert.ok((wf.match(/persist-credentials: false/g) ?? []).length === (wf.match(/uses: actions\/checkout@/g) ?? []).length, 'no checkout keeps the token');
