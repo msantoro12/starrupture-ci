@@ -654,13 +654,21 @@ jobs:
           # reported for review (the `review` output) and changes nothing that is scanned or predicted.
           # Such a plugin is never built from source here.
           $names = @(Get-Content -LiteralPath 'tool/ci/plugin-names.json' -Raw | ConvertFrom-Json | ForEach-Object { $_ })
-          $trusted = @('msantoro12', 'AlienXAXS')
+          # Who may be listed, from ci/plugin-owners.json: trusted owners (any StarRupture-Plugin-* repo, unpinned),
+          # pinned owners (other authors, only @latest-release at the reviewed Pin) and restricted owners, which are
+          # trusted but only for the repositories their pattern allows (an owner's other repositories are not plugins).
+          $owners = Get-Content -LiteralPath 'tool/ci/plugin-owners.json' -Raw | ConvertFrom-Json
+          $restricted = @{}
+          foreach ($o in @($owners.restricted.PSObject.Properties)) { $restricted[$o.Name] = [string]$o.Value }
+          $trusted = @(@($owners.trusted) + @($restricted.Keys))
+          $allowed = @($trusted + @($owners.pinned))
           $review = [Collections.Generic.List[string]]::new()
           $list = [Collections.Generic.List[object]]::new()
           $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
-            if ($p -notmatch '^(msantoro12|AlienXAXS|LetMeInside)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$') { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
+            if ($p -notmatch '^([A-Za-z0-9-]+)/(StarRupture-Plugin-[A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$' -or $Matches[1] -cnotin $allowed) { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
             $owner = $Matches[1]; $short = $Matches[2]; $repo = "$($Matches[1])/$short"; $ref = $Matches[3]
+            if ($restricted.ContainsKey($owner) -and $short -cnotmatch $restricted[$owner]) { throw "plugin '$p': $owner is allowed only for the repositories matching $($restricted[$owner])" }
             $e = [ordered]@{ name = ($short -replace '^StarRupture-Plugin-', ''); source = 'build'; repo = $repo; ref = $ref; sha = ''
                              release = ''; dll = ''; asset = ''; assetSha256 = ''; error = ''; hosted = ($owner -eq 'msantoro12') }
             if ($ref -eq 'latest-release') { try {
@@ -2003,6 +2011,7 @@ jobs:
           sparse-checkout: |
             ci/client-rig-set.ps1
             ci/plugin-names.json
+            ci/plugin-owners.json
             .github/sr-pipeline/rig-branches.json
           sparse-checkout-cone-mode: false
           persist-credentials: false

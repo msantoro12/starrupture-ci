@@ -1604,6 +1604,7 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
   const dir = mkdtempSync(join(tmpdir(), 'plan-'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   writeFileSync(join(dir, 'tool', 'ci', 'plugin-names.json'), JSON.stringify(names));
+  copyFileSync(join(here, 'plugin-owners.json'), join(dir, 'tool', 'ci', 'plugin-owners.json'));
   writeFileSync(join(dir, 'plan.ps1'), '\ufeff' + runOf(job('plugin-plan'), 'Check the plugin list'));
   const out = join(dir, 'github-output.txt');
   const uris = join(dir, 'uris.txt');
@@ -1710,6 +1711,30 @@ test('B1 plan: another author\'s plugin without a usable Pin is not fetched at a
   const branch = planRun({ plugins: `${MINIMAP_REPO}@main` });
   assert.notEqual(branch.r.status, 0);
   assert.match(branch.text.replace(/\s+/g, ' '), /allowed only as owner\/repo@latest-release, which is its reviewed release/);
+});
+
+const BB_REPO = 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder';
+
+test('plan: GoodStuffSoftware is trusted for a StarRupture-Plugin-* repository, unpinned, and never hosted', { skip: !powershell }, () => {
+  const p = planRun({ plugins: `${BB_REPO}@feat/build-anywhere ${BB_REPO.replace('BestBuilder', 'Other')}@latest-release` });
+  assert.equal(p.r.status, 0, p.text);
+  const b = planEntry(p, 'BestBuilder');
+  assert.equal(b.source, 'build');
+  assert.equal(b.sha, 'a'.repeat(40));
+  assert.equal(b.ref, 'feat/build-anywhere');
+  assert.equal(b.error, '');
+  assert.equal(b.hosted, false, 'built by the check job, never an artifact');
+  const o = planEntry(p, 'Other');
+  assert.equal(o.source, 'release');
+  assert.equal(o.release, 'v2.0.0', 'a trusted owner follows its latest release, no Pin');
+});
+
+test('plan: another repository of GoodStuffSoftware is refused, as is an unknown owner', { skip: !powershell }, () => {
+  for (const entry of ['GoodStuffSoftware/website@main', 'GoodStuffSoftware/sr-perftuner@main', 'GoodStuffSoftware/website@latest-release', 'GoodStuffSoftware/StarRupture-Plugin-/x@main', 'SomeoneElse/StarRupture-Plugin-X@main']) {
+    const p = planRun({ plugins: entry });
+    assert.notEqual(p.r.status, 0, entry);
+    assert.match(p.text.replace(/\s+/g, ' '), /is not owner\/repo@ref from an allowed owner/, entry);
+  }
 });
 
 test('B1 plan: the job reads the pins from the repository, with a read-only token, and outputs the review list', () => {

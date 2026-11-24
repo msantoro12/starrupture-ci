@@ -462,6 +462,7 @@ function resolveWithMock(args, { minimapLatest = PIN_TAG, minimapDigest = PIN_HE
     mkdirSync(tool);
     copyFileSync(join(here, 'client-rig-set.ps1'), join(tool, 'client-rig-set.ps1'));
     writeFileSync(join(tool, 'plugin-names.json'), JSON.stringify(plugins ?? names));
+    copyFileSync(join(here, 'plugin-owners.json'), join(tool, 'plugin-owners.json'));
     // The list of rigged branches, where the script looks for it (beside ci/, under .github/sr-pipeline).
     mkdirSync(join(dir, '.github', 'sr-pipeline'), { recursive: true });
     writeFileSync(join(dir, '.github', 'sr-pipeline', 'rig-branches.json'), JSON.stringify(rigBranches ?? JSON.parse(readFileSync(join(here, '..', '.github', 'sr-pipeline', 'rig-branches.json'), 'utf8'))));
@@ -614,6 +615,22 @@ test('rig set: a plugin of another author without a reviewed pin, or with a malf
   }
   // The nine of the rig owner and AlienX need no pin (they resolve Latest, as before).
   assert.equal(resolveWithMock('-Branch public').r.status, 0);
+});
+
+test('rig set: GoodStuffSoftware is trusted for a StarRupture-Plugin-* repository only (ci/plugin-owners.json), never for its other repositories', (t) => {
+  const entry = (Repo) => ({ Name: 'BestBuilder', Repo, LogName: 'Best Builder', Asset: 'BestBuilder', Owner: 'GoodStuffSoftware' });
+  const ok = resolveWithMock('-Branch public', { plugins: [...names, entry('StarRupture-Plugin-BestBuilder')] });
+  if (!ok) return t.skip('no PowerShell on this machine');
+  assert.equal(ok.r.status, 0, ok.text);
+  const bb = ok.plan.plugins.find((p) => p.name === 'BestBuilder');
+  assert.equal(bb.tag, 'v1.0.0', 'run at its latest release, no Pin');
+  assert.ok(ok.uris.includes('https://api.github.com/repos/GoodStuffSoftware/StarRupture-Plugin-BestBuilder/releases/latest'), ok.uris.join(' '));
+  for (const repo of ['website', 'sr-perftuner', 'StarRupture-Other']) {
+    const bad = resolveWithMock('-Branch public', { plugins: [...names, { ...entry(repo), Name: 'Other', Asset: 'Other' }] });
+    assert.notEqual(bad.r.status, 0, repo);
+    assert.match(bad.text, /GoodStuffSoftware is trusted only for the repositories matching/, repo);
+    assert.ok(!bad.uris.some((u) => u.includes('/GoodStuffSoftware/')), `${repo}: refused before any release is read`);
+  }
 });
 
 test('rig set: expect_refused MiniMap is accepted for the branch that runs CL-129402, and a tag override can only name the reviewed release', (t) => {

@@ -86,8 +86,12 @@ if (-not $PlanPath) { $PlanPath = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNE
 # turns off ([UI] Enabled=0); set.json carries it as uiOffInitFailure and the verdict excuses that line only.
 $Plugins = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-names.json') -Raw | ConvertFrom-Json | ForEach-Object { $_ })
 $LoaderRepo = 'StarRupture-ModLoader'
-# The owners whose releases the rig runs at Latest; any other owner needs a reviewed Pin.
-$TrustedOwners = @('msantoro12', 'AlienXAXS')
+# The owners whose releases the rig runs at Latest; any other owner needs a reviewed Pin. The list is ci/plugin-owners.json, which the
+# client check's plan reads too. A restricted owner is trusted only for the repositories its pattern allows.
+$OwnerList = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'plugin-owners.json') -Raw | ConvertFrom-Json
+$RestrictedOwners = @{}
+foreach ($o in @($OwnerList.restricted.PSObject.Properties)) { $RestrictedOwners[$o.Name] = [string]$o.Value }
+$TrustedOwners = @(@($OwnerList.trusted) + @($RestrictedOwners.Keys))
 # The loader's own files besides dwmapi.dll, which a candidate may carry at its root.
 $LoaderFiles = @('StarRupture-ModLoader-Core.dll', 'StarRupture-ImGui.dll', 'StarRupture-ModLoader-Updater.exe')
 
@@ -316,6 +320,7 @@ function Resolve-Plan {
             if ($tagMap.ContainsKey($p.Name)) { Write-Host "::warning::tags names $($p.Name), which the candidate replaces; the tag is ignored" }
         } else {
             $pOwner = if ($p.PSObject.Properties['Owner'] -and $p.Owner) { [string]$p.Owner } else { $Owner }
+            if ($RestrictedOwners.ContainsKey($pOwner) -and $p.Repo -cnotmatch $RestrictedOwners[$pOwner]) { throw "$($p.Name): $pOwner is trusted only for the repositories matching $($RestrictedOwners[$pOwner]), not $($p.Repo)" }
             $pin = if ($pOwner -cnotin $TrustedOwners) { Get-Pin $p $pOwner } else { $null }
             if ($pin -and $tagMap.ContainsKey($p.Name) -and $tagMap[$p.Name] -cne $pin.Tag) {
                 throw "tags names $($p.Name)=$($tagMap[$p.Name]), but $($p.Name) is another author's plugin: the rig runs only its reviewed release $($pin.Tag)"
