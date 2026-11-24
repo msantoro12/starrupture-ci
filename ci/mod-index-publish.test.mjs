@@ -76,8 +76,8 @@ function work() {
   return { dir, p, store, release, done: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-function run(w, args) {
-  const r = spawnSync('bash', ['-c', 'source "$1"; export -f gh; shift; exec bash "$@"', '_', fwd(w.p('fake-gh.sh')), 'tool/ci/plugin-catalog-publish.sh', ...args, 'mod-index'], {
+function run(w, args, what = 'mod-index') {
+  const r = spawnSync('bash', ['-c', 'source "$1"; export -f gh; shift; exec bash "$@"', '_', fwd(w.p('fake-gh.sh')), 'tool/ci/plugin-catalog-publish.sh', ...args, what], {
     cwd: w.dir,
     encoding: 'utf8',
     windowsHide: true,
@@ -184,5 +184,7 @@ test('live: the release key only, to vmap-feed only; the first publish never rep
     for (const args of [['publish', 'vmap-feed', 'staging'], ['publish', 'vmap-feed-rehearsal', 'live']]) {
       assert.equal(run(w, args).status, 2, args.join(' '));
     }
+    // an empty or unknown fourth argument is a usage error too, never the catalog
+    for (const what of ['', 'nope']) assert.equal(run(w, ['publish', 'vmap-feed', 'live'], what).status, 2, `fourth argument '${what}'`);
   } finally { w.done(); }
 });

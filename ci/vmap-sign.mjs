@@ -135,7 +135,7 @@ export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Ma
   need(Buffer.byteLength(unsigned) <= k.max, `the ${kind === 'feed' ? 'feed' : kind === 'catalog' ? 'catalog' : k.label} is over ${k.max} bytes`);
   const lines = unsigned.split('\n');
   need(lines[0] === k.header && lines[lines.length - 1] === '', kind === 'feed' ? `expected an unsigned format ${FEED_FORMAT} feed from export-feed` : `expected an unsigned ${k.label} starting ${JSON.stringify(k.header)}`);
-  need(!lines.some((l) => l.startsWith('seq\t') || l.startsWith('sig\t') || l.includes('\r')), 'the feed already has a seq or sig line, or a CR');
+  need(!lines.some((l) => l.startsWith('seq\t') || l.startsWith('sig\t') || l.includes('\r')), 'the file already has a seq or sig line, or a CR');
   k.rows(lines);
   let seq;
   if (given === undefined) seq = nextSeq(lastSeq, now);
@@ -146,7 +146,10 @@ export function signFeed(unsigned, privateKeyPem, { keyId, lastSeq = 0, now = Ma
   }
   const body = [lines[0], `seq\t${seq}`, ...lines.slice(1)].join('\n');
   const signature = edSign(null, Buffer.from(body), createPrivateKey(privateKeyPem));
-  return { text: `${body}sig\t${keyId}\t${signature.toString('base64')}\n`, seq };
+  const text = `${body}sig\t${keyId}\t${signature.toString('base64')}\n`;
+  // the verifier checks the cap on the signed file, so a mod index must fit with its seq and sig lines too
+  if (kind === 'mod-index') need(Buffer.byteLength(text) <= k.max, `the signed ${k.label} is over ${k.max} bytes`);
+  return { text, seq };
 }
 
 // signed: Buffer or string. keys: { id: { hex, test } }. Returns { keyId, seq, test };

@@ -16,8 +16,8 @@
 #
 #   last-seq  Prints the seq of the catalog the target release holds now: 0 when it holds none, a stop when the file
 #             it holds does not verify. The seq of a catalog counts on its own, not with the version map's.
-#   publish   Refuses, before anything is uploaded, a file that does not verify as a signed $label (a version
-#             map, a changed byte, a wrong key: `vmap-sign.mjs verify --kind "$skind"`), and one whose seq does not
+#   publish   Refuses, before anything is uploaded, a file that does not verify as a signed plugin catalog or mod
+#             index (a version map, a changed byte, a wrong key: `vmap-sign.mjs verify --kind catalog|mod-index`), and one whose seq does not
 #             rise above the target's. Then uploads it to the target release only, downloads it as the loader will and
 #             checks the signature, the seq and the sha256. A live call takes the release key (k2) only; a staging call
 #             also takes the TEST key (k1). The first live publish never replaces a catalog; a later one does.
@@ -29,7 +29,7 @@ set -euo pipefail
 phase="${1:-}"
 target="${2:-}"
 kind="${3:-}"
-what="${4:-catalog}"
+what="${4-catalog}"
 case "$what" in
   catalog) asset=plugin-catalog.v1.txt; skind=catalog; label="plugin catalog"; noun=catalog ;;
   mod-index) asset=mod-index.v1.txt; skind=mod-index; label="mod index"; noun="mod index" ;;

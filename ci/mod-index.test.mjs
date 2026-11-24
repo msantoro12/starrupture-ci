@@ -105,7 +105,18 @@ test('the file cap is checked on the whole file by the signer and by the verifie
   const k = pair();
   const pad = (n) => `{"pad":"${'a'.repeat(n)}"}\n`;
   const fits = MOD_INDEX_MAX_BYTES - 'format\t1\nkind\tmod-index\n{"pad":""}\n'.length;
-  assert.doesNotThrow(() => sign(k, `format\t1\nkind\tmod-index\n${pad(fits)}`));
+  // the signed file carries a seq line and a sig line on top of the unsigned text
+  const signedLen = (n) => Buffer.byteLength(sign(k, `format\t1\nkind\tmod-index\n${pad(n)}`).text);
+  const extra = Buffer.byteLength(sign(k, `format\t1\nkind\tmod-index\n${pad(1)}`).text) - Buffer.byteLength(`format\t1\nkind\tmod-index\n${pad(1)}`);
+  const fitsSigned = fits - extra;
+  // a body that fits signed signs, and the verifier accepts it
+  const ok = sign(k, `format\t1\nkind\tmod-index\n${pad(fitsSigned)}`);
+  assert.equal(Buffer.byteLength(ok.text), MOD_INDEX_MAX_BYTES);
+  assert.equal(verify(k, ok.text).keyId, 'k1');
+  assert.equal(signedLen(fitsSigned - 1), MOD_INDEX_MAX_BYTES - 1);
+  // one that fits unsigned but not signed is refused at sign time
+  assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${pad(fitsSigned + 1)}`)), /signed mod index is over/);
+  assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${pad(fits)}`)), /signed mod index is over/);
   assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${pad(fits + 1)}`)), /over/);
   const big = forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', pad(MOD_INDEX_MAX_BYTES), '']);
   assert.match(reason(() => verify(k, big)), /over the mod index cap/);
@@ -132,5 +143,7 @@ test('same: the published body equals index.json byte for byte, a changed byte o
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /CR/);
   writeFileSync(f('bom.json'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(INDEX)]));
-  assert.equal(run('build', f('bom.json'), '--out', f('x.txt')).status, 2);
+  const bom = run('build', f('bom.json'), '--out', f('x.txt'));
+  assert.equal(bom.status, 2);
+  assert.match(bom.stderr, /byte order mark/);
 });

@@ -11,6 +11,7 @@
 //   node ci/mod-index.mjs build <index.json> --out <unsigned.txt>
 //   node ci/mod-index.mjs same <published-asset.txt> <index.json>    exit 0 when the asset's body equals index.json
 //
+// same compares bodies only; it does not verify the signature, so callers run vmap-sign.mjs verify first.
 // Exit codes: 0 ok (same: equal); 1 same: the bodies differ; 2 usage or input error.
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -40,9 +41,9 @@ export function checkBody(body) {
 // Reads index.json as bytes: a UTF-8 BOM or bytes that are not UTF-8 would not survive a text round trip.
 function readIndex(path) {
   const bytes = readFileSync(path);
+  need(!(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf), `${path} starts with a byte order mark`);
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   need(Buffer.from(text, 'utf8').equals(bytes), `${path} is not plain UTF-8`);
-  need(!text.startsWith('﻿'), `${path} starts with a byte order mark`);
   return text;
 }
 
