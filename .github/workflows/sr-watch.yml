@@ -454,6 +454,64 @@ jobs:
       VMAP_SIGN_KEY_TEST: ${{ secrets.VMAP_SIGN_KEY_TEST }}
       VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
 
+  # ---- Mod index: the loader's mod-index/index.json, signed to the rehearsal prerelease ----
+  # An optional leg on the existing poll, off the game-update chain. mod-index-plan reads index.json of the loader
+  # repository's main and the mod index the vmap-feed-rehearsal prerelease holds, and says `changed` only when the
+  # file exists and its body differs; mod-index then calls sr-mod-index.yml (sign and publish to the rehearsal
+  # prerelease). Nothing here sets `live`, which a call cannot reach: the live release is never touched from this
+  # workflow. No other job needs either job, so neither can hold or fail the chain or the alert job; the plan job has
+  # no `needs` and continue-on-error, and a call job cannot carry continue-on-error, so a failed call only reddens its own row.
+  mod-index-plan:
+    name: mod index plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+    outputs:
+      state: ${{ steps.plan.outputs.state }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      LOADER_REPO: AlienXAXS/StarRupture-ModLoader
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: main
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Compare the loader's mod index with the rehearsal one
+        id: plan
+        run: |
+          set -euo pipefail
+          state=changed
+          if gh api -H "Accept: application/vnd.github.raw+json" "repos/$LOADER_REPO/contents/mod-index/index.json?ref=main" > index.json 2> index.err; then
+            if gh release download vmap-feed-rehearsal --pattern mod-index.v1.txt --dir published 2> /dev/null; then
+              set +e
+              node ci/mod-index.mjs same published/mod-index.v1.txt index.json
+              [ $? = 0 ] && state=unchanged
+              set -e
+            fi
+          elif grep -q 'HTTP 404' index.err; then
+            state=none
+          else
+            cat index.err >&2; exit 2
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "### Mod index plan: $state" >> "$GITHUB_STEP_SUMMARY"
+
+  mod-index:
+    name: mod index
+    needs: [mod-index-plan]
+    if: ${{ needs.mod-index-plan.outputs.state == 'changed' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/sr-mod-index.yml
+    secrets:
+      VMAP_SIGN_KEY: ${{ secrets.VMAP_SIGN_KEY }}
+
   # ---- Alert: a failed job of this chain outside the client check ----
   # The client check alerts on its own jobs. This covers the rest of the chain: the
   # poll, the compile check (sr-build-all.yml, called as build-all) and the server

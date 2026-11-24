@@ -5,6 +5,9 @@ name: vmap watchdog
 # has stopped. GitHub switches off scheduled workflows in a public repository
 # after 60 days without activity, and the loader's owner has stepped away.
 #
+# The mod index (mod-index.v1.txt) is optional: until this repository's vmap-feed release holds one, its leg ends at
+# "No signed feed has been published yet". Once it does, the loader's vmap-publish.yml must carry it too, or the leg opens its issue.
+#
 # Reads only. The signed feed's home is this repository's `vmap-feed` release;
 # Latest is the loader repository's. Both are public.
 
@@ -34,6 +37,8 @@ jobs:
             title: The version-map feed on the loader's Latest release is behind
           - asset: version-map-server.v1.txt
             title: The server version object map on the loader's Latest release is behind
+          - asset: mod-index.v1.txt
+            title: The signed mod index on the loader's Latest release is behind
     env:
       GH_TOKEN: ${{ github.token }}
       LOADER_REPO: ${{ inputs.loader_repo || 'AlienXAXS/StarRupture-ModLoader' }}

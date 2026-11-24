@@ -36,13 +36,13 @@ test('build: the file is the format and kind lines then the index byte for byte'
   assert.equal(buildModIndex(INDEX), `format\t1\nkind\tmod-index\n${INDEX}`);
 });
 
-test('build refuses a CR, no final LF, bad JSON, a non-object, an empty file and one over the cap', () => {
+test('build refuses a CR, no final LF, bad JSON, a scalar, an empty file and one over the cap', () => {
   assert.match(reason(() => buildModIndex(INDEX.replace(/\n/g, '\r\n'))), /CR/);
   assert.match(reason(() => buildModIndex(INDEX.trimEnd())), /does not end in LF/);
   assert.match(reason(() => buildModIndex('{"a": \n')), /not valid JSON/);
-  assert.match(reason(() => buildModIndex('[1]\n')), /not a JSON object/);
-  assert.match(reason(() => buildModIndex('"x"\n')), /not a JSON object/);
-  assert.match(reason(() => buildModIndex('null\n')), /not a JSON object/);
+  assert.equal(buildModIndex('[1]\n'), 'format\t1\nkind\tmod-index\n[1]\n'); // the loader's index.json is an array
+  assert.match(reason(() => buildModIndex('"x"\n')), /not a JSON object or array/);
+  assert.match(reason(() => buildModIndex('null\n')), /not a JSON object or array/);
   assert.match(reason(() => buildModIndex('')), /empty/);
   const big = `{"pad":"${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}\n`;
   assert.match(reason(() => buildModIndex(big)), /over/);
@@ -76,13 +76,13 @@ test('the signer and the verifier refuse a body with a sig or seq line, a CR, or
   assert.match(reason(() => sign(k, unsigned(sigBody))), /seq or sig line|sig or seq/);
   assert.match(reason(() => sign(k, unsigned(INDEX.replace(/\n/g, '\r\n')))), /CR/);
   assert.match(reason(() => sign(k, unsigned('{"a": \n'))), /not valid JSON/);
-  assert.match(reason(() => sign(k, unsigned('[1]\n'))), /not a JSON object/);
+  assert.match(reason(() => sign(k, unsigned('"x"\n'))), /not a JSON object or array/);
   assert.match(reason(() => sign(k, `format\t1\n${INDEX}`)), /kind line/);
   assert.match(reason(() => sign(k, `format\t1\nkind\tplugin-catalog\n${INDEX}`)), /kind line/);
   assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${'{"p":"'}${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}\n`)), /mod index is over/);
   // a correct signature over such a file (made past the signer) does not make it verify
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{', '"a":', '1,', 'sig\tk1\tAAAA', '}', '']))), /sig or seq/);
-  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '[1]', '']))), /not a JSON object/);
+  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '"x"', '']))), /not a JSON object or array/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{"a": ', '']))), /not valid JSON/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{}\r', '']))), /CR/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, '{}', '']))), /kind line/);

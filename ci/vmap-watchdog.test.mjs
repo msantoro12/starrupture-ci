@@ -48,8 +48,8 @@ test('the command line exits 0 and 3, and 2 on bad input (a staged lag)', () => 
 const wf = readFileSync(join(dirname(TOOL), '..', '.github', 'workflows', 'vmap-watchdog.yml'), 'utf8').replace(/\r\n/g, '\n');
 const bash = process.platform === 'win32' ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'].find(existsSync) : 'bash';
 
-test('the workflow runs for the client and the server asset, each leg on its own', () => {
-  assert.match(wf, /strategy:\n\s+fail-fast: false\n\s+matrix:\n\s+include:\n\s+- asset: version-map-client\.v1\.txt\n\s+title: The version-map feed on the loader's Latest release is behind\n\s+- asset: version-map-server\.v1\.txt\n\s+title: The server version object map on the loader's Latest release is behind\n/);
+test('the workflow runs for the client, the server and the mod index asset, each leg on its own', () => {
+  assert.match(wf, /strategy:\n\s+fail-fast: false\n\s+matrix:\n\s+include:\n\s+- asset: version-map-client\.v1\.txt\n\s+title: The version-map feed on the loader's Latest release is behind\n\s+- asset: version-map-server\.v1\.txt\n\s+title: The server version object map on the loader's Latest release is behind\n\s+- asset: mod-index\.v1\.txt\n\s+title: The signed mod index on the loader's Latest release is behind\n/);
   assert.match(wf, /FEED_ASSET: \$\{\{ matrix\.asset \}\}\n\s+ISSUE_TITLE: \$\{\{ matrix\.title \}\}\n/);
 });
 
