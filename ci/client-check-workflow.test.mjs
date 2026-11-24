@@ -1758,7 +1758,8 @@ test('plan: another repository of GoodStuffSoftware is refused, as is an unknown
   for (const entry of ['GoodStuffSoftware/website@main', 'GoodStuffSoftware/sr-perftuner@main', 'GoodStuffSoftware/website@latest-release', 'GoodStuffSoftware/StarRupture-Plugin-/x@main', 'SomeoneElse/StarRupture-Plugin-X@main']) {
     const p = planRun({ plugins: entry });
     assert.notEqual(p.r.status, 0, entry);
-    assert.match(p.text.replace(/\s+/g, ' '), /is not owner\/repo@ref from an allowed owner/, entry);
+    // PowerShell 7 colours the error and wraps it behind a gutter ("| "); read the message without either.
+    assert.match(p.text.replace(/\x1B\[[0-9;]*m/g, '').replace(/\s*\|\s+/g, ' ').replace(/\s+/g, ' '), /is not owner\/repo@ref from an allowed owner/, entry);
   }
 });
 
