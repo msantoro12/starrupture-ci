@@ -205,7 +205,7 @@ test('REFUSED: a CL with a leading zero or over 10 digits; 0 and 10 digits pass'
 });
 
 test('REFUSED: a seq line with a leading zero or zero', () => {
-  const seq = (s) => `format\tTAB1\nseq\t${s}\nkind\tplugin-catalog\n`;
+  const seq = (s) => `format\t1\nseq\t${s}\nkind\tplugin-catalog\n`;
   for (const s of ['01', '007', '0']) assert.ok(reasons(() => parseCatalog(seq(s))), s);
   assert.equal(parseCatalog(seq('10')).seq, 10);
 });
