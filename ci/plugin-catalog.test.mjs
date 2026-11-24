@@ -120,13 +120,32 @@ test('REFUSED: duplicates, compared without regard to case', () => {
   assert.match(reasons(() => parseCatalog(cat(p, 'feature\tWAILA\tx\t-\tT', 'feature\tWAILA\tx\t*\tT'))), /listed twice/);
 });
 
+test('a plugin name with single spaces: Best Builder parses, builds and takes feature rows', () => {
+  const rows = ['plugin	Best Builder	1.0', 'feature	Best Builder	grid	-	Grid'];
+  const c = parseCatalog(cat(...rows));
+  assert.equal(c.plugins[0].name, 'Best Builder');
+  assert.equal(c.plugins[0].features[0].id, 'grid');
+  const text = buildCatalog({ plugins: [{ name: 'Best Builder', version: '1.0', features: [{ id: 'grid', title: 'Grid' }] }] });
+  assert.equal(text, cat(...rows));
+  assert.ok(reasons(() => parseCatalog(cat('plugin	Best Builder	1', 'feature	Best  Builder	x	-	T'))), 'feature must name the plugin exactly');
+  assert.equal(parseCatalog(cat(`plugin	${'a'.repeat(31)} ${'b'.repeat(32)}	1`)).plugins.length, 1);
+});
+
+test('REFUSED: a bad spaced name, a space in a feature id, a name that differs only by case', () => {
+  const bad = [' A', 'A ', 'A  B', 'A	B'.replace('	', ' '), 'A B ', `${'a'.repeat(32)} ${'b'.repeat(32)}`, 'a'.repeat(65), 'é'];
+  for (const n of bad) assert.ok(reasons(() => parseCatalog(cat(`plugin	${n}	1`))), JSON.stringify(n));
+  assert.ok(reasons(() => parseCatalog(cat('plugin	A	1', 'feature	A	x y	-	T'))), 'no space in an id');
+  assert.ok(reasons(() => buildCatalog({ plugins: [{ name: 'A	B', version: '1' }] })), 'tab');
+  assert.match(reasons(() => parseCatalog(cat('plugin	Best Builder	1', 'plugin	best builder	1'))), /listed twice/);
+});
+
 test('REFUSED: a feature before its plugin row, or for another plugin', () => {
   assert.match(reasons(() => parseCatalog(cat('feature\tA\tx\t-\tT', 'plugin\tA\t1'))), /before its plugin row/);
   assert.match(reasons(() => parseCatalog(cat('plugin\tA\t1', 'feature\tB\tx\t-\tT'))), /before its plugin row/);
 });
 
 test('REFUSED: bad characters or lengths in name, id, version', () => {
-  const rows = ['plugin\tbad name\t1', 'plugin\tA.B\t1', 'plugin\t\t1', `plugin\t${'a'.repeat(65)}\t1`, 'plugin\tA\t', 'plugin\tA\tv 1', `plugin\tA\t${'1'.repeat(33)}`];
+  const rows = ['plugin\tbad.name\t1', 'plugin\tA.B\t1', 'plugin\t\t1', `plugin\t${'a'.repeat(65)}\t1`, 'plugin\tA\t', 'plugin\tA\tv 1', `plugin\tA\t${'1'.repeat(33)}`];
   for (const row of rows) assert.ok(reasons(() => parseCatalog(cat(row))), row);
   assert.equal(parseCatalog(cat(`plugin\t${'a'.repeat(64)}\t${'1'.repeat(32)}`)).plugins.length, 1);
   assert.equal(parseCatalog(cat('plugin\tA_b-1\t1.0+x_y-z')).plugins.length, 1);
