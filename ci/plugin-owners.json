@@ -2,6 +2,6 @@
   "trusted": ["msantoro12", "AlienXAXS"],
   "pinned": ["LetMeInside"],
   "restricted": {
-    "GoodStuffSoftware": "^StarRupture-Plugin-[A-Za-z0-9_-]+$"
+    "GoodStuffSoftware": { "sr-bestbuilder": "BestBuilder" }
   }
 }

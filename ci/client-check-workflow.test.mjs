@@ -241,6 +241,7 @@ test('map step: plugins that report another name than their repo (Waila, AxRuptu
   mkdirSync(join(dir, 'res'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
+  copyFileSync(join(here, 'plugin-owners.json'), join(dir, 'tool', 'ci', 'plugin-owners.json'));
   writeFileSync(join(dir, 'res', 'scanner.json'), '{}');
   for (const n of ['Waila', 'AxRuptureTimer', 'BetterCheats', 'MiniMap']) writeFileSync(join(dir, 'res', `plugin-${n}.json`), JSON.stringify({ plugin: { name: n } }));
   const plugins = ['WAILA', 'RuptureTimer', 'BetterCheats'].map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ')
@@ -260,10 +261,11 @@ test('map step: a plugin with a spaced PluginInfo name that is not in plugin-nam
   mkdirSync(join(dir, 'res'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
+  copyFileSync(join(here, 'plugin-owners.json'), join(dir, 'tool', 'ci', 'plugin-owners.json'));
   writeFileSync(join(dir, 'res', 'scanner.json'), '{}');
   writeFileSync(join(dir, 'res', 'plugin-BestBuilder.json'), JSON.stringify({ plugin: { name: 'Best Builder' } }));
   writeFileSync(join(dir, 'res', 'plugin-MiniMap.json'), JSON.stringify({ plugin: { name: 'MiniMap' } }));
-  const plugins = 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere';
+  const plugins = 'GoodStuffSoftware/sr-bestbuilder@feat/build-anywhere';
   const r = spawnSync(process.execPath, ['-e', script, '1'], { cwd: dir, env: { ...process.env, PLUGINS: plugins, LOADER_REF: 'v1' }, encoding: 'utf8', windowsHide: true });
   assert.equal(r.status, 0, r.stderr);
   const scans = JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans;
@@ -1738,10 +1740,10 @@ test('B1 plan: another author\'s plugin without a usable Pin is not fetched at a
   assert.match(branch.text.replace(/\s+/g, ' '), /allowed only as owner\/repo@latest-release, which is its reviewed release/);
 });
 
-const BB_REPO = 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder';
+const BB_REPO = 'GoodStuffSoftware/sr-bestbuilder';
 
-test('plan: GoodStuffSoftware is trusted for a StarRupture-Plugin-* repository, unpinned, and never hosted', { skip: !powershell }, () => {
-  const p = planRun({ plugins: `${BB_REPO}@feat/build-anywhere ${BB_REPO.replace('BestBuilder', 'Other')}@latest-release` });
+test('plan: GoodStuffSoftware is trusted for the repositories listed in plugin-owners.json (sr-bestbuilder, reported as BestBuilder), unpinned, and never hosted', { skip: !powershell }, () => {
+  const p = planRun({ plugins: `${BB_REPO}@feat/build-anywhere` });
   assert.equal(p.r.status, 0, p.text);
   const b = planEntry(p, 'BestBuilder');
   assert.equal(b.source, 'build');
@@ -1749,17 +1751,19 @@ test('plan: GoodStuffSoftware is trusted for a StarRupture-Plugin-* repository, 
   assert.equal(b.ref, 'feat/build-anywhere');
   assert.equal(b.error, '');
   assert.equal(b.hosted, false, 'built by the check job, never an artifact');
-  const o = planEntry(p, 'Other');
+  const r = planRun({ plugins: `${BB_REPO}@latest-release` });
+  assert.equal(r.r.status, 0, r.text);
+  const o = planEntry(r, 'BestBuilder');
   assert.equal(o.source, 'release');
   assert.equal(o.release, 'v2.0.0', 'a trusted owner follows its latest release, no Pin');
 });
 
-test('plan: another repository of GoodStuffSoftware is refused, as is an unknown owner', { skip: !powershell }, () => {
+test('plan: a repository of GoodStuffSoftware that is not listed is refused, as is an unknown owner', { skip: !powershell }, () => {
   for (const entry of ['GoodStuffSoftware/website@main', 'GoodStuffSoftware/sr-perftuner@main', 'GoodStuffSoftware/website@latest-release', 'GoodStuffSoftware/StarRupture-Plugin-/x@main', 'SomeoneElse/StarRupture-Plugin-X@main']) {
     const p = planRun({ plugins: entry });
     assert.notEqual(p.r.status, 0, entry);
     // PowerShell 7 colours the error and wraps it behind a gutter ("| "); read the message without either.
-    assert.match(p.text.replace(/\x1B\[[0-9;]*m/g, '').replace(/\s*\|\s+/g, ' ').replace(/\s+/g, ' '), /is not owner\/repo@ref from an allowed owner/, entry);
+    assert.match(p.text.replace(/\x1B\[[0-9;]*m/g, '').replace(/\s*\|\s+/g, ' ').replace(/\s+/g, ' '), /is not owner\/repo@ref from an allowed owner|is allowed only for the repositories listed/, entry);
   }
 });
 
@@ -1770,7 +1774,7 @@ test('plan: a private GoodStuffSoftware plugin without the read token is not fet
   assert.equal(p.r.status, 0, p.text);
   const b = planEntry(p, 'BestBuilder');
   assert.equal(b.sha, '', 'no commit was resolved');
-  assert.match(b.error, /not fetched: GoodStuffSoftware\/StarRupture-Plugin-BestBuilder is private and SR_READ_TOKEN_GOODSTUFFSOFTWARE is not set or cannot read it/);
+  assert.match(b.error, /not fetched: GoodStuffSoftware\/sr-bestbuilder is private and SR_READ_TOKEN_GOODSTUFFSOFTWARE is not set or cannot read it/);
   assert.equal(planEntry(p, 'WAILA').sha, 'a'.repeat(40), 'another plugin is resolved as usual');
   assert.equal(planEntry(p, 'WAILA').error, '');
   assert.equal(planEntry(p, 'MiniMap').release, PIN_TAG);
@@ -1966,7 +1970,7 @@ test('N2 alert: a hold that staged no candidate is not "ready"', { skip: !bash }
 // ------------------------------------------------------------ the bases are the released line
 
 const DEFAULT_PLUGINS = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls']
-  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere';
+  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release';
 const defaultOf = (section, input) => section.match(new RegExp(`\\n {6}${input}:\\n(?: {8}description: [^\\n]*\\n)? {8}type: string\\n {8}default: '([^']*)'\\n`))?.[1];
 
 test('bases: both triggers default to AlienX main for the loader, both SDKs and the nine plugins; only the scanner overlay is the fork\'s', () => {
@@ -2003,8 +2007,9 @@ test('bases: no workflow, script or doc reads a default base from the stale gss 
   for (const [name, text] of Object.entries(texts)) assert.ok(!/gss\/(loader|plugin|sdk)-work/.test(withoutKeySources(text)), `${name} still names a gss work branch`);
   // The nine default plugins are AlienX's, every one a branch ref, so plugin-plan resolves each to a commit before any plugin code runs.
   const entries = defaultOf(call, 'plugins').split(' ');
-  assert.equal(entries.length, 12);
-  assert.deepEqual(entries.slice(9), ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', 'LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release', 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere']);
+  assert.equal(entries.length, 11);
+  assert.deepEqual(entries.slice(9), ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', 'LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release']);
+  assert.ok(!defaultOf(call, 'plugins').includes('GoodStuffSoftware/'), 'private sr-bestbuilder stays out of the defaults until it is public or the read token exists');
   assert.equal(entries.filter((e) => /^AlienXAXS\/StarRupture-Plugin-[A-Za-z]+@main$/.test(e)).length, 9);
 });
 
@@ -2575,6 +2580,7 @@ test('key sources: the scans builder adds the sources after the released scans, 
   mkdirSync(join(dir, 'res'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
+  copyFileSync(join(here, 'plugin-owners.json'), join(dir, 'tool', 'ci', 'plugin-owners.json'));
   const row = (key, rva, extra = {}) => ({ key, kind: 'infunction', result: 'OK', rva: `0x${rva.toString(16)}`, pattern: '48 8B 05 ?? ?? ?? ??', fp: '0x2D1AC6AE', resultOffset: 0, ...extra });
   const put = (f, doc) => writeFileSync(join(dir, 'res', f), JSON.stringify(doc));
   put('scanner.json', { exe: { cl: 129402, imageStamp: '0x6B000001', imageSize: '0x0A430000' }, patterns: [] });

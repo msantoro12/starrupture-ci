@@ -617,18 +617,18 @@ test('rig set: a plugin of another author without a reviewed pin, or with a malf
   assert.equal(resolveWithMock('-Branch public').r.status, 0);
 });
 
-test('rig set: GoodStuffSoftware is trusted for a StarRupture-Plugin-* repository only (ci/plugin-owners.json), never for its other repositories', (t) => {
+test('rig set: GoodStuffSoftware is trusted for the repositories listed in ci/plugin-owners.json only (sr-bestbuilder), never for its others', (t) => {
   const entry = (Repo) => ({ Name: 'BestBuilder', Repo, LogName: 'Best Builder', Asset: 'BestBuilder', Owner: 'GoodStuffSoftware' });
-  const ok = resolveWithMock('-Branch public', { plugins: [...names, entry('StarRupture-Plugin-BestBuilder')] });
+  const ok = resolveWithMock('-Branch public', { plugins: [...names, entry('sr-bestbuilder')] });
   if (!ok) return t.skip('no PowerShell on this machine');
   assert.equal(ok.r.status, 0, ok.text);
   const bb = ok.plan.plugins.find((p) => p.name === 'BestBuilder');
   assert.equal(bb.tag, 'v1.0.0', 'run at its latest release, no Pin');
-  assert.ok(ok.uris.includes('https://api.github.com/repos/GoodStuffSoftware/StarRupture-Plugin-BestBuilder/releases/latest'), ok.uris.join(' '));
-  for (const repo of ['website', 'sr-perftuner', 'StarRupture-Other']) {
+  assert.ok(ok.uris.includes('https://api.github.com/repos/GoodStuffSoftware/sr-bestbuilder/releases/latest'), ok.uris.join(' '));
+  for (const repo of ['website', 'sr-perftuner', 'StarRupture-Plugin-BestBuilder']) {
     const bad = resolveWithMock('-Branch public', { plugins: [...names, { ...entry(repo), Name: 'Other', Asset: 'Other' }] });
     assert.notEqual(bad.r.status, 0, repo);
-    assert.match(bad.text, /GoodStuffSoftware is trusted only for the repositories matching/, repo);
+    assert.match(bad.text, /GoodStuffSoftware is trusted only for the repositories sr-bestbuilder/, repo);
     assert.ok(!bad.uris.some((u) => u.includes('/GoodStuffSoftware/')), `${repo}: refused before any release is read`);
   }
 });

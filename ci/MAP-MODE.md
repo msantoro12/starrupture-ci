@@ -133,7 +133,7 @@ Policy (owner), in plain words:
   exe under its own build id). Map mode passes the map's build CLs as `known_cls`; when the loader logs Game version OK for
   one of them, the rig is judged as a boot (nothing expected refused), not as a decline.
 - Plugins of other authors are pinned. The owner lists are in `ci/plugin-owners.json`
-  (GoodStuffSoftware is trusted only for `StarRupture-Plugin-*` repositories; its plugin may be a private
+  (GoodStuffSoftware is trusted only for the repositories listed there, now `sr-bestbuilder`, reported as BestBuilder; it is not in the default `plugins` while it is private without the read token, and adding `GoodStuffSoftware/sr-bestbuilder@<branch>` to both `plugins` defaults of `sr-client-check.yml` puts it back; its plugin may be a private
   repository, read with the optional secret `SR_READ_TOKEN_GOODSTUFFSOFTWARE`, which the callers pass by name; without it
   that plugin alone is reported BUILD-FAILED). A rig plugin whose owner is neither msantoro12 nor
   AlienXAXS (MiniMap, PersistentIdFix) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
