@@ -4770,15 +4770,25 @@ jobs:
         id: plan
         env:
           DUMP_COUNT: ${{ steps.dumps.outputs.count }}
+          OTHER_BRANCH: ${{ needs.map-mode.outputs.other_branch }}
         run: |
           set -euo pipefail
-          if [ "$DUMP_COUNT" = 0 ]; then
-            note="No dump: the rigs' loader writes no declared-features file yet (the candidate loader is built from a branch without the dump code), so the plugin catalog is neither built nor published."
+          skip() {
             echo "state=skip" >> "$GITHUB_OUTPUT"
-            echo "### Plugin catalog: no dump" >> "$GITHUB_STEP_SUMMARY"
-            echo "$note" >> "$GITHUB_STEP_SUMMARY"
-            echo "$note"
+            echo "### Plugin catalog: $1" >> "$GITHUB_STEP_SUMMARY"
+            echo "$2" >> "$GITHUB_STEP_SUMMARY"
+            echo "$2"
             exit 0
+          }
+          if [ "$DUMP_COUNT" = 0 ]; then
+            skip "no dump" "No dump: the rigs' loader writes no declared-features file yet (the candidate loader is built from a branch without the dump code), so the plugin catalog is neither built nor published."
+          fi
+          # A catalog is rebuilt from the dumps of this run alone, so one built from fewer builds than the run covers
+          # would drop the other build's rows from the published catalog and flip back on the next full run.
+          expected=1
+          case "$OTHER_BRANCH" in ''|none) ;; *) expected=2 ;; esac
+          if [ "$DUMP_COUNT" -lt "$expected" ]; then
+            skip "partial dumps" "Partial dumps: $DUMP_COUNT of $expected builds gave a dump (the other rig did not pass or its loader wrote none), so nothing is published; a catalog from some builds would drop the rows of the others."
           fi
           node tool/ci/catalog-from-dumps.mjs dumps/* --out catalog-in.json --published published/plugin-catalog.v1.txt --verdict verdict.txt --expect-plugins tool/ci/plugin-names.json 2> generator.err \
             || { cat generator.err >&2; exit 2; }

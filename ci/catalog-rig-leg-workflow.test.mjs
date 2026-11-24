@@ -108,8 +108,12 @@ test('catalog-plan reads this run\'s rig artifacts, the rehearsal prerelease onl
 test('no dump ends the plan green with a note and no publish; a generator refusal fails it', () => {
   const build = stepOf(plan, 'Build the catalog input and compare');
   assert.match(build, /DUMP_COUNT: \$\{\{ steps\.dumps\.outputs\.count \}\}/);
-  assert.ok(build.includes('if [ "$DUMP_COUNT" = 0 ]; then') && build.includes('echo "state=skip" >> "$GITHUB_OUTPUT"') && /state=skip[\s\S]*?\n\s+exit 0\n\s+fi/.test(build), 'no dump: state skip, exit 0');
+  assert.ok(build.includes('if [ "$DUMP_COUNT" = 0 ]; then') && build.includes('skip "no dump"') && /skip\(\) \{\n[\s\S]*?echo "state=skip" >> "\$GITHUB_OUTPUT"[\s\S]*?\n\s+exit 0\n\s+\}/.test(build), 'no dump: state skip, exit 0');
   assert.ok(build.includes('No dump:'), 'the note says why');
+  // Fewer dumps than builds the run covers would narrow the published catalog: skipped, with a note.
+  assert.match(build, /OTHER_BRANCH: \$\{\{ needs\.map-mode\.outputs\.other_branch \}\}/);
+  assert.ok(build.includes("case \"$OTHER_BRANCH\" in ''|none) ;; *) expected=2 ;; esac") && build.includes('if [ "$DUMP_COUNT" -lt "$expected" ]; then') && build.includes('skip "partial dumps"'), 'partial dumps: skip, no publish');
+  assert.ok(build.indexOf('skip "partial dumps"') < build.indexOf('node tool/ci/catalog-from-dumps.mjs'), 'the skips come before the generator');
   assert.ok(build.includes('|| { cat generator.err >&2; exit 2; }'), 'a refused dump set (same CL, different content) fails the job');
   assert.ok(build.includes('changed|unchanged) ;;') && build.includes('exit 2'), 'only changed or unchanged is accepted');
   const published = stepOf(plan, 'Read the catalog the rehearsal prerelease holds');
