@@ -2979,10 +2979,13 @@ jobs:
             const table = JSON.parse(fs.readFileSync("tool/ci/plugin-names.json", "utf8"));
             const built = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop())
               .map((repo) => table.find((t) => t.Repo === repo)?.LogName ?? repo.replace(/^StarRupture-Plugin-/, ""));
+            // A plugin not in plugin-names.json yet (no release to rig) may report a name that is not its repo name
+            // (Best Builder for StarRupture-Plugin-BestBuilder). Its scan file is named after the plan name, so the stem counts too.
+            const planNames = (process.env.PLUGINS || "").split(/\s+/).filter(Boolean).map((e) => e.split("@")[0].split("/").pop().replace(/^StarRupture-Plugin-/, ""));
             for (const f of fs.readdirSync("res").filter((n) => /^plugin-.*\.json$/.test(n)).sort()) {
               const name = JSON.parse(fs.readFileSync("res/" + f, "utf8")).plugin?.name;
               if (!name) continue;
-              const tracked = built.includes(name);
+              const tracked = built.includes(name) || planNames.includes(f.replace(/^plugin-|\.json$/g, ""));
               scans.push({ owner: name, tracked, tag: "current", rank: "current", file: "res/" + f });
             }
             // Key sources (res/keysrc.json, from the check job; the step above named the ones that failed, and those are left out here):

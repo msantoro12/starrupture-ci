@@ -252,6 +252,25 @@ test('map step: plugins that report another name than their repo (Waila, AxRuptu
   assert.deepEqual(tracked, { ModLoader: true, AxRuptureTimer: true, BetterCheats: true, MiniMap: true, Waila: true });
 });
 
+test('map step: a plugin with a spaced PluginInfo name that is not in plugin-names.json yet (Best Builder) is tracked by its scan file name', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const script = wf.match(/node -e '\n(\s+const fs = require\("fs"\);\n[\s\S]*?)\n\s+' "\$buildid"/)[1];
+  const dir = mkdtempSync(join(tmpdir(), 'map-step-'));
+  mkdirSync(join(dir, 'res'));
+  mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
+  copyFileSync(join(here, 'plugin-names.json'), join(dir, 'tool', 'ci', 'plugin-names.json'));
+  writeFileSync(join(dir, 'res', 'scanner.json'), '{}');
+  writeFileSync(join(dir, 'res', 'plugin-BestBuilder.json'), JSON.stringify({ plugin: { name: 'Best Builder' } }));
+  writeFileSync(join(dir, 'res', 'plugin-MiniMap.json'), JSON.stringify({ plugin: { name: 'MiniMap' } }));
+  const plugins = 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere';
+  const r = spawnSync(process.execPath, ['-e', script, '1'], { cwd: dir, env: { ...process.env, PLUGINS: plugins, LOADER_REF: 'v1' }, encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, r.stderr);
+  const scans = JSON.parse(readFileSync(join(dir, 'scans.json'), 'utf8')).scans;
+  const tracked = Object.fromEntries(scans.map((s) => [s.owner, s.tracked]));
+  assert.deepEqual(tracked, { ModLoader: true, 'Best Builder': true, MiniMap: false }, 'MiniMap is not in this PLUGINS, so it stays untracked');
+});
+
 // ------------------------------------------------------------ candidate chain and the loader push
 
 const watch = readFileSync(join(here, '..', '.github', 'workflows', 'sr-watch.yml'), 'utf8').replace(/\r\n/g, '\n');
