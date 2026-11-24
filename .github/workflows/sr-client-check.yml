@@ -164,6 +164,9 @@ on:
       VMAP_SIGN_KEY:
         description: 'Release signing key (k2, environment vmap-sign); pass it by name. Only the publish job reads it'
         required: false
+      SR_READ_TOKEN_GOODSTUFFSOFTWARE:
+        description: 'Read-only token for the GoodStuffSoftware plugin repositories on the plugin list (fine-grained, Contents read, only those repositories); pass it by name. Without it such a plugin is reported as not fetched and the others are unaffected'
+        required: false
       SR_DEPLOYKEY_MODLOADER:
         description: 'Write deploy key of the loader fork (environment fork-push); pass it by name'
         required: false
@@ -2164,6 +2167,7 @@ jobs:
           REFERENCE_DIR: ${{ steps.dl.outputs.reference_dir }}
           PLAN: ${{ needs.plugin-plan.outputs.matrix }}
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
+          SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
         run: |
           # The keys each component reads: the loader's own layout table, each
           # built plugin's used Game-SDK classes (ci/layout-table.mjs gen over
@@ -2181,9 +2185,20 @@ jobs:
           }
           function Get-Cl($e) { if ([string]$e.VersionInfo.ProductVersion -match 'CL-(\d+)$') { $Matches[1] } else { '' } }
           function Invoke-Native([string]$what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE)" } }
+          # The optional read token of the restricted owner reaches git only through its environment, around the one
+          # fetch of that owner's repository (see the build step of the plugin check).
+          $readToken = $env:SR_READ_TOKEN_GOODSTUFFSOFTWARE
+          Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $readBasic = if ($readToken) { [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$readToken")) } else { '' }
+          if ($readBasic) { Write-Host "::add-mask::$readBasic" }
           function Get-Source([string]$repo, [string]$rev, [string]$dir) {
             git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            if ($readBasic -and $repo -like 'GoodStuffSoftware/*') {
+              $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/GoodStuffSoftware/.extraheader'; $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $readBasic"
+            }
+            try { git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev } finally { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
+            Invoke-Native "fetching $repo $rev"
             git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
           }
           $exe = Find-Exe $env:INSTALL_DIR
@@ -2436,6 +2451,7 @@ jobs:
           PLAN: ${{ needs.plugin-plan.outputs.matrix }}
           SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
           APPLY_CONFIDENCE: ${{ inputs.apply_confidence || 'high' }}
+          SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
         run: |
           # Per plugin with failing patterns: apply the proposals at or above
           # APPLY_CONFIDENCE to its source (ci/apply-proposals.mjs), rebuild it
@@ -2460,10 +2476,22 @@ jobs:
           }
           # Source at an exact commit, bytes as committed (no CRLF rewrite), so
           # the auto-apply job re-creates the same tree on Linux.
+          # The optional read token of the restricted owner reaches git only through its environment, around the one
+          # fetch of that owner's repository (see the build step of the plugin check); it is out of the environment
+          # before msbuild runs. A fix whose source cannot be fetched costs only that plugin's fix.
+          $readToken = $env:SR_READ_TOKEN_GOODSTUFFSOFTWARE
+          Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $readBasic = if ($readToken) { [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$readToken")) } else { '' }
+          if ($readBasic) { Write-Host "::add-mask::$readBasic" }
           function Get-Source([string]$repo, [string]$rev, [string]$dir) {
             git -c init.defaultBranch=main init -q $dir; Invoke-Native "git init $dir"
             git -C $dir config core.autocrlf false
-            git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev; Invoke-Native "fetching $repo $rev"
+            if ($readBasic -and $repo -like 'GoodStuffSoftware/*') {
+              $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/GoodStuffSoftware/.extraheader'; $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $readBasic"
+            }
+            try { git -C $dir fetch -q --depth 1 "https://github.com/$repo" $rev } finally { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
+            Invoke-Native "fetching $repo $rev"
             git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
           }
           $exe = Find-Exe $env:INSTALL_DIR
