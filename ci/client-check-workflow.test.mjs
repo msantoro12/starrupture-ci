@@ -1892,7 +1892,7 @@ test('N2 alert: a hold that staged no candidate is not "ready"', { skip: !bash }
 // ------------------------------------------------------------ the bases are the released line
 
 const DEFAULT_PLUGINS = ['BetterCheats', 'BetterDrone', 'WAILA', 'Codex', 'Compass', 'ProductionViewer', 'RuptureTimer', 'WaveOptimiser', 'CameraControls']
-  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release';
+  .map((n) => `AlienXAXS/StarRupture-Plugin-${n}@main`).join(' ') + ' LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere';
 const defaultOf = (section, input) => section.match(new RegExp(`\\n {6}${input}:\\n(?: {8}description: [^\\n]*\\n)? {8}type: string\\n {8}default: '([^']*)'\\n`))?.[1];
 
 test('bases: both triggers default to AlienX main for the loader, both SDKs and the nine plugins; only the scanner overlay is the fork\'s', () => {
@@ -1929,8 +1929,8 @@ test('bases: no workflow, script or doc reads a default base from the stale gss 
   for (const [name, text] of Object.entries(texts)) assert.ok(!/gss\/(loader|plugin|sdk)-work/.test(withoutKeySources(text)), `${name} still names a gss work branch`);
   // The nine default plugins are AlienX's, every one a branch ref, so plugin-plan resolves each to a commit before any plugin code runs.
   const entries = defaultOf(call, 'plugins').split(' ');
-  assert.equal(entries.length, 11);
-  assert.deepEqual(entries.slice(9), ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', 'LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release']);
+  assert.equal(entries.length, 12);
+  assert.deepEqual(entries.slice(9), ['LetMeInside/StarRupture-Plugin-MiniMap@latest-release', 'LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release', 'GoodStuffSoftware/StarRupture-Plugin-BestBuilder@feat/build-anywhere']);
   assert.equal(entries.filter((e) => /^AlienXAXS\/StarRupture-Plugin-[A-Za-z]+@main$/.test(e)).length, 9);
 });
 
