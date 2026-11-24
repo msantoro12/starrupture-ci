@@ -334,3 +334,7 @@ The release history (`vmap-history.json`) is keyed by version identity, so a CL 
 - A scheduled workflow is switched off after 60 days without repository activity. `sr-keepalive.yml` runs monthly and calls the workflow `enable` API (`actions: write`, no push) for `sr-watch.yml`, `sr-build-all.yml`, `sr-client-check.yml`, `sr-layout-refresh.yml` and itself, which resets the timer. It is a plain `gh api` call, not a third-party action.
 - Persistent API trouble is a log warning, not a red run; look for "SKIPPED (API failure)" in the summary.
 - None of the mod repos' release workflows are called or referenced from here.
+
+## Plugin catalog
+
+A second signed file next to the version object map: which plugins exist at which version and on which game CLs each feature is off, for the in-game admin tool. It uses the version map envelope (`format`, `seq`, signature last) and the same keys, plus a signed `kind<TAB>plugin-catalog` line that keeps one file from verifying as the other. The grammar is provisional until the loader reads it; all of it lives in `ci/plugin-catalog.mjs` (header comment), its tests in `ci/plugin-catalog.test.mjs`. Build with `node ci/plugin-catalog.mjs build <in.json> --out <unsigned.txt>`, then sign and verify with `ci/vmap-sign.mjs ... --kind catalog`. Nothing publishes it yet.
