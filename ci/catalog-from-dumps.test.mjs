@@ -9,8 +9,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mergeDumps, parseDump, rigGaps } from './catalog-from-dumps.mjs';
-import { buildCatalog } from './plugin-catalog.mjs';
+import { carryForward, mergeDumps, parseDump, rigGaps } from './catalog-from-dumps.mjs';
+import { buildCatalog, parseCatalog } from './plugin-catalog.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (name) => readFileSync(join(here, 'fixtures', 'catalog-dumps', name), 'utf8').replace(/\r\n/g, '\n');
@@ -175,4 +175,64 @@ test('--expect-plugins reports each rig gap on stderr, exits 0 and writes nothin
   r = run(d1, '--out', out, '--expect-plugins');
   assert.equal(r.status, 2);
   assert.match(r.stderr, /--expect-plugins needs a value/);
+});
+
+// carry-forward from the published catalog
+const pubOf = (...rows) => parseCatalog(`format\t1\nkind\tplugin-catalog\n${rows.map((r) => `${r}\n`).join('')}`);
+const carry = (dumpTexts, published) => { const ds = dumpTexts.map(parseDump); return carryForward(mergeDumps(ds).input, ds, published); };
+const offOf = (r, plugin, id) => r.input.plugins.find((p) => p.name === plugin).features.find((f) => f.id === id).off;
+
+test('carry: a published plugin with no row in any dump keeps its rows and is named', () => {
+  const r = carry([dump(100, 'plugin\tP\t1', 'feature\tP\ta\ton\tA')], pubOf('plugin\tGone\t2.0', 'feature\tGone\tx\t100,110\tX', 'plugin\tP\t1', 'feature\tP\ta\t-\tA'));
+  assert.deepEqual(r.carried, ['Gone']);
+  assert.deepEqual(r.input.plugins.find((p) => p.name === 'Gone'), { name: 'Gone', version: '2.0', features: [{ id: 'x', title: 'X', off: ['100', '110'] }] });
+});
+
+test('carry: off is the union of published and measured-off CLs; unmeasured CLs stay', () => {
+  const r = carry([dump(120, 'plugin\tP\t1', 'feature\tP\ta\toff\tA')], pubOf('plugin\tP\t1', 'feature\tP\ta\t100,110\tA'));
+  assert.deepEqual(offOf(r, 'P', 'a'), ['100', '110', '120']);
+});
+
+test('carry: a CL this run measured on leaves the published off list', () => {
+  const r = carry([dump(100, 'plugin\tP\t1', 'feature\tP\ta\ton\tA'), dump(120, 'plugin\tP\t1', 'feature\tP\ta\toff\tA')], pubOf('plugin\tP\t1', 'feature\tP\ta\t100,110\tA'));
+  assert.deepEqual(offOf(r, 'P', 'a'), ['110', '120']);
+  const all = carry([dump(100, 'plugin\tP\t1', 'feature\tP\ta\ton\tA')], pubOf('plugin\tP\t1', 'feature\tP\ta\t100\tA'));
+  assert.equal(offOf(all, 'P', 'a'), '-');
+});
+
+test('carry: * stays unless the run saw the feature on', () => {
+  const pub = pubOf('plugin\tP\t1', 'feature\tP\ta\t*\tA');
+  assert.equal(offOf(carry([dump(100, 'plugin\tP\t1', 'feature\tP\ta\toff\tA')], pub), 'P', 'a'), '*');
+  assert.equal(offOf(carry([dump(100, 'plugin\tP\t1')], pub), 'P', 'a'), '*');
+  const seen = carry([dump(100, 'plugin\tP\t1', 'feature\tP\ta\ton\tA'), dump(120, 'plugin\tP\t1', 'feature\tP\ta\toff\tA')], pub);
+  assert.deepEqual(offOf(seen, 'P', 'a'), ['120']);
+  assert.equal(seen.warnings.length, 0);
+  const lone = carry([dump(100, 'plugin\tP\t1', 'feature\tP\ta\ton\tA')], pub);
+  assert.equal(offOf(lone, 'P', 'a'), '*');
+  assert.match(lone.warnings[0], /kept \*/);
+});
+
+test('carry: a published feature missing from the dump is kept with a warning; version and title come from the run', () => {
+  const r = carry([dump(100, 'plugin\tP\t2', 'feature\tP\ta\ton\tNew')], pubOf('plugin\tP\t1', 'feature\tP\ta\t-\tOld', 'feature\tP\tb\t100\tB'));
+  const p = r.input.plugins[0];
+  assert.equal(p.version, '2');
+  assert.equal(p.features.find((f) => f.id === 'a').title, 'New');
+  assert.deepEqual(p.features.find((f) => f.id === 'b'), { id: 'b', title: 'B', off: ['100'] });
+  assert.match(r.warnings[0], /feature P b: published but not in this run/);
+});
+
+test('carry on the command line: carrying alone is unchanged, a removal is never automatic, carried is printed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cfd-'));
+  const run = (...args) => spawnSync(process.execPath, [join(here, 'catalog-from-dumps.mjs'), ...args], { encoding: 'utf8', windowsHide: true });
+  const d = join(dir, 'a.txt'), out = join(dir, 'in.json'), pub = join(dir, 'pub.txt');
+  writeFileSync(d, dump(100, 'plugin\tP\t1', 'feature\tP\ta\toff\tA'));
+  writeFileSync(pub, `format\t1\nseq\t3\nkind\tplugin-catalog\nplugin\tGone\t2.0\nfeature\tGone\tx\t100\tX\nplugin\tP\t1\nfeature\tP\ta\t100,110\tA\nsig\tk1\tAAAA\n`);
+  const r = run(d, '--out', out, '--published', pub);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'unchanged\n');
+  assert.match(r.stderr, /catalog-from-dumps: carried: Gone\n/);
+  const names = JSON.parse(readFileSync(out, 'utf8')).plugins.map((p) => p.name);
+  assert.deepEqual(names, ['P', 'Gone']);
+  writeFileSync(d, dump(100, 'plugin\tP\t1', 'feature\tP\ta\toff\tA2'));
+  assert.equal(run(d, '--out', out, '--published', pub).stdout, 'changed\n');
 });

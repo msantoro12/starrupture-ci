@@ -18,8 +18,11 @@
 //
 // With --published, prints `changed` or `unchanged` (rows compared, seq and signature
 // ignored; a missing published file is `changed`) and writes it to --verdict. Exit 0 either way.
-// An off list only ever holds game CLs whose dump says off; `*` is never written, since a dump
-// cannot prove a feature off on a future build.
+// Without --published an off list only ever holds game CLs whose dump says off; `*` is never written,
+// since a dump cannot prove a feature off on a future build.
+// With --published the published catalog is carried forward (carryForward below), so a plugin or a
+// build this run does not cover is not dropped from it. Removing a plugin or a feature is a manual
+// edit of the catalog JSON (sr-plugin-catalog.yml, workflow_dispatch), never automatic.
 // With --expect-plugins (the rig's plugin list, ci/plugin-names.json), a plugin of that list with no
 // plugin row in any dump is a rig gap: one `rig gap:` line on stderr per plugin, exit 0 and nothing
 // written for it. The catalog never holds a row the loader did not dump.
@@ -154,6 +157,68 @@ export function rigGaps(names, input) {
   }).map((n) => n.Name);
 }
 
+// input: mergeDumps' input, dumps: the parsed dumps it came from, published: the parsed published
+// catalog (parseCatalog). Returns { input, carried, warnings }: the input with the published rows folded in.
+//  - A published plugin with no row in any dump is kept as published (named in `carried`).
+//  - For a plugin in both, a feature's off list is the CLs published plus the CLs this run measured off,
+//    minus the CLs this run measured on; CLs this run did not measure stay as published.
+//  - Published `*` stays `*`, unless this run saw the feature on: then it becomes the CLs this run
+//    measured off, or stays `*` with a warning when there are none (nothing else is provable).
+//  - A published feature the plugin's dumps no longer list is kept, with a warning.
+// Version and title come from this run.
+export function carryForward(input, dumps, published) {
+  const warnings = [];
+  const carried = [];
+  const runKeys = new Set(input.plugins.map((p) => p.name.toLowerCase()));
+  const measuredOn = new Map(); // lower-case "plugin<TAB>feature" -> CLs this run measured on
+  for (const d of dumps) {
+    for (const p of d.plugins) {
+      for (const f of p.features) {
+        if (f.state !== 'on') continue;
+        const k = `${p.name.toLowerCase()}\t${f.id.toLowerCase()}`;
+        if (!measuredOn.has(k)) measuredOn.set(k, new Set());
+        measuredOn.get(k).add(d.gameCl);
+      }
+    }
+  }
+  const asInput = (f) => ({ id: f.id, title: f.title, off: f.off === '-' || f.off === '*' ? f.off : f.off.split(',') });
+  const pub = new Map(published.plugins.map((p) => [p.name.toLowerCase(), p]));
+  const plugins = input.plugins.map((p) => {
+    const old = pub.get(p.name.toLowerCase());
+    if (!old) return p;
+    const have = new Set(p.features.map((f) => f.id.toLowerCase()));
+    const features = p.features.map((f) => {
+      const o = old.features.find((x) => x.id.toLowerCase() === f.id.toLowerCase());
+      if (!o) return f;
+      const ran = f.off === '-' ? [] : f.off;
+      const on = measuredOn.get(`${p.name.toLowerCase()}\t${f.id.toLowerCase()}`) ?? new Set();
+      if (o.off === '*') {
+        if (!on.size) return { ...f, off: '*' };
+        if (!ran.length) {
+          warnings.push(`feature ${p.name} ${f.id}: published off on every build, this run saw it on and can prove no other build off; kept *`);
+          return { ...f, off: '*' };
+        }
+        return f;
+      }
+      const kept = o.off === '-' ? [] : o.off.split(',').filter((c) => !on.has(c));
+      const all = [...new Set([...kept, ...ran])].sort(clNum);
+      return { ...f, off: all.length ? all : '-' };
+    });
+    for (const o of old.features) {
+      if (have.has(o.id.toLowerCase())) continue;
+      warnings.push(`feature ${p.name} ${o.id}: published but not in this run's dumps; kept as published`);
+      features.push(asInput(o));
+    }
+    return { ...p, features };
+  });
+  for (const o of published.plugins) {
+    if (runKeys.has(o.name.toLowerCase())) continue;
+    carried.push(o.name);
+    plugins.push({ name: o.name, version: o.version, features: o.features.map(asInput) });
+  }
+  return { input: { plugins }, carried, warnings };
+}
+
 // published: text of the published catalog, or null. Returns 'changed' or 'unchanged'.
 export function verdict(input, published) {
   if (published == null) return 'changed';
@@ -174,15 +239,27 @@ export function main(argv) {
   }
   need(dumps.length && out, 'usage: catalog-from-dumps.mjs <dump>... --out <catalog-in.json> [--published <file>] [--verdict <path>] [--expect-plugins <plugin-names.json>]');
   need(!verdictPath || published, '--verdict needs --published');
-  const { input, warnings } = mergeDumps(dumps.map((f) => parseDump(readFileSync(f, 'utf8'))));
+  const parsed = dumps.map((f) => parseDump(readFileSync(f, 'utf8')));
+  const run = mergeDumps(parsed);
+  const warnings = [...run.warnings];
+  const publishedText = published && existsSync(published) ? readFileSync(published, 'utf8') : null;
+  let input = run.input;
+  let carried = [];
+  if (publishedText != null) {
+    const c = carryForward(run.input, parsed, parseCatalog(publishedText));
+    input = c.input;
+    carried = c.carried;
+    warnings.push(...c.warnings);
+  }
   buildCatalog(input); // every catalog limit, before anything is written
   writeFileSync(out, `${JSON.stringify(input, null, 2)}\n`);
   for (const w of warnings) process.stderr.write(`catalog-from-dumps: warning: ${w}\n`);
+  for (const c of carried) process.stderr.write(`catalog-from-dumps: carried: ${c}\n`);
   if (expectPlugins) {
-    for (const g of rigGaps(JSON.parse(readFileSync(expectPlugins, 'utf8')), input)) process.stderr.write(`catalog-from-dumps: rig gap: ${g} has no plugin row in any dump\n`);
+    for (const g of rigGaps(JSON.parse(readFileSync(expectPlugins, 'utf8')), run.input)) process.stderr.write(`catalog-from-dumps: rig gap: ${g} has no plugin row in any dump\n`);
   }
   if (published) {
-    const v = verdict(input, existsSync(published) ? readFileSync(published, 'utf8') : null);
+    const v = verdict(input, publishedText);
     process.stdout.write(`${v}\n`);
     if (verdictPath) writeFileSync(verdictPath, v);
   }
