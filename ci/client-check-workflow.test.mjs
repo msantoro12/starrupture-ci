@@ -1677,7 +1677,9 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
     "$env:EXCLUDE = ''; $env:TEST_AUTOPILOT = 'false'; $env:PUBLISH = 'false'; $env:MAP_MODE = 'true'",
     `$env:PLUGINS = '${plugins}'`,
     `Set-Location '${dir}'`,
-    "& (Join-Path (Get-Location) 'plan.ps1')",
+    // A refusal is printed as its message alone. pwsh's own error view wraps it behind a gutter and colours it,
+    // which splits the words the tests look for; Windows PowerShell only breaks the line.
+    "try { & (Join-Path (Get-Location) 'plan.ps1') } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }",
     // What the step leaves in the environment for the steps after it.
     `Set-Content -LiteralPath '${left}' -Value ((@('SR_READ_TOKEN_GOODSTUFFSOFTWARE', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0') | Where-Object { Test-Path "Env:$_" }) -join ' ')`,
   ].join('\n'));
