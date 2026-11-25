@@ -30,6 +30,11 @@
 // twice, or where any key is written with a backslash escape (scanEntries, per entry). None of this depends on the
 // loader's builder, so a loader commit without it does not weaken the check.
 //
+// An entry may also carry a thumbnail, as three flat keys that come all or none: thumbnail_url
+// (https://raw.githubusercontent.com/<owner>/<repo>/<40 lowercase hex commit>/images/thumbnail.png, of the repository
+// page_url names), thumbnail_sha256 (64 lowercase hex) and thumbnail_size (plain digits, 1 to 512 KiB). They are read
+// under the same raw-text rules as the install keys.
+//
 // same compares bodies only; it does not verify the signature, so callers run vmap-sign.mjs verify first.
 // Exit codes: 0 ok (same: equal); 1 same: the bodies differ; 2 usage or input error, or a refused loader ref.
 
@@ -115,7 +120,9 @@ export const MAX_ENTRIES = 200;
 export const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 const MAX_URL_LEN = 200;
 const INSTALL_KEYS = ['download_url', 'download_sha256', 'download_size', 'install_files', 'update_manifest_url'];
-const SCANNED_KEYS = ['page_url', ...INSTALL_KEYS];
+const THUMBNAIL_KEYS = ['thumbnail_url', 'thumbnail_sha256', 'thumbnail_size'];
+const MAX_THUMBNAIL_BYTES = 512 * 1024;
+const SCANNED_KEYS = ['page_url', ...INSTALL_KEYS, ...THUMBNAIL_KEYS];
 
 // ASCII letters, digits, '_', '.', '-', with no "..".
 const plainSegment = (s) => /^[A-Za-z0-9_.-]+$/.test(s) && s !== '.' && !s.includes('..');
@@ -166,19 +173,49 @@ function scanEntries(text, keys, label) {
     need(++e.counts[key] === 1, `${who}: the key ${key} appears more than once`);
     next++;
     while (next < text.length && /\s/.test(text[next])) next++;
-    if (key === 'download_size') e.raw[key] = /^[^\s,}\]]*/.exec(text.slice(next))[0];
+    if (key === 'download_size' || key === 'thumbnail_size') e.raw[key] = /^[^\s,}\]]*/.exec(text.slice(next))[0];
   }
   return entries;
 }
 
+// Whether page_url is https://github.com/<owner>/<repo>[/plain segments] for [owner, repo], case aside.
+function pageNames(pageUrl, [owner, repo]) {
+  const page = typeof pageUrl === 'string' ? pageUrl.split('/') : [];
+  return page.length >= 5 && page[0] === 'https:' && page[1] === '' && sameName(page[2], 'github.com') && sameName(page[3], owner) && sameName(page[4], repo) && page.slice(5, page.at(-1) === '' ? -1 : undefined).every(plainSegment);
+}
+
+// https://raw.githubusercontent.com/<owner>/<repo>/<40 lowercase hex commit>/images/thumbnail.png as [owner, repo], or null.
+function thumbnailRepo(url) {
+  const start = 'https://raw.githubusercontent.com/';
+  if (typeof url !== 'string' || url.length > MAX_URL_LEN || !url.startsWith(start)) return null;
+  const p = url.slice(start.length).split('/');
+  if (p.length !== 5 || !p.slice(0, 2).every(plainSegment) || !/^[0-9a-f]{40}$/.test(p[2]) || p[3] !== 'images' || p[4] !== 'thumbnail.png') return null;
+  return [p[0], p[1]];
+}
+
+// The three thumbnail keys come all or none.
+function checkThumbnail(e, who, raw) {
+  const missing = THUMBNAIL_KEYS.filter((k) => !Object.hasOwn(e, k));
+  if (missing.length === THUMBNAIL_KEYS.length) return;
+  need(missing.length === 0, `${who}: the thumbnail keys come all or none, missing ${missing.join(', ')}`);
+  const repo = thumbnailRepo(e.thumbnail_url);
+  need(repo, `${who}: thumbnail_url must be https://raw.githubusercontent.com/<owner>/<repo>/<40 lowercase hex commit>/images/thumbnail.png`);
+  need(pageNames(e.page_url, repo), `${who}: thumbnail_url must belong to the repository page_url names`);
+  need(typeof e.thumbnail_sha256 === 'string' && /^[0-9a-f]{64}$/.test(e.thumbnail_sha256), `${who}: thumbnail_sha256 must be 64 lowercase hex characters`);
+  need(/^[1-9][0-9]*$/.test(raw.thumbnail_size ?? '') && Number.isSafeInteger(e.thumbnail_size) && e.thumbnail_size <= MAX_THUMBNAIL_BYTES,
+    `${who}: thumbnail_size must be a whole number from 1 to ${MAX_THUMBNAIL_BYTES}, written as plain digits`);
+}
+
 function checkEntry(e, who, raw) {
   need(e !== null && typeof e === 'object' && !Array.isArray(e), `${who} is not an object`);
-  if (INSTALL_KEYS.every((k) => !Object.hasOwn(e, k))) return;
+  if (INSTALL_KEYS.some((k) => Object.hasOwn(e, k))) checkInstall(e, who, raw);
+  checkThumbnail(e, who, raw);
+}
+
+function checkInstall(e, who, raw) {
   const asset = releaseAssetRepo(e.download_url);
   need(asset, `${who}: download_url must be https://github.com/<owner>/<repo>/releases/download/<tag>/<name>.dll`);
-  const page = typeof e.page_url === 'string' ? e.page_url.split('/') : [];
-  need(page.length >= 5 && page[0] === 'https:' && page[1] === '' && sameName(page[2], 'github.com') && sameName(page[3], asset[0]) && sameName(page[4], asset[1]) && page.slice(5, page.at(-1) === '' ? -1 : undefined).every(plainSegment),
-    `${who}: download_url must belong to the repository page_url names`);
+  need(pageNames(e.page_url, asset), `${who}: download_url must belong to the repository page_url names`);
   need(typeof e.download_sha256 === 'string' && /^[0-9a-f]{64}$/.test(e.download_sha256), `${who}: download_sha256 must be 64 lowercase hex characters`);
   // The raw text must be plain digits: the loader reads 3.2e7 as 3, JSON.parse as 32000000.
   need(/^[1-9][0-9]*$/.test(raw.download_size ?? '') && Number.isSafeInteger(e.download_size) && e.download_size <= MAX_DOWNLOAD_BYTES,
