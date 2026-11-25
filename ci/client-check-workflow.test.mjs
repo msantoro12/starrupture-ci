@@ -5149,7 +5149,7 @@ const pickSnippet = (text) => {
 
 test('scanner: the loader ref\'s own unless scanner_ref lays another over it, the same in both checks', { skip: !powershell }, () => {
   const server = readFileSync(join(here, '..', '.github', 'workflows', 'sr-server-check.yml'), 'utf8').replace(/\r\n/g, '\n');
-  const script = pickSnippet(job('build-scanner'));
+  const script = pickSnippet(job('build'));
   assert.equal(pickSnippet(server), script, 'the server check picks it the same way');
   // The loader's copy says "own", the checked-out override says "override".
   const pick = (ref, { own = true } = {}) => {

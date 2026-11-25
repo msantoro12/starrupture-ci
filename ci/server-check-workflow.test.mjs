@@ -80,18 +80,13 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
   for (const n of ['loader_repo', 'loader_ref', 'scanner_repo', 'scanner_ref']) assert.ok(sd.includes(`inputs.${n} == '${dflt(n)}'`), `a live run compares ${n} with its dispatch default`);
   assert.match(stepOf(publish, 'Refuse a live publish that is not allowed'), /SCANNER_DEFAULTS" = true/);
   // No override by default, on either trigger, and a live run takes none.
-  const refOf = (t) => t.match(/      scanner_ref:
-(?:        .*
-)*?        default: '([^']*)'/)[1];
-  assert.deepEqual([refOf(call), refOf(dispatch), sd.match(/inputs.scanner_ref == '([^']*)'/)[1]], ['', '', ''], 'both defaults and the SCANNER_DEFAULTS pin are blank');
-  assert.ok(!/ || /.test(sd), 'every SCANNER_DEFAULTS condition must hold: no alternative');
+  const refOf = (t) => t.match(/      scanner_ref:\n(?:        .*\n)*?        default: '([^']*)'/)[1];
+  assert.deepEqual([refOf(call), refOf(dispatch), sd.match(/inputs\.scanner_ref == '([^']*)'/)[1]], ['', '', ''], 'both defaults and the SCANNER_DEFAULTS pin are blank');
+  assert.ok(!/ \|\| /.test(sd), 'every SCANNER_DEFAULTS condition must hold: no alternative');
   const scanner = job(wf, 'server-scanner');
-  assert.match(stepOf(scanner, 'Check out tools/AobScan'), /
- {8}if: ${{ inputs.scanner_ref != '' }}
-/, 'a blank ref is never checked out (it would take the default branch)');
+  assert.match(stepOf(scanner, 'Check out tools/AobScan'), /\n {8}if: \$\{\{ inputs\.scanner_ref != '' \}\}\n/, 'a blank ref is never checked out (it would take the default branch)');
   const pick = stepOf(scanner, 'Pick the scanner');
-  assert.ok(!/
- {8}if:/.test(pick) && pick.includes('SCANNER_REF: ${{ inputs.scanner_ref }}'), 'the pick always runs and reads the ref through env');
+  assert.ok(!/\n {8}if:/.test(pick) && pick.includes('SCANNER_REF: ${{ inputs.scanner_ref }}'), 'the pick always runs and reads the ref through env');
 });
 
 test('no run block takes an expression: every input and output reaches a script through env', () => {
