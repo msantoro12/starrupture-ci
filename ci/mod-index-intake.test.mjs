@@ -73,23 +73,22 @@ function buildPe({ machine = 0x8664, characteristics = 0x2022, exports = ['GetPl
   return b;
 }
 const EXPORT_DIR = SECTION_RAW + 0x200;
-const pe = (opts) => buildPe(opts);
 const reason = (fn) => { try { fn(); } catch (e) { return e.message; } return null; };
 
 test('parsePe reads machine, DLL flag and the export names of a valid x64 DLL', () => {
-  const p = parsePe(pe());
+  const p = parsePe(buildPe());
   assert.equal(p.machine, 0x8664);
   assert.equal(p.isDll, true);
   assert.deepEqual([...p.exports.keys()], ['GetPluginInfo', 'PluginInit', 'PluginShutdown']);
 });
 
 test('parsePe: x86 machine and a non-DLL are read, not crashed on', () => {
-  assert.equal(parsePe(pe({ machine: 0x14c })).machine, 0x14c);
-  assert.equal(parsePe(pe({ characteristics: 0x0022 })).isDll, false);
+  assert.equal(parsePe(buildPe({ machine: 0x14c })).machine, 0x14c);
+  assert.equal(parsePe(buildPe({ characteristics: 0x0022 })).isDll, false);
 });
 
 test('parsePe refuses truncated and malformed files without throwing anything else', () => {
-  const good = pe();
+  const good = buildPe();
   for (const cut of [0, 10, 63, 0x44, 0x60, 0x150, 0x200, SECTION_RAW + 0x205]) assert.throws(() => parsePe(good.subarray(0, cut)), IntakeError, `cut at ${cut}`);
   const noMz = Buffer.from(good); noMz.writeUInt16LE(0x1234, 0);
   assert.match(reason(() => parsePe(noMz)), /MZ/);
@@ -104,37 +103,37 @@ test('parsePe refuses truncated and malformed files without throwing anything el
 });
 
 test('parsePe: an export RVA or name table outside the file or sections is a failure', () => {
-  const dirRva = Buffer.from(pe()); dirRva.writeUInt32LE(0x900000, 0x58 + 112);
+  const dirRva = Buffer.from(buildPe()); dirRva.writeUInt32LE(0x900000, 0x58 + 112);
   assert.match(reason(() => parsePe(dirRva)), /export directory is outside/);
-  const names = Buffer.from(pe()); names.writeUInt32LE(0x900000, EXPORT_DIR + 32);
+  const names = Buffer.from(buildPe()); names.writeUInt32LE(0x900000, EXPORT_DIR + 32);
   assert.match(reason(() => parsePe(names)), /outside the sections/);
-  const oneName = Buffer.from(pe()); oneName.writeUInt32LE(0x900000, SECTION_RAW + 0x260);
+  const oneName = Buffer.from(buildPe()); oneName.writeUInt32LE(0x900000, SECTION_RAW + 0x260);
   assert.match(reason(() => parsePe(oneName)), /export name is outside/);
-  const count = Buffer.from(pe()); count.writeUInt32LE(0x7fffffff, EXPORT_DIR + 24);
+  const count = Buffer.from(buildPe()); count.writeUInt32LE(0x7fffffff, EXPORT_DIR + 24);
   assert.match(reason(() => parsePe(count)), /export names/);
-  const ord = Buffer.from(pe()); ord.writeUInt16LE(99, SECTION_RAW + 0x280);
+  const ord = Buffer.from(buildPe()); ord.writeUInt16LE(99, SECTION_RAW + 0x280);
   assert.match(reason(() => parsePe(ord)), /ordinal/);
-  const open = Buffer.from(pe()); open.fill(0x41, SECTION_RAW + 0x290, open.length);
+  const open = Buffer.from(buildPe()); open.fill(0x41, SECTION_RAW + 0x290, open.length);
   assert.match(reason(() => parsePe(open)), /not terminated/);
 });
 
 test('parsePe: zero exports and no export directory give an empty table', () => {
-  assert.equal(parsePe(pe({ exports: [] })).exports.size, 0);
-  const none = Buffer.from(pe()); none.writeUInt32LE(0, 0x58 + 112);
+  assert.equal(parsePe(buildPe({ exports: [] })).exports.size, 0);
+  const none = Buffer.from(buildPe()); none.writeUInt32LE(0, 0x58 + 112);
   assert.equal(parsePe(none).exports.size, 0);
 });
 
 test('readDeclaredInterface decodes the lea-rax-ret stub and the PluginInfo table', () => {
-  const bytes = pe();
+  const bytes = buildPe();
   assert.deepEqual(readDeclaredInterface(bytes, parsePe(bytes)), { interfaceVersion: 73, pluginTarget: 2, name: 'TestPlugin', version: '1.2.3' });
 });
 
 test('readDeclaredInterface gives null when the stub is not the expected pattern', () => {
-  const bytes = pe({ stub: false });
+  const bytes = buildPe({ stub: false });
   assert.equal(readDeclaredInterface(bytes, parsePe(bytes)), null);
-  const far = pe(); far.writeInt32LE(0x7ffffff0, SECTION_RAW + 3);
+  const far = buildPe(); far.writeInt32LE(0x7ffffff0, SECTION_RAW + 3);
   assert.equal(readDeclaredInterface(far, parsePe(far)), null);
-  const noExport = pe({ exports: ['PluginInit'] });
+  const noExport = buildPe({ exports: ['PluginInit'] });
   assert.equal(readDeclaredInterface(noExport, parsePe(noExport)), null);
 });
 
@@ -147,7 +146,7 @@ const levels = (checks) => checks.map((c) => `${c.level}`);
 const failTexts = (checks) => checks.filter((c) => c.level === 'FAIL').map((c) => c.text);
 
 test('checkAsset passes a valid plugin and reads the interface', async () => {
-  const bytes = pe();
+  const bytes = buildPe();
   const checks = await checkAsset(entryFor(bytes), serve(bytes));
   assert.deepEqual(failTexts(checks), []);
   assert.ok(checks.some((c) => c.level === 'INFO' && /interface 73/.test(c.text)));
@@ -155,14 +154,14 @@ test('checkAsset passes a valid plugin and reads the interface', async () => {
 });
 
 test('checkAsset: a plugin whose interface cannot be read warns and still passes', async () => {
-  const bytes = pe({ stub: false });
+  const bytes = buildPe({ stub: false });
   const checks = await checkAsset(entryFor(bytes), serve(bytes));
   assert.deepEqual(failTexts(checks), []);
   assert.ok(checks.some((c) => c.level === 'WARN' && /interface not read/.test(c.text)));
 });
 
 test('checkAsset fails on a sha256 mismatch and on a size mismatch', async () => {
-  const bytes = pe();
+  const bytes = buildPe();
   assert.match(failTexts(await checkAsset(entryFor(bytes, { download_sha256: 'a'.repeat(64) }), serve(bytes)))[0], /sha256 is/);
   const short = await checkAsset(entryFor(bytes, { download_size: bytes.length + 10 }), serve(bytes));
   assert.match(failTexts(short)[0], /size is/);
@@ -171,18 +170,18 @@ test('checkAsset fails on a sha256 mismatch and on a size mismatch', async () =>
 test('checkAsset fails an x86 image, a non-DLL, a missing export and zero exports', async () => {
   const cases = [[{ machine: 0x14c }, /not x64/], [{ characteristics: 0x0022 }, /not a DLL/], [{ exports: ['GetPluginInfo', 'PluginInit'] }, /missing required exports: PluginShutdown/], [{ exports: [] }, /missing required exports: GetPluginInfo, PluginInit, PluginShutdown/]];
   for (const [opts, re] of cases) {
-    const bytes = pe(opts);
+    const bytes = buildPe(opts);
     assert.match(failTexts(await checkAsset(entryFor(bytes), serve(bytes))).join(' '), re);
   }
 });
 
 test('checkAsset reports a malformed PE as a failure', async () => {
-  const bytes = pe().subarray(0, 100);
+  const bytes = buildPe().subarray(0, 100);
   assert.match(failTexts(await checkAsset(entryFor(bytes), serve(bytes)))[0], /not a valid PE/);
 });
 
 test('checkAsset lists the optional exports as info', async () => {
-  const bytes = pe({ exports: ['GetPluginInfo', 'PluginInit', 'PluginShutdown', 'OnPluginLoadHooks'] });
+  const bytes = buildPe({ exports: ['GetPluginInfo', 'PluginInit', 'PluginShutdown', 'OnPluginLoadHooks'] });
   const checks = await checkAsset(entryFor(bytes), serve(bytes));
   assert.ok(checks.some((c) => c.level === 'INFO' && /OnPluginLoadHooks/.test(c.text)));
 });
@@ -192,12 +191,12 @@ test('checkAsset lists the optional exports as info', async () => {
 test('fetchAsset follows redirects to allowed hosts and returns the bytes', async () => {
   const calls = [];
   const fetchFn = async (u, init) => {
-    calls.push([u, init.redirect, init.credentials]);
+    calls.push([u, init.redirect]);
     if (u.startsWith('https://github.com/')) return new Response(null, { status: 302, headers: { location: 'https://release-assets.githubusercontent.com/a/b?sig=1' } });
     return new Response(Buffer.from('abc'), { status: 200 });
   };
   assert.equal((await fetchAsset(URL0, 3, fetchFn)).toString(), 'abc');
-  assert.deepEqual(calls.map((c) => c.slice(1)), [['manual', 'omit'], ['manual', 'omit']]);
+  assert.deepEqual(calls.map((c) => c.slice(1)), [['manual'], ['manual']]);
 });
 
 test('fetchAsset refuses a redirect to another host, to http, with a port, and too many hops', async () => {
@@ -230,7 +229,7 @@ test('fetchAsset reports a 404, a network error and a redirect without a locatio
 });
 
 test('checkAsset turns a download failure into one FAIL line', async () => {
-  const bytes = pe();
+  const bytes = buildPe();
   const checks = await checkAsset(entryFor(bytes), async () => new Response('', { status: 404 }));
   assert.deepEqual(levels(checks), ['FAIL']);
 });
@@ -250,8 +249,8 @@ test('selectEntries: new and changed entries only, all without a base', () => {
 });
 
 test('runIntake: a good entry passes, a changed bad one fails, an untouched bad one is not looked at', async () => {
-  const good = pe();
-  const bad = pe({ machine: 0x14c });
+  const good = buildPe();
+  const bad = buildPe({ machine: 0x14c });
   const files = { 'good.dll': good, 'bad.dll': bad };
   const fetchFn = async (u) => new Response(files[u.split('/').pop()], { status: 200 });
   const eGood = { id: 'good', page_url: 'https://github.com/o/r', download_url: 'https://github.com/o/r/releases/download/v1/good.dll', download_sha256: sha(good), download_size: good.length };
@@ -287,7 +286,7 @@ test('runIntake: an index the signer would refuse is one FAIL', async () => {
 });
 
 test('a forwarded required export does not count as present', async () => {
-  const bytes = pe();
+  const bytes = buildPe();
   const fwd = Buffer.from(bytes);
   // PluginInit's function RVA points inside the export directory: a forwarder string, not code.
   fwd.writeUInt32LE(SECTION_VA + 0x210, SECTION_RAW + 0x240 + 4);
@@ -306,7 +305,6 @@ test('markdown output drops link, image and table characters from the index text
 test('output never lets text from the index start a workflow command', async () => {
   const report = { results: [{ who: 'entry 1', status: 'FAIL', checks: [{ level: 'FAIL', text: '::error::x\nsecond' }] }] };
   assert.doesNotMatch(renderText(report), /^\s*::/m);
-  assert.doesNotMatch(renderText(report), /::/);
 });
 
 // ---- CLI -------------------------------------------------------------------------------------------------------
@@ -317,7 +315,14 @@ test('CLI: usage errors exit 2, an index with a failing entry exits 1, a clean i
   assert.equal(run().status, 2);
   assert.equal(run('--index').status, 2);
   assert.equal(run('--bogus', 'x').status, 2);
-  assert.equal(run('--index', join(dir, 'missing.json')).status, 2);
+  const gone = run('--index', join(dir, 'missing.json'));
+  assert.equal(gone.status, 1);
+  assert.match(gone.stdout, /^FAIL index\r?\n {2}FAIL .*does not exist/);
+  const bom = join(dir, 'bom.json');
+  writeFileSync(bom, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(withIndex([]))]));
+  const bomRun = run('--index', bom);
+  assert.equal(bomRun.status, 1);
+  assert.match(bomRun.stdout, /FAIL .*byte order mark/);
   const clean = join(dir, 'clean.json');
   writeFileSync(clean, withIndex([{ id: 'n', page_url: 'https://github.com/o/r' }]));
   const summary = join(dir, 'summary.md');
@@ -334,4 +339,77 @@ test('main returns 0 for an index with nothing new against its base', async () =
   const f = join(dir, 'i.json');
   writeFileSync(f, withIndex([{ id: 'n', page_url: 'https://github.com/o/r' }]));
   assert.equal(await main(['--index', f, '--base', f]), 0);
+});
+
+// ---- hardening ---------------------------------------------------------------------------------------------------
+
+// parsePe either returns or throws IntakeError; readDeclaredInterface on anything it returned never throws.
+function parseOrRefuse(bytes) {
+  let p;
+  try { p = parsePe(bytes); } catch (e) { assert.ok(e instanceof IntakeError, `unexpected ${e?.constructor?.name}: ${e?.message}`); return; }
+  readDeclaredInterface(bytes, p);
+}
+
+test('parsePe: every truncation length gives an IntakeError or a clean result', () => {
+  const good = buildPe();
+  for (let cut = 0; cut <= good.length; cut++) parseOrRefuse(good.subarray(0, cut));
+});
+
+test('parsePe: seeded random byte flips never throw anything but IntakeError', () => {
+  const good = buildPe();
+  let state = 0x2545f491; // mulberry32, fixed seed
+  const rand = () => { state = (state + 0x6d2b79f5) >>> 0; let t = state; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  for (let i = 0; i < 4000; i++) {
+    const mutated = Buffer.from(good);
+    const flips = 1 + Math.floor(rand() * 3);
+    for (let f = 0; f < flips; f++) mutated[Math.floor(rand() * mutated.length)] = Math.floor(rand() * 256);
+    parseOrRefuse(mutated);
+  }
+});
+
+test('parsePe: an export name over 256 bytes is refused', () => {
+  const long = buildPe();
+  long.fill(0x41, SECTION_RAW + 0x290, SECTION_RAW + 0x290 + 300);
+  long[SECTION_RAW + 0x290 + 300] = 0;
+  assert.match(reason(() => parsePe(long)), /too long/);
+});
+
+test('fetchAsset: a hung download is cut off by the timeout', async () => {
+  const hung = (u, init) => new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+  await assert.rejects(fetchAsset(URL0, 3, hung, 20), /download failed: aborted/);
+});
+
+test('checkAsset: a body of exactly download_size + 1 bytes is a size mismatch', async () => {
+  const bytes = buildPe();
+  const over = Buffer.concat([bytes, Buffer.from([0])]);
+  const checks = await checkAsset(entryFor(bytes), serve(over));
+  assert.match(failTexts(checks)[0], new RegExp(`size is ${bytes.length + 1} bytes, download_size says ${bytes.length}`));
+});
+
+test('runIntake downloads two entries at a time', async () => {
+  let active = 0;
+  let peak = 0;
+  const fetchFn = async () => {
+    active++; peak = Math.max(peak, active);
+    await new Promise((r) => setTimeout(r, 20));
+    active--;
+    return new Response('', { status: 404 });
+  };
+  const entries = [1, 2, 3, 4, 5].map((n) => ({ id: `e${n}`, page_url: 'https://github.com/o/r', download_url: `https://github.com/o/r/releases/download/v1/e${n}.dll`, download_sha256: 'a'.repeat(64), download_size: 5 }));
+  const report = await runIntake(withIndex(entries), null, fetchFn);
+  assert.equal(report.results.length, 5);
+  assert.equal(peak, 2);
+});
+
+test('fetchAsset: a malformed Location is a clean refusal, and a 404 body is cancelled', async () => {
+  await assert.rejects(fetchAsset(URL0, 3, async () => new Response(null, { status: 302, headers: { location: 'https://[bad' } })), /not a URL/);
+  let cancelled = false;
+  const body = new ReadableStream({ cancel() { cancelled = true; } });
+  await assert.rejects(fetchAsset(URL0, 3, async () => new Response(body, { status: 500 })), /HTTP 500/);
+  assert.equal(cancelled, true);
+});
+
+test('fetchAsset reads at most 32 MB even when download_size claims more', async () => {
+  const big = async () => new Response(Buffer.alloc(32 * 1024 * 1024 + 2), { status: 200 });
+  await assert.rejects(fetchAsset(URL0, 2 ** 40, big), /larger than download_size/);
 });

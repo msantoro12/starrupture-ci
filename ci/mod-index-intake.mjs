@@ -28,9 +28,10 @@ const need = (cond, msg) => { if (!cond) throw new IntakeError(msg); };
 export const ASSET_HOSTS = ['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'];
 export const MAX_REDIRECTS = 5;
 export const DOWNLOAD_TIMEOUT_MS = 60_000;
+export const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 
 // Downloads url as bytes: https only, redirects followed by hand and only to ASSET_HOSTS (the first URL must be
-// github.com), no cookies or credentials, at most `size` + 1 bytes read (one more than declared shows an overrun).
+// github.com), no cookies or credentials, at most min(`size`, MAX_DOWNLOAD_BYTES) + 1 bytes read (one more than declared shows an overrun).
 export async function fetchAsset(url, size, fetchFn = fetch, timeoutMs = DOWNLOAD_TIMEOUT_MS) {
   const signal = AbortSignal.timeout(timeoutMs);
   let target = url;
@@ -41,18 +42,19 @@ export async function fetchAsset(url, size, fetchFn = fetch, timeoutMs = DOWNLOA
     need(!u.username && !u.password && !u.port, 'refusing a URL with user info or a port');
     need(hop === 0 ? u.hostname === 'github.com' : ASSET_HOSTS.includes(u.hostname), `refusing the host ${u.hostname}`);
     let res;
+    // redirect: 'manual' relies on Node's fetch (undici) returning the real 3xx response, so Location can be checked.
     try {
-      res = await fetchFn(u.href, { redirect: 'manual', credentials: 'omit', headers: { 'user-agent': 'sr-mod-index-intake', accept: 'application/octet-stream' }, signal });
+      res = await fetchFn(u.href, { redirect: 'manual', headers: { 'user-agent': 'sr-mod-index-intake', accept: 'application/octet-stream' }, signal });
     } catch (e) { throw new IntakeError(`download failed: ${e.message}`); }
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location');
       await res.body?.cancel();
       need(loc, `HTTP ${res.status} without a location`);
-      target = new URL(loc, u).href;
+      try { target = new URL(loc, u).href; } catch { throw new IntakeError('redirect to a location that is not a URL'); }
       continue;
     }
-    need(res.status === 200, `the download answered HTTP ${res.status}`);
-    const cap = size + 1;
+    if (res.status !== 200) { await res.body?.cancel(); throw new IntakeError(`the download answered HTTP ${res.status}`); }
+    const cap = Math.min(size, MAX_DOWNLOAD_BYTES) + 1;
     const declared = Number(res.headers.get('content-length'));
     if (Number.isFinite(declared) && declared > cap) { await res.body?.cancel(); throw new IntakeError(`the download is larger than download_size (${size} bytes)`); }
     const chunks = [];
@@ -165,8 +167,7 @@ function plainString(buf, off) {
 }
 
 // Best effort, static: GetPluginInfo is expected to be `lea rax,[rip+disp32]; ret` and to return a PluginInfo table
-// (plugin_interface.h: name, version, author, description pointers; int interfaceVersion at 32; int pluginTarget at 36;
-// from interface 72 gameBuiltCL at 40 and mapFlags at 44). Returns { interfaceVersion, pluginTarget, name, version } or
+// (plugin_interface.h: name, version, author, description pointers; int interfaceVersion at 32; int pluginTarget at 36). Returns { interfaceVersion, pluginTarget, name, version } or
 // null when anything is not exactly as expected. Nothing is executed: the bytes of the stub are only compared.
 export function readDeclaredInterface(buf, pe) {
   const rva = pe.exports.get('GetPluginInfo');
@@ -224,8 +225,9 @@ export function selectEntries(list, baseList) {
 }
 
 const statusOf = (checks) => (checks.some((c) => c.level === FAIL) ? FAIL : checks.some((c) => c.level === WARN) ? WARN : PASS);
-// Text that came from the index or from a downloaded file never starts a workflow command or breaks a line.
-const clean = (s) => String(s).replace(/[^\x20-\x7e]/g, '?').replace(/::/g, ': :');
+// Text that came from the index or from a downloaded file is printable ASCII on one line. It cannot start a workflow
+// command: every output line begins with a fixed prefix (PASS, FAIL, WARN, INFO, or two spaces and a level).
+const clean = (s) => String(s).replace(/[^\x20-\x7e]/g, '?');
 // In markdown a stranger's text also loses everything that makes a link, image, tag, emphasis or table cell.
 const md = (s) => clean(s).replace(/[\[\]()<>*_`!~#&|\\]/g, '?');
 
@@ -284,9 +286,19 @@ export async function main(argv) {
     opts[argv[i]] = argv[i + 1];
   }
   if (opts['--index'] === undefined) throw new IntakeError('usage: mod-index-intake.mjs --index <index.json> [--base <base index.json>] [--summary <file>]');
-  const body = readIndex(opts['--index']);
-  const baseBody = opts['--base'] === undefined ? null : readIndex(opts['--base']);
-  const report = await runIntake(body, baseBody);
+  let report;
+  try {
+    const body = readIndex(opts['--index']);
+    // The base only narrows the work: when it cannot be read, every entry is checked.
+    let baseBody = null;
+    if (opts['--base'] !== undefined) { try { baseBody = readIndex(opts['--base']); } catch { baseBody = null; } }
+    report = await runIntake(body, baseBody);
+  } catch (e) {
+    if (!(e instanceof ModIndexError) && !['ENOENT', 'ERR_ENCODING_INVALID_ENCODED_DATA'].includes(e.code)) throw e;
+    // A deleted or unreadable index in the pull request is a result for the contributor, not a crash.
+    const why = e.code === 'ENOENT' ? `${opts['--index']} does not exist (was the file deleted?)` : e.message;
+    report = { results: [{ who: 'index', status: FAIL, checks: [{ level: FAIL, text: why }] }], failed: true };
+  }
   process.stdout.write(renderText(report));
   if (opts['--summary'] !== undefined) appendFileSync(opts['--summary'], renderMarkdown(report));
   return report.failed ? 1 : 0;
