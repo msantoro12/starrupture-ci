@@ -1,0 +1,184 @@
+name: SR mod index auto
+
+# Notices when the loader's mod index (mod-index/index.json on the loader repository's main, AlienXAXS/StarRupture-ModLoader)
+# differs from the one the live vmap-feed release carries, and says so in the job summary. It starts the live signed
+# publish (sr-mod-index.yml, live=true, loader_ref the exact commit it read) only when the repository variable
+# MOD_INDEX_AUTO_PUBLISH is the string `true`. It ships OFF: with the variable unset, or anything but `true`, it only reports
+# and ends green. The decision is ci/mod-index-auto.mjs (.github/sr-pipeline/README.md, "Automatic live publish of the mod index").
+#
+# Runs from main only. Two jobs: `plan` (read-only token, no secret, no environment) gathers what it needs and asks the
+# script for a verdict; `dispatch` (a token that can start workflows, nothing else, no checkout, no environment) runs
+# only for the verdict `dispatch`, and then does one thing: `gh workflow run sr-mod-index.yml`. The signing key, the
+# vmap-sign environment and the publish are the dispatched run's, which signs only the loader's main as it is at that
+# moment and only from main. No pull_request trigger, no secret in this file.
+#
+# Never dispatches when: the switch is off; the index is not on the loader's main yet; the live release holds no mod
+# index (the first live publish is by hand); the live file cannot be read; the two bodies are equal; the index fails the
+# signer's own checks (the run goes red); a run of sr-mod-index.yml is queued or going; the last two dispatched runs,
+# whatever the commit, failed (the stop holds until one succeeds). At most one dispatch per run. While that stop holds,
+# the `alert` job (issues: write, nothing else) raises one issue, and none while it is open.
+
+on:
+  schedule:
+    - cron: '11,41 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: read and report only, never dispatch, whatever the variable says'
+        type: boolean
+        default: false
+
+concurrency:
+  group: sr-mod-index-auto
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  plan:
+    name: plan
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      action: ${{ steps.decide.outputs.action }}
+      sha: ${{ steps.decide.outputs.sha }}
+      stopped: ${{ steps.decide.outputs.stopped }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      LOADER_REPO: AlienXAXS/StarRupture-ModLoader
+    steps:
+      - name: Check out the tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+
+      # The tip of the loader's main, by the same routine the signing path uses (it answers a full commit id or stops).
+      - name: Resolve the loader's main
+        id: head
+        run: |
+          set -euo pipefail
+          sha="$(node ci/mod-index.mjs loader-ref main)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no full loader commit"; exit 2; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # index.json at that commit, by the commit id and not the branch name, so what is compared is what would be signed.
+      # A 404 means the loader has no index there yet. The file is only ever read by ci/mod-index-auto.mjs.
+      - name: Read the loader's mod index
+        id: index
+        env:
+          LOADER_SHA: ${{ steps.head.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$LOADER_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no checked loader commit"; exit 2; }
+          if gh api -H "Accept: application/vnd.github.raw+json" "repos/$LOADER_REPO/contents/mod-index/index.json?ref=$LOADER_SHA" > index.json 2> index.err; then
+            echo "state=present" >> "$GITHUB_OUTPUT"
+          elif grep -q 'HTTP 404' index.err; then
+            rm -f index.json
+            echo "state=missing" >> "$GITHUB_OUTPUT"
+          else
+            cat index.err >&2; exit 2
+          fi
+
+      # The mod index on the live release. No release, or no such asset, is "missing"; any other failure stops the run.
+      - name: Read the live mod index
+        id: live
+        run: |
+          set -euo pipefail
+          if gh release view vmap-feed --json assets --jq '.assets[].name' > assets.txt 2> assets.err; then
+            :
+          elif grep -q 'release not found' assets.err; then
+            : > assets.txt
+          else
+            cat assets.err >&2; exit 2
+          fi
+          if grep -qxF mod-index.v1.txt assets.txt; then
+            mkdir live
+            gh release download vmap-feed --pattern mod-index.v1.txt --dir live
+            echo "state=present" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=missing" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Runs of sr-mod-index.yml: one going now, or two failed dispatched runs in a row, stop a dispatch (the script counts them).
+      - name: Read the recent runs of the publish workflow
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/actions/workflows/sr-mod-index.yml/runs?per_page=100" > runs.json
+
+      # Nothing of the index goes through the shell: the script reads the files itself and writes the summary and the two
+      # outputs (a verdict word and the commit id). The variable reaches it as an environment value only.
+      - name: Decide
+        id: decide
+        env:
+          LOADER_SHA: ${{ steps.head.outputs.sha }}
+          INDEX_STATE: ${{ steps.index.outputs.state }}
+          LIVE_STATE: ${{ steps.live.outputs.state }}
+          MOD_INDEX_AUTO_PUBLISH: ${{ vars.MOD_INDEX_AUTO_PUBLISH }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          node ci/mod-index-auto.mjs plan --index index.json --live live/mod-index.v1.txt --runs runs.json --summary "$GITHUB_STEP_SUMMARY" --output "$GITHUB_OUTPUT" > /dev/null
+
+  # The one job that can start a workflow. It checks out nothing and holds no secret; the switch and the commit id are
+  # checked again here.
+  dispatch:
+    name: dispatch
+    needs: [plan]
+    if: ${{ needs.plan.outputs.action == 'dispatch' && vars.MOD_INDEX_AUTO_PUBLISH == 'true' && inputs.dry_run != true && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      LOADER_SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+      - name: Start the live publish for that commit
+        run: |
+          set -euo pipefail
+          [[ "$LOADER_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no checked loader commit"; exit 2; }
+          gh workflow run sr-mod-index.yml --repo "$GH_REPO" --ref main -f live=true -f "loader_ref=$LOADER_SHA"
+          echo "### Mod index auto publish: dispatched the live publish (sr-mod-index.yml) for \`$LOADER_SHA\`." >> "$GITHUB_STEP_SUMMARY"
+
+  # While the two-failure stop holds, one issue (label pipeline-alert, assigned to the owner, so GitHub notifies him). Each
+  # run checks for an open issue with the title first and posts nothing while it exists, so a stop is one alert, not one
+  # per tick. It only runs with the switch on, which is the only way a stop can hold.
+  alert:
+    name: alert
+    needs: [plan]
+    if: ${{ needs.plan.outputs.stopped == 'true' && vars.MOD_INDEX_AUTO_PUBLISH == 'true' && inputs.dry_run != true && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      OWNER: msantoro12
+      TITLE: SR mod index auto publish stopped
+    steps:
+      - name: Check out the tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Raise one alert for the stop
+        run: |
+          set -euo pipefail
+          open="$(gh issue list --state open --search "$TITLE in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
+          if [ -n "$open" ]; then echo "Alert #$open is already open."; exit 0; fi
+          cat > "$RUNNER_TEMP/stopped.md" <<EOF
+          @$OWNER the automatic live publish of the mod index is stopped: the last two dispatched runs of sr-mod-index.yml failed.
+          Nothing more is dispatched until one succeeds. Look at the failed runs, fix the cause, then dispatch sr-mod-index.yml by hand for the loader commit.
+          Runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-mod-index.yml
+          Seen by: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID
+          EOF
+          node ci/pipeline-alert.mjs raise --title "$TITLE" --body-file "$RUNNER_TEMP/stopped.md" --owner "$OWNER"
