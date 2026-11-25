@@ -1,7 +1,8 @@
 # Which plugin DLLs may reach sr-aobscan --plugin. The scanner loads the DLL, so its code runs: only a
 # DLL this run built from source may, and only from our own repositories or the nine AlienXAXS plugins.
-# A downloaded DLL never may, whoever published it. No input, variable or list entry widens this.
+# A downloaded DLL never may, whoever published it. No input, variable or list entry adds to these.
 # sr-client-check.yml dot-sources this before every scanner call, and before a plugin is fetched.
+# Both checks also use it on a ref that names code compiled here (Assert-OwnRef, below).
 $ScanOwnRepos = '^(msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+|GoodStuffSoftware/sr-bestbuilder)$'
 $ScanThirdPartySource = '^AlienXAXS/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$'
 
@@ -13,6 +14,16 @@ function Get-ScanRefusal([string]$Source, [string]$Repo) {
         return "not scanned: gated (another author's source that is not one of the nine allowed AlienXAXS plugins)"
     }
     $null
+}
+
+# Text this run does not control (an error that quotes a ref, a tag or a server's answer), made safe for a
+# note that is logged and put in the report's Markdown: one line of letters, digits and plain punctuation, so
+# it can start no workflow command (a line break, '##[') and shape no Markdown (a table cell, code, HTML, a
+# link or a mention). At most 300 characters.
+function ConvertTo-NoteText([string]$Text) {
+    $plain = (($Text -creplace '[^A-Za-z0-9 .,;:''"()/\\_=+?-]', ' ') -replace ':{2,}', ':' -replace '\s+', ' ').Trim()
+    if ($plain.Length -gt 300) { $plain = $plain.Substring(0, 300) + '...' }
+    $plain
 }
 
 # The check at the scanner call itself: the source and repository above, and the DLL is a file under
@@ -33,9 +44,38 @@ function Assert-ScanAllowed([string]$Source, [string]$Repo, [string]$Dll, [strin
     }
 }
 
+# A commit id is taken only when a branch or tag of the named repository reaches it. GitHub serves the commits of
+# forks and pull requests under the parent repository's name (checkout, fetch and the compare API all resolve
+# them), so the commit is compared with the tips $RefLines (git ls-remote) lists as that repository's own heads and tags.
+function Assert-OwnCommit([string]$Repo, [string]$Sha, [string[]]$RefLines, $Headers) {
+    # An annotated tag counts as its commit: the peeled line follows the tag's own and replaces it.
+    $tips = [ordered]@{}
+    foreach ($line in $RefLines) { $id, $name = $line -split '\s+'; if ($name -cmatch '^refs/(heads|tags)/') { $tips[($name -creplace '\^\{\}$')] = $id } }
+    if (@($tips.Values) -contains $Sha) { return }
+    $why = ''
+    foreach ($name in @($tips.Keys | Sort-Object { $_ -cnotmatch '^refs/heads/(main|master)$' })) {
+        try { $status = [string](Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/compare/$Sha...$($tips[$name])?per_page=1" -Headers $Headers -TimeoutSec 60).status }
+        catch { $why = " (last compare error: $($_.Exception.Message))"; continue }
+        if ($status -ceq 'ahead' -or $status -ceq 'identical') { return }
+    }
+    throw "the commit $Sha is in no branch or tag of $Repo (to run it, push a branch for it to that repository)$why"
+}
+
+# An input that names a ref of a public repository: a branch or tag of $Repo itself, or a full commit id that
+# one of them reaches. Anything else (refs/pull/*, a short id, a blank) is refused: the checkout would take it.
+function Assert-OwnRef([string]$What, [string]$Repo, [string]$Ref, $Headers) {
+    $refs = @(git ls-remote "https://github.com/$Repo" 'refs/heads/*' 'refs/tags/*')
+    if ($LASTEXITCODE -ne 0) { throw "git ls-remote $Repo failed (exit $LASTEXITCODE)" }
+    if ($Ref -match '^[0-9a-f]{40}$') { Assert-OwnCommit $Repo $Ref $refs $Headers; return }
+    if (-not @($refs | Where-Object { @("refs/heads/$Ref", "refs/tags/$Ref") -ccontains ($_ -split '\s+')[1] }).Count) {
+        throw "$What '$Ref' is not a branch, a tag or a full commit id of $Repo"
+    }
+}
+
 # The refusal facts of a pinned plugin whose DLL is not scanned: Pin.Facts in plugin-names.json, what a
-# past scan of exactly that DLL read. Returned only when the release asset's digest ($Digest, hex) is
-# exactly the Pin's, so a re-uploaded asset, a missing digest or a new Pin without Facts declares
+# past scan of one DLL read, with that DLL's digest in Facts.Digest. Returned only when Facts.Digest,
+# Pin.Digest and the release asset's digest ($Digest, hex) all name that one DLL, so a re-uploaded
+# asset, a missing digest or a new Pin whose Facts are missing or still the old DLL's declares
 # nothing. The rig still checks the claim: a declared refusal the loader does not make fails it.
 function Get-PinnedFacts([string]$NamesPath, [string]$Name, [string]$Tag, [string]$Digest) {
     if ($Digest -cnotmatch '^[0-9a-f]{64}$') { return $null }
@@ -45,7 +85,8 @@ function Get-PinnedFacts([string]$NamesPath, [string]$Name, [string]$Tag, [strin
     $pin = $hit[0].Pin
     if (-not $pin.PSObject.Properties['Facts'] -or $pin.Tag -cne $Tag -or $pin.Digest -cne "sha256:$Digest") { return $null }
     $f = $pin.Facts
-    foreach ($k in 'InterfaceVersion', 'GameBuild', 'Migrated', 'ObservedIn') { if (-not $f.PSObject.Properties[$k]) { return $null } }
+    foreach ($k in 'Digest', 'InterfaceVersion', 'GameBuild', 'Migrated', 'ObservedIn') { if (-not $f.PSObject.Properties[$k]) { return $null } }
+    if ($f.Digest -cne $pin.Digest) { return $null }
     if ($f.Migrated -isnot [bool]) { return $null }
     [ordered]@{ plugin = [ordered]@{ interfaceVersion = [int]$f.InterfaceVersion; gameBuild = [string]$f.GameBuild }
                 rule3 = [ordered]@{ migrated = $f.Migrated }; factsFrom = [string]$f.ObservedIn }

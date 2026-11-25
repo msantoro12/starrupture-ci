@@ -31,8 +31,9 @@ name: SR client check
 # login, after the login cache is deleted from disk. Deleting it does not
 # clear it from the runner's memory, so that code only ever comes from the
 # owners the inputs allow (msantoro12 and AlienXAXS; for a latest release also
-# LetMeInside, the author of MiniMap and PersistentIdFix), the same trust as scanner_ref. The fork
-# deploy keys are only in the auto-apply job (environment fork-push), which
+# LetMeInside, the author of MiniMap and PersistentIdFix), the same trust as loader_ref, or a scanner_ref
+# override. The fork deploy keys are only in the auto-apply job (environment
+# fork-push), which
 # runs no plugin code and no action but actions/checkout, and checks every
 # field of its work list: the commit must be the one plugin-plan resolved
 # from the inputs, before any plugin code ran. Each key can write only
@@ -363,11 +364,22 @@ jobs:
       loader_sha: ${{ steps.read.outputs.loader_sha }}
       scanner_sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
+      - name: Check out the scan gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-gate
+          sparse-checkout: ci/scan-gate.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the loader repository
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           LOADER_REPO: ${{ inputs.loader_repo }}
+          LOADER_REF: ${{ inputs.loader_ref }}
           SCANNER_REPO: ${{ inputs.scanner_repo }}
+          SCANNER_REF: ${{ inputs.scanner_ref }}
         run: |
           # The scanner built here runs in the job that holds the Steam login,
           # so it only ever comes from the owner's fork or the upstream repo.
@@ -377,6 +389,12 @@ jobs:
           if ($env:SCANNER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
             throw "scanner_repo '$($env:SCANNER_REPO)' is not allowed"
           }
+          # The loader ref gives the scanner source and the plugin header, a scanner_ref the scanner source: each is
+          # a branch or tag of its repository, or a commit one of them reaches (never a fork's or pull request's).
+          . .\ci-gate\ci\scan-gate.ps1
+          $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          Assert-OwnRef 'loader_ref' $env:LOADER_REPO $env:LOADER_REF $api
+          if ($env:SCANNER_REF) { Assert-OwnRef 'scanner_ref' $env:SCANNER_REPO $env:SCANNER_REF $api }
 
       - name: Check out the loader (with its pinned Game SDK)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -643,8 +661,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Optional: reads the one private repository of GoodStuffSoftware that is listed; empty when the secret is not set.
           SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
+          LOADER_REPO: ${{ inputs.loader_repo }}
+          LOADER_REF: ${{ inputs.loader_ref }}
           PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
+          PLUGIN_SDK_REF: ${{ inputs.plugin_sdk_ref }}
           GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
+          GAME_SDK_REF: ${{ inputs.game_sdk_ref }}
           EXCLUDE: ${{ inputs.plugin_exclude }}
           TEST_AUTOPILOT: ${{ inputs.test_autopilot == true && contains(github.workflow_ref, '/.github/workflows/sr-client-check.yml@') }}
           PUBLISH: ${{ inputs.publish }}
@@ -699,6 +721,14 @@ jobs:
           }
           function Clear-ReadAuth { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
           function Get-ApiHeaders([string]$repo) { if ($readToken -and $repo -like 'GoodStuffSoftware/*') { @{ Authorization = "Bearer $readToken"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' } } else { $api } }
+          # The loader's header and both SDKs are compiled into every plugin built here, including the ones the gate
+          # then lets the scanner run (the plugins and key-sources jobs wait for this one): Assert-OwnRef, ci/scan-gate.ps1.
+          . ./tool/ci/scan-gate.ps1
+          if ($env:LOADER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') { throw "loader_repo '$($env:LOADER_REPO)' is not allowed" }
+          foreach ($pair in @(@('loader_ref', $env:LOADER_REPO, $env:LOADER_REF), @('plugin_sdk_ref', $env:PLUGIN_SDK_REPO, $env:PLUGIN_SDK_REF), @('game_sdk_ref', $env:GAME_SDK_REPO, $env:GAME_SDK_REF))) {
+            $what, $inRepo, $inRef = $pair
+            Assert-OwnRef $what $inRepo $inRef $api
+          }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^([A-Za-z0-9-]+)/([A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$' -or $Matches[1] -cnotin $allowed) { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
             $owner = $Matches[1]; $short = $Matches[2]; $repo = "$($Matches[1])/$short"; $ref = $Matches[3]
@@ -778,9 +808,10 @@ jobs:
           # runs: the plugins job builds exactly that commit, and auto-apply
           # pushes only on top of it.
           foreach ($e in @($list | Where-Object { $_.source -eq 'build' -and -not $_.sha })) {
-            if ($e.ref -match '^[0-9a-f]{40}$') { $e.sha = $e.ref; continue }
+            $isCommit = $e.ref -match '^[0-9a-f]{40}$'
+            $wanted = if ($isCommit) { @('refs/heads/*', 'refs/tags/*') } else { @("refs/heads/$($e.ref)", "refs/tags/$($e.ref)", "refs/tags/$($e.ref)^{}") }
             Set-ReadAuth $e.repo
-            try { $refs = @(git ls-remote "https://github.com/$($e.repo)" "refs/heads/$($e.ref)" "refs/tags/$($e.ref)" "refs/tags/$($e.ref)^{}") } finally { Clear-ReadAuth }
+            try { $refs = @(git ls-remote "https://github.com/$($e.repo)" $wanted) } finally { Clear-ReadAuth }
             if ($LASTEXITCODE -ne 0) {
               # A restricted owner's repository can be private: when it cannot be read, that plugin alone is not fetched (the check job reports it BUILD-FAILED).
               if ($e.repo -like 'GoodStuffSoftware/*') {
@@ -790,6 +821,7 @@ jobs:
               }
               throw "git ls-remote $($e.repo) failed (exit $LASTEXITCODE)"
             }
+            if ($isCommit) { Assert-OwnCommit $e.repo $e.ref $refs (Get-ApiHeaders $e.repo); $e.sha = $e.ref; continue }
             $hit = foreach ($want in "refs/heads/$($e.ref)", "refs/tags/$($e.ref)^{}", "refs/tags/$($e.ref)") {
               $line = $refs | Where-Object { ($_ -split '\s+')[1] -eq $want } | Select-Object -First 1
               if ($line) { ($line -split '\s+')[0]; break }
@@ -893,6 +925,8 @@ jobs:
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
           $tag = if (Test-Path version) { (Get-Content version -Raw).Trim() } else { 'dev' }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'build\Client Release\Plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -970,6 +1004,8 @@ jobs:
   # of the pipeline-alert issue (the "Settle the key sources" step).
   key-sources-plan:
     name: key-sources-plan
+    # The key sources are built with game_sdk_ref, which plugin-plan checks: a refused plan builds none.
+    needs: plugin-plan
     if: ${{ inputs.map_mode == true && inputs.branch && inputs.branch != 'expiry-only' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1136,6 +1172,8 @@ jobs:
           Copy-Item ..\loader-interface\StarRupture-ModLoader-Core\plugins\plugin_interface.h ..\plugin-sdk\include\plugin_interface.h -Force
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'build\Client Release\Plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -1167,6 +1205,8 @@ jobs:
           $clFile = Join-Path $env:GITHUB_WORKSPACE 'plugin-sdk\StarRupture SDK\Client\build_cl.txt'
           $cl = if (Test-Path $clFile) { (Get-Content $clFile -Raw).Trim() } else { '' }
           $clArgs = if ($cl -match '^\d+$') { @("/p:PluginGameBuiltCL=$cl") } else { Write-Host '::notice::the Game SDK names no build; the project default CL is used'; @() }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'bin\x64\Client Release\plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild MiniMap.sln `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -1196,6 +1236,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'bin\x64\Client Release\plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -1893,8 +1935,10 @@ jobs:
               $gated = Get-ScanRefusal $p.source $p.repo
               if ($gated) {
                 $r.verdict = 'NOT-SCANNED'
-                $r.note = $gated
-                Write-Host "::warning title=Plugin $($p.name)::$gated"
+                # Why the plan found no release or commit, when it says, stays in the note.
+                $planned = if ($p.PSObject.Properties['error']) { ConvertTo-NoteText $p.error } else { '' }
+                $r.note = if ($planned) { "$gated; the plan: $planned" } else { $gated }
+                Write-Host "::warning title=Plugin $($p.name)::$($r.note)"
                 $r; continue
               }
               $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
@@ -1906,11 +1950,14 @@ jobs:
               }
               $r.ref = $meta.ref
               $r.sha = $meta.sha
-              $dll = Join-Path $dir $meta.dll
+              # The gate gets the folder the build wrote. A plugin that is not hosted was built on this runner by
+              # the step above. A hosted one was built in the plugins job: only its artifact ($dir) is here.
+              $built = if ($p.hosted) { $dir } else { Join-Path $env:RUNNER_TEMP "third\$($p.name)\src\build\Client Release\Plugins" }
+              $dll = Join-Path $built $meta.dll
               if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the plugin job made" }
               $stem = "out\plugin-$($p.name)"
               $ErrorActionPreference = 'Continue'
-              Assert-ScanAllowed $p.source $p.repo $dll $dir
+              Assert-ScanAllowed $p.source $p.repo $dll $built
               & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
               $r.exitCode = $LASTEXITCODE
               $ErrorActionPreference = 'Stop'
@@ -2031,7 +2078,8 @@ jobs:
               if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the key-sources job made" }
               $stem = "out\keysrc-$($p.name)"
               $ErrorActionPreference = 'Continue'
-              # The key-sources job builds every one from source in this run.
+              # The key-sources job builds every one from source in this run. Its build folder is on that job's
+              # runner: only the artifact ($dir) is here.
               Assert-ScanAllowed 'build' $p.repo $dll $dir
               & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
               $code = $LASTEXITCODE

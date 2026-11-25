@@ -110,6 +110,12 @@ test('gate: at the scanner call, a path, junction or link cannot bring in a DLL 
   assert.match(got.rootIsJunction, /junction or link/);
 });
 
+test('pinned facts: every committed Facts names the digest its Pin names', () => {
+  const withFacts = NAMES.filter((n) => n.Pin?.Facts);
+  assert.ok(withFacts.length > 0);
+  for (const n of withFacts) assert.equal(n.Pin.Facts.Digest, n.Pin.Digest, `${n.Name}: Pin.Facts are for another DLL; replace or delete them with the Pin`);
+});
+
 test('pinned facts: only for exactly the reviewed DLL; a mismatch, no digest or no Facts declares nothing', ps, () => {
   const dir = scratch();
   const write = (name, pin) => put(dir, name, JSON.stringify([{ Name: 'PersistentIdFix', Pin: pin }]));
@@ -123,6 +129,9 @@ test('pinned facts: only for exactly the reviewed DLL; a mismatch, no digest or 
     unknown: [names, 'Nobody', PIN.Tag, HEX],
     noFacts: [write('nofacts.json', { Tag: PIN.Tag, Digest: PIN.Digest }), 'PersistentIdFix', PIN.Tag, HEX],
     partial: [write('partial.json', { ...PIN, Facts: { InterfaceVersion: 75 } }), 'PersistentIdFix', PIN.Tag, HEX],
+    // The pin moved to a new DLL and the old DLL's facts stayed behind.
+    bumped: [write('bumped.json', { ...PIN, Digest: `sha256:${'b'.repeat(64)}` }), 'PersistentIdFix', PIN.Tag, 'b'.repeat(64)],
+    factsNoDigest: [write('olddigest.json', { ...PIN, Facts: { ...PIN.Facts, Digest: undefined } }), 'PersistentIdFix', PIN.Tag, HEX],
     textFlag: [write('flag.json', { ...PIN, Facts: { ...PIN.Facts, Migrated: 'false' } }), 'PersistentIdFix', PIN.Tag, HEX],
   };
   const out = runPs(dir, [
@@ -170,30 +179,45 @@ test('check step: a gated plugin is graded NOT-SCANNED and never reaches the sca
   const meta = (file) => JSON.stringify({ ref: 'main', sha: 'a'.repeat(40), dll: file.split(/[\\/]/).pop(), sha256: createHash('sha256').update(readFileSync(file)).digest('hex') });
   put(dir, 'plugins/plugin-public-Foo/plugin.json', meta(dll));
   put(dir, 'plugins/plugin-public-MiniMap/plugin.json', meta(planted));
-  const entry = (name, source, repo) => ({ name, source, repo, ref: 'main', release: '' });
+  // Built in the check job (not hosted): the scanned DLL is the one in that build's output folder.
+  const local = put(dir, 'third/Codex/src/build/Client Release/Plugins/Codex.dll', 'built here');
+  put(dir, 'plugins/plugin-public-Codex/Codex.dll', 'built here');
+  put(dir, 'plugins/plugin-public-Codex/plugin.json', meta(local));
+  const entry = (name, source, repo, hosted = false) => ({ name, source, repo, ref: 'main', release: '', hosted });
   const plan = [
     entry('MiniMap', 'release', 'LetMeInside/StarRupture-Plugin-MiniMap'),
-    entry('Other', 'build', 'someone/StarRupture-Plugin-Other'),
+    { ...entry('Other', 'build', 'someone/StarRupture-Plugin-Other'),
+      error: 'no release "v1" | x\r\n::error::forged\n##[error]also <img> `tick` [a](b) @someone %0A ' + 'z'.repeat(400) },
     entry('WAILA', 'build', THIRD),
-    entry('Foo', 'build', OWN),
+    entry('Foo', 'build', OWN, true),
+    entry('Codex', 'build', 'AlienXAXS/StarRupture-Plugin-Codex'),
   ];
   const step = runOf("Check the plugins' patterns");
   const from = step.indexOf('$results = foreach');
   const last = 'foreach ($r in $results) { "$($r.name): $($r.verdict)" }';
   assert.ok(from > 0 && step.indexOf(last) > from);
-  runPs(dir, [
+  const log = runPs(dir, [
     `. ${q(gate)}`,
-    `$env:BRANCH = 'public'; $env:PLAN = ${q(JSON.stringify(plan))}`,
+    `$env:RUNNER_TEMP = ${q(dir)}; $env:BRANCH = 'public'; $env:PLAN = ${q(JSON.stringify(plan))}`,
     `function Invoke-FakeScanner { Add-Content -LiteralPath ${q(join(dir, 'scanned.txt'))} -Value ($args -join ' '); $global:LASTEXITCODE = 2 }`,
     "$scanner = 'Invoke-FakeScanner'; $suggest = @(); $exe = [pscustomobject]@{ FullName = 'game.exe' }",
     step.slice(from, step.indexOf(last)),
   ]);
   const out = JSON.parse(read(join(dir, 'out', 'plugins.json')).replace(/^\ufeff/, ''));
   assert.equal(out.status, 'fail', 'never silently green');
-  assert.deepEqual(out.plugins.map((p) => [p.name, p.verdict]), [['MiniMap', 'NOT-SCANNED'], ['Other', 'NOT-SCANNED'], ['WAILA', 'BUILD-FAILED'], ['Foo', 'ERROR']]);
+  assert.deepEqual(out.plugins.map((p) => [p.name, p.verdict]), [['MiniMap', 'NOT-SCANNED'], ['Other', 'NOT-SCANNED'], ['WAILA', 'BUILD-FAILED'], ['Foo', 'ERROR'], ['Codex', 'ERROR']]);
+  const notes = Object.fromEntries(out.plugins.map((p) => [p.name, p.note]));
+  assert.equal(notes.MiniMap, 'not scanned: gated (a downloaded DLL; only a DLL this run built from source is scanned)', 'no plan error, nothing added');
+  assert.match(notes.Other, /^not scanned: gated .*; the plan: no release "v1" x :error:forged error also img tick a \(b\) someone 0A z+\.\.\.$/);
+  assert.doesNotMatch(notes.Other, /[|`<>\[\]@#%\r\n]|::/);
+  assert.ok(notes.Other.length < 500);
+  // The log: the forged commands start no line of their own.
+  assert.doesNotMatch(log, /^\s*::error::forged|##\[error\]/m);
+  assert.match(log, /^::warning title=Plugin Other::not scanned: gated .*; the plan: no release/m);
   const scanned = read(join(dir, 'scanned.txt')).trim().split('\n');
-  assert.equal(scanned.length, 1);
+  assert.equal(scanned.length, 2);
   assert.match(scanned[0], /Foo\.dll/);
+  assert.match(scanned[1], /third.Codex.src.build.Client Release.Plugins.Codex\.dll/, 'not the copy folder');
 });
 
 test('workflows: every sr-aobscan --plugin call is right behind the gate, on the same DLL', () => {
@@ -226,8 +250,15 @@ test('workflows: no downloaded DLL is fetched for a scan, and a committed DLL ca
   const rig = runOf("Record the rig's plugin set (not scanned)");
   assert.ok(!/\$scanner|Invoke-WebRequest|rig-dl/.test(rig));
   assert.ok(!/-Mode Fetch|D:\\rig-dl/.test(wf), 'the check job downloads no rig release DLL');
-  assert.equal(wf.split('the source already holds a DLL in its build output folder').length - 1, 2, 'both builds that are scanned from a fresh checkout');
-  const checkout = wf.indexOf('- name: Check out the scan gate\n');
-  assert.ok(checkout > 0 && checkout < wf.indexOf(". .\\ci-gate\\ci\\scan-gate.ps1"));
+  assert.equal(wf.split('the source already holds a DLL in its build output folder').length - 1, 6, 'every build whose DLL is scanned: plugins, three key-source recipes, the check job, autofix');
+  // In each of the hosted ones the refusal comes before msbuild runs.
+  for (const name of ['Build the plugin (Client Release)', 'Build the key source (Client Release)', 'Build the key-scan build (Client Release)', 'Build the key source on the Plugin SDK root (Client Release)']) {
+    const run = runOf(name);
+    const at = run.indexOf('the source already holds a DLL in its build output folder');
+    assert.ok(at > 0 && at < run.search(/^\s*msbuild /m), name);
+  }
+  const check = wf.slice(wf.indexOf('\n  check:\n'), wf.indexOf('\n  layout-store:\n'));
+  const checkout = check.indexOf('- name: Check out the scan gate\n');
+  assert.ok(checkout > 0 && checkout < check.indexOf(". .\\ci-gate\\ci\\scan-gate.ps1"));
   assert.ok(!existsSync(join(here, 'scan-gate.allow')), 'no allow list outside the script');
 });
