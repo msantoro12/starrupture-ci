@@ -10,19 +10,20 @@
 //   INDEX_STATE                 present | missing     whether mod-index/index.json exists at that commit
 //   LIVE_STATE                  present | missing     whether the live vmap-feed release holds mod-index.v1.txt
 //   MOD_INDEX_AUTO_PUBLISH      the repository variable; only the exact string `true` switches publishing on
-//   DRY_RUN                     `true` for a hand run that must not dispatch
+//   DRY_RUN                     `false` only for a run that may dispatch; anything else, unset included, is a dry run
 // --index, --live and --runs name files; a file is read only when its state says it exists. --runs is the answer of
 // GET /repos/<repo>/actions/workflows/sr-mod-index.yml/runs.
 //
 // The verdict is one of
 //   skip      nothing to do: the live index is the one on main, or main has no index yet
 //   report    something to say and no dispatch: a difference while the switch is off, no live mod index to compare with
-//             (the first live publish is by hand), a run already going, or two failed runs for this commit
+//             (the first live publish is by hand), a run already going, or two failed dispatched runs in a row
 //   dispatch  start the live publish for exactly this commit
 //   fail      the run goes red and nothing is dispatched: the index fails the signer's own checks, the live file cannot
 //             be read, or an input is not what it must be
 // Only `dispatch` ever leads to a write, and only when every check passed. --output receives `action=` and `sha=`, both
-// from fixed sets (the sha only when it is 40 lowercase hex). The summary is markdown with every text that came from the
+// from fixed sets (the sha only when it is 40 lowercase hex), and `stopped=true|false`: true while the two-failure stop holds,
+// which the workflow turns into one alert issue. The summary is markdown with every text that came from the
 // index or a downloaded file made printable ASCII without anything that makes a link, tag, emphasis or table cell.
 // Exit codes: 0 skip, report or dispatch; 1 fail; 2 usage error or an unreadable input.
 
@@ -97,16 +98,22 @@ export function renderDiff(diff) {
 // ---- the runs ----------------------------------------------------------------------------------------------------
 
 // From the answer of the workflow's runs API: how many runs of sr-mod-index.yml are not finished, and how many
-// dispatched runs for this commit (their title carries the loader_ref, see run-name there) ended without success.
-export function summariseRuns(json, sha) {
+// dispatched runs in a row, newest first, ended without success. A dispatched run is one whose title carries a full
+// commit id as its loader_ref (see run-name there), whatever the commit; the first success ends the count.
+export function summariseRuns(json) {
   const runs = json?.workflow_runs;
   if (!Array.isArray(runs)) throw new AutoError('the runs list is not an answer of the workflow runs API');
-  const title = `${RUN_TITLE_PREFIX}${sha}`;
+  const titled = new RegExp(`^${RUN_TITLE_PREFIX}[0-9a-f]{40}$`);
+  const newestFirst = (a, b) => (Date.parse(b?.created_at) || 0) - (Date.parse(a?.created_at) || 0);
   let inFlight = 0;
   let failures = 0;
-  for (const r of runs) {
+  let counting = true;
+  for (const r of [...runs].sort(newestFirst)) {
     if (r?.status !== 'completed') inFlight++;
-    else if (r.event === 'workflow_dispatch' && r.display_title === title && FAILED.has(r.conclusion)) failures++;
+    else if (counting && r.event === 'workflow_dispatch' && titled.test(r.display_title)) {
+      if (FAILED.has(r.conclusion)) failures++;
+      else if (r.conclusion === 'success') counting = false;
+    }
   }
   return { inFlight, failures };
 }
@@ -114,12 +121,13 @@ export function summariseRuns(json, sha) {
 // ---- the decision ------------------------------------------------------------------------------------------------
 
 // i: { sha, variable, dryRun, indexState, indexBody, liveState, liveBody, liveError, signerError, inFlight, failures }
-// Returns { action: 'skip' | 'report' | 'dispatch' | 'fail', reason, detail, diff }. reason is fixed text of this file;
+// Returns { action: 'skip' | 'report' | 'dispatch' | 'fail', reason, detail, diff, stopped }; stopped is true only for the
+// two-failure stop. reason is fixed text of this file;
 // detail is text that came from the index or a downloaded file (an error message that names an entry) and is only ever
 // shown cleaned. Fails closed: anything not named below as a reason to dispatch is not one, and only the last line
 // returns `dispatch`.
 export function decide(i) {
-  const out = (action, reason, diff = null, detail = '') => ({ action, reason, detail, diff });
+  const out = (action, reason, diff = null, detail = '', stopped = false) => ({ action, reason, detail, diff, stopped });
   if (typeof i?.sha !== 'string' || !FULL_SHA.test(i.sha)) return out('fail', 'the loader commit is not a full commit id');
   if (i.indexState !== 'present' && i.indexState !== 'missing') return out('fail', 'the state of the index on main is not known');
   if (i.indexState === 'missing') return out('skip', 'index not on main yet: the loader has no mod-index/index.json at that commit');
@@ -135,7 +143,7 @@ export function decide(i) {
   if (i.variable !== 'true') return out('report', 'automatic publishing is off (the variable MOD_INDEX_AUTO_PUBLISH is not `true`): nothing is dispatched', diff);
   if (!Number.isInteger(i.inFlight) || !Number.isInteger(i.failures) || i.inFlight < 0 || i.failures < 0) return out('fail', 'the recent runs of sr-mod-index.yml could not be counted', diff);
   if (i.inFlight > 0) return out('report', `a run of sr-mod-index.yml is already queued or going (${i.inFlight}): nothing is dispatched`, diff);
-  if (i.failures >= MAX_FAILURES) return out('report', `STOPPED: ${i.failures} dispatched runs for this commit failed; nothing more is dispatched for it. Look at those runs, or dispatch by hand once the cause is fixed`, diff);
+  if (i.failures >= MAX_FAILURES) return out('report', `STOPPED: the last ${i.failures} dispatched runs failed; nothing more is dispatched until one succeeds. Look at those runs, or dispatch by hand once the cause is fixed`, diff, '', true);
   return out('dispatch', 'the index on main differs from the live one, passes the signer\'s checks, and no run is going: dispatching the live publish for this commit', diff);
 }
 
@@ -162,7 +170,7 @@ export function readInputs(a, env) {
   const input = {
     sha: env.LOADER_SHA,
     variable: env.MOD_INDEX_AUTO_PUBLISH,
-    dryRun: env.DRY_RUN === 'true',
+    dryRun: env.DRY_RUN !== 'false',
     indexState,
     liveState,
     signerError: null,
@@ -179,7 +187,7 @@ export function readInputs(a, env) {
   }
   const runsFile = arg(a, '--runs');
   if (runsFile && existsSync(runsFile) && FULL_SHA.test(input.sha ?? '')) {
-    const { inFlight, failures } = summariseRuns(JSON.parse(readFileSync(runsFile, 'utf8')), input.sha);
+    const { inFlight, failures } = summariseRuns(JSON.parse(readFileSync(runsFile, 'utf8')));
     input.inFlight = inFlight;
     input.failures = failures;
   }
@@ -196,7 +204,7 @@ export function main(argv, env = process.env) {
   const summaryFile = arg(a, '--summary');
   if (summaryFile) appendFileSync(summaryFile, `${summary}\n`);
   const outputFile = arg(a, '--output');
-  if (outputFile) appendFileSync(outputFile, `action=${verdict.action}\n${FULL_SHA.test(input.sha ?? '') ? `sha=${input.sha}\n` : ''}`);
+  if (outputFile) appendFileSync(outputFile, `action=${verdict.action}\nstopped=${verdict.stopped}\n${FULL_SHA.test(input.sha ?? '') ? `sha=${input.sha}\n` : ''}`);
   if (verdict.action === 'fail') process.stderr.write(`::error::${md(verdict.reason)}\n`);
   return verdict.action === 'fail' ? 1 : 0;
 }

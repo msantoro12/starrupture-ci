@@ -82,13 +82,24 @@ test('a run of the publish workflow is queued or going: no dispatch', () => {
   assert.match(v.reason, /already queued or going/);
 });
 
-test(`${MAX_FAILURES} failed runs for the commit: no dispatch, a clear STOPPED line; one failure still retries`, () => {
-  assert.equal(decide(ready({ failures: MAX_FAILURES - 1 })).action, 'dispatch');
+test(`${MAX_FAILURES} failed runs in a row: no dispatch, a clear STOPPED line, stopped is set; one failure still retries`, () => {
+  const one = decide(ready({ failures: MAX_FAILURES - 1 }));
+  assert.equal(one.action, 'dispatch');
+  assert.equal(one.stopped, false);
   for (const failures of [MAX_FAILURES, MAX_FAILURES + 5]) {
     const v = decide(ready({ failures }));
     assert.equal(v.action, 'report');
+    assert.equal(v.stopped, true);
     assert.match(v.reason, /^STOPPED: /);
   }
+});
+
+test('stopped is set for the two-failure stop and for nothing else', () => {
+  for (const over of [{}, { variable: 'no' }, { dryRun: true }, { indexState: 'missing' }, { liveState: 'missing' }, { indexBody: LIVE }, { signerError: 'x' }, { inFlight: 1 }, { sha: 'x' }]) {
+    assert.equal(decide(ready(over)).stopped, false, JSON.stringify(over));
+  }
+  assert.equal(decide(ready({ variable: 'no', failures: MAX_FAILURES })).stopped, false, 'switch off: no stop, no alert');
+  assert.equal(decide(ready({ dryRun: true, failures: MAX_FAILURES })).stopped, false, 'dry run: no alert');
 });
 
 test('fails closed on inputs that are not what they must be', () => {
@@ -142,23 +153,29 @@ test('the summary lists the difference and caps long lists', () => {
 
 // ---- the runs -----------------------------------------------------------------------------------------------------
 
-test('summariseRuns counts runs going and failed dispatches by the title that carries the commit', () => {
-  const t = `SR mod index ${SHA}`;
-  const run = (o) => ({ status: 'completed', conclusion: 'success', event: 'workflow_dispatch', display_title: t, ...o });
-  const json = { workflow_runs: [
+test('summariseRuns counts runs going, and the failed dispatched runs in a row, newest first, whatever the commit', () => {
+  const other = 'b'.repeat(40);
+  let n = 100;
+  const run = (o) => ({ status: 'completed', conclusion: 'success', event: 'workflow_dispatch', display_title: `SR mod index ${SHA}`, created_at: new Date(Date.UTC(2026, 10, 1, 0, n--)).toISOString(), ...o });
+  const summarise = (runs) => summariseRuns({ workflow_runs: runs });
+  // Newest first. Two failures for two different commits are two failures in a row.
+  assert.deepEqual(summarise([run({ conclusion: 'failure' }), run({ conclusion: 'cancelled', display_title: `SR mod index ${other}` })]), { inFlight: 0, failures: 2 });
+  // A success ends the count; older failures do not count.
+  assert.deepEqual(summarise([run({ conclusion: 'failure' }), run({ conclusion: 'success', display_title: `SR mod index ${other}` }), run({ conclusion: 'failure' }), run({ conclusion: 'failure' })]), { inFlight: 0, failures: 1 });
+  // Not dispatched runs, other titles, skipped runs: ignored. Runs going are counted apart.
+  assert.deepEqual(summarise([
     run({ status: 'in_progress', conclusion: null }),
     run({ status: 'queued', conclusion: null, display_title: 'SR mod index main' }),
-    run({ conclusion: 'failure' }),
-    run({ conclusion: 'cancelled' }),
-    run({ conclusion: 'success' }),
-    run({ conclusion: 'skipped' }),
-    run({ conclusion: 'failure', display_title: `SR mod index ${'b'.repeat(40)}` }),
+    run({ conclusion: 'failure', display_title: 'SR mod index main' }),
     run({ conclusion: 'failure', event: 'workflow_call' }),
-    run({ conclusion: 'failure', display_title: `${t} ` }),
-  ] };
-  assert.deepEqual(summariseRuns(json, SHA), { inFlight: 2, failures: 2 });
-  assert.throws(() => summariseRuns({}, SHA), /runs list/);
-  assert.throws(() => summariseRuns(null, SHA), /runs list/);
+    run({ conclusion: 'failure', display_title: `SR mod index ${SHA} ` }),
+    run({ conclusion: 'skipped' }),
+    run({ conclusion: 'timed_out' }),
+  ]), { inFlight: 2, failures: 1 });
+  // The order of the answer does not matter: the newest run decides.
+  assert.deepEqual(summarise([run({ conclusion: 'failure' }), run({ conclusion: 'failure' }), run({ conclusion: 'success' })].reverse()), { inFlight: 0, failures: 2 });
+  assert.throws(() => summariseRuns({}), /runs list/);
+  assert.throws(() => summariseRuns(null), /runs list/);
 });
 
 // ---- the command --------------------------------------------------------------------------------------------------
@@ -187,7 +204,7 @@ const noRuns = JSON.stringify({ workflow_runs: [] });
 test('command: a difference with the switch on writes action=dispatch and the sha, exit 0', () => {
   const r = plan({ 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': noRuns }, env());
   assert.equal(r.code, 0);
-  assert.equal(r.out, `action=dispatch\nsha=${SHA}\n`);
+  assert.equal(r.out, `action=dispatch\nstopped=false\nsha=${SHA}\n`);
   assert.match(r.summary, /Mod index auto publish: dispatch/);
   assert.match(r.summary, /added \(1\): `minimap`/);
 });
@@ -196,7 +213,7 @@ test('command: the switch off or unset writes action=report', () => {
   for (const v of [undefined, '', 'false', 'TRUE']) {
     const r = plan({ 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': noRuns }, env({ MOD_INDEX_AUTO_PUBLISH: v }));
     assert.equal(r.code, 0, `variable ${v}`);
-    assert.equal(r.out, `action=report\nsha=${SHA}\n`);
+    assert.equal(r.out, `action=report\nstopped=false\nsha=${SHA}\n`);
   }
 });
 
@@ -207,14 +224,23 @@ test('command: equal, missing live, missing index and a dry run write no dispatc
   assert.match(plan({ 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': noRuns }, env({ DRY_RUN: 'true' })).out, /^action=report\n/);
 });
 
-test('command: a run going or two failures for the commit write action=report', () => {
+test('command: a run going or two failures in a row write action=report, the failures stopped=true', () => {
   const t = `SR mod index ${SHA}`;
   const going = JSON.stringify({ workflow_runs: [{ status: 'queued', event: 'workflow_dispatch', display_title: t }] });
-  const failed = JSON.stringify({ workflow_runs: [1, 2].map(() => ({ status: 'completed', conclusion: 'failure', event: 'workflow_dispatch', display_title: t })) });
+  const failed = JSON.stringify({ workflow_runs: [SHA, 'c'.repeat(40)].map((sha) => ({ status: 'completed', conclusion: 'failure', event: 'workflow_dispatch', display_title: `SR mod index ${sha}` })) });
   assert.match(plan({ 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': going }, env()).out, /^action=report\n/);
   const r = plan({ 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': failed }, env());
-  assert.match(r.out, /^action=report\n/);
-  assert.match(r.summary, /STOPPED: 2 dispatched runs/);
+  assert.match(r.out, /^action=report\nstopped=true\n/);
+  assert.match(r.summary, /STOPPED: the last 2 dispatched runs/);
+  const dispatched = (conclusion, sha) => ({ status: 'completed', conclusion, event: 'workflow_dispatch', display_title: `SR mod index ${sha}` });
+  const recovered = JSON.stringify({ workflow_runs: [dispatched('failure', SHA), dispatched('success', 'c'.repeat(40)), dispatched('failure', SHA)] });
+  assert.match(plan({ 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': recovered }, env()).out, /^action=dispatch\nstopped=false\n/);
+});
+
+test('command: only the exact string false lets a run dispatch; unset, empty and other values are a dry run', () => {
+  const files = { 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': noRuns };
+  for (const DRY_RUN of [undefined, '', 'TRUE', 'no', 'true']) assert.match(plan(files, env({ DRY_RUN })).out, /^action=report\n/, `DRY_RUN ${DRY_RUN}`);
+  assert.match(plan(files, env({ DRY_RUN: 'false' })).out, /^action=dispatch\n/);
 });
 
 test('command: an index the signer refuses exits 1 with action=fail; a bad runs file or live file never dispatches', () => {
@@ -234,7 +260,7 @@ test('command: an index the signer refuses exits 1 with action=fail; a bad runs 
 test('command: an unusable loader commit writes no sha output, and a hostile value stays out of the output file', () => {
   const r = plan({ 'index.json': NEW, 'live.txt': signed(LIVE), 'runs.json': noRuns }, env({ LOADER_SHA: `${SHA}\naction=dispatch` }));
   assert.equal(r.code, 1);
-  assert.equal(r.out, 'action=fail\n');
+  assert.equal(r.out, 'action=fail\nstopped=false\n');
 });
 
 test('command: text that came from the index cannot make markdown or a workflow command in the summary or the error line', () => {
@@ -266,6 +292,7 @@ const jobText = (name) => {
 };
 const planJob = jobText('plan');
 const dispatchJob = jobText('dispatch');
+const alertJob = jobText('alert');
 const stepOf = (job, name) => {
   const at = job.indexOf(`- name: ${name}\n`);
   assert.ok(at > 0, `step "${name}" exists`);
@@ -289,12 +316,29 @@ test('one run at a time, never cancelled; main only', () => {
   assert.ok(dispatchJob.includes("github.ref == 'refs/heads/main'"));
 });
 
-test('permissions: none by default; the plan job reads, the dispatch job can start workflows and nothing else', () => {
+test('permissions: none by default; the plan job reads, the dispatch job can start workflows, the alert job can write issues, each nothing else', () => {
   assert.match(wf, /\npermissions: \{\}\n/);
   assert.match(planJob, /\n {4}permissions:\n {6}contents: read\n {6}actions: read\n {4}[a-z]/);
   assert.match(dispatchJob, /\n {4}permissions:\n {6}actions: write\n {4}[a-z]/);
-  assert.equal([...wf.matchAll(/^ +[a-z-]+: (read|write)$/gm)].length, 3, 'three permission lines in all');
-  assert.ok(!/(contents|issues|pull-requests|id-token|packages|deployments): write/.test(wf));
+  assert.match(alertJob, /\n {4}permissions:\n {6}issues: write\n {4}[a-z]/);
+  assert.equal([...wf.matchAll(/^ +[a-z-]+: (read|write)$/gm)].length, 4, 'four permission lines in all');
+  assert.ok(!/(contents|pull-requests|id-token|packages|deployments): write/.test(wf));
+  assert.ok(!/issues: write/.test(planJob + dispatchJob));
+});
+
+test('the alert: one issue per stop, only on the stop verdict with the switch on, none while one is open, no dispatch', () => {
+  assert.ok(planJob.includes('stopped: ${{ steps.decide.outputs.stopped }}'));
+  assert.ok(alertJob.includes("needs.plan.outputs.stopped == 'true'"));
+  assert.ok(alertJob.includes("vars.MOD_INDEX_AUTO_PUBLISH == 'true'") && alertJob.includes('inputs.dry_run != true') && alertJob.includes("github.ref == 'refs/heads/main'"));
+  const step = stepOf(alertJob, 'Raise one alert for the stop');
+  assert.ok(step.includes('gh issue list --state open') && step.indexOf('gh issue list') < step.indexOf('pipeline-alert.mjs raise'), 'looks for an open issue first');
+  assert.match(step, /if \[ -n "\$open" \]; then [^\n]*exit 0; fi\n/);
+  assert.match(step, /node ci\/pipeline-alert\.mjs raise --title "\$TITLE" --body-file "\$RUNNER_TEMP\/stopped\.md" --owner "\$OWNER"\n/);
+  assert.ok(!/gh workflow run|secrets\./.test(alertJob));
+});
+
+test('the keepalive workflow keeps the schedule of this workflow enabled', () => {
+  assert.match(read('.github', 'workflows', 'sr-keepalive.yml'), /for wf in [^\n]*\bsr-mod-index-auto\.yml\b[^\n]*; do\n/);
 });
 
 test('no secret, no environment, no key: the signing happens in the dispatched run only', () => {

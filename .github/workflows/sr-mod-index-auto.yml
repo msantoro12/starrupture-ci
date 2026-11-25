@@ -14,8 +14,9 @@ name: SR mod index auto
 #
 # Never dispatches when: the switch is off; the index is not on the loader's main yet; the live release holds no mod
 # index (the first live publish is by hand); the live file cannot be read; the two bodies are equal; the index fails the
-# signer's own checks (the run goes red); a run of sr-mod-index.yml is queued or going; two dispatched runs for this
-# commit have already failed. At most one dispatch per run.
+# signer's own checks (the run goes red); a run of sr-mod-index.yml is queued or going; the last two dispatched runs,
+# whatever the commit, failed (the stop holds until one succeeds). At most one dispatch per run. While that stop holds,
+# the `alert` job (issues: write, nothing else) raises one issue, and none while it is open.
 
 on:
   schedule:
@@ -45,6 +46,7 @@ jobs:
     outputs:
       action: ${{ steps.decide.outputs.action }}
       sha: ${{ steps.decide.outputs.sha }}
+      stopped: ${{ steps.decide.outputs.stopped }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -103,7 +105,7 @@ jobs:
             echo "state=missing" >> "$GITHUB_OUTPUT"
           fi
 
-      # Runs of sr-mod-index.yml: one going now, or failures for this commit, stop a dispatch (the script counts them).
+      # Runs of sr-mod-index.yml: one going now, or two failed dispatched runs in a row, stop a dispatch (the script counts them).
       - name: Read the recent runs of the publish workflow
         run: |
           set -euo pipefail
@@ -144,3 +146,39 @@ jobs:
           [[ "$LOADER_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no checked loader commit"; exit 2; }
           gh workflow run sr-mod-index.yml --repo "$GH_REPO" --ref main -f live=true -f "loader_ref=$LOADER_SHA"
           echo "### Mod index auto publish: dispatched the live publish (sr-mod-index.yml) for \`$LOADER_SHA\`." >> "$GITHUB_STEP_SUMMARY"
+
+  # While the two-failure stop holds, one issue (label pipeline-alert, assigned to the owner, so GitHub notifies him). Each
+  # run checks for an open issue with the title first and posts nothing while it exists, so a stop is one alert, not one
+  # per tick. It only runs with the switch on, which is the only way a stop can hold.
+  alert:
+    name: alert
+    needs: [plan]
+    if: ${{ needs.plan.outputs.stopped == 'true' && vars.MOD_INDEX_AUTO_PUBLISH == 'true' && inputs.dry_run != true && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      OWNER: msantoro12
+      TITLE: SR mod index auto publish stopped
+    steps:
+      - name: Check out the tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Raise one alert for the stop
+        run: |
+          set -euo pipefail
+          open="$(gh issue list --state open --search "$TITLE in:title" --json number,title --jq '[.[] | select(.title == env.TITLE)][0].number // empty')"
+          if [ -n "$open" ]; then echo "Alert #$open is already open."; exit 0; fi
+          cat > "$RUNNER_TEMP/stopped.md" <<EOF
+          @$OWNER the automatic live publish of the mod index is stopped: the last two dispatched runs of sr-mod-index.yml failed.
+          Nothing more is dispatched until one succeeds. Look at the failed runs, fix the cause, then dispatch sr-mod-index.yml by hand for the loader commit.
+          Runs: $GITHUB_SERVER_URL/$GH_REPO/actions/workflows/sr-mod-index.yml
+          Seen by: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID
+          EOF
+          node ci/pipeline-alert.mjs raise --title "$TITLE" --body-file "$RUNNER_TEMP/stopped.md" --owner "$OWNER"

@@ -21,7 +21,7 @@ run-name: SR mod index ${{ inputs.loader_ref }}
 # that turns it on is sr-mod-index-auto.yml, and only while the owner's variable MOD_INDEX_AUTO_PUBLISH is `true`; and it signs only the loader's main as it is at that moment: the commit read must be the tip of main when the signing job asks (`ci/mod-index.mjs loader-head`). A run without it reads the live vmap-feed release before and after and fails if it changed; a live run
 # fails if any asset but mod-index.v1.txt changed. No pull_request, push or schedule trigger; the only caller is the
 # mod index leg of sr-watch.yml, which never sets `live`. The run title carries loader_ref (run-name): sr-mod-index-auto.yml
-# counts the failed dispatches for one commit by it.
+# counts the failed dispatched runs in a row by it.
 
 on:
   workflow_call:
