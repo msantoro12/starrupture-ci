@@ -227,7 +227,8 @@ test('workflows: no downloaded DLL is fetched for a scan, and a committed DLL ca
   assert.ok(!/\$scanner|Invoke-WebRequest|rig-dl/.test(rig));
   assert.ok(!/-Mode Fetch|D:\\rig-dl/.test(wf), 'the check job downloads no rig release DLL');
   assert.equal(wf.split('the source already holds a DLL in its build output folder').length - 1, 2, 'both builds that are scanned from a fresh checkout');
-  const checkout = wf.indexOf('- name: Check out the scan gate\n');
-  assert.ok(checkout > 0 && checkout < wf.indexOf(". .\\ci-gate\\ci\\scan-gate.ps1"));
+  const check = wf.slice(wf.indexOf('\n  check:\n'), wf.indexOf('\n  layout-store:\n'));
+  const checkout = check.indexOf('- name: Check out the scan gate\n');
+  assert.ok(checkout > 0 && checkout < check.indexOf(". .\\ci-gate\\ci\\scan-gate.ps1"));
   assert.ok(!existsSync(join(here, 'scan-gate.allow')), 'no allow list outside the script');
 });

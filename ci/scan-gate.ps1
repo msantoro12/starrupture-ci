@@ -2,6 +2,7 @@
 # DLL this run built from source may, and only from our own repositories or the nine AlienXAXS plugins.
 # A downloaded DLL never may, whoever published it. No input, variable or list entry widens this.
 # sr-client-check.yml dot-sources this before every scanner call, and before a plugin is fetched.
+# Both checks also use it on a ref that names code compiled here (Assert-OwnRef, below).
 $ScanOwnRepos = '^(msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+|GoodStuffSoftware/sr-bestbuilder)$'
 $ScanThirdPartySource = '^AlienXAXS/StarRupture-Plugin-(BetterCheats|BetterDrone|WAILA|Codex|Compass|ProductionViewer|RuptureTimer|WaveOptimiser|CameraControls)$'
 
@@ -30,6 +31,34 @@ function Assert-ScanAllowed([string]$Source, [string]$Repo, [string]$Dll, [strin
     while ($item -and ($item.FullName.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'not scanned: gated (a junction or link on the way to the DLL)' }
         $item = if ($item -is [IO.DirectoryInfo]) { $item.Parent } else { $item.Directory }
+    }
+}
+
+# A commit id is taken only when a branch or tag of the named repository reaches it. GitHub serves the commits of
+# forks and pull requests under the parent repository's name (checkout, fetch and the compare API all resolve
+# them), so the commit is compared with the tips $RefLines (git ls-remote) lists as that repository's own heads and tags.
+function Assert-OwnCommit([string]$Repo, [string]$Sha, [string[]]$RefLines, $Headers) {
+    # An annotated tag counts as its commit: the peeled line follows the tag's own and replaces it.
+    $tips = [ordered]@{}
+    foreach ($line in $RefLines) { $id, $name = $line -split '\s+'; if ($name -cmatch '^refs/(heads|tags)/') { $tips[($name -creplace '\^\{\}$')] = $id } }
+    if (@($tips.Values) -contains $Sha) { return }
+    $why = ''
+    foreach ($name in @($tips.Keys | Sort-Object { $_ -cnotmatch '^refs/heads/(main|master)$' })) {
+        try { $status = [string](Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/compare/$Sha...$($tips[$name])?per_page=1" -Headers $Headers -TimeoutSec 60).status }
+        catch { $why = " (last compare error: $($_.Exception.Message))"; continue }
+        if ($status -ceq 'ahead' -or $status -ceq 'identical') { return }
+    }
+    throw "the commit $Sha is in no branch or tag of $Repo (to run it, push a branch for it to that repository)$why"
+}
+
+# An input that names a ref of a public repository: a branch or tag of $Repo itself, or a full commit id that
+# one of them reaches. Anything else (refs/pull/*, a short id, a blank) is refused: the checkout would take it.
+function Assert-OwnRef([string]$What, [string]$Repo, [string]$Ref, $Headers) {
+    $refs = @(git ls-remote "https://github.com/$Repo" 'refs/heads/*' 'refs/tags/*')
+    if ($LASTEXITCODE -ne 0) { throw "git ls-remote $Repo failed (exit $LASTEXITCODE)" }
+    if ($Ref -match '^[0-9a-f]{40}$') { Assert-OwnCommit $Repo $Ref $refs $Headers; return }
+    if (-not @($refs | Where-Object { @("refs/heads/$Ref", "refs/tags/$Ref") -ccontains ($_ -split '\s+')[1] }).Count) {
+        throw "$What '$Ref' is not a branch, a tag or a full commit id of $Repo"
     }
 }
 

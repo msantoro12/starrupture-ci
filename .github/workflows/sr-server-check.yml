@@ -112,11 +112,22 @@ jobs:
       scanner_sha256: ${{ steps.hash.outputs.sha256 }}
       server_scanner_sha256: ${{ steps.hash.outputs.server_sha256 }}
     steps:
+      - name: Check out the scan gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-gate
+          sparse-checkout: ci/scan-gate.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the loader repository
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           LOADER_REPO: ${{ inputs.loader_repo }}
+          LOADER_REF: ${{ inputs.loader_ref }}
           SCANNER_REPO: ${{ inputs.scanner_repo }}
+          SCANNER_REF: ${{ inputs.scanner_ref }}
         run: |
           if ($env:LOADER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
             throw "loader_repo '$($env:LOADER_REPO)' is not allowed"
@@ -124,6 +135,12 @@ jobs:
           if ($env:SCANNER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
             throw "scanner_repo '$($env:SCANNER_REPO)' is not allowed"
           }
+          # The loader ref gives the scanner source and the plugin header, a scanner_ref the scanner source: each is
+          # a branch or tag of its repository, or a commit one of them reaches (never a fork's or pull request's).
+          . .\ci-gate\ci\scan-gate.ps1
+          $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          Assert-OwnRef 'loader_ref' $env:LOADER_REPO $env:LOADER_REF $api
+          if ($env:SCANNER_REF) { Assert-OwnRef 'scanner_ref' $env:SCANNER_REPO $env:SCANNER_REF $api }
 
       - name: Check out the loader (with its pinned Game SDK)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

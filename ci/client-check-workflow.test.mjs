@@ -1626,10 +1626,11 @@ const MINIMAP_REPO = 'LetMeInside/StarRupture-Plugin-MiniMap';
 // pinAssets: 'client' (the client DLL beside a zip), 'zip' (no DLL) or 'two' (two client DLLs).
 // private: git refuses every GoodStuffSoftware repository unless the read token's header is set around the call.
 // readToken: the value of SR_READ_TOKEN_GOODSTUFFSOFTWARE ('' = the secret is not set).
-const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = PIN_DIGEST, pinAssets = 'client', private: isPrivate = false, readToken = '', acceptToken = readToken, pluginSdkRef = 'main', gameSdkRef = 'main', compare = {} }) => {
+const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = PIN_DIGEST, pinAssets = 'client', private: isPrivate = false, readToken = '', acceptToken = readToken, loaderRef = 'main', pluginSdkRef = 'main', gameSdkRef = 'main', compare = {} }) => {
   const dir = mkdtempSync(join(tmpdir(), 'plan-'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   writeFileSync(join(dir, 'tool', 'ci', 'plugin-names.json'), JSON.stringify(names));
+  copyFileSync(join(here, 'scan-gate.ps1'), join(dir, 'tool', 'ci', 'scan-gate.ps1'));
   copyFileSync(join(here, 'plugin-owners.json'), join(dir, 'tool', 'ci', 'plugin-owners.json'));
   writeFileSync(join(dir, 'plan.ps1'), '\ufeff' + runOf(job('plugin-plan'), 'Check the plugin list'));
   const out = join(dir, 'github-output.txt');
@@ -1672,6 +1673,7 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
     readToken ? `$env:SR_READ_TOKEN_GOODSTUFFSOFTWARE = '${readToken}'` : 'Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue',
     "$env:GH_TOKEN = 'x'; $env:PLUGIN_SDK_REPO = 'AlienXAXS/StarRupture-Plugin-SDK'; $env:GAME_SDK_REPO = 'AlienXAXS/StarRupture-Game-SDK'",
     `$env:PLUGIN_SDK_REF = '${pluginSdkRef}'; $env:GAME_SDK_REF = '${gameSdkRef}'`,
+    `$env:LOADER_REPO = 'AlienXAXS/StarRupture-ModLoader'; $env:LOADER_REF = '${loaderRef}'`,
     "$env:EXCLUDE = ''; $env:TEST_AUTOPILOT = 'false'; $env:PUBLISH = 'false'; $env:MAP_MODE = 'true'",
     `$env:PLUGINS = '${plugins}'`,
     `Set-Location '${dir}'`,
@@ -1709,28 +1711,29 @@ test('plan: a commit id is built only when a branch or tag of the named reposito
   assert.equal(compared[0], MAIN_TIP, 'the default branch first');
 });
 
-test('plan: plugin_sdk_ref and game_sdk_ref name a branch, a tag or a commit the SDK repository itself holds', { skip: !powershell }, () => {
+test('plan: loader_ref, plugin_sdk_ref and game_sdk_ref name a branch, a tag or a commit their repository itself holds', { skip: !powershell }, () => {
   const plugins = 'AlienXAXS/StarRupture-Plugin-WAILA@main';
   const reach = { [ANCESTOR]: { [MAIN_TIP]: 'ahead' } };
   for (const ref of ['main', 'dev', 'v1', MAIN_TIP, ANCESTOR]) {
-    const p = planRun({ plugins, pluginSdkRef: ref, gameSdkRef: ref, compare: reach });
+    const p = planRun({ plugins, loaderRef: ref, pluginSdkRef: ref, gameSdkRef: ref, compare: reach });
     assert.equal(p.r.status, 0, `${ref}: ${p.text}`);
   }
-  for (const input of ['pluginSdkRef', 'gameSdkRef']) {
+  for (const [input, repo] of [['loaderRef', 'StarRupture-ModLoader'], ['pluginSdkRef', 'StarRupture-Plugin-SDK'], ['gameSdkRef', 'StarRupture-Game-SDK']]) {
     for (const ref of [FOREIGN, 'refs/pull/5/head', 'pull/5/head', 'refs/heads/main', 'Main', 'abc1234', '']) {
       const p = planRun({ plugins, [input]: ref, compare: reach });
       assert.notEqual(p.r.status, 0, `${input} '${ref}' must stop the plan`);
       assert.equal(p.matrix, null);
-      const repo = input === 'pluginSdkRef' ? 'StarRupture-Plugin-SDK' : 'StarRupture-Game-SDK';
       assert.ok(p.text.replace(/\s+/g, '').includes(repo), p.text);
     }
   }
 });
 
-test('plan: the SDK refs reach the plan step, and a refused plan builds no key source', () => {
+test('plan: the loader and SDK refs reach the plan step, and a refused plan builds no key source or hosted plugin', () => {
   const plan = stepText(job('plugin-plan'), 'Check the plugin list');
   assert.match(plan, /\n {10}PLUGIN_SDK_REF: \$\{\{ inputs\.plugin_sdk_ref \}\}\r?\n/);
   assert.match(plan, /\n {10}GAME_SDK_REF: \$\{\{ inputs\.game_sdk_ref \}\}\r?\n/);
+  assert.match(plan, /\n {10}LOADER_REF: \$\{\{ inputs\.loader_ref \}\}\r?\n/);
+  assert.match(job('plugins'), /\n {4}needs: plugin-plan\r?\n/);
   assert.match(job('key-sources-plan'), /\n {4}needs: plugin-plan\r?\n/);
   assert.doesNotMatch(job('key-sources-plan').match(/\n {4}if: [^\r\n]*/)[0], /always\(\)|cancelled\(\)|failure\(\)/, 'the default success() applies');
   assert.match(job('key-sources'), /\n {4}needs: key-sources-plan\r?\n/);
@@ -5205,6 +5208,45 @@ const pickSnippet = (text) => {
   assert.ok(from > 0 && to > from, 'the job picks its scanner');
   return text.slice(from, to + '\n          }\n'.length).replace(/^ {10}/gm, '');
 };
+
+test('scanner builds: loader_ref and a scanner_ref are a branch, a tag or a commit one reaches, judged before either checkout', { skip: !powershell }, () => {
+  const server = readFileSync(join(here, '..', '.github', 'workflows', 'sr-server-check.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const serverJob = server.slice(server.indexOf('\n  server-scanner:\n'), server.indexOf('\n  server-layout:\n'));
+  const scripts = [job('build'), serverJob].map((j) => {
+    const order = ['Check out the scan gate', 'Check the loader repository', 'Check out the loader (with its pinned Game SDK)', 'Check out tools/AobScan'].map((n) => j.indexOf(`- name: ${n}\n`));
+    assert.ok(order.every((at, i) => at > (order[i - 1] ?? 0)), 'the gate, then the check, then the checkouts');
+    const step = stepText(j, 'Check the loader repository');
+    for (const n of ['loader_repo', 'loader_ref', 'scanner_repo', 'scanner_ref']) assert.ok(step.includes(`${n.toUpperCase()}: \${{ inputs.${n} }}\n`), n);
+    return step.slice(step.indexOf('        run: |\n') + '        run: |\n'.length).replace(/^ {10}/gm, '');
+  });
+  assert.equal(scripts[0].trim().split('\n').filter((l) => !l.trim().startsWith('#')).join('\n'), scripts[1].trim().split('\n').filter((l) => !l.trim().startsWith('#')).join('\n'), 'both checks judge them the same way');
+  const [MAIN, UPDATE, OLD, FOREIGN_SHA] = ['1', '2', '3', 'f'].map((c) => c.repeat(40));
+  const run = (loaderRef, scannerRef) => {
+    const dir = mkdtempSync(join(tmpdir(), 'ref-check-'));
+    mkdirSync(join(dir, 'ci-gate', 'ci'), { recursive: true });
+    copyFileSync(join(here, 'scan-gate.ps1'), join(dir, 'ci-gate', 'ci', 'scan-gate.ps1'));
+    writeFileSync(join(dir, 'run.ps1'), [
+      "$ErrorActionPreference = 'Stop'",
+      `function git { $global:LASTEXITCODE = 0; "${MAIN}\`trefs/heads/main"; "${UPDATE}\`trefs/heads/auto/update-130045-1-1" }`,
+      `function Invoke-RestMethod { param($Headers, $Uri, $TimeoutSec) [pscustomobject]@{ status = $(if ($Uri -match '/compare/${OLD}\.\.\.${UPDATE}\?') { 'ahead' } else { 'diverged' }) } }`,
+      `$env:LOADER_REPO = 'msantoro12/StarRupture-ModLoader'; $env:SCANNER_REPO = 'msantoro12/StarRupture-ModLoader'`,
+      `$env:LOADER_REF = '${loaderRef}'; $env:SCANNER_REF = '${scannerRef}'`,
+      scripts[0],
+    ].join('\n'));
+    const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-File', 'run.ps1'], { cwd: dir, encoding: 'utf8', windowsHide: true });
+    return { status: r.status, text: (r.stdout + r.stderr).replace(/\s+/g, '') };
+  };
+  // What a default run, an update branch and a replay on a commit of one pass.
+  for (const [l, s] of [['main', ''], ['auto/update-130045-1-1', ''], [UPDATE, ''], [OLD, 'main'], ['main', OLD]]) {
+    const x = run(l, s);
+    assert.equal(x.status, 0, `${l} ${s}: ${x.text}`);
+  }
+  for (const [l, s, what] of [[FOREIGN_SHA, '', 'pushabranchforit'], ['main', FOREIGN_SHA, 'pushabranchforit'], ['refs/pull/5/head', '', 'loader_ref'], ['main', 'refs/pull/5/head', 'scanner_ref'], ['main', ' ', 'scanner_ref'], ['', '', 'loader_ref']]) {
+    const x = run(l, s);
+    assert.notEqual(x.status, 0, `'${l}' '${s}' must be refused`);
+    assert.ok(x.text.includes(what), x.text);
+  }
+});
 
 test('scanner: the loader ref\'s own unless scanner_ref lays another over it, the same in both checks', { skip: !powershell }, () => {
   const server = readFileSync(join(here, '..', '.github', 'workflows', 'sr-server-check.yml'), 'utf8').replace(/\r\n/g, '\n');

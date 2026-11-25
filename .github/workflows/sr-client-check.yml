@@ -363,11 +363,22 @@ jobs:
       loader_sha: ${{ steps.read.outputs.loader_sha }}
       scanner_sha256: ${{ steps.hash.outputs.sha256 }}
     steps:
+      - name: Check out the scan gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-gate
+          sparse-checkout: ci/scan-gate.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the loader repository
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           LOADER_REPO: ${{ inputs.loader_repo }}
+          LOADER_REF: ${{ inputs.loader_ref }}
           SCANNER_REPO: ${{ inputs.scanner_repo }}
+          SCANNER_REF: ${{ inputs.scanner_ref }}
         run: |
           # The scanner built here runs in the job that holds the Steam login,
           # so it only ever comes from the owner's fork or the upstream repo.
@@ -377,6 +388,12 @@ jobs:
           if ($env:SCANNER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') {
             throw "scanner_repo '$($env:SCANNER_REPO)' is not allowed"
           }
+          # The loader ref gives the scanner source and the plugin header, a scanner_ref the scanner source: each is
+          # a branch or tag of its repository, or a commit one of them reaches (never a fork's or pull request's).
+          . .\ci-gate\ci\scan-gate.ps1
+          $api = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          Assert-OwnRef 'loader_ref' $env:LOADER_REPO $env:LOADER_REF $api
+          if ($env:SCANNER_REF) { Assert-OwnRef 'scanner_ref' $env:SCANNER_REPO $env:SCANNER_REF $api }
 
       - name: Check out the loader (with its pinned Game SDK)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -643,6 +660,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Optional: reads the one private repository of GoodStuffSoftware that is listed; empty when the secret is not set.
           SR_READ_TOKEN_GOODSTUFFSOFTWARE: ${{ secrets.SR_READ_TOKEN_GOODSTUFFSOFTWARE }}
+          LOADER_REPO: ${{ inputs.loader_repo }}
+          LOADER_REF: ${{ inputs.loader_ref }}
           PLUGIN_SDK_REPO: ${{ inputs.plugin_sdk_repo }}
           PLUGIN_SDK_REF: ${{ inputs.plugin_sdk_ref }}
           GAME_SDK_REPO: ${{ inputs.game_sdk_repo }}
@@ -701,29 +720,13 @@ jobs:
           }
           function Clear-ReadAuth { Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue }
           function Get-ApiHeaders([string]$repo) { if ($readToken -and $repo -like 'GoodStuffSoftware/*') { @{ Authorization = "Bearer $readToken"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' } } else { $api } }
-          # A commit id is taken only when a branch or tag of the named repository reaches it. GitHub serves the commits of
-          # forks and pull requests under the parent repository's name (checkout, fetch and the compare API all resolve
-          # them), so the commit is compared with the tips ls-remote lists as that repository's own heads and tags.
-          function Assert-OwnCommit([string]$repo, [string]$sha, [string[]]$refLines) {
-            # An annotated tag counts as its commit: the peeled line follows the tag's own and replaces it.
-            $tips = [ordered]@{}
-            foreach ($line in $refLines) { $id, $name = $line -split '\s+'; if ($name -cmatch '^refs/(heads|tags)/') { $tips[($name -creplace '\^\{\}$')] = $id } }
-            if (@($tips.Values) -contains $sha) { return }
-            $why = ''
-            foreach ($name in @($tips.Keys | Sort-Object { $_ -cnotmatch '^refs/heads/(main|master)$' })) {
-              try { $status = [string](Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/compare/$sha...$($tips[$name])?per_page=1" -Headers (Get-ApiHeaders $repo) -TimeoutSec 60).status }
-              catch { $why = " (last compare error: $($_.Exception.Message))"; continue }
-              if ($status -ceq 'ahead' -or $status -ceq 'identical') { return }
-            }
-            throw "the commit $sha is in no branch or tag of $repo$why"
-          }
-          # Both SDKs are compiled into every plugin built here, including the ones the gate then lets the scanner run.
-          foreach ($sdk in @(@('plugin_sdk_ref', $env:PLUGIN_SDK_REPO, $env:PLUGIN_SDK_REF), @('game_sdk_ref', $env:GAME_SDK_REPO, $env:GAME_SDK_REF))) {
-            $what, $sdkRepo, $sdkRef = $sdk
-            $refs = @(git ls-remote "https://github.com/$sdkRepo" 'refs/heads/*' 'refs/tags/*')
-            if ($LASTEXITCODE -ne 0) { throw "git ls-remote $sdkRepo failed (exit $LASTEXITCODE)" }
-            if ($sdkRef -match '^[0-9a-f]{40}$') { Assert-OwnCommit $sdkRepo $sdkRef $refs }
-            elseif (-not @($refs | Where-Object { @("refs/heads/$sdkRef", "refs/tags/$sdkRef") -ccontains ($_ -split '\s+')[1] }).Count) { throw "$what '$sdkRef' is not a branch, a tag or a full commit id of $sdkRepo" }
+          # The loader's header and both SDKs are compiled into every plugin built here, including the ones the gate
+          # then lets the scanner run (the plugins and key-sources jobs wait for this one): Assert-OwnRef, ci/scan-gate.ps1.
+          . ./tool/ci/scan-gate.ps1
+          if ($env:LOADER_REPO -notmatch '^(msantoro12|AlienXAXS)/StarRupture-ModLoader$') { throw "loader_repo '$($env:LOADER_REPO)' is not allowed" }
+          foreach ($pair in @(@('loader_ref', $env:LOADER_REPO, $env:LOADER_REF), @('plugin_sdk_ref', $env:PLUGIN_SDK_REPO, $env:PLUGIN_SDK_REF), @('game_sdk_ref', $env:GAME_SDK_REPO, $env:GAME_SDK_REF))) {
+            $what, $inRepo, $inRef = $pair
+            Assert-OwnRef $what $inRepo $inRef $api
           }
           foreach ($p in ("$env:PLUGINS" -split '\s+' | Where-Object { $_ })) {
             if ($p -notmatch '^([A-Za-z0-9-]+)/([A-Za-z0-9_-]+)@([A-Za-z0-9._/-]+)$' -or $Matches[1] -cnotin $allowed) { throw "plugin '$p' is not owner/repo@ref from an allowed owner" }
@@ -817,7 +820,7 @@ jobs:
               }
               throw "git ls-remote $($e.repo) failed (exit $LASTEXITCODE)"
             }
-            if ($isCommit) { Assert-OwnCommit $e.repo $e.ref $refs; $e.sha = $e.ref; continue }
+            if ($isCommit) { Assert-OwnCommit $e.repo $e.ref $refs (Get-ApiHeaders $e.repo); $e.sha = $e.ref; continue }
             $hit = foreach ($want in "refs/heads/$($e.ref)", "refs/tags/$($e.ref)^{}", "refs/tags/$($e.ref)") {
               $line = $refs | Where-Object { ($_ -split '\s+')[1] -eq $want } | Select-Object -First 1
               if ($line) { ($line -split '\s+')[0]; break }
