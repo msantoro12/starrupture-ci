@@ -1734,6 +1734,17 @@ jobs:
       # DLL) is never built or stored by the plugins job: it is fetched or
       # built here, after the login cache is gone, into the runner's disk only
       # (not an artifact).
+      # Only a DLL this run built from an allowed repository reaches sr-aobscan --plugin (it runs
+      # the DLL's code): ci/scan-gate.ps1. If this checkout fails, the steps that scan fail with it.
+      - name: Check out the scan gate
+        if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ci-gate
+          sparse-checkout: ci/scan-gate.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       # The files land where the download above puts the others, so the
       # check below treats them alike.
       - name: Get the other authors' plugins
@@ -1778,27 +1789,22 @@ jobs:
             git -C $dir checkout -q FETCH_HEAD; Invoke-Native "checking out $repo $rev"
             (git -C $dir rev-parse HEAD)
           }
+          . .\ci-gate\ci\scan-gate.ps1
           $msbuild = $null
           foreach ($p in @($env:PLAN | ConvertFrom-Json | Where-Object { -not $_.hosted })) {
+            # A plugin the gate refuses is not fetched at all; the check below reports it NOT-SCANNED.
+            if (Get-ScanRefusal $p.source $p.repo) { continue }
             # One plugin's problem never stops the others; a plugin left without plugin.json is reported as not fetched or not built.
             try {
               $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
               New-Item -ItemType Directory -Force $dir | Out-Null
-              if ($p.source -eq 'release') {
-                if (-not $p.asset) { throw "the latest release was not resolved: $($p.error)" }
-                # The release's DLL asset, as players download it.
-                Invoke-WebRequest -Uri $p.asset -OutFile "$dir\$($p.dll)" -TimeoutSec 120
-                $hash = (Get-FileHash "$dir\$($p.dll)" -Algorithm SHA256).Hash.ToLowerInvariant()
-                if ($p.assetSha256 -and $hash -ne $p.assetSha256) { throw "$($p.dll) does not match the SHA-256 GitHub recorded for the asset" }
-                [ordered]@{ name = $p.name; repo = $p.repo; ref = $p.ref; sha = $p.sha; dll = $p.dll; sha256 = $hash } |
-                  ConvertTo-Json | Set-Content "$dir\plugin.json" -Encoding utf8
-                continue
-              }
               # Built the way the plugins job builds one, from the planned commit.
               $work = Join-Path $env:RUNNER_TEMP "third\$($p.name)"
               if (-not $p.sha) { throw "no commit was planned: $($p.error)" }
               $sha = Get-Source $p.repo $p.sha "$work\src"
               if ($sha -ne $p.sha) { throw "checked out $sha, not the planned commit $($p.sha)" }
+              # A DLL committed where the build writes its output would pass as built here.
+              if (Test-Path "$work\src\build\Client Release\Plugins\*.dll") { throw 'the source already holds a DLL in its build output folder' }
               $psdk = Get-Source $env:PLUGIN_SDK_REPO $env:PLUGIN_SDK_REF "$work\plugin-sdk"
               $gsdk = Get-Source $env:GAME_SDK_REPO $env:GAME_SDK_REF "$work\game-sdk"
               $loader = (Invoke-RestMethod -Uri "https://api.github.com/repos/$($env:LOADER_REPO)/commits/$($env:LOADER_REF)" -TimeoutSec 60 -Headers @{ Authorization = "Bearer $token" }).sha
@@ -1865,15 +1871,23 @@ jobs:
           if ($refExe) { $suggest += @('--reference', $refExe.FullName) }
           $scanner = 'scanner\sr-aobscan-client.exe'
           if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          . .\ci-gate\ci\scan-gate.ps1
           $results = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
             $r = [ordered]@{ name = $p.name; source = $p.source; repo = $p.repo; ref = $p.ref; sha = ''; release = $p.release }
             # One plugin's problem never stops the others.
             try {
+              $gated = Get-ScanRefusal $p.source $p.repo
+              if ($gated) {
+                $r.verdict = 'NOT-SCANNED'
+                $r.note = $gated
+                Write-Host "::warning title=Plugin $($p.name)::$gated"
+                $r; continue
+              }
               $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
               $meta = if (Test-Path "$dir\plugin.json") { Get-Content "$dir\plugin.json" -Raw | ConvertFrom-Json } else { $null }
               if (-not $meta) {
-                $r.verdict = if ($p.source -eq 'release') { 'FETCH-FAILED' } else { 'BUILD-FAILED' }
-                Write-Host "::error title=Plugin $($p.name)::$(if ($p.source -eq 'release') { 'its released DLL could not be fetched' } else { 'did not build' }), so its patterns were not checked"
+                $r.verdict = 'BUILD-FAILED'
+                Write-Host "::error title=Plugin $($p.name)::did not build, so its patterns were not checked"
                 $r; continue
               }
               $r.ref = $meta.ref
@@ -1882,6 +1896,7 @@ jobs:
               if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the plugin job made" }
               $stem = "out\plugin-$($p.name)"
               $ErrorActionPreference = 'Continue'
+              Assert-ScanAllowed $p.source $p.repo $dll $dir
               & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
               $r.exitCode = $LASTEXITCODE
               $ErrorActionPreference = 'Stop'
@@ -1990,6 +2005,7 @@ jobs:
           if ($refExe) { $suggest += @('--reference', $refExe.FullName) }
           $scanner = 'scanner\sr-aobscan-client.exe'
           if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
+          . .\ci-gate\ci\scan-gate.ps1
           $rows = foreach ($p in ($env:PLAN | ConvertFrom-Json)) {
             $r = [ordered]@{ name = $p.name; repo = $p.repo; branch = $p.branch; sha = $p.sha; tag = $p.tag; component = $p.component; recipe = $p.recipe; status = 'failed'; keys = 0 }
             try {
@@ -2001,6 +2017,8 @@ jobs:
               if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the key-sources job made" }
               $stem = "out\keysrc-$($p.name)"
               $ErrorActionPreference = 'Continue'
+              # The key-sources job builds every one from source in this run.
+              Assert-ScanAllowed 'build' $p.repo $dll $dir
               & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
               $code = $LASTEXITCODE
               $ErrorActionPreference = 'Stop'
@@ -2040,16 +2058,14 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      # ---- The rig's plugin DLLs: read before the rig runs --------------------
+      # ---- The rig's plugin set -----------------------------------------------
       # The rig does not run the plugin builds scanned above: it runs the Latest released plugins
       # (MOD_OWNER's, AlienXAXS by default) and the reviewed release of each plugin of another
-      # author (the Pin in ci/plugin-names.json). Which of them the loader refuses on a build has to
-      # be declared to the rig before it runs, so the exact set is resolved here by the rig's own
-      # script, fetched through the rig's own cache (asset id and digest in the key: the rig then
-      # downloads nothing), and each DLL is read by the scanner (interface version, the build it was
-      # made on, and the loader's note on this build). Nothing of it is a verdict on the plugin: the
-      # facts go to decide's expect_refused, and the tags go to both rigs so they run these very
-      # releases. A DLL whose facts cannot be read has no row, and then nothing is declared for it.
+      # author (the Pin in ci/plugin-names.json). The exact set is resolved here by the rig's own
+      # script, and its tags go to both rigs so they run these very releases. All of them are
+      # downloaded DLLs, so none is downloaded here or given to the scanner (ci/scan-gate.ps1):
+      # each row says "not scanned: gated". With no facts for them, decide declares no refusal, so a
+      # loader refusal of one fails the rig and nothing is published.
       - name: Check out the rig's set script
         id: rigtool
         if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success'
@@ -2075,89 +2091,28 @@ jobs:
           MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}
         run: ./ci-rig/ci/client-rig-set.ps1 -Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER -PlanPath (Join-Path $env:RUNNER_TEMP 'rig-plan.json')
 
-      - name: Restore the rig's release files
-        id: rigcache
-        if: always() && steps.rigset.outcome == 'success'
-        continue-on-error: true
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # The rig's own path and key: the cache is shared with it.
-          path: D:\rig-dl
-          key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}
-          restore-keys: sr-client-rig-dl-
-
-      - name: Download what the cache lacks
-        id: rigfetch
-        if: always() && steps.rigset.outcome == 'success'
-        continue-on-error: true
-        shell: pwsh
-        env:
-          PLAN_PATH: ${{ runner.temp }}\rig-plan.json
-        run: ./ci-rig/ci/client-rig-set.ps1 -Mode Fetch -PlanPath $env:PLAN_PATH -DownloadDir 'D:\rig-dl'
-
-      - name: Save the rig's release files
-        if: always() && steps.rigfetch.outcome == 'success' && steps.rigcache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: D:\rig-dl
-          key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}
-
-      - name: Read the rig's plugin DLLs
+      - name: Record the rig's plugin set (not scanned)
         id: rigdlls
-        if: always() && steps.rigfetch.outcome == 'success'
+        if: always() && steps.rigset.outcome == 'success'
         continue-on-error: true
-        timeout-minutes: 30
         shell: pwsh
-        env:
-          INSTALL_DIR: ${{ steps.dl.outputs.install_dir }}
-          SCANNER_SHA256: ${{ needs.build.outputs.scanner_sha256 }}
         run: |
-          # out/rig-plugins.json: { tags: "Name=tag ...", plugins: [{ name, tag, plugin, verdict, note? } or { name, tag, error }] }.
-          # `plugin` is the scanner's block for the DLL, as in the plugin rows above; map mode reads the
-          # facts and never the verdict. The scanner's own files stay out of out/ (map mode reads every
-          # out/plugin-*.json as a scan of the build).
+          # out/rig-plugins.json: { tags: "Name=tag ...", plugins: [{ name, tag, gated, error }] }.
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
           New-Item -ItemType Directory -Force out | Out-Null
           $plan = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-plan.json') -Raw | ConvertFrom-Json
-          $exe = Get-ChildItem -Path $env:INSTALL_DIR -Recurse -File -Filter '*-Win64-Shipping.exe' |
-            Where-Object { $_.FullName -notmatch '\\Engine\\' } | Select-Object -First 1
-          if (-not $exe) { throw 'no *-Win64-Shipping.exe in the install' }
-          $scanner = 'scanner\sr-aobscan-client.exe'
-          if ((Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:SCANNER_SHA256) { throw 'sr-aobscan-client.exe is not the one build-scanner made' }
-          $work = Join-Path $env:RUNNER_TEMP 'rig-scan'
-          New-Item -ItemType Directory -Force $work | Out-Null
           $tagRx = '^[A-Za-z0-9][A-Za-z0-9._+-]*$'
           $tags = [Collections.Generic.List[string]]::new()
           $rows = foreach ($e in @($plan.plugins | Where-Object { $_.asset })) {
-            $r = [ordered]@{ name = $e.name; tag = $e.tag }
-            try {
-              if ($e.tag -cnotmatch $tagRx) { throw "its release tag '$($e.tag)' is not a plain tag" }
-              $tags.Add("$($e.name)=$($e.tag)")
-              # The rig's cache layout (client-rig-set.ps1 Get-AssetPath).
-              $file = Join-Path 'D:\rig-dl' (Join-Path "$($e.repo)\$($e.tag)\$($e.asset.id)" ([IO.Path]::GetFileName($e.asset.name)))
-              if (-not (Test-Path -LiteralPath $file)) { throw "$($e.asset.name) is not in the downloaded files" }
-              if ($e.asset.digest -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $e.asset.digest) { throw "$($e.asset.name) does not match the digest the release gives" }
-              $stem = Join-Path $work $e.name
-              $ErrorActionPreference = 'Continue'
-              & $scanner $exe.FullName --plugin $file --json > "$stem.json" 2> "$stem.txt"
-              $code = $LASTEXITCODE
-              $ErrorActionPreference = 'Stop'
-              $scan = if ($code -ne 2 -and (Test-Path -LiteralPath "$stem.json") -and (Get-Item -LiteralPath "$stem.json").Length) { Get-Content -LiteralPath "$stem.json" -Raw | ConvertFrom-Json } else { $null }
-              if (-not $scan -or -not $scan.PSObject.Properties['plugin'] -or -not $scan.plugin.PSObject.Properties['interfaceVersion']) { throw "sr-aobscan could not read its plugin facts (exit $code)" }
-              $r.plugin = $scan.plugin
-              $r.verdict = $scan.verdict
-              if ($scan.PSObject.Properties['note']) { $r.note = $scan.note }
-            } catch {
-              $r.error = $_.Exception.Message
-              Write-Host "::warning title=Rig plugin $($e.name)::$($r.error); nothing is declared for it, so a refusal of it fails the rig"
-            }
-            $r
+            $why = 'not scanned: gated (a downloaded release DLL)'
+            if ($e.tag -cmatch $tagRx) { $tags.Add("$($e.name)=$($e.tag)") }
+            else { $why = "$why; its release tag is not a plain tag, so the rigs are not given it" }
+            [ordered]@{ name = $e.name; tag = $e.tag; gated = $true; error = $why }
           }
           [ordered]@{ branch = $env:BRANCH; tags = ($tags -join ' '); plugins = @($rows) } |
-            ConvertTo-Json -Depth 8 | Set-Content out\rig-plugins.json -Encoding utf8
-          foreach ($r in @($rows)) { "$($r.name) $($r.tag): $(if ($r.Contains('plugin')) { 'interface ' + $r.plugin.interfaceVersion } else { $r.error })" }
+            ConvertTo-Json -Depth 4 | Set-Content out\rig-plugins.json -Encoding utf8
+          foreach ($r in @($rows)) { "$($r.name) $($r.tag): $($r.error)" }
 
       # ---- Layouts from the PDBs: what each component reads, on both builds --
       - name: Read the used layouts from the PDBs
@@ -2579,6 +2534,8 @@ jobs:
               if ($dll.Count -ne 1) { throw "expected one plugin DLL, found $($dll.Count)" }
 
               # Scanned on this build, and on the public one when there is one.
+              . .\ci-gate\ci\scan-gate.ps1
+              Assert-ScanAllowed $p.source $p.repo $dll[0].FullName "$d\src\build"
               $scans = @{}
               foreach ($b in @(@{ key = 'target'; exe = $exe }, @{ key = 'reference'; exe = $refExe }) | Where-Object { $_.exe }) {
                 $stem = "out\autofix-$($p.name)-$($b.key)"
@@ -5290,6 +5247,11 @@ jobs:
             $md.Add("#### Plugins: $($r.plugins.status.ToUpperInvariant())$(if ($partial.Count) { ' (partial: ' + ($partial -join ', ') + ' not fully exercised)' })")
             $md.Add('')
             $md.Add('The loader refuses a plugin that fails here. A failing plugin does not change the loader verdict above. OFFSETS and OFFSETS-UNCHECKED: a fixed offset the plugin reads does not match this build, or could not be checked (below).')
+            $gated = @($r.plugins.plugins | Where-Object { $_.verdict -eq 'NOT-SCANNED' } | ForEach-Object { $_.name })
+            if ($gated.Count) {
+              $md.Add('')
+              $md.Add("**Not scanned: gated:** $($gated -join ', '). Their DLLs may not reach the scanner (ci/scan-gate.ps1), so nothing here says whether they work on this build. The release DLLs the rigs run are not scanned either.")
+            }
             $md.Add('')
             $md.Add('| Plugin | Ref | Verdict | OK | MISSING | AMBIGUOUS | Other | Note |')
             $md.Add('|---|---|---|---|---|---|---|---|')
