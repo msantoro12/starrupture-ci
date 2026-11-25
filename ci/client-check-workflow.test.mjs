@@ -78,7 +78,7 @@ test('B5: one plugin that fails to fetch, check out or build never fails the plu
   assert.match(step('Note a plugin that did not build'), /if: hashFiles\('out\/plugin\.json'\) == ''/);
   assert.match(plugins, /fail-fast: false/);
   // The missing artifact is graded per plugin in the check job, and the G1 gate is the loader build alone.
-  assert.ok(job('check').includes("$r.verdict = if ($p.source -eq 'release') { 'FETCH-FAILED' } else { 'BUILD-FAILED' }"));
+  assert.ok(job('check').includes("$r.verdict = 'BUILD-FAILED'"));
   const mm = job('map-mode');
   assert.ok(!/PLUGINS_RESULT/.test(mm), 'the plugins job result is not a gate');
   assert.match(mm, /put\("g1\.json", \{ ok: process\.env\.BUILD_RESULT === "success" \}\);/);
@@ -1840,12 +1840,12 @@ test('B1 alert: a newer release the plan saw raises the review line once, though
 
 // ---- S1: the DLLs the rig runs are read by the check job and decide declares the refusals from them
 
-test('S1 check: the rig\'s own set is resolved, fetched through the rig\'s cache and read before the layouts', () => {
+test('S1 check: the rig\'s own set is resolved and recorded before the layouts, without its DLLs', () => {
   const j = job('check');
-  const names = ['Check out the rig\'s set script', 'Resolve the rig\'s plugin set', 'Restore the rig\'s release files', 'Download what the cache lacks', 'Save the rig\'s release files', 'Read the rig\'s plugin DLLs'];
+  const names = ['Check out the rig\'s set script', 'Resolve the rig\'s plugin set', 'Record the rig\'s plugin set (not scanned)'];
   const at = names.map((n) => j.indexOf(`- name: ${n}\n`));
   assert.ok(at.every((x, i) => x > 0 && (i === 0 || x > at[i - 1])), `in this order: ${at}`);
-  assert.ok(at[5] < j.indexOf('# ---- Layouts from the PDBs'), 'before the layout steps');
+  assert.ok(at[2] < j.indexOf('# ---- Layouts from the PDBs'), 'before the layout steps');
   // The rig's own script and its names file, from this repository.
   const tool = stepText(j, names[0]);
   assert.ok(tool.includes('ci/client-rig-set.ps1') && tool.includes('ci/plugin-names.json') && tool.includes('persist-credentials: false'));
@@ -1859,26 +1859,11 @@ test('S1 check: the rig\'s own set is resolved, fetched through the rig\'s cache
   assert.ok(res.includes('-Mode Resolve -Branch $env:BRANCH -Owner $env:MOD_OWNER'));
   assert.ok(res.includes("MOD_OWNER: ${{ vars.MOD_OWNER || 'AlienXAXS' }}"), 'the rig\'s default owner');
   assert.ok(!res.includes('-Tags'), 'the check resolves what the rig would resolve with no tags');
-  // The same cache the rig uses: path and key (the cache version depends on the path).
-  const rig = readFileSync(join(here, '..', '.github', 'workflows', 'sr-client-rig.yml'), 'utf8').replace(/\r\n/g, '\n');
-  assert.ok(rig.includes('DOWNLOAD_DIR: D:\\rig-dl') && rig.includes('key: sr-client-rig-dl-${{ steps.res.outputs.key }}'));
-  const restore = stepText(j, names[2]);
-  assert.ok(restore.includes('path: D:\\rig-dl') && restore.includes('key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}') && restore.includes('restore-keys: sr-client-rig-dl-'));
-  assert.ok(stepText(j, names[3]).includes('-Mode Fetch'));
-  assert.ok(stepText(j, names[4]).includes('key: sr-client-rig-dl-${{ steps.rigset.outputs.key }}'));
   // Each step may fail without failing the check: the facts are then unknown and nothing is declared.
-  for (const n of names.slice(0, 4).concat(names[5])) assert.match(stepText(j, n), /continue-on-error: true/, n);
-});
-
-test('S1 check: each DLL is read with the scanner, and one that cannot be read gets an error row, never a guess', () => {
-  const run = runOf(job('check'), 'Read the rig\'s plugin DLLs');
-  assert.ok(run.includes('$SCANNER_SHA256') || run.includes('$env:SCANNER_SHA256'), 'the scanner is the verified one');
-  assert.ok(run.includes('--plugin $file --json'));
-  assert.ok(run.includes("$e.asset.digest -and (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant() -ne $e.asset.digest"), 'the file is the digest the release gives');
-  assert.ok(run.includes("throw \"sr-aobscan could not read its plugin facts (exit $code)\""));
-  assert.ok(run.includes('$r.error = $_.Exception.Message'), 'a failed read is an error row');
+  for (const n of names) assert.match(stepText(j, n), /continue-on-error: true/, n);
+  assert.ok(j.includes('out/rig-plugins.json\n          if-no-files-found: warn'), 'in the artifact map mode downloads');
+  const run = runOf(j, names[2]);
   assert.ok(run.includes('out\\rig-plugins.json') && !/out\\plugin-/.test(run), 'not named like a scan of the build: map mode reads every out/plugin-*.json');
-  assert.ok(job('check').includes('out/rig-plugins.json\n          if-no-files-found: warn'), 'in the artifact map mode downloads');
 });
 
 const rigChain = () => {

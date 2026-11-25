@@ -29,7 +29,7 @@ function Assert-ScanAllowed([string]$Source, [string]$Repo, [string]$Dll, [strin
     $item = Get-Item -LiteralPath $Dll -Force
     while ($item -and ($item.FullName.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'not scanned: gated (a junction or link on the way to the DLL)' }
-        $item = if ($item.PSIsContainer) { $item.Parent } else { $item.Directory }
+        $item = if ($item -is [IO.DirectoryInfo]) { $item.Parent } else { $item.Directory }
     }
 }
 
