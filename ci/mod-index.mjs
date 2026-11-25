@@ -25,9 +25,10 @@
 // carries an install key (download_url, download_sha256, download_size, install_files, update_manifest_url) needs a
 // download_url that is a .dll asset of a GitHub release (https://github.com/<owner>/<repo>/releases/download/<tag>/<name>.dll)
 // of the repository its own page_url names, a download_sha256 of exactly 64 lowercase hex characters and a download_size
-// from 1 byte to 32 MB. The loader reads these keys with its own text scanner (first occurrence, at any depth), so an
-// index where one of them appears twice, nested or escaped in an entry is refused. None of this depends on the loader's
-// builder, so a loader commit without it does not weaken the check.
+// from 1 byte to 32 MB written as plain digits. The loader reads these keys with its own text scanner (first occurrence,
+// at any depth, by raw text), so an index is refused where, in any entry, one of them (or page_url) is nested, appears
+// twice, or where any key is written with a backslash escape (scanEntries, per entry). None of this depends on the
+// loader's builder, so a loader commit without it does not weaken the check.
 //
 // same compares bodies only; it does not verify the signature, so callers run vmap-sign.mjs verify first.
 // Exit codes: 0 ok (same: equal); 1 same: the bodies differ; 2 usage or input error, or a refused loader ref.
@@ -70,8 +71,8 @@ function tipOf(entry, name) {
 }
 
 async function releaseTips(get) {
-  const list = await get(`repos/${LOADER_REPO}/git/matching-refs/heads/release/`);
-  need(Array.isArray(list), 'GitHub API did not list the release branches');
+  const list = await get(`repos/${LOADER_REPO}/git/matching-refs/heads/release/?per_page=100`);
+  need(Array.isArray(list) && list.length < 100, 'GitHub API did not list the release branches, or lists more than one page of them');
   return list.flatMap((entry) => {
     const name = String(entry?.ref).replace(/^refs\/heads\//, '');
     return SIGNING_BRANCH.test(name) ? [tipOf(entry, name)] : [];
@@ -118,7 +119,8 @@ const SCANNED_KEYS = ['page_url', ...INSTALL_KEYS];
 
 // ASCII letters, digits, '_', '.', '-', with no "..".
 const plainSegment = (s) => /^[A-Za-z0-9_.-]+$/.test(s) && s !== '.' && !s.includes('..');
-const sameName = (a, b) => a.toLowerCase() === b.toLowerCase();
+const lowerAscii = (s) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+const sameName = (a, b) => lowerAscii(a) === lowerAscii(b);
 
 // https://github.com/<owner>/<repo>/releases/download/<tag>/<name>.dll as [owner, repo], or null. Nothing else passes:
 // no other scheme or host, no user info, port, query, fragment, backslash, "..", or a path that is not a release download.
@@ -130,48 +132,70 @@ function releaseAssetRepo(url) {
   return [p[0], p[1]];
 }
 
-// How often each of `keys` appears in `text` as an object key, read the way the loader reads it (JsonFindValue in the
-// loader's json_extract.h): a string token that sits outside any other string and is followed by a colon, compared as
-// the raw text between the quotes.
-function keyCounts(text, keys) {
-  const counts = Object.fromEntries(keys.map((k) => [k, 0]));
+// Reads the index text the way the loader's JsonFindValue and JsonSplitObjectArray do (a string token followed by a
+// colon is a key, the raw text between its quotes is compared) and returns, for each element of the top-level array,
+// how often each of `keys` is a direct member of it and the raw text of its value. It throws on what the loader could
+// read differently from JSON.parse: a key written with a backslash escape (JSON.parse decodes it, the loader compares
+// the raw text), one of `keys` anywhere but directly in an entry (the loader finds a key at any depth) or twice in one
+// entry (the loader takes the first, JSON.parse the last). The text must already be valid JSON.
+function scanEntries(text, keys, label) {
+  const entries = [];
+  const at = (n) => entries[n] ??= { counts: Object.fromEntries(keys.map((k) => [k, 0])), raw: {} };
+  let depth = 0;
+  let n = 0;
   let i = 0;
   while (i < text.length) {
-    if (text[i] !== '"') { i++; continue; }
+    const c = text[i];
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') depth--;
+    else if (c === ',' && depth === 1) n++;
+    if (c !== '"') { i++; continue; }
     const start = ++i;
     while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
     if (i >= text.length) break;
     const end = i++;
     let next = i;
     while (next < text.length && /\s/.test(text[next])) next++;
-    if (text[next] === ':' && Object.hasOwn(counts, text.slice(start, end))) counts[text.slice(start, end)]++;
+    if (text[next] !== ':') continue;
+    const key = text.slice(start, end);
+    need(!key.includes('\\'), `the mod index has a key written with a backslash escape (${JSON.stringify(key)}); the loader reads keys as raw text`);
+    if (!keys.includes(key)) continue;
+    const who = label(n);
+    need(depth === 2, `${who}: the key ${key} must be a direct member of the entry, not nested`);
+    const e = at(n);
+    need(++e.counts[key] === 1, `${who}: the key ${key} appears more than once`);
+    next++;
+    while (next < text.length && /\s/.test(text[next])) next++;
+    e.raw[key] = /^[^\s,}\]]*/.exec(text.slice(next))[0];
   }
-  return counts;
+  return entries;
 }
 
-function checkEntry(e, who) {
+function checkEntry(e, who, raw) {
   need(e !== null && typeof e === 'object' && !Array.isArray(e), `${who} is not an object`);
   if (INSTALL_KEYS.every((k) => !Object.hasOwn(e, k))) return;
   const asset = releaseAssetRepo(e.download_url);
   need(asset, `${who}: download_url must be https://github.com/<owner>/<repo>/releases/download/<tag>/<name>.dll`);
   const page = typeof e.page_url === 'string' ? e.page_url.split('/') : [];
-  need(page.length >= 5 && page[0] === 'https:' && page[1] === '' && sameName(page[2], 'github.com') && sameName(page[3], asset[0]) && sameName(page[4], asset[1]),
+  need(page.length >= 5 && page[0] === 'https:' && page[1] === '' && sameName(page[2], 'github.com') && sameName(page[3], asset[0]) && sameName(page[4], asset[1]) && !page.slice(5).some((p) => p === '.' || p === '..'),
     `${who}: download_url must belong to the repository page_url names`);
   need(typeof e.download_sha256 === 'string' && /^[0-9a-f]{64}$/.test(e.download_sha256), `${who}: download_sha256 must be 64 lowercase hex characters`);
-  need(Number.isInteger(e.download_size) && e.download_size >= 1 && e.download_size <= MAX_DOWNLOAD_BYTES,
-    `${who}: download_size must be a whole number from 1 to ${MAX_DOWNLOAD_BYTES}`);
+  // The raw text must be plain digits: the loader reads 3.2e7 as 3, JSON.parse as 32000000.
+  need(/^[1-9][0-9]*$/.test(raw.download_size ?? '') && Number.isSafeInteger(e.download_size) && e.download_size <= MAX_DOWNLOAD_BYTES,
+    `${who}: download_size must be a whole number from 1 to ${MAX_DOWNLOAD_BYTES}, written as plain digits`);
 }
 
 function checkEntries(body, list) {
   need(Array.isArray(list), 'the mod index is not a JSON array');
   need(list.length <= MAX_ENTRIES, `the mod index has ${list.length} entries (at most ${MAX_ENTRIES})`);
-  // First, that no key is read from another place than the checks below read it from.
-  const seen = keyCounts(body, SCANNED_KEYS);
-  for (const k of SCANNED_KEYS) {
-    const own = list.filter((e) => e !== null && typeof e === 'object' && Object.hasOwn(e, k)).length;
-    need(seen[k] === own, `the key ${k} appears more than once, nested or escaped in an entry`);
-  }
-  list.forEach((e, i) => checkEntry(e, `entry ${i + 1}${typeof e?.id === 'string' && e.id !== '' ? ` (${e.id})` : ''}`));
+  const label = (i) => `entry ${i + 1}${typeof list[i]?.id === 'string' && list[i].id !== '' ? ` (${list[i].id})` : ''}`;
+  // First, that no key is read from another place than the checks below read it from, entry by entry.
+  const scanned = scanEntries(body, SCANNED_KEYS, label);
+  list.forEach((e, i) => {
+    const s = scanned[i] ?? { counts: {}, raw: {} };
+    if (e !== null && typeof e === 'object') for (const k of SCANNED_KEYS) need((s.counts[k] ?? 0) === (Object.hasOwn(e, k) ? 1 : 0), `${label(i)}: the key ${k} is not read the same way by the loader`);
+    checkEntry(e, label(i), s.raw);
+  });
 }
 
 // body: the index JSON as text. Throws ModIndexError when it cannot be carried: a CR, no final LF, a line that would

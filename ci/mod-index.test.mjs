@@ -167,7 +167,7 @@ function fakeApi(heads = HEADS, broken = () => {}) {
     broken(path);
     const p = path.replace(`repos/${LOADER_REPO}/`, '');
     assert.notEqual(p, path, `only the loader repository is asked: ${path}`);
-    if (p === 'git/matching-refs/heads/release/') return Object.keys(heads).filter((n) => n.startsWith('release/')).map((n) => refEntry(n, heads[n]));
+    if (p === 'git/matching-refs/heads/release/?per_page=100') return Object.keys(heads).filter((n) => n.startsWith('release/')).map((n) => refEntry(n, heads[n]));
     if (p === 'git/ref/heads/main' && heads.main) return refEntry('main', heads.main);
     const m = /^compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})\?per_page=1$/.exec(p);
     if (m && parents[m[1]] && parents[m[2]]) {
@@ -242,6 +242,9 @@ test('loader-ref: an answer that does not prove reachability is refused', async 
     assert.match(await refusal(resolveLoaderRef('main', answering(good, tip))), /did not give the tip of the branch main/, JSON.stringify(tip));
   }
   assert.match(await refusal(resolveLoaderRef('release/next', async () => ({ message: 'Not Found' }))), /did not list the release branches/);
+  // A full page of branches may hide the one asked for on the next page: refused, not guessed.
+  const full = Array.from({ length: 100 }, (_, i) => refEntry(`release/${i}.0.0`, C.next));
+  assert.match(await refusal(resolveLoaderRef('release/next', async () => full)), /more than one page/);
 });
 
 test('loader-ref: the commit stays fixed when the branch moves, and a commit a branch no longer reaches is refused', async () => {
@@ -392,15 +395,53 @@ test('entries: a key the loader would read from another place than the check rea
   const good = JSON.stringify(entry());
   const evil = 'https://github.com/Mallory/Evil/releases/download/v1/Evil.dll';
   // the loader takes the first "download_url" at any depth, JSON.parse the last of the top level
-  refused(`[${good.replace('{', `{"download_url":"${evil}",`)}]\n`, /download_url appears more than once/);
-  refused(`[${good.slice(0, -1)},"download_url":"${evil}"}]\n`, /download_url appears more than once/);
-  refused(`[${good.replace('{', `{"extra":{"download_url":"${evil}"},`)}]\n`, /download_url appears more than once/);
-  refused(`[${good.replace('{', `{"extra":[{"download_sha256":"${'0'.repeat(64)}"}],`)}]\n`, /download_sha256 appears more than once/);
-  refused(`[${good.slice(0, -1)},"page_url":"https://github.com/Mallory/Evil"}]\n`, /page_url appears more than once/);
-  refused(`[${good.replace('"download_url"', '"download\\u005furl"')}]\n`, /download_url appears more than once/);
+  refused(`[${good.replace('{', `{"download_url":"${evil}",`)}]\n`, /entry 1 \(codex\): the key download_url appears more than once/);
+  refused(`[${good.slice(0, -1)},"download_url":"${evil}"}]\n`, /entry 1 \(codex\): the key download_url appears more than once/);
+  refused(`[${good.replace('{', `{"extra":{"download_url":"${evil}"},`)}]\n`, /the key download_url must be a direct member of the entry/);
+  refused(`[${good.replace('{', `{"extra":[{"download_sha256":"${'0'.repeat(64)}"}],`)}]\n`, /the key download_sha256 must be a direct member of the entry/);
+  refused(`[${good.slice(0, -1)},"page_url":"https://github.com/Mallory/Evil"}]\n`, /the key page_url appears more than once/);
+  refused(`[${good.replace('"download_url"', '"download\\u005furl"')}]\n`, /key written with a backslash escape/);
   // a string that only spells a key is not a key
   assert.equal(checkBody(`[${good.replace('"Codex"', '"download_url"')}]\n`), undefined);
   assert.equal(checkBody(`[${good.replace('"Codex"', '"a \\"download_url\\": b"')}]\n`), undefined);
+});
+
+// One entry's nested keys must not balance another entry's escaped keys: the check is per entry, not over the whole text.
+test('entries: nested, duplicate and escaped keys are refused per entry, however the other entries are written', () => {
+  const page = 'https://github.com/o/r';
+  const installed = { download_url: 'https://github.com/o/r/releases/download/t/x.dll', download_sha256: SHA, download_size: 5, install_files: ['X.dll'] };
+  const nested = JSON.stringify({ id: 'a', name: 'A', page_url: 'https://github.com/X/Y', meta: { download_url: 'https://github.com/Mallory/Evil/releases/download/v1/Evil.dll', download_sha256: '0'.repeat(64), download_size: 5, install_files: ['Evil.dll'] } });
+  const plain = JSON.stringify({ id: 'b', name: 'B', page_url: page, ...installed });
+  const escaped = plain.replace('"download_url"', '"download\\u005furl"').replace('"download_sha256"', '"download\\u005fsha256"').replace('"download_size"', '"download\\u005fsize"').replace('"install_files"', '"install\\u005ffiles"');
+  // the reviewer's index: A has the install keys nested, B spells them with escapes, so the raw counts balance over the whole text
+  refused(`[${nested},${escaped}]\n`, /entry 1 \(a\): the key download_url must be a direct member/);
+  refused(`[${escaped},${nested}]\n`, /key written with a backslash escape/);
+  refused(`[${plain},${nested}]\n`, /entry 2 \(a\): the key download_url must be a direct member/);
+  refused(`[${nested}]\n`, /entry 1 \(a\): the key download_url must be a direct member/);
+  // a duplicate in one entry, whichever entry it is
+  refused(`[${plain.slice(0, -1)},"download_size":6}, ${plain}]\n`, /entry 1 \(b\): the key download_size appears more than once/);
+  refused(`[${plain}, ${plain.slice(0, -1)},"install_files":["Y.dll"]}]\n`, /entry 2 \(b\): the key install_files appears more than once/);
+  // an escaped spelling of any key, of the scanned ones or not, anywhere
+  refused(`[${plain.replace('"page_url"', '"page\\u005furl"')}]\n`, /key written with a backslash escape/);
+  refused(`[{"id":"c","name":"C","x":{"a\\u0062":1},"page_url":"${page}"}]\n`, /key written with a backslash escape/);
+  // a key that only looks like an install key (another letter, same shape) is not one: the entry stays browse-only for both readers
+  assert.equal(checkBody(`[${JSON.stringify({ id: 'd', name: 'D', page_url: page }).replace('{', '{"dпwnload_url":"https://evil.test/x.dll",')}]\n`), undefined);
+  assert.equal(checkBody(`[${plain},${JSON.stringify({ id: 'e', name: 'E', page_url: 'https://www.nexusmods.com/x', note: { download_urls: 1 } })}]\n`), undefined);
+});
+
+test('entries: download_size is plain decimal digits, so the signer and the loader read the same number', () => {
+  const good = JSON.stringify(entry({ download_size: 1234 }));
+  for (const raw of ['1.5e3', '1234.0', '1.234e3', '12340e-1', '1E3', '-1234', '0']) refused(`[${good.replace('1234', raw)}]\n`, /download_size must be/);
+  for (const raw of ['01234', '+1234']) refused(`[${good.replace('1234', raw)}]\n`, /not valid JSON/);
+  assert.equal(checkBody(`[${good}]\n`), undefined);
+  assert.equal(checkBody(`[${good.replace('"download_size":1234', '"download_size" : 1234 ')}]\n`), undefined);
+});
+
+test('entries: the page_url may not walk back out of the repository, and a letter that only lowercases to a name does not match it', () => {
+  refused([entry({ page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/../../Mallory/Evil' })], /belong to the repository page_url names/);
+  refused([entry({ page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/./x' })], /belong to the repository page_url names/);
+  const kelvin = 'https://github.com/Klone/r';
+  refused([entry({ page_url: kelvin, download_url: 'https://github.com/klone/r/releases/download/t/x.dll' })], /belong to the repository page_url names/);
 });
 
 test('entries: signing and verifying run the same check, so a bad index never gets a signature', () => {
