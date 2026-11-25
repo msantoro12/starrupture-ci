@@ -250,7 +250,7 @@ export function checkBody(body) {
 }
 
 // Reads index.json as bytes: a UTF-8 BOM or bytes that are not UTF-8 would not survive a text round trip.
-function readIndex(path) {
+export function readIndex(path) {
   const bytes = readFileSync(path);
   need(!(bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf), `${path} starts with a byte order mark`);
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
