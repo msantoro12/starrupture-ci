@@ -16,6 +16,16 @@ function Get-ScanRefusal([string]$Source, [string]$Repo) {
     $null
 }
 
+# Text this run does not control (an error that quotes a ref, a tag or a server's answer), made safe for a
+# note that is logged and put in the report's Markdown: one line of letters, digits and plain punctuation, so
+# it can start no workflow command (a line break, '##[') and shape no Markdown (a table cell, code, HTML, a
+# link or a mention). At most 300 characters.
+function ConvertTo-NoteText([string]$Text) {
+    $plain = (($Text -creplace '[^A-Za-z0-9 .,;:''"()/\\_=+?-]', ' ') -replace ':{2,}', ':' -replace '\s+', ' ').Trim()
+    if ($plain.Length -gt 300) { $plain = $plain.Substring(0, 300) + '...' }
+    $plain
+}
+
 # The check at the scanner call itself: the source and repository above, and the DLL is a file under
 # $BuiltIn, the folder this run's build of that plugin writes. A junction or link anywhere from the DLL
 # up to $BuiltIn is refused: the path check does not follow one. Throws otherwise.

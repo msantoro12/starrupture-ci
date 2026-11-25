@@ -186,7 +186,8 @@ test('check step: a gated plugin is graded NOT-SCANNED and never reaches the sca
   const entry = (name, source, repo, hosted = false) => ({ name, source, repo, ref: 'main', release: '', hosted });
   const plan = [
     entry('MiniMap', 'release', 'LetMeInside/StarRupture-Plugin-MiniMap'),
-    entry('Other', 'build', 'someone/StarRupture-Plugin-Other'),
+    { ...entry('Other', 'build', 'someone/StarRupture-Plugin-Other'),
+      error: 'no release "v1" | x\r\n::error::forged\n##[error]also <img> `tick` [a](b) @someone %0A ' + 'z'.repeat(400) },
     entry('WAILA', 'build', THIRD),
     entry('Foo', 'build', OWN, true),
     entry('Codex', 'build', 'AlienXAXS/StarRupture-Plugin-Codex'),
@@ -195,7 +196,7 @@ test('check step: a gated plugin is graded NOT-SCANNED and never reaches the sca
   const from = step.indexOf('$results = foreach');
   const last = 'foreach ($r in $results) { "$($r.name): $($r.verdict)" }';
   assert.ok(from > 0 && step.indexOf(last) > from);
-  runPs(dir, [
+  const log = runPs(dir, [
     `. ${q(gate)}`,
     `$env:RUNNER_TEMP = ${q(dir)}; $env:BRANCH = 'public'; $env:PLAN = ${q(JSON.stringify(plan))}`,
     `function Invoke-FakeScanner { Add-Content -LiteralPath ${q(join(dir, 'scanned.txt'))} -Value ($args -join ' '); $global:LASTEXITCODE = 2 }`,
@@ -205,6 +206,14 @@ test('check step: a gated plugin is graded NOT-SCANNED and never reaches the sca
   const out = JSON.parse(read(join(dir, 'out', 'plugins.json')).replace(/^\ufeff/, ''));
   assert.equal(out.status, 'fail', 'never silently green');
   assert.deepEqual(out.plugins.map((p) => [p.name, p.verdict]), [['MiniMap', 'NOT-SCANNED'], ['Other', 'NOT-SCANNED'], ['WAILA', 'BUILD-FAILED'], ['Foo', 'ERROR'], ['Codex', 'ERROR']]);
+  const notes = Object.fromEntries(out.plugins.map((p) => [p.name, p.note]));
+  assert.equal(notes.MiniMap, 'not scanned: gated (a downloaded DLL; only a DLL this run built from source is scanned)', 'no plan error, nothing added');
+  assert.match(notes.Other, /^not scanned: gated .*; the plan: no release "v1" x :error:forged error also img tick a \(b\) someone 0A z+\.\.\.$/);
+  assert.doesNotMatch(notes.Other, /[|`<>\[\]@#%\r\n]|::/);
+  assert.ok(notes.Other.length < 500);
+  // The log: the forged commands start no line of their own.
+  assert.doesNotMatch(log, /^\s*::error::forged|##\[error\]/m);
+  assert.match(log, /^::warning title=Plugin Other::not scanned: gated .*; the plan: no release/m);
   const scanned = read(join(dir, 'scanned.txt')).trim().split('\n');
   assert.equal(scanned.length, 2);
   assert.match(scanned[0], /Foo\.dll/);

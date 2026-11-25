@@ -1934,8 +1934,10 @@ jobs:
               $gated = Get-ScanRefusal $p.source $p.repo
               if ($gated) {
                 $r.verdict = 'NOT-SCANNED'
-                $r.note = $gated
-                Write-Host "::warning title=Plugin $($p.name)::$gated"
+                # Why the plan found no release or commit, when it says, stays in the note.
+                $planned = if ($p.PSObject.Properties['error']) { ConvertTo-NoteText $p.error } else { '' }
+                $r.note = if ($planned) { "$gated; the plan: $planned" } else { $gated }
+                Write-Host "::warning title=Plugin $($p.name)::$($r.note)"
                 $r; continue
               }
               $dir = "plugins\plugin-$($env:BRANCH)-$($p.name)"
