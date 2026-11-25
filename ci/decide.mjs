@@ -267,10 +267,12 @@ function checkSdkGlobals(rows) {
 //   FETCH-FAILED,          from the PDB, or could not be checked). It stays on its last release,
 //   OFFSETS,               which the loader refuses on the new CL like REFUSED, and every other
 //   OFFSETS-UNCHECKED      plugin proceeds
+//   NOT-SCANNED            held, this plugin only: its DLL may not reach the scanner
+//                          (ci/scan-gate.ps1), so it was never run and nothing says it works
 //   anything else          (a verdict this file does not know) holds the whole update
 const PLUGIN_OK = new Set(['PASS', 'NONE', 'GAME-CALL']);
 const PLUGIN_DEGRADED = new Set(['FAIL']);
-const PLUGIN_HELD = new Set(['REFUSED', 'RULE3', 'CRASH', 'ERROR', 'BUILD-FAILED', 'FETCH-FAILED', 'OFFSETS', 'OFFSETS-UNCHECKED']);
+const PLUGIN_HELD = new Set(['REFUSED', 'RULE3', 'CRASH', 'ERROR', 'BUILD-FAILED', 'FETCH-FAILED', 'OFFSETS', 'OFFSETS-UNCHECKED', 'NOT-SCANNED']);
 const EXCEPTION_CODE = /0x[cC][0-9a-fA-F]{7}\b|\bexception\s+0x[0-9a-fA-F]+/;
 const NO_ROW = /refused: no row for CL-\d+/;
 const HARNESS_LIMIT = /outside the one table it was given/;
@@ -405,6 +407,8 @@ function checkPlugins(loaded, rowKeys = new Set(), cl = null) {
       e.heldAlone = true;
       e.reasons.push(p.verdict === 'RULE3'
         ? `declares PLUGIN_MAP_MIGRATED but reads game members directly, stays on its last release: ${why(p)}`
+        : p.verdict === 'NOT-SCANNED'
+          ? `not scanned: gated, so nothing is known about it on the new CL: ${why(p)}`
         : p.verdict === 'REFUSED'
           ? `cannot load on the new CL: ${why(p)}; rebuild path`
           : `not verified on the new CL, stays on its last release: ${why(p)}`);
@@ -612,6 +616,11 @@ export function decide(inputs) {
     if (rigRows === null) notes.push(`rig plugins: the facts of the DLLs the rig runs were not read (${inputs.rigPlugins === undefined ? 'no file given' : inputs.rigPlugins.error ?? 'no plugins list'}); no refusal is declared for the rig`);
     else {
       const unread = rigRows.filter((p) => !isObj(p) || !isObj(p.plugin) || !Number.isInteger(p.plugin.interfaceVersion)).map((p) => (isObj(p) && typeof p.name === 'string' ? p.name : '?'));
+      const gated = rigRows.filter((p) => isObj(p) && p.gated === true);
+      if (gated.length) {
+        const stored = gated.filter((p) => isObj(p.plugin)).map((p) => p.name);
+        notes.push(`rig plugins: not scanned: gated: ${gated.map((p) => p.name).join(', ')}${stored.length ? `; the stored facts of the reviewed release are used for ${stored.join(', ')}` : ''}`);
+      }
       if (unread.length) notes.push(`rig plugins: no facts for ${unread.join(', ')}; no refusal is declared for ${unread.length === 1 ? 'it' : 'them'}, so a refusal fails the rig`);
     }
     const r = {

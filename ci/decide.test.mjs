@@ -1295,6 +1295,28 @@ test('HOLD: plugin verdicts missing, malformed or with a status that disagrees',
   holds(decide(base({ plugins: ok({ status: 'pass', plugins: [{ name: 'X' }] }) })), /a name and a verdict/);
 });
 
+test('M: a plugin that was not scanned (gated) is held alone and named; it neither blocks the update nor passes', () => {
+  const plugins = ok({ status: 'fail', plugins: [{ name: 'BetterCheats', verdict: 'PASS' },
+    { name: 'MiniMap', verdict: 'NOT-SCANNED', note: 'not scanned: gated (a downloaded DLL)' }] });
+  const r = decide(base({ plugins }));
+  assert.equal(r.decision, 'M');
+  assert.equal(r.pluginsOk, true);
+  assert.deepEqual(r.plugins.map((p) => [p.name, p.status, p.heldAlone === true]), [['BetterCheats', 'updated', false], ['MiniMap', 'held', true]]);
+  assert.match(r.plugins[1].reasons[0], /^not scanned: gated, so nothing is known about it on the new CL/);
+  assert.match(r.notes.join(' '), /MiniMap held/);
+  holds(decide(base({ plugins: ok({ status: 'pass', plugins: plugins.value.plugins }) })), /disagrees with the verdicts/);
+});
+
+test('rig set not scanned: decide names the gated rows and declares only what stored facts show', () => {
+  const stored = { name: 'PersistentIdFix', gated: true, error: 'not scanned: gated', plugin: { interfaceVersion: 75, gameBuild: 'CL-127004 (none declared)' }, rule3: { migrated: false } };
+  const bare = { name: 'WAILA', gated: true, error: 'not scanned: gated' };
+  const r = decide(base({ g3: ok({ ok: true, cl: '129402', previousCl: '127004' }), rigPlugins: ok({ branch: 'public', tags: '', plugins: [stored, bare] }) }));
+  assert.deepEqual(r.expectRefused, ['PersistentIdFix']);
+  const notes = r.notes.join(' | ');
+  assert.match(notes, /rig plugins: not scanned: gated: PersistentIdFix, WAILA; the stored facts of the reviewed release are used for PersistentIdFix/);
+  assert.match(notes, /rig plugins: no facts for WAILA; no refusal is declared for it, so a refusal fails the rig/);
+});
+
 test('M: GAME-CALL is a note, not a hold', () => {
   const r = decide(base());
   assert.equal(r.decision, 'M');
