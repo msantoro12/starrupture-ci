@@ -1732,7 +1732,7 @@ test('plan: the SDK refs reach the plan step, and a refused plan builds no key s
   assert.match(plan, /\n {10}PLUGIN_SDK_REF: \$\{\{ inputs\.plugin_sdk_ref \}\}\r?\n/);
   assert.match(plan, /\n {10}GAME_SDK_REF: \$\{\{ inputs\.game_sdk_ref \}\}\r?\n/);
   assert.match(job('key-sources-plan'), /\n {4}needs: plugin-plan\r?\n/);
-  assert.doesNotMatch(jobIf(job('key-sources-plan')), /always\(\)|cancelled\(\)|failure\(\)/, 'the default success() applies');
+  assert.doesNotMatch(job('key-sources-plan').match(/\n {4}if: [^\r\n]*/)[0], /always\(\)|cancelled\(\)|failure\(\)/, 'the default success() applies');
   assert.match(job('key-sources'), /\n {4}needs: key-sources-plan\r?\n/);
 });
 
