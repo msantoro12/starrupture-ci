@@ -649,10 +649,10 @@ jobs:
           # that tag's commit. A release with exactly one DLL asset is checked
           # as that DLL (source 'release'); otherwise the tag's source is
           # built (source 'build'). A plugin that is not hosted (not
-          # msantoro12's, or a release DLL) is fetched or built by the check
-          # job itself and never becomes an artifact. A latest release that
-          # cannot be resolved costs only that plugin (FETCH-FAILED), never
-          # the plan.
+          # msantoro12's, or a release DLL) is left to the check job, which
+          # builds it or, under ci/scan-gate.ps1, reports it NOT-SCANNED; it
+          # never becomes an artifact. A latest release that cannot be
+          # resolved costs only that plugin, never the plan.
           # A plugin whose owner is neither msantoro12 nor AlienXAXS (MiniMap, PersistentIdFix) is not taken at its
           # latest release: it is the reviewed release in its Pin in ci/plugin-names.json (tag, and the
           # sha256 of its client DLL), the one release the rig runs too. A newer release is only
@@ -752,7 +752,7 @@ jobs:
                 if ($latestTag -and $latestTag -cne $pinTag) {
                   $shown = if ($latestTag -cmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$') { $latestTag } else { 'unreadable-tag' }
                   $review.Add("$($e.name)=$shown")
-                  Write-Host "::warning title=New release waiting for review::new $($e.name) release $shown waiting for review; the check scans the reviewed $pinTag"
+                  Write-Host "::warning title=New release waiting for review::new $($e.name) release $shown waiting for review; CI stays on the reviewed $pinTag"
                 }
               }
             } catch {
@@ -819,7 +819,7 @@ jobs:
     # One plugin's failure (a checkout or the build) never fails this job: the
     # failing steps below are continue-on-error, so the other legs and the jobs that
     # need this one go on. A plugin with no plugin.json gets no artifact, and the
-    # check job grades it BUILD-FAILED or FETCH-FAILED, which holds that plugin alone.
+    # check job grades it BUILD-FAILED or NOT-SCANNED, which holds that plugin alone.
     steps:
       - name: Check out the plugin
         continue-on-error: true
@@ -1856,7 +1856,7 @@ jobs:
           # does not (the loader refuses a plugin on any recorded failure);
           # CRASH; REFUSED (interface version outside the loader's range); NONE
           # (no OnPluginLoadHooks); RULE3 (it declares PLUGIN_MAP_MIGRATED and still reads game
-          # members directly: held alone, like REFUSED); BUILD-FAILED or FETCH-FAILED; ERROR. Only the
+          # members directly: held alone, like REFUSED); BUILD-FAILED; NOT-SCANNED (ci/scan-gate.ps1); ERROR. Only the
           # plugin fails; the loader's status does not change.
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest

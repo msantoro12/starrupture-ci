@@ -2478,7 +2478,7 @@ test('key sources: nothing but the scan, the layout keys and the scans builder r
     for (const n of named) assert.ok(ok.includes(n) || n === undefined, `${name}: step "${n}" reads the key sources`);
   }
   // The steps that decide, stage, gate the rig, grade the plugins or build the rig's set name no key source.
-  for (const [j, n] of [['check', "Check the plugins' patterns"], ['check', "Resolve the rig's plugin set"], ['check', "Read the rig's plugin DLLs"], ['check', 'Write the result'], ['map-mode', 'Decide, export, sign, stage and plan the promotion']]) {
+  for (const [j, n] of [['check', "Check the plugins' patterns"], ['check', "Resolve the rig's plugin set"], ['check', "Record the rig's plugin set (not scanned)"], ['check', 'Write the result'], ['map-mode', 'Decide, export, sign, stage and plan the promotion']]) {
     const text = stepsOf(job(j)).find(([x]) => x === n)?.[1];
     assert.ok(text !== undefined, `${j}: step "${n}" exists`);
     assert.ok(!mentions(text), `${j}: "${n}" does not read the key sources`);

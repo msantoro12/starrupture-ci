@@ -425,7 +425,7 @@ test('rig set: eleven plugins, MiniMap and PersistentIdFix from their author wit
   const m = names.find((p) => p.Name === 'MiniMap');
   assert.deepEqual(m, { Name: 'MiniMap', Repo: 'StarRupture-Plugin-MiniMap', LogName: 'MiniMap', Asset: 'MiniMap', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'MiniMap: atlas texture interface initialization failed', Pin: { Tag: PIN_TAG, Digest: `sha256:${PIN_HEX}` } });
   const pid = names.find((p) => p.Name === 'PersistentIdFix');
-  assert.deepEqual(pid, { Name: 'PersistentIdFix', Repo: 'StarRupture-Plugin-PersistentIdFix', LogName: 'PersistentIdFix', Asset: 'PersistentIdFix', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'PersistentIdFix: failed to initialize statistics UI', Pin: { Tag: PID_TAG, Digest: `sha256:${PID_HEX}` } });
+  assert.deepEqual(pid, { Name: 'PersistentIdFix', Repo: 'StarRupture-Plugin-PersistentIdFix', LogName: 'PersistentIdFix', Asset: 'PersistentIdFix', Owner: 'LetMeInside', StripV: true, UiOffInitFailure: 'PersistentIdFix: failed to initialize statistics UI', Pin: { Tag: PID_TAG, Digest: `sha256:${PID_HEX}`, Facts: { InterfaceVersion: 75, GameBuild: 'CL-127004 (none declared)', Migrated: false, ObservedIn: 'scan of this digest in client check runs 44538450666 (CL-130045) and 44113512685 (CL-129402)' } } });
   // The other nine keep the rig's owner and Latest: no owner, no pin.
   for (const p of names.filter((x) => !THIRD_PARTY.includes(x.Name))) {
     assert.ok(!('Owner' in p) && !('StripV' in p) && !('LoggedVersion' in p) && !('Pin' in p) && !('UiOffInitFailure' in p), `${p.Name}: unchanged`);
