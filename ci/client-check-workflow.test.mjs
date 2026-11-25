@@ -1969,7 +1969,7 @@ test('bases: both triggers default to AlienX main for the loader, both SDKs and 
     assert.equal(defaultOf(section, 'plugins'), DEFAULT_PLUGINS, name);
     // The scanner overlay: tools/AobScan only, from the fork's scanner branch.
     assert.equal(defaultOf(section, 'scanner_repo'), 'msantoro12/StarRupture-ModLoader', name);
-    assert.equal(defaultOf(section, 'scanner_ref'), 'ci/aobscan', name);
+    assert.equal(defaultOf(section, 'scanner_ref'), '', name);
   }
 });
 
@@ -2270,8 +2270,11 @@ const KEY_SDK = { repo: 'msantoro12/StarRupture-Plugin-SDK', ref: 'd7fda62873283
 // The node program of a step's `node -e '...'` run block.
 const nodeScriptOf = (j, name) => runOf(j, name).match(/node -e '\n([\s\S]*)\n'\s*$/)[1];
 
+// The branch each of the nine follows with no commit pin.
+const keyBranch = (name) => (name === 'WaveOptimiser' ? 'gss/host-off' : 'gss/plugin-work');
+
 test('key sources: both triggers default to the nine work branches, the pinned MiniMap key-scan build and the pinned PersistentIdFix build', () => {
-  const want = [...KEY_NINE.map((n) => `msantoro12/StarRupture-Plugin-${n}@gss/plugin-work`), `msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:${KEY_PIN}`, `msantoro12/StarRupture-Plugin-PersistentIdFix@main:${PIDFIX_PIN}`];
+  const want = [...KEY_NINE.map((n) => `msantoro12/StarRupture-Plugin-${n}@${keyBranch(n)}`), `msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:${KEY_PIN}`, `msantoro12/StarRupture-Plugin-PersistentIdFix@main:${PIDFIX_PIN}`];
   for (const s of [call, dispatch]) assert.deepEqual(defaultOf(s, 'key_sources').split(' '), want);
 });
 
@@ -2297,8 +2300,8 @@ test('key sources: the default list is accepted, MiniMap gets its key-scan recip
   assert.deepEqual([pid.recipe, pid.pin, pid.branch, pid.repo, pid.tag, pid.component], ['sdkroot', PIDFIX_PIN, 'main', 'msantoro12/StarRupture-Plugin-PersistentIdFix', 'msantoro12/StarRupture-Plugin-PersistentIdFix@main', 'PersistentIdFix@main']);
   assert.deepEqual([pid.pluginSdkRepo, pid.pluginSdkRef], [KEY_SDK.repo, KEY_SDK.ref], 'PersistentIdFix builds on the pinned fork SDK too');
   for (const e of entries.filter((x) => x !== mini && x !== pid)) {
-    assert.deepEqual([e.recipe, e.branch, e.pin, e.repo], ['standard', 'gss/plugin-work', '', `msantoro12/StarRupture-Plugin-${e.name}`]);
-    assert.equal(e.tag, `${e.repo}@gss/plugin-work`);
+    assert.deepEqual([e.recipe, e.branch, e.pin, e.repo], ['standard', keyBranch(e.name), '', `msantoro12/StarRupture-Plugin-${e.name}`]);
+    assert.equal(e.tag, `${e.repo}@${keyBranch(e.name)}`);
     assert.deepEqual([e.pluginSdkRepo, e.pluginSdkRef], [KEY_SDK.repo, KEY_SDK.ref], `${e.name} builds on the pinned fork SDK`);
   }
   assert.equal(keyPlan({ KEY_SOURCES: '' }).entries.length, 0);
@@ -2315,6 +2318,8 @@ test('key sources: only msantoro12 plugin repositories, branch names, and a comm
     ['msantoro12/StarRupture-Plugin-Codex@gss/plugin-work:abc123', /is not msantoro12\/StarRupture-Plugin-/],
     [`msantoro12/StarRupture-Plugin-Codex@gss/plugin-work:${HEX40.toUpperCase()}`, /is not msantoro12\/StarRupture-Plugin-/],
     ['msantoro12/StarRupture-Plugin-Other@gss/plugin-work', /has no commit pin/],
+    ['msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work', /has no commit pin/],
+    ['msantoro12/StarRupture-Plugin-Codex@gss/host-off', /has no commit pin/],
     ['msantoro12/StarRupture-Plugin-BetterCheats@main', /has no commit pin/],
     ['msantoro12/StarRupture-Plugin-BetterCheats@feat/x', /has no commit pin/],
     [`msantoro12/StarRupture-Plugin-Other@refs/pull/12/head:${HEX40}`, /is not a branch name/],
@@ -5131,3 +5136,48 @@ for (const [label, name, env] of [['live', 'Publish the feed to the live release
     assert.ok(!callsOf(dupFeed.dir).some((l) => /^gh release (upload|create)/.test(l)), 'nothing was uploaded');
   });
 }
+
+// ---- Which scanner is built ----
+
+// The pick lines of a scanner job, from its if to the closing brace.
+const pickSnippet = (text) => {
+  const from = text.indexOf('          if ($env:SCANNER_REF) {\n');
+  const to = text.indexOf('\n          }\n', from);
+  assert.ok(from > 0 && to > from, 'the job picks its scanner');
+  return text.slice(from, to + '\n          }\n'.length).replace(/^ {10}/gm, '');
+};
+
+test('scanner: the loader ref\'s own unless scanner_ref lays another over it, the same in both checks', { skip: !powershell }, () => {
+  const server = readFileSync(join(here, '..', '.github', 'workflows', 'sr-server-check.yml'), 'utf8').replace(/\r\n/g, '\n');
+  const script = pickSnippet(job('build-scanner'));
+  assert.equal(pickSnippet(server), script, 'the server check picks it the same way');
+  // The loader's copy says "own", the checked-out override says "override".
+  const pick = (ref, { own = true } = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), 'scanner-pick-'));
+    const tool = (root, body) => {
+      mkdirSync(join(dir, root, 'tools', 'AobScan'), { recursive: true });
+      writeFileSync(join(dir, root, 'tools', 'AobScan', 'AobScan.vcxproj'), body);
+    };
+    mkdirSync(join(dir, 'loader', 'tools'), { recursive: true });
+    if (own) tool('loader', 'own');
+    tool('scanner-src', 'override'); // present either way: only the ref decides
+    const r = spawnSync(powershell, ['-NoProfile', '-Command', `$ErrorActionPreference = 'stop'\n${script}`], {
+      cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, SCANNER_REPO: 'msantoro12/StarRupture-ModLoader', SCANNER_REF: ref },
+    });
+    const file = join(dir, 'loader', 'tools', 'AobScan', 'AobScan.vcxproj');
+    return { r, built: existsSync(file) ? readFileSync(file, 'utf8') : null };
+  };
+  let x = pick('');
+  assert.equal(x.r.status, 0, x.r.stdout + x.r.stderr);
+  assert.equal(x.built, 'own');
+  assert.match(x.r.stdout, /Scanner: the loader ref's own tools\/AobScan/);
+  for (const own of [true, false]) {
+    x = pick('some-ref', { own });
+    assert.equal(x.r.status, 0, x.r.stdout + x.r.stderr);
+    assert.equal(x.built, 'override');
+    assert.match(x.r.stdout, /Scanner: tools\/AobScan of msantoro12\/StarRupture-ModLoader@some-ref/);
+  }
+  x = pick('', { own: false });
+  assert.notEqual(x.r.status, 0, 'a loader with no scanner and no override fails');
+  assert.match(x.r.stdout + x.r.stderr, /give scanner_ref/);
+});
