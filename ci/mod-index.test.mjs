@@ -440,6 +440,10 @@ test('entries: download_size is plain decimal digits, so the signer and the load
 test('entries: the page_url may not walk back out of the repository, and a letter that only lowercases to a name does not match it', () => {
   refused([entry({ page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/../../Mallory/Evil' })], /belong to the repository page_url names/);
   refused([entry({ page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/./x' })], /belong to the repository page_url names/);
+  const mallory = { download_url: 'https://github.com/Mallory/Evil/releases/download/v1/Codex.dll' };
+  refused([entry({ ...mallory, page_url: 'https://github.com/Mallory/Evil/%2e%2e/%2e%2e/AlienXAXS/StarRupture-Plugin-Codex' })], /belong to the repository page_url names/);
+  refused([entry({ ...mallory, page_url: 'https://github.com/Mallory/Evil/.\r./.\r./AlienXAXS/StarRupture-Plugin-Codex' })], /belong to the repository page_url names/);
+  assert.equal(checkBody(asText([entry({ ...mallory, page_url: 'https://github.com/Mallory/Evil/tree/v1.0' })])), undefined, 'plain extra segments pass');
   const kelvin = 'https://github.com/Klone/r';
   refused([entry({ page_url: kelvin, download_url: 'https://github.com/klone/r/releases/download/t/x.dll' })], /belong to the repository page_url names/);
 });

@@ -166,7 +166,7 @@ function scanEntries(text, keys, label) {
     need(++e.counts[key] === 1, `${who}: the key ${key} appears more than once`);
     next++;
     while (next < text.length && /\s/.test(text[next])) next++;
-    e.raw[key] = /^[^\s,}\]]*/.exec(text.slice(next))[0];
+    if (key === 'download_size') e.raw[key] = /^[^\s,}\]]*/.exec(text.slice(next))[0];
   }
   return entries;
 }
@@ -177,7 +177,7 @@ function checkEntry(e, who, raw) {
   const asset = releaseAssetRepo(e.download_url);
   need(asset, `${who}: download_url must be https://github.com/<owner>/<repo>/releases/download/<tag>/<name>.dll`);
   const page = typeof e.page_url === 'string' ? e.page_url.split('/') : [];
-  need(page.length >= 5 && page[0] === 'https:' && page[1] === '' && sameName(page[2], 'github.com') && sameName(page[3], asset[0]) && sameName(page[4], asset[1]) && !page.slice(5).some((p) => p === '.' || p === '..'),
+  need(page.length >= 5 && page[0] === 'https:' && page[1] === '' && sameName(page[2], 'github.com') && sameName(page[3], asset[0]) && sameName(page[4], asset[1]) && page.slice(5, page.at(-1) === '' ? -1 : undefined).every(plainSegment),
     `${who}: download_url must belong to the repository page_url names`);
   need(typeof e.download_sha256 === 'string' && /^[0-9a-f]{64}$/.test(e.download_sha256), `${who}: download_sha256 must be 64 lowercase hex characters`);
   // The raw text must be plain digits: the loader reads 3.2e7 as 3, JSON.parse as 32000000.
