@@ -24,7 +24,7 @@ const hasBash = spawnSync('bash', ['-c', 'true'], { windowsHide: true }).status 
 const ASSET = 'mod-index.v1.txt';
 const OTHER = 'plugin-catalog.v1.txt';
 const NOW = Math.floor(Date.now() / 1000);
-const INDEX = '{\n  "schema": 1,\n  "mods": []\n}\n';
+const INDEX = '[\n  { "id": "codex", "name": "Codex", "page_url": "https://github.com/AlienXAXS/StarRupture-Plugin-Codex" }\n]\n';
 
 const pair = () => {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -109,7 +109,7 @@ test('the other assets of the release are never read as the mod index and never 
   try {
     const other = 'plugin catalog bytes\n';
     w.release('vmap-feed-rehearsal', { [OTHER]: other, 'version-map-client.v1.txt': 'feed\n', [ASSET]: modIndex(K1, 'k1', NOW - 50) });
-    writeFileSync(w.p(ASSET), modIndex(K1, 'k1', NOW - 40, '{\n  "schema": 2\n}\n'));
+    writeFileSync(w.p(ASSET), modIndex(K1, 'k1', NOW - 40, '[\n  { "id": "codex", "name": "Codex 2", "page_url": "https://github.com/AlienXAXS/StarRupture-Plugin-Codex" }\n]\n'));
     const r = run(w, ['publish', 'vmap-feed-rehearsal', 'staging']);
     assert.equal(r.status, 0, r.stderr + r.stdout);
     assert.deepEqual(writes(r.log), ['gh release upload vmap-feed-rehearsal mod-index.v1.txt --clobber']);
@@ -142,7 +142,7 @@ test('a file that is not a signed mod index is refused before any upload: a cata
     const bad = {
       'a signed plugin catalog': signFeed(catalogText, K1.pem, { keyId: 'k1', kind: 'catalog', now: NOW, seq: NOW - 100 }).text,
       'an unsigned mod index': buildModIndex(INDEX),
-      'a changed byte': good.replace('schema', 'schemb'),
+      'a changed byte': good.replace('Codex', 'Codey'),
       'another key': modIndex(pair(), 'k1', NOW - 100),
       'an empty file': '',
     };

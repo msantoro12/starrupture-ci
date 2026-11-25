@@ -11,8 +11,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { MOD_INDEX_MAX_BYTES, bodyOf, buildModIndex, checkBody } from './mod-index.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { LOADER_REPO, MAX_ENTRIES, MOD_INDEX_MAX_BYTES, ModIndexError, bodyOf, buildModIndex, checkBody, checkLoaderHead, githubApi, resolveLoaderRef } from './mod-index.mjs';
 import { signFeed, verifyFeed } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +23,7 @@ const pair = () => {
 };
 const KEYS = (hex) => ({ k1: { hex, test: false } });
 const reason = (fn) => { try { fn(); } catch (e) { return e.message; } return null; };
-const INDEX = '{\n  "schema": 1,\n  "mods": [\n    { "name": "Codex", "url": "https://example.test/codex" }\n  ]\n}\n';
+const INDEX = '[\n  { "id": "codex", "name": "Codex", "page_url": "https://github.com/AlienXAXS/StarRupture-Plugin-Codex" }\n]\n';
 const sign = (k, unsigned, extra = {}) => signFeed(unsigned, k.pem, { keyId: 'k1', kind: 'mod-index', now: NOW, ...extra });
 const verify = (k, text, extra = {}) => verifyFeed(text, { keys: KEYS(k.hex), now: NOW, kind: 'mod-index', ...extra });
 // Signs `body` as the signer would, but past its checks, to prove the verifier refuses it on its own.
@@ -40,11 +40,13 @@ test('build refuses a CR, no final LF, bad JSON, a scalar, an empty file and one
   assert.match(reason(() => buildModIndex(INDEX.replace(/\n/g, '\r\n'))), /CR/);
   assert.match(reason(() => buildModIndex(INDEX.trimEnd())), /does not end in LF/);
   assert.match(reason(() => buildModIndex('{"a": \n')), /not valid JSON/);
-  assert.equal(buildModIndex('[1]\n'), 'format\t1\nkind\tmod-index\n[1]\n'); // the loader's index.json is an array
-  assert.match(reason(() => buildModIndex('"x"\n')), /not a JSON object or array/);
-  assert.match(reason(() => buildModIndex('null\n')), /not a JSON object or array/);
+  assert.equal(buildModIndex('[]\n'), 'format\t1\nkind\tmod-index\n[]\n'); // the loader's index.json is an array
+  assert.match(reason(() => buildModIndex('[1]\n')), /entry 1 is not an object/);
+  assert.match(reason(() => buildModIndex('{}\n')), /not a JSON array/);
+  assert.match(reason(() => buildModIndex('"x"\n')), /not a JSON array/);
+  assert.match(reason(() => buildModIndex('null\n')), /not a JSON array/);
   assert.match(reason(() => buildModIndex('')), /empty/);
-  const big = `{"pad":"${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}\n`;
+  const big = `[{"pad":"${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}]\n`;
   assert.match(reason(() => buildModIndex(big)), /over/);
   assert.match(reason(() => buildModIndex('{\n"a":\n1,\nsig\tk1\tAAAA\n}\n')), /sig or seq/);
   assert.equal(checkBody(INDEX), undefined);
@@ -76,13 +78,13 @@ test('the signer and the verifier refuse a body with a sig or seq line, a CR, or
   assert.match(reason(() => sign(k, unsigned(sigBody))), /seq or sig line|sig or seq/);
   assert.match(reason(() => sign(k, unsigned(INDEX.replace(/\n/g, '\r\n')))), /CR/);
   assert.match(reason(() => sign(k, unsigned('{"a": \n'))), /not valid JSON/);
-  assert.match(reason(() => sign(k, unsigned('"x"\n'))), /not a JSON object or array/);
+  assert.match(reason(() => sign(k, unsigned('"x"\n'))), /not a JSON array/);
   assert.match(reason(() => sign(k, `format\t1\n${INDEX}`)), /kind line/);
   assert.match(reason(() => sign(k, `format\t1\nkind\tplugin-catalog\n${INDEX}`)), /kind line/);
   assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${'{"p":"'}${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}\n`)), /mod index is over/);
   // a correct signature over such a file (made past the signer) does not make it verify
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{', '"a":', '1,', 'sig\tk1\tAAAA', '}', '']))), /sig or seq/);
-  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '"x"', '']))), /not a JSON object or array/);
+  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '"x"', '']))), /not a JSON array/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{"a": ', '']))), /not valid JSON/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{}\r', '']))), /CR/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, '{}', '']))), /kind line/);
@@ -103,8 +105,8 @@ test('the kinds never cross-verify: a mod index is not a feed or a catalog, and 
 
 test('the file cap is checked on the whole file by the signer and by the verifier', () => {
   const k = pair();
-  const pad = (n) => `{"pad":"${'a'.repeat(n)}"}\n`;
-  const fits = MOD_INDEX_MAX_BYTES - 'format\t1\nkind\tmod-index\n{"pad":""}\n'.length;
+  const pad = (n) => `[{"pad":"${'a'.repeat(n)}"}]\n`;
+  const fits = MOD_INDEX_MAX_BYTES - 'format\t1\nkind\tmod-index\n[{"pad":""}]\n'.length;
   // the signed file carries a seq line and a sig line on top of the unsigned text
   const signedLen = (n) => Buffer.byteLength(sign(k, `format\t1\nkind\tmod-index\n${pad(n)}`).text);
   const extra = Buffer.byteLength(sign(k, `format\t1\nkind\tmod-index\n${pad(1)}`).text) - Buffer.byteLength(`format\t1\nkind\tmod-index\n${pad(1)}`);
@@ -146,4 +148,324 @@ test('same: the published body equals index.json byte for byte, a changed byte o
   const bom = run('build', f('bom.json'), '--out', f('x.txt'));
   assert.equal(bom.status, 2);
   assert.match(bom.stderr, /byte order mark/);
+});
+
+// ---- loader-ref: the gate on what gets signed, against a faked GitHub API ----
+
+// A made-up loader repository. parents holds every commit the API can resolve, those of forks and pull requests
+// included: the compare answer is worked out from it, as GitHub does for any commit of the repository's network.
+const id = (c) => c.repeat(40);
+const C = { root: id('1'), main: id('2'), nextOnly: id('3'), next: id('4'), version: id('5'), feature: id('6'), auto: id('7'), work: id('8'), fork: id('9'), forkOnMain: id('a'), gone: id('b') };
+const parents = { [C.root]: [], [C.main]: [C.root], [C.nextOnly]: [C.root], [C.next]: [C.nextOnly], [C.version]: [C.main], [C.feature]: [C.main], [C.auto]: [C.main], [C.work]: [C.root], [C.fork]: [C.root], [C.forkOnMain]: [C.main] };
+const HEADS = { main: C.main, 'release/next': C.next, 'release/1.28.0': C.version, 'release/loader-unknown-build': C.work, 'feat/mod-browser': C.feature, 'auto/update-1-2-3': C.auto };
+const history = (c) => new Set([c, ...parents[c].flatMap((p) => [...history(p)])]);
+const refEntry = (name, sha) => ({ ref: `refs/heads/${name}`, object: { type: 'commit', sha } });
+function fakeApi(heads = HEADS, broken = () => {}) {
+  const calls = [];
+  const get = async (path) => {
+    calls.push(path);
+    broken(path);
+    const p = path.replace(`repos/${LOADER_REPO}/`, '');
+    assert.notEqual(p, path, `only the loader repository is asked: ${path}`);
+    if (p === 'git/matching-refs/heads/release/?per_page=100') return Object.keys(heads).filter((n) => n.startsWith('release/')).map((n) => refEntry(n, heads[n]));
+    if (p === 'git/ref/heads/main' && heads.main) return refEntry('main', heads.main);
+    const m = /^compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})\?per_page=1$/.exec(p);
+    if (m && parents[m[1]] && parents[m[2]]) {
+      const [, base, head] = m;
+      const up = history(head);
+      const down = history(base);
+      const ahead = [...up].filter((c) => !down.has(c)).length;
+      const behind = [...down].filter((c) => !up.has(c)).length;
+      const status = ahead && behind ? 'diverged' : ahead ? 'ahead' : behind ? 'behind' : 'identical';
+      return { status, ahead_by: ahead, behind_by: behind, merge_base_commit: { sha: [...down].find((c) => up.has(c)) } };
+    }
+    throw new ModIndexError(`GitHub API ${path} answered HTTP 404`);
+  };
+  return { get, calls };
+}
+const refusal = async (promise) => {
+  try { await promise; } catch (e) { assert.ok(e instanceof ModIndexError, e.stack); return e.message; }
+  return null;
+};
+
+test('loader-ref: main and a release branch are accepted, by name (as their tip) and by any commit they reach', async () => {
+  for (const [ref, sha, branch] of [
+    ['main', C.main, 'main'], [C.main, C.main, 'main'], [C.root, C.root, 'main'],
+    ['release/next', C.next, 'release/next'], [C.next, C.next, 'release/next'], [C.nextOnly, C.nextOnly, 'release/next'],
+    ['release/1.28.0', C.version, 'release/1.28.0'], [C.version, C.version, 'release/1.28.0'],
+  ]) {
+    assert.deepEqual(await resolveLoaderRef(ref, fakeApi().get), { sha, branch }, ref);
+  }
+});
+
+test('loader-ref: a commit no accepted branch reaches is refused, though the compare API resolves it', async () => {
+  for (const [what, sha] of [
+    ['fork only', C.fork], ['fork or pull request commit on top of main', C.forkOnMain], ['feature branch', C.feature],
+    ['auto/ branch', C.auto], ['another branch under release/', C.work],
+  ]) {
+    const api = fakeApi();
+    assert.match(await refusal(resolveLoaderRef(sha, api.get)), /is refused: neither main nor a release branch/, what);
+    assert.ok(api.calls.some((c) => c.includes(`/compare/${sha}...${C.main}`)), what);
+    assert.ok(!api.calls.some((c) => [C.feature, C.auto, C.work].some((t) => c.includes(`...${t}`))), 'no unaccepted tip is compared with');
+  }
+  assert.match(await refusal(resolveLoaderRef(C.gone, fakeApi().get)), /answered HTTP 404/, 'a commit the API does not know');
+});
+
+test('loader-ref: every name but main and a release branch is refused before the API is asked', async () => {
+  const names = ['feat/mod-browser', 'auto/update-1-2-3', 'release/loader-unknown-build', 'release/', 'release/1.28', 'release/1.28.0-rc.1', 'release/next/x', 'rc/loader-next', 'v1.27.0',
+    'refs/heads/main', 'refs/pull/7/head', 'refs/tags/v1.27.0', 'msantoro12:main', 'Main', 'main ', 'main\n', '', C.main.slice(0, 12), C.forkOnMain.toUpperCase(), undefined];
+  for (const ref of names) {
+    const api = fakeApi();
+    assert.match(await refusal(resolveLoaderRef(ref, api.get)), /^loader_ref .* is refused: /, JSON.stringify(ref));
+    assert.deepEqual(api.calls, [], JSON.stringify(ref));
+  }
+  assert.match(await refusal(resolveLoaderRef('release/9.9.9', fakeApi().get)), /has no branch release\/9\.9\.9/);
+});
+
+test('loader-ref: an API failure on any call refuses the run, with no fall-through to another branch', async () => {
+  for (const [ref, part] of [['main', '/git/ref/heads/main'], ['release/next', '/git/matching-refs/'], [C.main, '/git/ref/heads/main'], [C.nextOnly, `/compare/${C.nextOnly}...${C.main}`], [C.nextOnly, '/git/matching-refs/'], [C.nextOnly, `...${C.next}?`]]) {
+    const api = fakeApi(HEADS, (path) => { if (path.includes(part)) throw new ModIndexError('boom'); });
+    assert.equal(await refusal(resolveLoaderRef(ref, api.get)), 'boom', `${ref} ${part}`);
+    assert.ok(api.calls.at(-1).includes(part), 'nothing is asked after the failure');
+  }
+});
+
+test('loader-ref: an answer that does not prove reachability is refused', async () => {
+  const answering = (compare, tip = refEntry('main', C.main)) => async (path) => (path.includes('/compare/') ? compare : path.includes('matching-refs') ? [] : tip);
+  const good = { status: 'ahead', behind_by: 0, merge_base_commit: { sha: C.fork } };
+  assert.equal(await refusal(resolveLoaderRef(C.fork, answering(good))), null, 'the control: this answer is a proof');
+  for (const bad of [{}, null, { status: 'ahead' }, { ...good, status: 'behind' }, { ...good, status: 'diverged' }, { ...good, behind_by: 1 }, { ...good, merge_base_commit: { sha: C.root } }, { ...good, merge_base_commit: undefined }]) {
+    assert.match(await refusal(resolveLoaderRef(C.fork, answering(bad))), /neither main nor a release branch/, JSON.stringify(bad));
+  }
+  // Not the commit tip of the very branch asked for: a list (prefix match), another branch, a tag object, a short id.
+  for (const tip of [[refEntry('main', C.main)], refEntry('main-old', C.main), { ref: 'refs/heads/main', object: { type: 'tag', sha: C.main } }, refEntry('main', 'abc'), {}]) {
+    assert.match(await refusal(resolveLoaderRef('main', answering(good, tip))), /did not give the tip of the branch main/, JSON.stringify(tip));
+  }
+  assert.match(await refusal(resolveLoaderRef('release/next', async () => ({ message: 'Not Found' }))), /did not list the release branches/);
+  // A full page of branches may hide the one asked for on the next page: refused, not guessed.
+  const full = Array.from({ length: 100 }, (_, i) => refEntry(`release/${i}.0.0`, C.next));
+  assert.match(await refusal(resolveLoaderRef('release/next', async () => full)), /more than one page/);
+});
+
+test('loader-ref: the commit stays fixed when the branch moves, and a commit a branch no longer reaches is refused', async () => {
+  const first = await resolveLoaderRef('main', fakeApi().get);
+  assert.equal((await resolveLoaderRef(first.sha, fakeApi({ ...HEADS, main: C.feature }).get)).sha, first.sha, 'main moved forward');
+  assert.match(await refusal(resolveLoaderRef(first.sha, fakeApi({ main: C.fork }).get)), /neither main nor a release branch/, 'main was rewritten');
+});
+
+test('loader-ref: the API client takes a 200 with JSON only; a status, a network failure or other text is an error', async () => {
+  const seen = [];
+  const ok = githubApi('t0ken', async (url, init) => { seen.push([url, init]); return { status: 200, json: async () => ({ a: 1 }) }; });
+  assert.deepEqual(await ok('repos/x/y'), { a: 1 });
+  assert.equal(seen[0][0], 'https://api.github.com/repos/x/y');
+  assert.equal(seen[0][1].headers.authorization, 'Bearer t0ken');
+  assert.equal(seen[0][1].redirect, 'error');
+  for (const status of [201, 301, 401, 403, 404, 422, 429, 500, 502]) {
+    assert.match(await refusal(githubApi('', async () => ({ status, json: async () => ({}) }))('p')), new RegExp(`answered HTTP ${status}$`));
+  }
+  assert.match(await refusal(githubApi('', async () => { throw new TypeError('fetch failed'); })('p')), /p failed: fetch failed/);
+  assert.match(await refusal(githubApi('', async () => ({ status: 200, json: async () => { throw new SyntaxError('bad'); } }))('p')), /did not answer JSON/);
+});
+
+// The command the workflow runs, with fetch replaced before it loads.
+test('loader-ref: the command prints the commit and nothing else on stdout; a refusal or a failed API exits 2 with no stdout', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mod-index-ref-'));
+  const preload = join(dir, 'fake-fetch.mjs');
+  writeFileSync(preload, `globalThis.fetch = async (url) => {
+  if (process.env.FAKE_DOWN) throw new TypeError('fetch failed');
+  const sha = ${JSON.stringify(C.main)};
+  if (url.endsWith('/git/ref/heads/main')) return { status: 200, json: async () => ({ ref: 'refs/heads/main', object: { type: 'commit', sha } }) };
+  if (url.includes('/git/matching-refs/')) return { status: 200, json: async () => [] };
+  return { status: 200, json: async () => ({ status: 'diverged', behind_by: 1, merge_base_commit: { sha } }) };
+};
+`);
+  const gate = (ref, env = {}) => spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, join(here, 'mod-index.mjs'), 'loader-ref', ref], { encoding: 'utf8', windowsHide: true, env: { ...process.env, GH_TOKEN: '', ...env } });
+  const good = gate('main');
+  assert.equal(good.status, 0, good.stderr);
+  assert.equal(good.stdout, `${C.main}\n`);
+  for (const [r, why] of [[gate(C.fork), /neither main nor a release branch/], [gate('feat/mod-browser'), /is refused/], [gate('main', { FAKE_DOWN: '1' }), /fetch failed/]]) {
+    assert.equal(r.status, 2, r.stderr);
+    assert.equal(r.stdout, '');
+    assert.match(r.stderr, why);
+  }
+});
+
+// ---- the signer's own check of the entries: it does not wait for the loader's builder ----
+
+const SHA = 'ab'.repeat(32);
+const ASSET = 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll';
+const entry = (over = {}) => ({ id: 'codex', name: 'Codex', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', download_url: ASSET, download_sha256: SHA, download_size: 123456, ...over });
+const asText = (list) => `${JSON.stringify(list, null, 2)}\n`;
+const refused = (list, why) => assert.match(reason(() => checkBody(typeof list === 'string' ? list : asText(list))), why);
+
+test('entries: a good entry, an entry with no install keys and a nexusmods page without them pass', () => {
+  assert.equal(checkBody(asText([entry()])), undefined);
+  assert.equal(checkBody(asText([entry({ page_url: 'https://github.com/alienxaxs/starrupture-plugin-codex/' })])), undefined, 'the repository compares without case');
+  assert.equal(checkBody(asText([{ id: 'x', name: 'X', page_url: 'https://www.nexusmods.com/starrupture/mods/1' }])), undefined);
+  assert.equal(checkBody(asText([entry(), entry({ id: 'other', page_url: 'https://github.com/Someone/Other', download_url: 'https://github.com/Someone/Other/releases/download/v1/Other.dll' })])), undefined);
+});
+
+test('entries: a download_url that is not a https GitHub release asset is refused', () => {
+  for (const [what, url] of [
+    ['another host', 'https://example.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['a look-alike host', 'https://github.com.evil.test/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['a look-alike host without a dot', 'https://githubusercontent.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['raw.githubusercontent.com', 'https://raw.githubusercontent.com/AlienXAXS/StarRupture-Plugin-Codex/main/Codex.dll'],
+    ['http', ASSET.replace('https://', 'http://')],
+    ['no scheme', ASSET.slice('https://'.length)],
+    ['a scheme in capitals', ASSET.replace('https://', 'HTTPS://')],
+    ['a host in capitals', ASSET.replace('github.com', 'GitHub.com')],
+    ['user info', ASSET.replace('https://', 'https://github.com@')],
+    ['user info that names the real host last', 'https://evil.test@github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['user info with a colon', ASSET.replace('https://', 'https://user:pw@')],
+    ['a port', ASSET.replace('github.com', 'github.com:443')],
+    ['a backslash', ASSET.replace('/releases/', '\\releases\\')],
+    ['the other repository\'s release', 'https://github.com/AlienXAXS/StarRupture-ModLoader/releases/download/v1.2.0/Codex.dll'],
+    ['the other owner\'s release', 'https://github.com/Mallory/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['a repository that only starts the same', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex2/releases/download/v1.2.0/Codex.dll'],
+    ['an archive path', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/archive/refs/heads/main.zip'],
+    ['the latest download', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/latest/download/Codex.dll'],
+    ['a raw path', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/raw/main/Codex.dll'],
+    ['a release page', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/tag/v1.2.0'],
+    ['an extra path segment', `${ASSET.replace('/Codex.dll', '')}/sub/Codex.dll`],
+    ['a path walking back', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/../../../Evil/Evil/releases/download/v1/Codex.dll'],
+    ['a dot segment', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/./Codex.dll'],
+    ['a query that looks like a redirect', `${ASSET}?redirect=https://evil.test/Codex.dll`],
+    ['a fragment', `${ASSET}#https://evil.test/Codex.dll`],
+    ['an encoded slash', ASSET.replace('/v1.2.0/', '/v1.2.0%2f..%2f/')],
+    ['a file that is not a dll', ASSET.replace('Codex.dll', 'Codex.exe')],
+    ['a bare .dll name', ASSET.replace('Codex.dll', '.dll')],
+    ['a very long url', `${ASSET.replace('Codex.dll', `${'a'.repeat(200)}.dll`)}`],
+    ['a space', ASSET.replace('Codex.dll', 'Co dex.dll')],
+    ['nothing', ''],
+    ['a number', 5],
+    ['null', null],
+  ]) refused([entry({ download_url: url })], /download_url must be/);
+  const noUrl = entry(); delete noUrl.download_url;
+  refused([noUrl], /download_url must be/);
+});
+
+test('entries: the download_url must belong to the repository the entry\'s own page_url names', () => {
+  for (const [what, page] of [
+    ['a nexusmods page', 'https://www.nexusmods.com/starrupture/mods/1'],
+    ['another repository', 'https://github.com/AlienXAXS/StarRupture-ModLoader'],
+    ['another owner', 'https://github.com/Mallory/StarRupture-Plugin-Codex'],
+    ['a look-alike host', 'https://github.com.evil.test/AlienXAXS/StarRupture-Plugin-Codex'],
+    ['user info', 'https://evil.test@github.com/AlienXAXS/StarRupture-Plugin-Codex'],
+    ['a page url that is only the host', 'https://github.com/'],
+    ['http', 'http://github.com/AlienXAXS/StarRupture-Plugin-Codex'],
+    ['a query in the repository name', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex?x=1'],
+    ['a number', 7],
+  ]) refused([entry({ page_url: page })], /belong to the repository page_url names/);
+  const noPage = entry(); delete noPage.page_url;
+  refused([noPage], /belong to the repository page_url names/);
+});
+
+test('entries: download_sha256 is exactly 64 lowercase hex characters, download_size is 1 byte to 32 MB', () => {
+  for (const hash of [SHA.toUpperCase(), `${SHA.slice(0, 63)}A`, SHA.slice(1), `${SHA}a`, `${SHA.slice(0, 63)}g`, ` ${SHA}`, `${SHA}\n`, `sha256:${SHA}`, '', 5, null, [SHA]]) {
+    refused([entry({ download_sha256: hash })], /download_sha256 must be 64 lowercase hex/);
+  }
+  const noHash = entry(); delete noHash.download_sha256;
+  refused([noHash], /download_sha256 must be/);
+  const noSize = entry(); delete noSize.download_size;
+  refused([noSize], /download_size must be/);
+  for (const size of [0, -1, 32 * 1024 * 1024 + 1, 1.5, '123', null]) refused([entry({ download_size: size })], /download_size must be/);
+  for (const size of [1, 32 * 1024 * 1024]) assert.equal(checkBody(asText([entry({ download_size: size })])), undefined);
+});
+
+test('entries: any install key brings the whole set of checks, and a hash or size with no download_url is refused', () => {
+  refused([{ id: 'x', name: 'X', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', download_sha256: SHA }], /download_url must be/);
+  refused([{ id: 'x', name: 'X', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', install_files: ['Codex.dll'] }], /download_url must be/);
+  refused([{ id: 'x', name: 'X', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', update_manifest_url: 'https://evil.test/m.json' }], /download_url must be/);
+  refused([entry({ download_url: null })], /download_url must be/);
+});
+
+test('entries: every entry is checked, one bad entry refuses the index, the body is a JSON array of objects', () => {
+  refused([entry(), entry({ id: 'bad', download_sha256: 'zz' })], /entry 2 \(bad\): download_sha256/);
+  refused({ mods: [entry()] }, /not a JSON array/);
+  refused('"x"\n', /not a JSON array/);
+  refused([1], /entry 1 is not an object/);
+  refused([null], /entry 1 is not an object/);
+  refused([[]], /entry 1 is not an object/);
+  assert.equal(checkBody(asText(Array.from({ length: MAX_ENTRIES }, (_, i) => ({ id: `m${i}`, name: 'M', page_url: 'https://www.nexusmods.com/x' })))), undefined);
+  refused(Array.from({ length: MAX_ENTRIES + 1 }, (_, i) => ({ id: `m${i}`, name: 'M', page_url: 'https://www.nexusmods.com/x' })), /201 entries/);
+});
+
+test('entries: a key the loader would read from another place than the check read it from is refused', () => {
+  const good = JSON.stringify(entry());
+  const evil = 'https://github.com/Mallory/Evil/releases/download/v1/Evil.dll';
+  // the loader takes the first "download_url" at any depth, JSON.parse the last of the top level
+  refused(`[${good.replace('{', `{"download_url":"${evil}",`)}]\n`, /entry 1 \(codex\): the key download_url appears more than once/);
+  refused(`[${good.slice(0, -1)},"download_url":"${evil}"}]\n`, /entry 1 \(codex\): the key download_url appears more than once/);
+  refused(`[${good.replace('{', `{"extra":{"download_url":"${evil}"},`)}]\n`, /the key download_url must be a direct member of the entry/);
+  refused(`[${good.replace('{', `{"extra":[{"download_sha256":"${'0'.repeat(64)}"}],`)}]\n`, /the key download_sha256 must be a direct member of the entry/);
+  refused(`[${good.slice(0, -1)},"page_url":"https://github.com/Mallory/Evil"}]\n`, /the key page_url appears more than once/);
+  refused(`[${good.replace('"download_url"', '"download\\u005furl"')}]\n`, /key written with a backslash escape/);
+  // a string that only spells a key is not a key
+  assert.equal(checkBody(`[${good.replace('"Codex"', '"download_url"')}]\n`), undefined);
+  assert.equal(checkBody(`[${good.replace('"Codex"', '"a \\"download_url\\": b"')}]\n`), undefined);
+});
+
+// One entry's nested keys must not balance another entry's escaped keys: the check is per entry, not over the whole text.
+test('entries: nested, duplicate and escaped keys are refused per entry, however the other entries are written', () => {
+  const page = 'https://github.com/o/r';
+  const installed = { download_url: 'https://github.com/o/r/releases/download/t/x.dll', download_sha256: SHA, download_size: 5, install_files: ['X.dll'] };
+  const nested = JSON.stringify({ id: 'a', name: 'A', page_url: 'https://github.com/X/Y', meta: { download_url: 'https://github.com/Mallory/Evil/releases/download/v1/Evil.dll', download_sha256: '0'.repeat(64), download_size: 5, install_files: ['Evil.dll'] } });
+  const plain = JSON.stringify({ id: 'b', name: 'B', page_url: page, ...installed });
+  const escaped = plain.replace('"download_url"', '"download\\u005furl"').replace('"download_sha256"', '"download\\u005fsha256"').replace('"download_size"', '"download\\u005fsize"').replace('"install_files"', '"install\\u005ffiles"');
+  // the reviewer's index: A has the install keys nested, B spells them with escapes, so the raw counts balance over the whole text
+  refused(`[${nested},${escaped}]\n`, /entry 1 \(a\): the key download_url must be a direct member/);
+  refused(`[${escaped},${nested}]\n`, /key written with a backslash escape/);
+  refused(`[${plain},${nested}]\n`, /entry 2 \(a\): the key download_url must be a direct member/);
+  refused(`[${nested}]\n`, /entry 1 \(a\): the key download_url must be a direct member/);
+  // a duplicate in one entry, whichever entry it is
+  refused(`[${plain.slice(0, -1)},"download_size":6}, ${plain}]\n`, /entry 1 \(b\): the key download_size appears more than once/);
+  refused(`[${plain}, ${plain.slice(0, -1)},"install_files":["Y.dll"]}]\n`, /entry 2 \(b\): the key install_files appears more than once/);
+  // an escaped spelling of any key, of the scanned ones or not, anywhere
+  refused(`[${plain.replace('"page_url"', '"page\\u005furl"')}]\n`, /key written with a backslash escape/);
+  refused(`[{"id":"c","name":"C","x":{"a\\u0062":1},"page_url":"${page}"}]\n`, /key written with a backslash escape/);
+  // a key that only looks like an install key (another letter, same shape) is not one: the entry stays browse-only for both readers
+  assert.equal(checkBody(`[${JSON.stringify({ id: 'd', name: 'D', page_url: page }).replace('{', '{"dпwnload_url":"https://evil.test/x.dll",')}]\n`), undefined);
+  assert.equal(checkBody(`[${plain},${JSON.stringify({ id: 'e', name: 'E', page_url: 'https://www.nexusmods.com/x', note: { download_urls: 1 } })}]\n`), undefined);
+});
+
+test('entries: download_size is plain decimal digits, so the signer and the loader read the same number', () => {
+  const good = JSON.stringify(entry({ download_size: 1234 }));
+  for (const raw of ['1.5e3', '1234.0', '1.234e3', '12340e-1', '1E3', '-1234', '0']) refused(`[${good.replace('1234', raw)}]\n`, /download_size must be/);
+  for (const raw of ['01234', '+1234']) refused(`[${good.replace('1234', raw)}]\n`, /not valid JSON/);
+  assert.equal(checkBody(`[${good}]\n`), undefined);
+  assert.equal(checkBody(`[${good.replace('"download_size":1234', '"download_size" : 1234 ')}]\n`), undefined);
+});
+
+test('entries: the page_url may not walk back out of the repository, and a letter that only lowercases to a name does not match it', () => {
+  refused([entry({ page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/../../Mallory/Evil' })], /belong to the repository page_url names/);
+  refused([entry({ page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/./x' })], /belong to the repository page_url names/);
+  const mallory = { download_url: 'https://github.com/Mallory/Evil/releases/download/v1/Codex.dll' };
+  refused([entry({ ...mallory, page_url: 'https://github.com/Mallory/Evil/%2e%2e/%2e%2e/AlienXAXS/StarRupture-Plugin-Codex' })], /belong to the repository page_url names/);
+  refused([entry({ ...mallory, page_url: 'https://github.com/Mallory/Evil/.\r./.\r./AlienXAXS/StarRupture-Plugin-Codex' })], /belong to the repository page_url names/);
+  assert.equal(checkBody(asText([entry({ ...mallory, page_url: 'https://github.com/Mallory/Evil/tree/v1.0' })])), undefined, 'plain extra segments pass');
+  const kelvin = 'https://github.com/Klone/r';
+  refused([entry({ page_url: kelvin, download_url: 'https://github.com/klone/r/releases/download/t/x.dll' })], /belong to the repository page_url names/);
+});
+
+test('entries: signing and verifying run the same check, so a bad index never gets a signature', () => {
+  const k = pair();
+  const bad = asText([entry({ download_url: 'https://example.com/Codex.dll' })]);
+  assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${bad}`)), /download_url must be/);
+  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', ...bad.split('\n')]))), /download_url must be/);
+  const good = asText([entry()]);
+  assert.equal(verify(k, sign(k, `format\t1\nkind\tmod-index\n${good}`).text).keyId, 'k1');
+});
+
+test('loader-head: only the current tip of main passes, a commit behind it or on another branch does not, an API failure refuses', async () => {
+  assert.equal(await checkLoaderHead(C.main, fakeApi().get), C.main);
+  for (const sha of [C.root, C.version, C.next, C.fork, C.gone, 'main', 'release/next', C.main.slice(0, 7), C.forkOnMain.toUpperCase(), '', undefined]) {
+    assert.match(await refusal(checkLoaderHead(sha, fakeApi().get)), /full commit id|is not the tip of main/, String(sha));
+  }
+  // main moved on: what was main a moment ago is refused
+  assert.match(await refusal(checkLoaderHead(C.main, fakeApi({ ...HEADS, main: C.forkOnMain }).get)), /is not the tip of main of .* \(main is at a{40}\)/);
+  const failing = fakeApi(HEADS, (path) => { if (path.includes('git/ref/heads/main')) throw new ModIndexError('boom'); });
+  assert.match(await refusal(checkLoaderHead(C.main, failing.get)), /boom/);
+  const { main, ...noMain } = HEADS;
+  assert.match(await refusal(checkLoaderHead(C.main, fakeApi(noMain).get)), /HTTP 404/);
 });
