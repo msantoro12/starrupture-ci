@@ -17,7 +17,7 @@ name: SR mod index
 # The target is the vmap-feed-rehearsal prerelease ALWAYS, unless the `live` input is set. Both targets are signed
 # with the release key (k2, secret VMAP_SIGN_KEY, environment vmap-sign). `live` is a dispatch input of this workflow
 # only (a workflow_call caller cannot set it), needs main and is the owner's switch: nothing in this repository
-# turns it on. A run without it reads the live vmap-feed release before and after and fails if it changed; a live run
+# turns it on, and it signs only the loader's main as it is at that moment: the commit read must be the tip of main when the signing job asks (`ci/mod-index.mjs loader-head`). A run without it reads the live vmap-feed release before and after and fails if it changed; a live run
 # fails if any asset but mod-index.v1.txt changed. No pull_request, push or schedule trigger; the only caller is the
 # mod index leg of sr-watch.yml, which never sets `live`.
 
@@ -151,7 +151,6 @@ jobs:
       GH_REPO: ${{ github.repository }}
       LIVE: ${{ contains(github.workflow_ref, '/.github/workflows/sr-mod-index.yml@') && github.event_name == 'workflow_dispatch' && inputs.live == true }}
       LOADER_REPO: AlienXAXS/StarRupture-ModLoader
-      LOADER_REF: ${{ inputs.loader_ref }}
       LOADER_SHA: ${{ needs.loader-ref.outputs.sha }}
       STAGING_RELEASE: vmap-feed-rehearsal
     steps:
@@ -166,7 +165,6 @@ jobs:
         run: |
           set -euo pipefail
           [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a live publish runs from main only (this run is on $GITHUB_REF)"; exit 2; }
-          [[ "$LOADER_REF" = main || "$LOADER_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::a live publish reads the loader's main or a full commit, not $LOADER_REF"; exit 2; }
           echo "This run publishes to the LIVE vmap-feed release."
 
       # The commit comes from loader-ref, which ran no loader code, and is checked again here: only a full commit id
@@ -176,6 +174,14 @@ jobs:
           set -euo pipefail
           checked="$(node tool/ci/mod-index.mjs loader-ref "$LOADER_SHA")"
           [ "$checked" = "$LOADER_SHA" ] || { echo "::error::the loader commit did not pass the check"; exit 2; }
+
+      # A live signature is for the loader's main as it is at this moment: the branch tip is read from the API here (no
+      # answer, no signature) and must be the commit id everything is read by. Staging keeps the check above only.
+      - name: Require the current head of main for a live signature
+        if: ${{ env.LIVE == 'true' }}
+        run: |
+          set -euo pipefail
+          node tool/ci/mod-index.mjs loader-head "$LOADER_SHA"
 
       - name: Choose the live release
         if: ${{ env.LIVE == 'true' }}

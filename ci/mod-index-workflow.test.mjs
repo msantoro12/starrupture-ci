@@ -65,7 +65,10 @@ test('live: needs this workflow as the top-level run, a dispatch and live true, 
   assert.equal((wf.match(/inputs\.live/g) ?? []).length, 1, 'no other expression reads the live input');
   const gate = stepOf('Refuse a live publish that is not allowed');
   assert.ok(gate.includes("if: ${{ env.LIVE == 'true' }}\n") && gate.includes('"$GITHUB_REF" = refs/heads/main') && gate.includes('exit 2'));
-  assert.ok(gate.includes('"$LOADER_REF" = main') && gate.includes('^[0-9a-f]{40}$'), 'a live run reads the loader main or a full commit only');
+  const head = stepOf('Require the current head of main for a live signature');
+  assert.ok(head.includes("if: ${{ env.LIVE == 'true' }}\n") && head.includes('node tool/ci/mod-index.mjs loader-head "$LOADER_SHA"') && head.includes('set -euo pipefail') && !head.includes('||'), 'a live run signs only the commit that is the tip of main now, no fall-through');
+  assert.ok(!/LOADER_REF/.test(pubJob), 'the signing job reads the loader only by the checked commit id');
+  assert.ok(pubJob.indexOf('- name: Check the loader commit again') < pubJob.indexOf('- name: Require the current head') && pubJob.indexOf('- name: Require the current head') < pubJob.indexOf('- name: Take the loader'), 'the head is checked after the ref check and before anything is read');
   assert.ok(wf.indexOf('Refuse a live publish') < wf.indexOf('Choose the live release'), 'refused before the live target is chosen');
   assert.ok(wf.indexOf('Refuse a live publish') < wf.indexOf('Sign with the release key'), 'refused before the release key is used');
   assert.ok(!/(?:vmap-sign\.mjs|plugin-catalog-publish\.sh)[^\n]*\bvmap-feed\b/.test(wf), 'no script call names the live release; the choose step does');

@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { LOADER_REPO, MOD_INDEX_MAX_BYTES, ModIndexError, bodyOf, buildModIndex, checkBody, githubApi, resolveLoaderRef } from './mod-index.mjs';
+import { LOADER_REPO, MAX_ENTRIES, MOD_INDEX_MAX_BYTES, ModIndexError, bodyOf, buildModIndex, checkBody, checkLoaderHead, githubApi, resolveLoaderRef } from './mod-index.mjs';
 import { signFeed, verifyFeed } from './vmap-sign.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +23,7 @@ const pair = () => {
 };
 const KEYS = (hex) => ({ k1: { hex, test: false } });
 const reason = (fn) => { try { fn(); } catch (e) { return e.message; } return null; };
-const INDEX = '{\n  "schema": 1,\n  "mods": [\n    { "name": "Codex", "url": "https://example.test/codex" }\n  ]\n}\n';
+const INDEX = '[\n  { "id": "codex", "name": "Codex", "page_url": "https://github.com/AlienXAXS/StarRupture-Plugin-Codex" }\n]\n';
 const sign = (k, unsigned, extra = {}) => signFeed(unsigned, k.pem, { keyId: 'k1', kind: 'mod-index', now: NOW, ...extra });
 const verify = (k, text, extra = {}) => verifyFeed(text, { keys: KEYS(k.hex), now: NOW, kind: 'mod-index', ...extra });
 // Signs `body` as the signer would, but past its checks, to prove the verifier refuses it on its own.
@@ -40,11 +40,13 @@ test('build refuses a CR, no final LF, bad JSON, a scalar, an empty file and one
   assert.match(reason(() => buildModIndex(INDEX.replace(/\n/g, '\r\n'))), /CR/);
   assert.match(reason(() => buildModIndex(INDEX.trimEnd())), /does not end in LF/);
   assert.match(reason(() => buildModIndex('{"a": \n')), /not valid JSON/);
-  assert.equal(buildModIndex('[1]\n'), 'format\t1\nkind\tmod-index\n[1]\n'); // the loader's index.json is an array
-  assert.match(reason(() => buildModIndex('"x"\n')), /not a JSON object or array/);
-  assert.match(reason(() => buildModIndex('null\n')), /not a JSON object or array/);
+  assert.equal(buildModIndex('[]\n'), 'format\t1\nkind\tmod-index\n[]\n'); // the loader's index.json is an array
+  assert.match(reason(() => buildModIndex('[1]\n')), /entry 1 is not an object/);
+  assert.match(reason(() => buildModIndex('{}\n')), /not a JSON array/);
+  assert.match(reason(() => buildModIndex('"x"\n')), /not a JSON array/);
+  assert.match(reason(() => buildModIndex('null\n')), /not a JSON array/);
   assert.match(reason(() => buildModIndex('')), /empty/);
-  const big = `{"pad":"${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}\n`;
+  const big = `[{"pad":"${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}]\n`;
   assert.match(reason(() => buildModIndex(big)), /over/);
   assert.match(reason(() => buildModIndex('{\n"a":\n1,\nsig\tk1\tAAAA\n}\n')), /sig or seq/);
   assert.equal(checkBody(INDEX), undefined);
@@ -76,13 +78,13 @@ test('the signer and the verifier refuse a body with a sig or seq line, a CR, or
   assert.match(reason(() => sign(k, unsigned(sigBody))), /seq or sig line|sig or seq/);
   assert.match(reason(() => sign(k, unsigned(INDEX.replace(/\n/g, '\r\n')))), /CR/);
   assert.match(reason(() => sign(k, unsigned('{"a": \n'))), /not valid JSON/);
-  assert.match(reason(() => sign(k, unsigned('"x"\n'))), /not a JSON object or array/);
+  assert.match(reason(() => sign(k, unsigned('"x"\n'))), /not a JSON array/);
   assert.match(reason(() => sign(k, `format\t1\n${INDEX}`)), /kind line/);
   assert.match(reason(() => sign(k, `format\t1\nkind\tplugin-catalog\n${INDEX}`)), /kind line/);
   assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${'{"p":"'}${'a'.repeat(MOD_INDEX_MAX_BYTES)}"}\n`)), /mod index is over/);
   // a correct signature over such a file (made past the signer) does not make it verify
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{', '"a":', '1,', 'sig\tk1\tAAAA', '}', '']))), /sig or seq/);
-  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '"x"', '']))), /not a JSON object or array/);
+  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '"x"', '']))), /not a JSON array/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{"a": ', '']))), /not valid JSON/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', '{}\r', '']))), /CR/);
   assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, '{}', '']))), /kind line/);
@@ -103,8 +105,8 @@ test('the kinds never cross-verify: a mod index is not a feed or a catalog, and 
 
 test('the file cap is checked on the whole file by the signer and by the verifier', () => {
   const k = pair();
-  const pad = (n) => `{"pad":"${'a'.repeat(n)}"}\n`;
-  const fits = MOD_INDEX_MAX_BYTES - 'format\t1\nkind\tmod-index\n{"pad":""}\n'.length;
+  const pad = (n) => `[{"pad":"${'a'.repeat(n)}"}]\n`;
+  const fits = MOD_INDEX_MAX_BYTES - 'format\t1\nkind\tmod-index\n[{"pad":""}]\n'.length;
   // the signed file carries a seq line and a sig line on top of the unsigned text
   const signedLen = (n) => Buffer.byteLength(sign(k, `format\t1\nkind\tmod-index\n${pad(n)}`).text);
   const extra = Buffer.byteLength(sign(k, `format\t1\nkind\tmod-index\n${pad(1)}`).text) - Buffer.byteLength(`format\t1\nkind\tmod-index\n${pad(1)}`);
@@ -283,4 +285,142 @@ test('loader-ref: the command prints the commit and nothing else on stdout; a re
     assert.equal(r.stdout, '');
     assert.match(r.stderr, why);
   }
+});
+
+// ---- the signer's own check of the entries: it does not wait for the loader's builder ----
+
+const SHA = 'ab'.repeat(32);
+const ASSET = 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll';
+const entry = (over = {}) => ({ id: 'codex', name: 'Codex', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', download_url: ASSET, download_sha256: SHA, download_size: 123456, ...over });
+const asText = (list) => `${JSON.stringify(list, null, 2)}\n`;
+const refused = (list, why) => assert.match(reason(() => checkBody(typeof list === 'string' ? list : asText(list))), why);
+
+test('entries: a good entry, an entry with no install keys and a nexusmods page without them pass', () => {
+  assert.equal(checkBody(asText([entry()])), undefined);
+  assert.equal(checkBody(asText([entry({ page_url: 'https://github.com/alienxaxs/starrupture-plugin-codex/' })])), undefined, 'the repository compares without case');
+  assert.equal(checkBody(asText([{ id: 'x', name: 'X', page_url: 'https://www.nexusmods.com/starrupture/mods/1' }])), undefined);
+  assert.equal(checkBody(asText([entry(), entry({ id: 'other', page_url: 'https://github.com/Someone/Other', download_url: 'https://github.com/Someone/Other/releases/download/v1/Other.dll' })])), undefined);
+});
+
+test('entries: a download_url that is not a https GitHub release asset is refused', () => {
+  for (const [what, url] of [
+    ['another host', 'https://example.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['a look-alike host', 'https://github.com.evil.test/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['a look-alike host without a dot', 'https://githubusercontent.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['raw.githubusercontent.com', 'https://raw.githubusercontent.com/AlienXAXS/StarRupture-Plugin-Codex/main/Codex.dll'],
+    ['http', ASSET.replace('https://', 'http://')],
+    ['no scheme', ASSET.slice('https://'.length)],
+    ['a scheme in capitals', ASSET.replace('https://', 'HTTPS://')],
+    ['a host in capitals', ASSET.replace('github.com', 'GitHub.com')],
+    ['user info', ASSET.replace('https://', 'https://github.com@')],
+    ['user info that names the real host last', 'https://evil.test@github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['user info with a colon', ASSET.replace('https://', 'https://user:pw@')],
+    ['a port', ASSET.replace('github.com', 'github.com:443')],
+    ['a backslash', ASSET.replace('/releases/', '\\releases\\')],
+    ['the other repository\'s release', 'https://github.com/AlienXAXS/StarRupture-ModLoader/releases/download/v1.2.0/Codex.dll'],
+    ['the other owner\'s release', 'https://github.com/Mallory/StarRupture-Plugin-Codex/releases/download/v1.2.0/Codex.dll'],
+    ['a repository that only starts the same', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex2/releases/download/v1.2.0/Codex.dll'],
+    ['an archive path', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/archive/refs/heads/main.zip'],
+    ['the latest download', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/latest/download/Codex.dll'],
+    ['a raw path', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/raw/main/Codex.dll'],
+    ['a release page', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/tag/v1.2.0'],
+    ['an extra path segment', `${ASSET.replace('/Codex.dll', '')}/sub/Codex.dll`],
+    ['a path walking back', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/../../../Evil/Evil/releases/download/v1/Codex.dll'],
+    ['a dot segment', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex/releases/download/./Codex.dll'],
+    ['a query that looks like a redirect', `${ASSET}?redirect=https://evil.test/Codex.dll`],
+    ['a fragment', `${ASSET}#https://evil.test/Codex.dll`],
+    ['an encoded slash', ASSET.replace('/v1.2.0/', '/v1.2.0%2f..%2f/')],
+    ['a file that is not a dll', ASSET.replace('Codex.dll', 'Codex.exe')],
+    ['a bare .dll name', ASSET.replace('Codex.dll', '.dll')],
+    ['a very long url', `${ASSET.replace('Codex.dll', `${'a'.repeat(200)}.dll`)}`],
+    ['a space', ASSET.replace('Codex.dll', 'Co dex.dll')],
+    ['nothing', ''],
+    ['a number', 5],
+    ['null', null],
+  ]) refused([entry({ download_url: url })], /download_url must be/);
+  const noUrl = entry(); delete noUrl.download_url;
+  refused([noUrl], /download_url must be/);
+});
+
+test('entries: the download_url must belong to the repository the entry\'s own page_url names', () => {
+  for (const [what, page] of [
+    ['a nexusmods page', 'https://www.nexusmods.com/starrupture/mods/1'],
+    ['another repository', 'https://github.com/AlienXAXS/StarRupture-ModLoader'],
+    ['another owner', 'https://github.com/Mallory/StarRupture-Plugin-Codex'],
+    ['a look-alike host', 'https://github.com.evil.test/AlienXAXS/StarRupture-Plugin-Codex'],
+    ['user info', 'https://evil.test@github.com/AlienXAXS/StarRupture-Plugin-Codex'],
+    ['a page url that is only the host', 'https://github.com/'],
+    ['http', 'http://github.com/AlienXAXS/StarRupture-Plugin-Codex'],
+    ['a query in the repository name', 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex?x=1'],
+    ['a number', 7],
+  ]) refused([entry({ page_url: page })], /belong to the repository page_url names/);
+  const noPage = entry(); delete noPage.page_url;
+  refused([noPage], /belong to the repository page_url names/);
+});
+
+test('entries: download_sha256 is exactly 64 lowercase hex characters, download_size is 1 byte to 32 MB', () => {
+  for (const hash of [SHA.toUpperCase(), `${SHA.slice(0, 63)}A`, SHA.slice(1), `${SHA}a`, `${SHA.slice(0, 63)}g`, ` ${SHA}`, `${SHA}\n`, `sha256:${SHA}`, '', 5, null, [SHA]]) {
+    refused([entry({ download_sha256: hash })], /download_sha256 must be 64 lowercase hex/);
+  }
+  const noHash = entry(); delete noHash.download_sha256;
+  refused([noHash], /download_sha256 must be/);
+  const noSize = entry(); delete noSize.download_size;
+  refused([noSize], /download_size must be/);
+  for (const size of [0, -1, 32 * 1024 * 1024 + 1, 1.5, '123', null]) refused([entry({ download_size: size })], /download_size must be/);
+  for (const size of [1, 32 * 1024 * 1024]) assert.equal(checkBody(asText([entry({ download_size: size })])), undefined);
+});
+
+test('entries: any install key brings the whole set of checks, and a hash or size with no download_url is refused', () => {
+  refused([{ id: 'x', name: 'X', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', download_sha256: SHA }], /download_url must be/);
+  refused([{ id: 'x', name: 'X', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', install_files: ['Codex.dll'] }], /download_url must be/);
+  refused([{ id: 'x', name: 'X', page_url: 'https://github.com/AlienXAXS/StarRupture-Plugin-Codex', update_manifest_url: 'https://evil.test/m.json' }], /download_url must be/);
+  refused([entry({ download_url: null })], /download_url must be/);
+});
+
+test('entries: every entry is checked, one bad entry refuses the index, the body is a JSON array of objects', () => {
+  refused([entry(), entry({ id: 'bad', download_sha256: 'zz' })], /entry 2 \(bad\): download_sha256/);
+  refused({ mods: [entry()] }, /not a JSON array/);
+  refused('"x"\n', /not a JSON array/);
+  refused([1], /entry 1 is not an object/);
+  refused([null], /entry 1 is not an object/);
+  refused([[]], /entry 1 is not an object/);
+  assert.equal(checkBody(asText(Array.from({ length: MAX_ENTRIES }, (_, i) => ({ id: `m${i}`, name: 'M', page_url: 'https://www.nexusmods.com/x' })))), undefined);
+  refused(Array.from({ length: MAX_ENTRIES + 1 }, (_, i) => ({ id: `m${i}`, name: 'M', page_url: 'https://www.nexusmods.com/x' })), /201 entries/);
+});
+
+test('entries: a key the loader would read from another place than the check read it from is refused', () => {
+  const good = JSON.stringify(entry());
+  const evil = 'https://github.com/Mallory/Evil/releases/download/v1/Evil.dll';
+  // the loader takes the first "download_url" at any depth, JSON.parse the last of the top level
+  refused(`[${good.replace('{', `{"download_url":"${evil}",`)}]\n`, /download_url appears more than once/);
+  refused(`[${good.slice(0, -1)},"download_url":"${evil}"}]\n`, /download_url appears more than once/);
+  refused(`[${good.replace('{', `{"extra":{"download_url":"${evil}"},`)}]\n`, /download_url appears more than once/);
+  refused(`[${good.replace('{', `{"extra":[{"download_sha256":"${'0'.repeat(64)}"}],`)}]\n`, /download_sha256 appears more than once/);
+  refused(`[${good.slice(0, -1)},"page_url":"https://github.com/Mallory/Evil"}]\n`, /page_url appears more than once/);
+  refused(`[${good.replace('"download_url"', '"download\\u005furl"')}]\n`, /download_url appears more than once/);
+  // a string that only spells a key is not a key
+  assert.equal(checkBody(`[${good.replace('"Codex"', '"download_url"')}]\n`), undefined);
+  assert.equal(checkBody(`[${good.replace('"Codex"', '"a \\"download_url\\": b"')}]\n`), undefined);
+});
+
+test('entries: signing and verifying run the same check, so a bad index never gets a signature', () => {
+  const k = pair();
+  const bad = asText([entry({ download_url: 'https://example.com/Codex.dll' })]);
+  assert.match(reason(() => sign(k, `format\t1\nkind\tmod-index\n${bad}`)), /download_url must be/);
+  assert.match(reason(() => verify(k, forge(k, ['format\t1', `seq\t${NOW}`, 'kind\tmod-index', ...bad.split('\n')]))), /download_url must be/);
+  const good = asText([entry()]);
+  assert.equal(verify(k, sign(k, `format\t1\nkind\tmod-index\n${good}`).text).keyId, 'k1');
+});
+
+test('loader-head: only the current tip of main passes, a commit behind it or on another branch does not, an API failure refuses', async () => {
+  assert.equal(await checkLoaderHead(C.main, fakeApi().get), C.main);
+  for (const sha of [C.root, C.version, C.next, C.fork, C.gone, 'main', 'release/next', C.main.slice(0, 7), C.forkOnMain.toUpperCase(), '', undefined]) {
+    assert.match(await refusal(checkLoaderHead(sha, fakeApi().get)), /full commit id|is not the tip of main/, String(sha));
+  }
+  // main moved on: what was main a moment ago is refused
+  assert.match(await refusal(checkLoaderHead(C.main, fakeApi({ ...HEADS, main: C.forkOnMain }).get)), /is not the tip of main of .* \(main is at a{40}\)/);
+  const failing = fakeApi(HEADS, (path) => { if (path.includes('git/ref/heads/main')) throw new ModIndexError('boom'); });
+  assert.match(await refusal(checkLoaderHead(C.main, failing.get)), /boom/);
+  const { main, ...noMain } = HEADS;
+  assert.match(await refusal(checkLoaderHead(C.main, fakeApi(noMain).get)), /HTTP 404/);
 });
