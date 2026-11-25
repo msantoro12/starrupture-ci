@@ -205,7 +205,7 @@ export async function checkAsset(e, fetchFn = fetch) {
   try { pe = parsePe(bytes); } catch (err) { out.push({ level: FAIL, text: err.message }); return out; }
   out.push(pe.machine === MACHINE_X64 ? { level: PASS, text: 'x64 image' } : { level: FAIL, text: `machine is 0x${pe.machine.toString(16)}, not x64 (0x8664)` });
   out.push(pe.isDll ? { level: PASS, text: 'DLL flag set' } : { level: FAIL, text: 'not a DLL (IMAGE_FILE_DLL is not set)' });
-  const missing = REQUIRED_EXPORTS.filter((n) => !pe.exports.has(n));
+  const missing = REQUIRED_EXPORTS.filter((n) => pe.exports.get(n) == null); // a forwarded export has no code here
   out.push(missing.length === 0 ? { level: PASS, text: `exports ${REQUIRED_EXPORTS.join(', ')}` } : { level: FAIL, text: `missing required exports: ${missing.join(', ')}` });
   const optional = OPTIONAL_EXPORTS.filter((n) => pe.exports.has(n));
   if (optional.length > 0) out.push({ level: INFO, text: `optional exports: ${optional.join(', ')}` });
@@ -226,6 +226,8 @@ export function selectEntries(list, baseList) {
 const statusOf = (checks) => (checks.some((c) => c.level === FAIL) ? FAIL : checks.some((c) => c.level === WARN) ? WARN : PASS);
 // Text that came from the index or from a downloaded file never starts a workflow command or breaks a line.
 const clean = (s) => String(s).replace(/[^\x20-\x7e]/g, '?').replace(/::/g, ': :');
+// In markdown a stranger's text also loses everything that makes a link, image, tag, emphasis or table cell.
+const md = (s) => clean(s).replace(/[\[\]()<>*_`!~#&|\\]/g, '?');
 
 // Pool of n workers over items; results keep the order of items.
 async function pool(items, n, fn) {
@@ -252,7 +254,9 @@ export async function runIntake(body, baseBody, fetchFn = fetch, concurrency = 2
     // checkBody has passed: the entry rules hold and download_url is a release asset of the repository page_url names.
     const checks = [{ level: PASS, text: 'entry rules; page_url and download_url name the same repository' }];
     if (entry.download_url === undefined) checks.push({ level: INFO, text: 'no download to check' });
-    else checks.push(...await checkAsset(entry, fetchFn));
+    else {
+      try { checks.push(...await checkAsset(entry, fetchFn)); } catch (e) { checks.push({ level: FAIL, text: `internal error while checking the asset: ${e.message}` }); }
+    }
     return { who, status: statusOf(checks), checks };
   });
   return { results, failed: results.some((r) => r.status === FAIL), checked: picked.length, total: list.length };
@@ -269,7 +273,7 @@ export function renderText({ results, checked, total }) {
 }
 
 export function renderMarkdown({ results, checked, total }) {
-  const rows = results.map((r) => `| ${clean(r.who).replace(/\|/g, '/')} | ${r.status} | ${r.checks.filter((c) => c.level !== PASS).map((c) => `${c.level}: ${clean(c.text)}`).join('<br>').replace(/\|/g, '/') || 'all checks passed'} |`);
+  const rows = results.map((r) => `| ${md(r.who)} | ${r.status} | ${r.checks.filter((c) => c.level !== PASS).map((c) => `${c.level}: ${md(c.text)}`).join('<br>') || 'all checks passed'} |`);
   return `### Mod index intake check\n\n${checked === undefined ? '' : `Checked ${checked} of ${total} entries (new or changed).\n\n`}| Entry | Result | Notes |\n| --- | --- | --- |\n${rows.join('\n')}\n`;
 }
 

@@ -264,7 +264,7 @@ test('runIntake: a good entry passes, a changed bad one fails, an untouched bad 
   const text = renderText(report);
   assert.match(text, /^PASS entry 2 \(good\)$/m);
   assert.match(text, /^FAIL entry 3 \(bad\)$/m);
-  assert.match(renderMarkdown(report), /\| entry 3 \(bad\) \| FAIL \| FAIL: machine is 0x14c/);
+  assert.match(renderMarkdown(report), /\| entry 3 \?bad\? \| FAIL \| FAIL: machine is 0x14c/);
 });
 
 test('runIntake: an entry with no download passes with a note, a bad entry never reaches the network', async () => {
@@ -284,6 +284,23 @@ test('runIntake: an index the signer would refuse is one FAIL', async () => {
   const report = await runIntake('not json\n', null, serve(Buffer.alloc(0)));
   assert.equal(report.failed, true);
   assert.match(report.results[0].checks[0].text, /not valid JSON/);
+});
+
+test('a forwarded required export does not count as present', async () => {
+  const bytes = pe();
+  const fwd = Buffer.from(bytes);
+  // PluginInit's function RVA points inside the export directory: a forwarder string, not code.
+  fwd.writeUInt32LE(SECTION_VA + 0x210, SECTION_RAW + 0x240 + 4);
+  assert.equal(parsePe(fwd).exports.get('PluginInit'), null);
+  assert.match(failTexts(await checkAsset(entryFor(fwd), serve(fwd))).join(' '), /missing required exports: PluginInit/);
+});
+
+test('markdown output drops link, image and table characters from the index text', () => {
+  const report = { results: [{ who: 'entry 1 (x)', status: 'FAIL', checks: [{ level: 'FAIL', text: '[a](http://e.example) ![i](x) | <b>' }] }] };
+  const md = renderMarkdown(report);
+  const row = md.split('\n').find((l) => l.startsWith('| entry'));
+  assert.doesNotMatch(row, /[\[\]()<>!]/);
+  assert.equal(row.split('|').length, 5);
 });
 
 test('output never lets text from the index start a workflow command', async () => {
