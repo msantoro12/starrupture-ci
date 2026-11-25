@@ -924,6 +924,8 @@ jobs:
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
           $tag = if (Test-Path version) { (Get-Content version -Raw).Trim() } else { 'dev' }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'build\Client Release\Plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -1169,6 +1171,8 @@ jobs:
           Copy-Item ..\loader-interface\StarRupture-ModLoader-Core\plugins\plugin_interface.h ..\plugin-sdk\include\plugin_interface.h -Force
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'build\Client Release\Plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -1200,6 +1204,8 @@ jobs:
           $clFile = Join-Path $env:GITHUB_WORKSPACE 'plugin-sdk\StarRupture SDK\Client\build_cl.txt'
           $cl = if (Test-Path $clFile) { (Get-Content $clFile -Raw).Trim() } else { '' }
           $clArgs = if ($cl -match '^\d+$') { @("/p:PluginGameBuiltCL=$cl") } else { Write-Host '::notice::the Game SDK names no build; the project default CL is used'; @() }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'bin\x64\Client Release\plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild MiniMap.sln `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -1229,6 +1235,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $sln = @(Get-ChildItem -File -Filter *.sln)
           if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+          # A DLL committed where the build writes its output would pass as built here.
+          if (Test-Path 'bin\x64\Client Release\plugins\*.dll') { throw 'the source already holds a DLL in its build output folder' }
           msbuild $sln[0].Name `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
@@ -1939,11 +1947,14 @@ jobs:
               }
               $r.ref = $meta.ref
               $r.sha = $meta.sha
-              $dll = Join-Path $dir $meta.dll
+              # The gate gets the folder the build wrote. A plugin that is not hosted was built on this runner by
+              # the step above. A hosted one was built in the plugins job: only its artifact ($dir) is here.
+              $built = if ($p.hosted) { $dir } else { Join-Path $env:RUNNER_TEMP "third\$($p.name)\src\build\Client Release\Plugins" }
+              $dll = Join-Path $built $meta.dll
               if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the plugin job made" }
               $stem = "out\plugin-$($p.name)"
               $ErrorActionPreference = 'Continue'
-              Assert-ScanAllowed $p.source $p.repo $dll $dir
+              Assert-ScanAllowed $p.source $p.repo $dll $built
               & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
               $r.exitCode = $LASTEXITCODE
               $ErrorActionPreference = 'Stop'
@@ -2064,7 +2075,8 @@ jobs:
               if ((Get-FileHash $dll -Algorithm SHA256).Hash.ToLowerInvariant() -ne $meta.sha256) { throw "$($meta.dll) is not the DLL the key-sources job made" }
               $stem = "out\keysrc-$($p.name)"
               $ErrorActionPreference = 'Continue'
-              # The key-sources job builds every one from source in this run.
+              # The key-sources job builds every one from source in this run. Its build folder is on that job's
+              # runner: only the artifact ($dir) is here.
               Assert-ScanAllowed 'build' $p.repo $dll $dir
               & $scanner $exe.FullName --plugin $dll --json @suggest > "$stem.json" 2> "$stem.txt"
               $code = $LASTEXITCODE

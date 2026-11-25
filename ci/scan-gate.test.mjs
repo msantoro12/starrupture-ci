@@ -170,12 +170,17 @@ test('check step: a gated plugin is graded NOT-SCANNED and never reaches the sca
   const meta = (file) => JSON.stringify({ ref: 'main', sha: 'a'.repeat(40), dll: file.split(/[\\/]/).pop(), sha256: createHash('sha256').update(readFileSync(file)).digest('hex') });
   put(dir, 'plugins/plugin-public-Foo/plugin.json', meta(dll));
   put(dir, 'plugins/plugin-public-MiniMap/plugin.json', meta(planted));
-  const entry = (name, source, repo) => ({ name, source, repo, ref: 'main', release: '' });
+  // Built in the check job (not hosted): the scanned DLL is the one in that build's output folder.
+  const local = put(dir, 'third/Codex/src/build/Client Release/Plugins/Codex.dll', 'built here');
+  put(dir, 'plugins/plugin-public-Codex/Codex.dll', 'built here');
+  put(dir, 'plugins/plugin-public-Codex/plugin.json', meta(local));
+  const entry = (name, source, repo, hosted = false) => ({ name, source, repo, ref: 'main', release: '', hosted });
   const plan = [
     entry('MiniMap', 'release', 'LetMeInside/StarRupture-Plugin-MiniMap'),
     entry('Other', 'build', 'someone/StarRupture-Plugin-Other'),
     entry('WAILA', 'build', THIRD),
-    entry('Foo', 'build', OWN),
+    entry('Foo', 'build', OWN, true),
+    entry('Codex', 'build', 'AlienXAXS/StarRupture-Plugin-Codex'),
   ];
   const step = runOf("Check the plugins' patterns");
   const from = step.indexOf('$results = foreach');
@@ -183,17 +188,18 @@ test('check step: a gated plugin is graded NOT-SCANNED and never reaches the sca
   assert.ok(from > 0 && step.indexOf(last) > from);
   runPs(dir, [
     `. ${q(gate)}`,
-    `$env:BRANCH = 'public'; $env:PLAN = ${q(JSON.stringify(plan))}`,
+    `$env:RUNNER_TEMP = ${q(dir)}; $env:BRANCH = 'public'; $env:PLAN = ${q(JSON.stringify(plan))}`,
     `function Invoke-FakeScanner { Add-Content -LiteralPath ${q(join(dir, 'scanned.txt'))} -Value ($args -join ' '); $global:LASTEXITCODE = 2 }`,
     "$scanner = 'Invoke-FakeScanner'; $suggest = @(); $exe = [pscustomobject]@{ FullName = 'game.exe' }",
     step.slice(from, step.indexOf(last)),
   ]);
   const out = JSON.parse(read(join(dir, 'out', 'plugins.json')).replace(/^\ufeff/, ''));
   assert.equal(out.status, 'fail', 'never silently green');
-  assert.deepEqual(out.plugins.map((p) => [p.name, p.verdict]), [['MiniMap', 'NOT-SCANNED'], ['Other', 'NOT-SCANNED'], ['WAILA', 'BUILD-FAILED'], ['Foo', 'ERROR']]);
+  assert.deepEqual(out.plugins.map((p) => [p.name, p.verdict]), [['MiniMap', 'NOT-SCANNED'], ['Other', 'NOT-SCANNED'], ['WAILA', 'BUILD-FAILED'], ['Foo', 'ERROR'], ['Codex', 'ERROR']]);
   const scanned = read(join(dir, 'scanned.txt')).trim().split('\n');
-  assert.equal(scanned.length, 1);
+  assert.equal(scanned.length, 2);
   assert.match(scanned[0], /Foo\.dll/);
+  assert.match(scanned[1], /third.Codex.src.build.Client Release.Plugins.Codex\.dll/, 'not the copy folder');
 });
 
 test('workflows: every sr-aobscan --plugin call is right behind the gate, on the same DLL', () => {
@@ -226,7 +232,13 @@ test('workflows: no downloaded DLL is fetched for a scan, and a committed DLL ca
   const rig = runOf("Record the rig's plugin set (not scanned)");
   assert.ok(!/\$scanner|Invoke-WebRequest|rig-dl/.test(rig));
   assert.ok(!/-Mode Fetch|D:\\rig-dl/.test(wf), 'the check job downloads no rig release DLL');
-  assert.equal(wf.split('the source already holds a DLL in its build output folder').length - 1, 2, 'both builds that are scanned from a fresh checkout');
+  assert.equal(wf.split('the source already holds a DLL in its build output folder').length - 1, 6, 'every build whose DLL is scanned: plugins, three key-source recipes, the check job, autofix');
+  // In each of the hosted ones the refusal comes before msbuild runs.
+  for (const name of ['Build the plugin (Client Release)', 'Build the key source (Client Release)', 'Build the key-scan build (Client Release)', 'Build the key source on the Plugin SDK root (Client Release)']) {
+    const run = runOf(name);
+    const at = run.indexOf('the source already holds a DLL in its build output folder');
+    assert.ok(at > 0 && at < run.search(/^\s*msbuild /m), name);
+  }
   const check = wf.slice(wf.indexOf('\n  check:\n'), wf.indexOf('\n  layout-store:\n'));
   const checkout = check.indexOf('- name: Check out the scan gate\n');
   assert.ok(checkout > 0 && checkout < check.indexOf(". .\\ci-gate\\ci\\scan-gate.ps1"));
