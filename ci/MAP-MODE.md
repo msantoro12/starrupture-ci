@@ -10,9 +10,20 @@ fork's `auto/update-<CL>` branch gets one.
 
 The bases are the released line, AlienX's `main` (loader, Plugin SDK, Game SDK and the
 nine plugins), because that is what players run and what reads the feed; the fork's old
-work branches are behind it. Only `tools/AobScan` comes from the fork's `ci/aobscan`
-(`scanner_repo`, `scanner_ref`). The fork is a target only: `auto/update-<CL>` is cut
-from the exact AlienX commit the run scanned.
+work branches are behind it. That includes the scanner: it is the loader ref's own
+`tools/AobScan`. `scanner_ref` is blank by default; a value lays `tools/AobScan` of
+`scanner_repo`@`scanner_ref` over the loader (see "Replaying an older loader"). The fork
+is a target only: `auto/update-<CL>` is cut from the exact AlienX commit the run scanned.
+
+### Replaying an older loader
+
+The scanner is compiled against the loader's sources, so the two have to match. A loader ref
+carries the scanner that matches it, which is why that is the default: a copy kept on another
+branch goes stale as soon as the loader's scanner changes, and the build breaks. Give
+`scanner_ref` (and `scanner_repo`, msantoro12 or AlienXAXS) only when the loader ref has no
+`tools/AobScan`, or its copy lacks something this pipeline needs; pick a commit that builds
+against that loader. Both checks take the same two inputs. A live server publish refuses any
+`scanner_ref`.
 
 ## Step 26: the loader fork's deploy key and ruleset (the owner sets it up once)
 
@@ -876,10 +887,11 @@ a new build until a row was written by hand. A **key source** is such a fork bui
 scanned for its keys alone, so every key it requests gets a row on every build.
 
 Input `key_sources` (both triggers): space-separated `msantoro12/StarRupture-Plugin-<Name>@<branch>[:<commit>]`.
-The default is the nine plugins on `gss/plugin-work`, plus the MiniMap key-scan build
+The default is the nine plugins on their work branches (`gss/plugin-work`; WaveOptimiser:
+`gss/host-off`), plus the MiniMap key-scan build
 (`feat/full-version-map`, pinned to a commit) and the PersistentIdFix Client build (`main`, pinned to a commit). Only `msantoro12` plugin repositories are accepted, the ref
 is a branch name (never a pull request ref or a tag), and a ref with no commit pin is accepted only
-for the nine plugins on `gss/plugin-work`; anything else needs `:<40-digit commit>`, which must be the
+for the nine plugins, each on its own work branch; anything else needs `:<40-digit commit>`, which must be the
 branch head or in its history. Nothing from an issue or a fork pull request is ever built.
 
 Jobs (map mode only; none holds a secret or an environment):
@@ -1316,9 +1328,8 @@ rows and four function rows, with three keys not placed and one row not for the 
    a key the scanner does not know has no row. The job also fails with `server build <CL> is missing loader rows: <keys>;
    the server would start with its plugins off` unless the file carries the 7 rows in `ci/server-required-rows.txt`
    (the loader's field rows and the Game-SDK global rows). CL 127004, the loader's own baseline, is skipped. A new
-   server build whose scan did not find one of the global rows stops here. The scanner is built from the loader
-   branch `ci/aobscan-server-rows`; the default `scanner_ref` of the server check is that
-   branch (the client check keeps `ci/aobscan`). `export-feed --server` cuts the unsigned file and `published-base.mjs
+   server build whose scan did not find one of the global rows stops here. The scanner is the loader ref's
+   own `tools/AobScan` (`scanner_ref` is blank by default, as in the client check). `export-feed --server` cuts the unsigned file and `published-base.mjs
    preserve` checks it keeps every published line. `decide.mjs identity --repo ModLoaderServer` checks the CL is not
    served yet and the file changes what is served for it (skipped in a rehearsal). The chain's seq is made here, above
    the published server file's own last seq (the client's seq is not used), and the file is signed once with the TEST

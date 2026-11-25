@@ -20,11 +20,12 @@ name: SR client check
 #
 # Bases: the released line, which is what players run and what reads the feed.
 # The loader, the Plugin SDK, the Game SDK and the nine plugins are AlienX's
-# `main` (inputs loader_repo/loader_ref, plugin_sdk_*, game_sdk_*, plugins). Only
-# tools/AobScan comes from elsewhere (scanner_repo@scanner_ref, the fork's
-# ci/aobscan), laid over the loader. The fork is where results go, never where a
-# base is read from: push-loader and auto-apply cut `auto/update-<CL>` from the
-# exact AlienX commit this run scanned and push it to the owner's fork.
+# `main` (inputs loader_repo/loader_ref, plugin_sdk_*, game_sdk_*, plugins). The
+# scanner is the loader ref's own tools/AobScan; a scanner_ref (blank by default)
+# lays scanner_repo@scanner_ref's copy over it, for a replay or an older loader.
+# The fork is where results go, never where a base is read from: push-loader and
+# auto-apply cut `auto/update-<CL>` from the exact AlienX commit this run scanned
+# and push it to the owner's fork.
 #
 # Trust: the scanner and plugin code run in the job that held the Steam
 # login, after the login cache is deleted from disk. Deleting it does not
@@ -90,7 +91,7 @@ on:
         default: 'msantoro12/StarRupture-ModLoader'
       scanner_ref:
         type: string
-        default: 'ci/aobscan'
+        default: ''
       plugins:
         type: string
         default: 'AlienXAXS/StarRupture-Plugin-BetterCheats@main AlienXAXS/StarRupture-Plugin-BetterDrone@main AlienXAXS/StarRupture-Plugin-WAILA@main AlienXAXS/StarRupture-Plugin-Codex@main AlienXAXS/StarRupture-Plugin-Compass@main AlienXAXS/StarRupture-Plugin-ProductionViewer@main AlienXAXS/StarRupture-Plugin-RuptureTimer@main AlienXAXS/StarRupture-Plugin-WaveOptimiser@main AlienXAXS/StarRupture-Plugin-CameraControls@main LetMeInside/StarRupture-Plugin-MiniMap@latest-release LetMeInside/StarRupture-Plugin-PersistentIdFix@latest-release'
@@ -110,9 +111,9 @@ on:
         type: string
         default: ''
       key_sources:
-        description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on gss/plugin-work. They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
+        description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on their work branch (gss/plugin-work; WaveOptimiser: gss/host-off). They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:48ad5db5f9a2115647f8d6d6d781b050f6675b90 msantoro12/StarRupture-Plugin-PersistentIdFix@main:da10067b6343726dde69910321144091e8889f57'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/host-off msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:48ad5db5f9a2115647f8d6d6d781b050f6675b90 msantoro12/StarRupture-Plugin-PersistentIdFix@main:da10067b6343726dde69910321144091e8889f57'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied: high, or medium for a replay'
         type: string
@@ -225,13 +226,13 @@ on:
         type: string
         default: 'main'
       scanner_repo:
-        description: 'Repository holding the scanner branch (only tools/AobScan is taken from it)'
+        description: 'Repository of the scanner_ref override (only tools/AobScan is taken from it; unused when scanner_ref is blank)'
         type: string
         default: 'msantoro12/StarRupture-ModLoader'
       scanner_ref:
-        description: 'Branch of the scanner repository holding tools/AobScan'
+        description: 'Override: lay this scanner_repo ref''s tools/AobScan over the loader (a replay or an older loader). Blank: the loader ref''s own'
         type: string
-        default: 'ci/aobscan'
+        default: ''
       plugins:
         description: 'Plugins whose patterns are checked too: owner/repo@ref, space-separated'
         type: string
@@ -257,9 +258,9 @@ on:
         type: string
         default: ''
       key_sources:
-        description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on gss/plugin-work. They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
+        description: 'Key sources (map mode): fork builds scanned for the map keys they request, space-separated msantoro12/StarRupture-Plugin-<Name>@<branch>[:<40-digit commit>]. A ref with no commit pin is allowed only for the nine plugins on their work branch (gss/plugin-work; WaveOptimiser: gss/host-off). They never enter the candidate, the rig or the feed (ci/MAP-MODE.md, Key sources)'
         type: string
-        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/plugin-work msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:48ad5db5f9a2115647f8d6d6d781b050f6675b90 msantoro12/StarRupture-Plugin-PersistentIdFix@main:da10067b6343726dde69910321144091e8889f57'
+        default: 'msantoro12/StarRupture-Plugin-BetterCheats@gss/plugin-work msantoro12/StarRupture-Plugin-BetterDrone@gss/plugin-work msantoro12/StarRupture-Plugin-WAILA@gss/plugin-work msantoro12/StarRupture-Plugin-Codex@gss/plugin-work msantoro12/StarRupture-Plugin-Compass@gss/plugin-work msantoro12/StarRupture-Plugin-ProductionViewer@gss/plugin-work msantoro12/StarRupture-Plugin-RuptureTimer@gss/plugin-work msantoro12/StarRupture-Plugin-WaveOptimiser@gss/host-off msantoro12/StarRupture-Plugin-CameraControls@gss/plugin-work msantoro12/StarRupture-Plugin-MiniMap@feat/full-version-map:48ad5db5f9a2115647f8d6d6d781b050f6675b90 msantoro12/StarRupture-Plugin-PersistentIdFix@main:da10067b6343726dde69910321144091e8889f57'
       apply_confidence:
         description: 'Lowest proposal confidence that is auto-applied (medium only for a replay)'
         type: choice
@@ -386,7 +387,10 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      # Only for a scanner_ref override. (Never run it with a blank ref: checkout
+      # would then take the repository's default branch.)
       - name: Check out tools/AobScan
+        if: ${{ inputs.scanner_ref != '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.scanner_repo }}
@@ -401,11 +405,20 @@ jobs:
         env:
           LOADER_REPO: ${{ inputs.loader_repo }}
           LOADER_REF: ${{ inputs.loader_ref }}
+          SCANNER_REPO: ${{ inputs.scanner_repo }}
+          SCANNER_REF: ${{ inputs.scanner_ref }}
         run: |
-          # The scanner source comes from its own branch; the patterns, the
-          # scan code and the SDK are the loader branch's, so the scan always
-          # checks what that branch would ship.
-          Copy-Item -Recurse -Force scanner-src\tools\AobScan loader\tools\
+          # The patterns, the scan code, the SDK and the scanner are the loader
+          # ref's, so the scan always checks what that ref would ship. A copy kept
+          # elsewhere goes stale against it, so one is used only when asked for.
+          if ($env:SCANNER_REF) {
+            Copy-Item -Recurse -Force scanner-src\tools\AobScan loader\tools\
+            "Scanner: tools/AobScan of $($env:SCANNER_REPO)@$($env:SCANNER_REF), laid over the loader"
+          } elseif (Test-Path loader\tools\AobScan\AobScan.vcxproj) {
+            "Scanner: the loader ref's own tools/AobScan"
+          } else {
+            throw 'the loader ref has no tools/AobScan: give scanner_ref'
+          }
 
           # A loader with one required CL names it here. A loader that runs on
           # every build in its version map has no such line; the scanner then
@@ -445,7 +458,7 @@ jobs:
 
       # The scanner's own tests (the locator it reports for a registry row,
       # against the loader's VersionMap::ResolveLoaderEntry). A manual test
-      # project of the scanner branch: built from its project file in the loader
+      # project of the scanner: built from its project file in the loader
       # checkout above, which supplies the version map code and the test doubles.
       # Its exit code is its verdict, so a failure fails this job and with it the check.
       - name: Build and run the scanner's tests (ObservedTests)
@@ -944,7 +957,8 @@ jobs:
   # built plugin. The plugins above are the released line, so a key that only the
   # owner's fork builds request never got a row. A key source is such a build,
   # built and scanned for its keys alone (input key_sources, msantoro12 repositories
-  # only, ref pinned to a commit except the nine plugins' gss/plugin-work).
+  # only, ref pinned to a commit except the nine plugins' work branches:
+  # gss/plugin-work, and gss/host-off for WaveOptimiser).
   # It is a source of observations for map mode and nothing else: it is not in
   # `plugins` (so never in plugins.json and decide's verdicts, expect_refused, the
   # rig's set, rule 3, auto-apply, staging or the feed), its artifact is
@@ -977,7 +991,7 @@ jobs:
             // The list is the only input that names code to run; each entry is checked before any of it is fetched.
             const fs = require("fs");
             const NINE = ["BetterCheats", "BetterDrone", "WAILA", "Codex", "Compass", "ProductionViewer", "RuptureTimer", "WaveOptimiser", "CameraControls"];
-            const WORK = "gss/plugin-work";
+            const workBranch = (name) => name === "WaveOptimiser" ? "gss/host-off" : "gss/plugin-work";
             // A repository that is not built the way the nine are: MiniMap needs Unreal Engine headers for its
             // readback adapter, so its key-scan build (MiniMapKeyScanOnly, no engine) is used, on the Plugin SDK
             // commit it was written against. PersistentIdFix takes the Plugin SDK root as one property and
@@ -1001,7 +1015,7 @@ jobs:
               const [, name, branch, pin] = m;
               // A branch name only: a pull request ref, a tag or a commit is never a key source.
               if (/^(refs|pull)\//.test(branch) || branch.includes("..") || /(\.lock|\.)$/.test(branch)) fail(`key source "${item}": "${branch}" is not a branch name`);
-              if (!pin && !(NINE.includes(name) && branch === WORK)) fail(`key source "${item}" has no commit pin; a ref without one is allowed only for the nine plugins on ${WORK}`);
+              if (!pin && !(NINE.includes(name) && branch === workBranch(name))) fail(`key source "${item}" has no commit pin; a ref without one is allowed only for the nine plugins on their work branch (gss/plugin-work; WaveOptimiser: gss/host-off)`);
               if (seen.has(name)) fail(`key source ${name} is listed more than once`);
               seen.add(name);
               const repo = "msantoro12/StarRupture-Plugin-" + name;
