@@ -1614,6 +1614,9 @@ test('review alert: the alert job reads the review output of both rigs', () => {
 
 // The plan step, run for real under Windows PowerShell with stand-ins for the releases API and git: the
 // step's run block beside a tool/ci/plugin-names.json, and the outputs GitHub would collect.
+// What the stand-in ls-remote lists for any repository: two branches and an annotated tag (its own line, then the commit's).
+const [MAIN_TIP, DEV_TIP, TAG_OBJECT, TAG_COMMIT, ANCESTOR, FOREIGN] = ['1', '2', '3', '4', '5', 'f'].map((c) => c.repeat(40));
+const LISTING = [[MAIN_TIP, 'refs/heads/main'], [DEV_TIP, 'refs/heads/dev'], [TAG_OBJECT, 'refs/tags/v1'], [TAG_COMMIT, 'refs/tags/v1^{}']];
 const PLAN_NAMES = JSON.parse(readFileSync(join(here, 'plugin-names.json'), 'utf8'));
 const MINIMAP = PLAN_NAMES.find((n) => n.Name === 'MiniMap');
 const PIN_TAG = MINIMAP.Pin.Tag;
@@ -1623,7 +1626,7 @@ const MINIMAP_REPO = 'LetMeInside/StarRupture-Plugin-MiniMap';
 // pinAssets: 'client' (the client DLL beside a zip), 'zip' (no DLL) or 'two' (two client DLLs).
 // private: git refuses every GoodStuffSoftware repository unless the read token's header is set around the call.
 // readToken: the value of SR_READ_TOKEN_GOODSTUFFSOFTWARE ('' = the secret is not set).
-const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = PIN_DIGEST, pinAssets = 'client', private: isPrivate = false, readToken = '', acceptToken = readToken }) => {
+const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = PIN_DIGEST, pinAssets = 'client', private: isPrivate = false, readToken = '', acceptToken = readToken, pluginSdkRef = 'main', gameSdkRef = 'main', compare = {} }) => {
   const dir = mkdtempSync(join(tmpdir(), 'plan-'));
   mkdirSync(join(dir, 'tool', 'ci'), { recursive: true });
   writeFileSync(join(dir, 'tool', 'ci', 'plugin-names.json'), JSON.stringify(names));
@@ -1641,6 +1644,15 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
     "$ErrorActionPreference = 'Stop'",
     'function Invoke-RestMethod { param($Headers, $Uri, $TimeoutSec)',
     `  Add-Content -LiteralPath '${uris}' -Value $Uri`,
+    // The compare API: compare names, per commit asked about, the answer for each tip (a status, or 'error' for a 404).
+    "  if ($Uri -match '/compare/([0-9a-f]{40})\\.\\.\\.([0-9a-f]{40})\\?per_page=1$') {",
+    `    $answers = '${JSON.stringify(compare)}' | ConvertFrom-Json`,
+    '    $sha = $Matches[1]; $tip = $Matches[2]',
+    "    $one = if ($answers.PSObject.Properties[$sha]) { $answers.$sha.PSObject.Properties[$tip] }",
+    "    $status = if ($one) { [string]$one.Value } else { 'diverged' }",
+    "    if ($status -eq 'error') { throw '404 (Not Found)' }",
+    '    return [pscustomobject]@{ status = $status }',
+    '  }',
     "  if ($Uri -notmatch '/repos/([^/]+)/([^/]+)/releases/(latest|tags/(.+))$') { throw \"unexpected $Uri\" }",
     '  $owner = $Matches[1]; $repo = $Matches[2]',
     "  if ($repo -eq 'StarRupture-Plugin-MiniMap') {",
@@ -1653,11 +1665,13 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
     '  }',
     '  [pscustomobject]@{ tag_name = $tag; assets = @($assets | ForEach-Object { [pscustomobject]$_ }) }',
     '}',
-    // The tag's commit: one line for the ref asked about.
-    `function git { $global:LASTEXITCODE = 0; if (${isPrivate ? '$true' : '$false'} -and $args[1] -like '*GoodStuffSoftware*' -and $env:GIT_CONFIG_VALUE_0 -cne 'AUTHORIZATION: basic ${Buffer.from(`x-access-token:${acceptToken}`).toString('base64')}') { $global:LASTEXITCODE = 128; return }; ("a" * 40) + [char]9 + $args[2] }`,
+    // The tag's commit: one line for the ref asked about. Asked for every head and tag, the repository's list (LISTING).
+    // A function takes an array as one argument where git takes each, so the arguments are flattened first.
+    `function git { $a = @($args | ForEach-Object { $_ }); $global:LASTEXITCODE = 0; if (${isPrivate ? '$true' : '$false'} -and $a[1] -like '*GoodStuffSoftware*' -and $env:GIT_CONFIG_VALUE_0 -cne 'AUTHORIZATION: basic ${Buffer.from(`x-access-token:${acceptToken}`).toString('base64')}') { $global:LASTEXITCODE = 128; return }; if ($a -ccontains 'refs/heads/*') { ${LISTING.map(([sha, ref]) => `"${sha}\`t${ref}"`).join('; ')} } else { ("a" * 40) + [char]9 + $a[2] } }`,
     `$env:GITHUB_OUTPUT = '${out}'`,
     readToken ? `$env:SR_READ_TOKEN_GOODSTUFFSOFTWARE = '${readToken}'` : 'Remove-Item Env:SR_READ_TOKEN_GOODSTUFFSOFTWARE -ErrorAction SilentlyContinue',
     "$env:GH_TOKEN = 'x'; $env:PLUGIN_SDK_REPO = 'AlienXAXS/StarRupture-Plugin-SDK'; $env:GAME_SDK_REPO = 'AlienXAXS/StarRupture-Game-SDK'",
+    `$env:PLUGIN_SDK_REF = '${pluginSdkRef}'; $env:GAME_SDK_REF = '${gameSdkRef}'`,
     "$env:EXCLUDE = ''; $env:TEST_AUTOPILOT = 'false'; $env:PUBLISH = 'false'; $env:MAP_MODE = 'true'",
     `$env:PLUGINS = '${plugins}'`,
     `Set-Location '${dir}'`,
@@ -1676,6 +1690,51 @@ const planRun = ({ plugins, names = PLAN_NAMES, latest = 'v1.4.0', pinDigest = P
 };
 const PLAN_PLUGINS = `${MINIMAP_REPO}@latest-release AlienXAXS/StarRupture-Plugin-WAILA@latest-release`;
 const planEntry = (p, name) => p.matrix.find((e) => e.name === name);
+
+test('plan: a commit id is built only when a branch or tag of the named repository reaches it', { skip: !powershell }, () => {
+  const waila = (sha) => `AlienXAXS/StarRupture-Plugin-WAILA@${sha}`;
+  for (const [sha, compare] of [[DEV_TIP, {}], [TAG_COMMIT, {}], [ANCESTOR, { [ANCESTOR]: { [DEV_TIP]: 'ahead' } }], [ANCESTOR, { [ANCESTOR]: { [TAG_COMMIT]: 'identical' } }]]) {
+    const p = planRun({ plugins: waila(sha), compare });
+    assert.equal(p.r.status, 0, p.text);
+    assert.equal(planEntry(p, 'WAILA').sha, sha);
+    if (!Object.keys(compare).length) assert.equal(p.uris.length, 0, 'a tip needs no compare');
+  }
+  // A fork's or a pull request's commit: the compare API answers for it too, but no tip has it in its history.
+  const p = planRun({ plugins: waila(FOREIGN), compare: { [FOREIGN]: { [MAIN_TIP]: 'behind', [DEV_TIP]: 'error' } } });
+  assert.notEqual(p.r.status, 0);
+  assert.ok(p.text.replace(/\s+/g, '').includes('isinnobranchortagofAlienXAXS/StarRupture-Plugin-WAILA'), p.text);
+  assert.equal(p.matrix, null, 'no plan at all');
+  const compared = p.uris.map((u) => /\.\.\.([0-9a-f]{40})/.exec(u)?.[1]);
+  assert.deepEqual([...compared].sort(), [MAIN_TIP, DEV_TIP, TAG_COMMIT], 'every tip, the tag as its commit');
+  assert.equal(compared[0], MAIN_TIP, 'the default branch first');
+});
+
+test('plan: plugin_sdk_ref and game_sdk_ref name a branch, a tag or a commit the SDK repository itself holds', { skip: !powershell }, () => {
+  const plugins = 'AlienXAXS/StarRupture-Plugin-WAILA@main';
+  const reach = { [ANCESTOR]: { [MAIN_TIP]: 'ahead' } };
+  for (const ref of ['main', 'dev', 'v1', MAIN_TIP, ANCESTOR]) {
+    const p = planRun({ plugins, pluginSdkRef: ref, gameSdkRef: ref, compare: reach });
+    assert.equal(p.r.status, 0, `${ref}: ${p.text}`);
+  }
+  for (const input of ['pluginSdkRef', 'gameSdkRef']) {
+    for (const ref of [FOREIGN, 'refs/pull/5/head', 'pull/5/head', 'refs/heads/main', 'Main', 'abc1234', '']) {
+      const p = planRun({ plugins, [input]: ref, compare: reach });
+      assert.notEqual(p.r.status, 0, `${input} '${ref}' must stop the plan`);
+      assert.equal(p.matrix, null);
+      const repo = input === 'pluginSdkRef' ? 'StarRupture-Plugin-SDK' : 'StarRupture-Game-SDK';
+      assert.ok(p.text.replace(/\s+/g, '').includes(repo), p.text);
+    }
+  }
+});
+
+test('plan: the SDK refs reach the plan step, and a refused plan builds no key source', () => {
+  const plan = stepText(job('plugin-plan'), 'Check the plugin list');
+  assert.match(plan, /\n {10}PLUGIN_SDK_REF: \$\{\{ inputs\.plugin_sdk_ref \}\}\r?\n/);
+  assert.match(plan, /\n {10}GAME_SDK_REF: \$\{\{ inputs\.game_sdk_ref \}\}\r?\n/);
+  assert.match(job('key-sources-plan'), /\n {4}needs: plugin-plan\r?\n/);
+  assert.doesNotMatch(jobIf(job('key-sources-plan')), /always\(\)|cancelled\(\)|failure\(\)/, 'the default success() applies');
+  assert.match(job('key-sources'), /\n {4}needs: key-sources-plan\r?\n/);
+});
 
 test('B1 plan: a plugin of another author is the reviewed release (tag and digest), a newer one is only reported', { skip: !powershell }, () => {
   const p = planRun({ plugins: PLAN_PLUGINS });
