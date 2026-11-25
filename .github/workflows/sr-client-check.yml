@@ -31,8 +31,9 @@ name: SR client check
 # login, after the login cache is deleted from disk. Deleting it does not
 # clear it from the runner's memory, so that code only ever comes from the
 # owners the inputs allow (msantoro12 and AlienXAXS; for a latest release also
-# LetMeInside, the author of MiniMap and PersistentIdFix), the same trust as scanner_ref. The fork
-# deploy keys are only in the auto-apply job (environment fork-push), which
+# LetMeInside, the author of MiniMap and PersistentIdFix), the same trust as loader_ref, or a scanner_ref
+# override. The fork deploy keys are only in the auto-apply job (environment
+# fork-push), which
 # runs no plugin code and no action but actions/checkout, and checks every
 # field of its work list: the commit must be the one plugin-plan resolved
 # from the inputs, before any plugin code ran. Each key can write only

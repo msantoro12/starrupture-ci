@@ -1,6 +1,6 @@
 # Which plugin DLLs may reach sr-aobscan --plugin. The scanner loads the DLL, so its code runs: only a
 # DLL this run built from source may, and only from our own repositories or the nine AlienXAXS plugins.
-# A downloaded DLL never may, whoever published it. No input, variable or list entry widens this.
+# A downloaded DLL never may, whoever published it. No input, variable or list entry adds to these.
 # sr-client-check.yml dot-sources this before every scanner call, and before a plugin is fetched.
 # Both checks also use it on a ref that names code compiled here (Assert-OwnRef, below).
 $ScanOwnRepos = '^(msantoro12/StarRupture-Plugin-[A-Za-z0-9_-]+|GoodStuffSoftware/sr-bestbuilder)$'

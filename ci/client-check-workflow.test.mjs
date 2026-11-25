@@ -446,7 +446,7 @@ test('candidate-loader: the version it names is the string the loader logs and t
   assert.ok(check.includes("Contains($env:TAG, [StringComparison]::Ordinal)") && check.includes('StarRupture-ModLoader-Core.dll'));
 });
 
-test('build-scanner: the scanner branch\'s ObservedTests are built and run against the loader checkout, and a failure fails the job', () => {
+test('build-scanner: the scanner tree\'s ObservedTests are built and run against the loader checkout, and a failure fails the job', () => {
   const j = job('build');
   const order = stepsOf(j);
   const at = (n) => order.indexOf(n);
@@ -2029,7 +2029,7 @@ test('bases: both triggers default to AlienX main for the loader, both SDKs and 
     assert.equal(defaultOf(section, 'game_sdk_repo'), 'AlienXAXS/StarRupture-Game-SDK', name);
     assert.equal(defaultOf(section, 'game_sdk_ref'), 'main', name);
     assert.equal(defaultOf(section, 'plugins'), DEFAULT_PLUGINS, name);
-    // The scanner overlay: tools/AobScan only, from the fork's scanner branch.
+    // The scanner overlay, when scanner_ref asks for one: tools/AobScan only, of scanner_repo.
     assert.equal(defaultOf(section, 'scanner_repo'), 'msantoro12/StarRupture-ModLoader', name);
     assert.equal(defaultOf(section, 'scanner_ref'), '', name);
   }
