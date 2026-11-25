@@ -110,6 +110,12 @@ test('gate: at the scanner call, a path, junction or link cannot bring in a DLL 
   assert.match(got.rootIsJunction, /junction or link/);
 });
 
+test('pinned facts: every committed Facts names the digest its Pin names', () => {
+  const withFacts = NAMES.filter((n) => n.Pin?.Facts);
+  assert.ok(withFacts.length > 0);
+  for (const n of withFacts) assert.equal(n.Pin.Facts.Digest, n.Pin.Digest, `${n.Name}: Pin.Facts are for another DLL; replace or delete them with the Pin`);
+});
+
 test('pinned facts: only for exactly the reviewed DLL; a mismatch, no digest or no Facts declares nothing', ps, () => {
   const dir = scratch();
   const write = (name, pin) => put(dir, name, JSON.stringify([{ Name: 'PersistentIdFix', Pin: pin }]));
@@ -123,6 +129,9 @@ test('pinned facts: only for exactly the reviewed DLL; a mismatch, no digest or 
     unknown: [names, 'Nobody', PIN.Tag, HEX],
     noFacts: [write('nofacts.json', { Tag: PIN.Tag, Digest: PIN.Digest }), 'PersistentIdFix', PIN.Tag, HEX],
     partial: [write('partial.json', { ...PIN, Facts: { InterfaceVersion: 75 } }), 'PersistentIdFix', PIN.Tag, HEX],
+    // The pin moved to a new DLL and the old DLL's facts stayed behind.
+    bumped: [write('bumped.json', { ...PIN, Digest: `sha256:${'b'.repeat(64)}` }), 'PersistentIdFix', PIN.Tag, 'b'.repeat(64)],
+    factsNoDigest: [write('olddigest.json', { ...PIN, Facts: { ...PIN.Facts, Digest: undefined } }), 'PersistentIdFix', PIN.Tag, HEX],
     textFlag: [write('flag.json', { ...PIN, Facts: { ...PIN.Facts, Migrated: 'false' } }), 'PersistentIdFix', PIN.Tag, HEX],
   };
   const out = runPs(dir, [

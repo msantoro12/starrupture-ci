@@ -159,14 +159,18 @@ Policy (owner), in plain words:
   DLLs: each row has `gated: true`. `decide.mjs --rig-plugins res/rig-plugins.json` applies
   the loader's rule (`loaderRefusal`) to the rows that carry facts, for `expect_refused` and
   `expect_refused_other`; the only facts are the stored `Pin.Facts`, used when the release
-  asset's digest is exactly the Pin's. The resolved tags go to both rigs as `tags` (output
+  asset's digest is exactly the Pin's and the one the facts name. The resolved tags go to both rigs as `tags` (output
   `rig_tags`). The plugin builds from `main` still produce the map rows and the verdicts, but
   declare nothing. A row without facts, or no `rig-plugins.json` at all, declares nothing (a
   note in the decision), so a refusal there is a loud fail.
 - Only a DLL this run built from source, from our own repositories or the nine allowed
   AlienXAXS plugins, reaches `sr-aobscan --plugin` (`ci/scan-gate.ps1`); any other plugin
   is `NOT-SCANNED`. What is gated, what coverage that costs and how to refresh `Pin.Facts`
-  after a pin change: `.github/sr-pipeline/README.md`, "The scan gate".
+  after a pin change: `.github/sr-pipeline/README.md`, "The scan gate". Facts apply only
+  while `Facts.Digest` equals `Pin.Digest`. They store `Migrated`, so decide takes the refusal
+  from these fields under its own copy of the loader's rule, not from what the candidate
+  loader says: if the loader relaxes its off-build rule, the rig fails on a declared refusal
+  the loader no longer makes. Change that rule or delete the `Facts` then.
 
 ## Step 27: `map-mode.mjs write`
 

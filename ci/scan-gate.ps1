@@ -63,8 +63,9 @@ function Assert-OwnRef([string]$What, [string]$Repo, [string]$Ref, $Headers) {
 }
 
 # The refusal facts of a pinned plugin whose DLL is not scanned: Pin.Facts in plugin-names.json, what a
-# past scan of exactly that DLL read. Returned only when the release asset's digest ($Digest, hex) is
-# exactly the Pin's, so a re-uploaded asset, a missing digest or a new Pin without Facts declares
+# past scan of one DLL read, with that DLL's digest in Facts.Digest. Returned only when Facts.Digest,
+# Pin.Digest and the release asset's digest ($Digest, hex) all name that one DLL, so a re-uploaded
+# asset, a missing digest or a new Pin whose Facts are missing or still the old DLL's declares
 # nothing. The rig still checks the claim: a declared refusal the loader does not make fails it.
 function Get-PinnedFacts([string]$NamesPath, [string]$Name, [string]$Tag, [string]$Digest) {
     if ($Digest -cnotmatch '^[0-9a-f]{64}$') { return $null }
@@ -74,7 +75,8 @@ function Get-PinnedFacts([string]$NamesPath, [string]$Name, [string]$Tag, [strin
     $pin = $hit[0].Pin
     if (-not $pin.PSObject.Properties['Facts'] -or $pin.Tag -cne $Tag -or $pin.Digest -cne "sha256:$Digest") { return $null }
     $f = $pin.Facts
-    foreach ($k in 'InterfaceVersion', 'GameBuild', 'Migrated', 'ObservedIn') { if (-not $f.PSObject.Properties[$k]) { return $null } }
+    foreach ($k in 'Digest', 'InterfaceVersion', 'GameBuild', 'Migrated', 'ObservedIn') { if (-not $f.PSObject.Properties[$k]) { return $null } }
+    if ($f.Digest -cne $pin.Digest) { return $null }
     if ($f.Migrated -isnot [bool]) { return $null }
     [ordered]@{ plugin = [ordered]@{ interfaceVersion = [int]$f.InterfaceVersion; gameBuild = [string]$f.GameBuild }
                 rule3 = [ordered]@{ migrated = $f.Migrated }; factsFrom = [string]$f.ObservedIn }
