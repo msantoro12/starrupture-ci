@@ -73,3 +73,7 @@ jobs:
           if [ -f base/mod-index/index.json ]; then base_args=(--base base/mod-index/index.json); fi
           node ci-tools/ci/mod-index-intake.mjs --index pr/mod-index/index.json "${base_args[@]}" --summary "$GITHUB_STEP_SUMMARY"
 ```
+
+## Automatic publishing
+
+After an entry is merged into the loader's `main`, `sr-mod-index-auto.yml` in this repository notices that the live signed mod index differs and lists what changed in its job summary. It starts the live signed publish only while the repository variable `MOD_INDEX_AUTO_PUBLISH` is `true`; it ships off, so today it only reports. Details and the switch: `.github/sr-pipeline/README.md`, "Automatic live publish of the mod index".

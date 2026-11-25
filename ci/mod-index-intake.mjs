@@ -227,9 +227,9 @@ export function selectEntries(list, baseList) {
 const statusOf = (checks) => (checks.some((c) => c.level === FAIL) ? FAIL : checks.some((c) => c.level === WARN) ? WARN : PASS);
 // Text that came from the index or from a downloaded file is printable ASCII on one line. It cannot start a workflow
 // command: every output line begins with a fixed prefix (PASS, FAIL, WARN, INFO, or two spaces and a level).
-const clean = (s) => String(s).replace(/[^\x20-\x7e]/g, '?');
+export const clean = (s) => String(s).replace(/[^\x20-\x7e]/g, '?');
 // In markdown a stranger's text also loses everything that makes a link, image, tag, emphasis or table cell.
-const md = (s) => clean(s).replace(/[\[\]()<>*_`!~#&|\\]/g, '?');
+export const md = (s) => clean(s).replace(/[\[\]()<>*_`!~#&|\\]/g, '?');
 
 // Pool of n workers over items; results keep the order of items.
 async function pool(items, n, fn) {
