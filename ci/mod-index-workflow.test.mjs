@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { LOADER_REPO } from './mod-index.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (...p) => readFileSync(join(here, '..', ...p), 'utf8').replace(/\r\n/g, '\n');
@@ -31,6 +32,7 @@ const jobText = (name) => {
   const next = wf.slice(at + 1).search(/\n {2}[a-z][\w-]*:\n/);
   return next < 0 ? wf.slice(at) : wf.slice(at, at + 1 + next);
 };
+const gateJob = jobText('loader-ref');
 const loaderJob = jobText('loader-check');
 const pubJob = jobText('mod-index-publish');
 const stepOf = (name) => stepIn(wf, name);
@@ -102,37 +104,56 @@ test('keys: both targets sign with the release key, read once, in one step', () 
   assert.deepEqual([...wf.matchAll(/\n\s+environment: (.*)/g)].map((m) => m[1]), ['vmap-sign']);
 });
 
-test('the loader repository: its code runs in its own job with no secret, no environment and a read-only token, last; only index.json crosses', () => {
-  assert.match(loaderJob, /\n {6}LOADER_REPO: AlienXAXS\/StarRupture-ModLoader\n {6}LOADER_REF: \$\{\{ inputs\.loader_ref \}\}\n/);
+test('the loader ref gate: its own job before any loader code; every loader read is by its commit id; the signing job checks it again', () => {
+  assert.match(gateJob, /\n {4}permissions:\n {6}contents: read\n/);
+  assert.ok(!/needs:|environment:|secrets\.|contents\/|build-mod-index|continue-on-error|\bif:/.test(gateJob), 'the gate job needs no job, holds no secret, reads no loader file and always runs');
+  assert.ok(gateJob.includes('LOADER_REF: ${{ inputs.loader_ref }}\n') && gateJob.includes('sha: ${{ steps.gate.outputs.sha }}\n'));
+  assert.ok(stepOf('Resolve and check the loader ref').includes('set -euo pipefail\n          sha="$(node tool/ci/mod-index.mjs loader-ref "$LOADER_REF")"\n          echo "sha=$sha" >> "$GITHUB_OUTPUT"'));
+  assert.match(loaderJob, /\n {4}needs: \[loader-ref\]\n/);
+  for (const j of [loaderJob, pubJob]) {
+    assert.ok(j.includes('LOADER_SHA: ${{ needs.loader-ref.outputs.sha }}\n'), 'the commit id comes from the gate job');
+    assert.ok(j.includes(`LOADER_REPO: ${LOADER_REPO}\n`), 'the reads name the repository the gate checks');
+  }
+  const reads = wf.match(/contents\/[^"\n]*\?ref=[^"\n]*/g);
+  assert.equal(reads.length, 3, 'index.json twice, the builder once');
+  for (const r of reads) assert.ok(r.endsWith('?ref=$LOADER_SHA'), r);
+  assert.ok(!/\$\{?LOADER_REF/.test(loaderJob), 'the loader job never reads by the input');
+  assert.ok(stepOf("Read the loader's mod index").includes('[[ "$LOADER_SHA" =~ ^[0-9a-f]{40}$ ]] ||'), 'an empty ref would read the default branch');
+  const again = stepOf('Check the loader commit again');
+  assert.ok(again.includes('checked="$(node tool/ci/mod-index.mjs loader-ref "$LOADER_SHA")"') && again.includes('[ "$checked" = "$LOADER_SHA" ]') && again.includes('exit 2') && !/\bif:/.test(again));
+  assert.ok(pubJob.indexOf('- name: Check the loader commit again') < pubJob.indexOf('- name: Take the loader'), 'checked before it is read');
+  assert.ok(!/upload-artifact|download-artifact/.test(wf), 'no file passes between jobs');
+  assert.deepEqual([...pubJob.matchAll(/needs\.([\w-]+)\.outputs\.(\w+)/g)].map((m) => `${m[1]}.${m[2]}`), ['loader-check.state', 'loader-ref.sha'], 'of the loader job the signing job reads only whether to run');
+});
+
+test('the loader repository: its code runs in its own job with no secret, no environment and a read-only token, last; no file of it reaches the signing job', () => {
+  assert.match(loaderJob, /\n {6}LOADER_REPO: AlienXAXS\/StarRupture-ModLoader\n {6}LOADER_SHA: /);
   assert.ok(!/repository:/.test(wf), 'no other repository is checked out');
   assert.match(loaderJob, /\n {4}permissions:\n {6}contents: read\n/);
   assert.ok(!/environment:|secrets\.|VMAP_SIGN_KEY|uses: actions\/checkout/.test(loaderJob), 'the loader job has no environment, no secret and no checkout of this repository');
   assert.ok(!/inputs\.live|contents: write/.test(loaderJob));
-  const ref = stepOf('Check the loader ref');
-  assert.ok(ref.includes('*..*') && ref.includes('-*') && ref.includes('[!A-Za-z0-9._/-]') && ref.includes('exit 2'));
   const idx = stepOf("Read the loader's mod index");
-  assert.ok(idx.includes('contents/mod-index/index.json?ref=$LOADER_REF') && idx.includes('application/vnd.github.raw+json'));
+  assert.ok(idx.includes('contents/mod-index/index.json?ref=$LOADER_SHA') && idx.includes('application/vnd.github.raw+json'));
   const fetch = stepOf("Fetch the loader's builder");
-  assert.ok(fetch.includes('contents/.github/vmap/build-mod-index.mjs?ref=$LOADER_REF'));
+  assert.ok(fetch.includes('contents/.github/vmap/build-mod-index.mjs?ref=$LOADER_SHA'));
   assert.ok(fetch.includes('HTTP 404') && fetch.includes('::notice::'), 'only a 404 means no loader builder, and it says so; any other error stops');
   const build = stepOf("Check the mod index with the loader's builder");
   assert.ok(build.includes('env -i PATH="$PATH" node loader-build/build-mod-index.mjs index.json --out loader-build/checked.txt'), "the loader's code runs with no environment of this job");
   const steps = [...loaderJob.matchAll(/\n {6}- (?:name|uses): (.*)/g)].map((m) => m[1]);
   assert.equal(steps[steps.length - 1], "Check the mod index with the loader's builder", "the loader's code is the last step of its job");
-  assert.ok(loaderJob.includes('actions/upload-artifact@') && loaderJob.includes('path: index.json'), 'index.json is all that crosses');
   assert.ok(!/loader-build|checked\.txt|build-mod-index/.test(pubJob), "the loader's builder and its output never reach the signing job");
-  assert.ok(pubJob.includes('actions/download-artifact@'));
+  assert.ok(stepOf("Take the loader's mod index").includes('contents/mod-index/index.json?ref=$LOADER_SHA" > index.json'), 'the signing job reads index.json itself');
   const own = stepOf("Build the signer's input");
   assert.ok(own.includes('node tool/ci/mod-index.mjs build index.json --out mod-index.unsigned.txt') && own.includes('STATE=built'), "the signing job builds the signer's input itself from index.json");
   assert.ok(pubJob.indexOf('- name: Take the loader') < pubJob.indexOf("- name: Build the signer's input"));
-  assert.match(pubJob, /\n {4}needs: \[loader-check\]\n {4}if: \$\{\{ needs\.loader-check\.outputs\.state == 'present' \}\}\n/);
+  assert.match(pubJob, /\n {4}needs: \[loader-ref, loader-check\]\n {4}if: \$\{\{ needs\.loader-check\.outputs\.state == 'present' \}\}\n/);
 });
 
 test('a missing index.json at the ref ends green with a note; nothing after it runs', () => {
   const idx = stepOf("Read the loader's mod index");
   assert.ok(idx.includes('grep -q \'HTTP 404\' index.err') && idx.includes('state=missing') && idx.includes('GITHUB_STEP_SUMMARY'));
   assert.ok(!/exit 2/.test(idx.slice(idx.indexOf('HTTP 404'), idx.indexOf('else\n'))), 'the 404 branch does not fail');
-  for (const n of ["Fetch the loader's builder", 'Hand index.json to the signing job', "Check the mod index with the loader's builder"]) {
+  for (const n of ["Fetch the loader's builder", "Check the mod index with the loader's builder"]) {
     assert.match(stepOf(n), /\n\s+if: \$\{\{ steps\.read\.outputs\.state == 'present' \}\}\n/, `${n} runs only when the index exists`);
   }
   for (const n of ["Build the signer's input", 'Compare with the published mod index', 'Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move']) {
@@ -152,7 +173,7 @@ test('an unchanged index ends green without signing or publishing; the published
   for (const n of ['Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move']) {
     assert.ok(stepOf(n).includes("if: ${{ env.STATE == 'go' }}"), `${n} runs only for a changed index`);
   }
-  const order = ['Check the loader ref', "Read the loader's mod index", "Check the mod index with the loader's builder", 'Read the live release', "Build the signer's input", 'Compare with the published mod index', 'Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
+  const order = ['Resolve and check the loader ref', "Read the loader's mod index", "Check the mod index with the loader's builder", 'Read the live release', "Build the signer's input", 'Compare with the published mod index', 'Sign with the release key and verify', 'Publish the mod index', 'Check the live release did not move'].map((n) => wf.indexOf(`- name: ${n}\n`));
   assert.ok(order.every((i) => i > 0));
   assert.deepEqual(order, [...order].sort((a, b) => a - b), 'index read and checked, live assets read, built, compared, signed, published, live assets checked');
   assert.ok(!/vmap-history|vmap-publish\.sh/.test(wf.replace(/#.*\n/g, '')), 'no history file and not the version map routine');
@@ -175,7 +196,7 @@ test('trust and shape: contents: write in the signing job only, no input in a ru
   assert.equal((wf.match(/contents: write/g) ?? []).length, 1, 'only the signing job writes');
   assert.ok(!/(?:pull-requests|issues|actions|checks|id-token|packages):/.test(wf), 'asks for no other permission');
   assert.match(pubJob, /\n {4}concurrency:\n {6}group: vmap-publish\n {6}cancel-in-progress: false\n/);
-  assert.deepEqual([...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]), ['loader-check', 'mod-index-publish'], 'two jobs: the loader check, then the signing job');
+  assert.deepEqual([...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]), ['loader-ref', 'loader-check', 'mod-index-publish'], 'three jobs: the gate, the loader check, then the signing job');
   assert.ok(runSteps.length >= 8, 'every run step was found');
   for (const r of runSteps) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
   assert.ok((wf.match(/persist-credentials: false/g) ?? []).length === (wf.match(/uses: actions\/checkout@/g) ?? []).length, 'no checkout keeps the token');
