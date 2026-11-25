@@ -138,19 +138,24 @@ Policy (owner), in plain words:
   that plugin alone is reported BUILD-FAILED). A rig plugin whose owner is neither msantoro12 nor
   AlienXAXS (MiniMap, PersistentIdFix) runs only at the `Pin` (tag and asset digest) in `ci/plugin-names.json`,
   in the client check as well as in the rig: the check's `plugin-plan` reads the same Pin,
-  fetches that tag and never builds such a plugin from source; a digest mismatch, a missing or
-  malformed Pin fails the plugin (FETCH-FAILED) and the rig. A newer release does not change
-  anything that is scanned, run or predicted: the alert job adds "new <plugin> release <tag>
+  resolves that tag and never builds such a plugin from source; the check never fetches or
+  scans its DLL. A digest mismatch, or a missing or malformed Pin, fails the rig. A newer
+  release does not change anything that is run or predicted: the alert job adds "new <plugin> release <tag>
   waiting for review", which blocks nothing.
 - The refusals declared to a rig come from the DLLs that rig runs. The check job resolves the
   rig's set with `ci/client-rig-set.ps1` (Latest released plugins plus the pinned third-party
-  one), fetches it through the rig's download cache, reads each DLL with `sr-aobscan --plugin`
-  into `out/rig-plugins.json`, and `decide.mjs --rig-plugins res/rig-plugins.json` applies the
-  loader's rule (`loaderRefusal`) to those facts, for `expect_refused` and
-  `expect_refused_other`. The resolved tags go to both rigs as `tags` (output `rig_tags`).
-  The plugin builds from `main` still produce the map rows and the verdicts, but declare
-  nothing. A DLL whose facts cannot be read, or no `rig-plugins.json` at all, declares
-  nothing (a note in the decision), so a refusal there is a loud fail.
+  one) and records it in `out/rig-plugins.json` without downloading or scanning any of its
+  DLLs: each row has `gated: true`. `decide.mjs --rig-plugins res/rig-plugins.json` applies
+  the loader's rule (`loaderRefusal`) to the rows that carry facts, for `expect_refused` and
+  `expect_refused_other`; the only facts are the stored `Pin.Facts`, used when the release
+  asset's digest is exactly the Pin's. The resolved tags go to both rigs as `tags` (output
+  `rig_tags`). The plugin builds from `main` still produce the map rows and the verdicts, but
+  declare nothing. A row without facts, or no `rig-plugins.json` at all, declares nothing (a
+  note in the decision), so a refusal there is a loud fail.
+- Only a DLL this run built from source, from our own repositories or the nine allowed
+  AlienXAXS plugins, reaches `sr-aobscan --plugin` (`ci/scan-gate.ps1`); any other plugin
+  is `NOT-SCANNED`. What is gated, what coverage that costs and how to refresh `Pin.Facts`
+  after a pin change: `.github/sr-pipeline/README.md`, "The scan gate".
 
 ## Step 27: `map-mode.mjs write`
 
@@ -586,7 +591,8 @@ the field-rows report), or `held` (REFUSED: it cannot load on the new CL at all,
 version or no built CL; it alone goes to the rebuild path, and the loader refuses it
 there; RULE3: it declares `PLUGIN_MAP_MIGRATED` and still reads game members directly; and
 CRASH, ERROR, BUILD-FAILED, FETCH-FAILED, OFFSETS, OFFSETS-UNCHECKED: it crashed, did not
-build, could not be fetched or was not verified). A held plugin stays on its last release
+build, could not be fetched or was not verified; NOT-SCANNED: the scan gate refused its DLL,
+so nothing is known about it on the new CL). A held plugin stays on its last release
 and every other plugin goes on; one plugin's build failure does not fail the `plugins` job,
 and with every plugin held the loader alone still ships. The run summary shows the same
 table. Only a verdict decide does not know, and the loader's own gates (G1 to G4, the SDK
