@@ -495,7 +495,7 @@ test('thumbnails: thumbnail_url is the raw.githubusercontent.com image of a full
   const other = `https://raw.githubusercontent.com/Mallory/Evil/${COMMIT}/images/thumbnail.png`;
   refused([entry(THUMB({ thumbnail_url: other }))], /thumbnail_url must belong to the repository page_url names/);
   refused([entry(THUMB({ thumbnail_url: `https://raw.githubusercontent.com/AlienXAXS/Other/${COMMIT}/images/thumbnail.png` }))], /belong to the repository page_url names/);
-  refused([entry({ ...THUMB({ thumbnail_url: other }), page_url: 'https://www.nexusmods.com/starrupture/mods/1' })], /belong to the repository page_url names/);
+  refused([{ id: 'x', name: 'X', page_url: 'https://www.nexusmods.com/starrupture/mods/1', ...THUMB() }], /thumbnail_url must belong to the repository page_url names/);
 });
 
 test('thumbnails: thumbnail_sha256 is 64 lowercase hex, thumbnail_size is plain digits from 1 to 512 KiB', () => {

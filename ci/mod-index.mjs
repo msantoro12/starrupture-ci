@@ -121,7 +121,7 @@ export const MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 const MAX_URL_LEN = 200;
 const INSTALL_KEYS = ['download_url', 'download_sha256', 'download_size', 'install_files', 'update_manifest_url'];
 const THUMBNAIL_KEYS = ['thumbnail_url', 'thumbnail_sha256', 'thumbnail_size'];
-export const MAX_THUMBNAIL_BYTES = 512 * 1024;
+const MAX_THUMBNAIL_BYTES = 512 * 1024;
 const SCANNED_KEYS = ['page_url', ...INSTALL_KEYS, ...THUMBNAIL_KEYS];
 
 // ASCII letters, digits, '_', '.', '-', with no "..".
