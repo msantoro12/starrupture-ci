@@ -208,10 +208,10 @@ test('trust and shape: contents: write in the signing job only, no input in a ru
   for (const line of wf.split('\n')) if (/\b(?:cancelled|always|failure|success)\(\)/.test(line)) assert.match(line, /^\s+if: /, line);
 });
 
-test('text: no attribution line, version object map wording; only sr-watch.yml calls this workflow', () => {
+test('text: no attribution line, version object map wording; only sr-watch.yml calls this workflow and only sr-mod-index-auto.yml dispatches it', () => {
   assert.ok(!/Co-Authored|Generated with/.test(wf));
   assert.ok(!/\bthe feed\b/i.test(wf), 'version object map, not the feed');
-  for (const f of readdirSync(join(here, '..', '.github', 'workflows')).filter((n) => n.endsWith('.yml') && n !== 'sr-mod-index.yml' && n !== 'sr-watch.yml')) {
+  for (const f of readdirSync(join(here, '..', '.github', 'workflows')).filter((n) => n.endsWith('.yml') && n !== 'sr-mod-index.yml' && n !== 'sr-watch.yml' && n !== 'sr-mod-index-auto.yml')) {
     assert.ok(!read('.github', 'workflows', f).includes('sr-mod-index.yml'), `${f} does not call or dispatch it`);
   }
   assert.equal((watch.match(/uses: .*sr-mod-index\.yml/g) ?? []).length, 1, 'sr-watch calls it once');
