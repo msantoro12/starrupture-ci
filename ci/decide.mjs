@@ -616,6 +616,11 @@ export function decide(inputs) {
     if (rigRows === null) notes.push(`rig plugins: the facts of the DLLs the rig runs were not read (${inputs.rigPlugins === undefined ? 'no file given' : inputs.rigPlugins.error ?? 'no plugins list'}); no refusal is declared for the rig`);
     else {
       const unread = rigRows.filter((p) => !isObj(p) || !isObj(p.plugin) || !Number.isInteger(p.plugin.interfaceVersion)).map((p) => (isObj(p) && typeof p.name === 'string' ? p.name : '?'));
+      const gated = rigRows.filter((p) => isObj(p) && p.gated === true);
+      if (gated.length) {
+        const stored = gated.filter((p) => isObj(p.plugin)).map((p) => p.name);
+        notes.push(`rig plugins: not scanned: gated: ${gated.map((p) => p.name).join(', ')}${stored.length ? `; the stored facts of the reviewed release are used for ${stored.join(', ')}` : ''}`);
+      }
       if (unread.length) notes.push(`rig plugins: no facts for ${unread.join(', ')}; no refusal is declared for ${unread.length === 1 ? 'it' : 'them'}, so a refusal fails the rig`);
     }
     const r = {

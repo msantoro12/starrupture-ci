@@ -2064,8 +2064,9 @@ jobs:
       # author (the Pin in ci/plugin-names.json). The exact set is resolved here by the rig's own
       # script, and its tags go to both rigs so they run these very releases. All of them are
       # downloaded DLLs, so none is downloaded here or given to the scanner (ci/scan-gate.ps1):
-      # each row says "not scanned: gated". With no facts for them, decide declares no refusal, so a
-      # loader refusal of one fails the rig and nothing is published.
+      # each row says "not scanned: gated". A pinned plugin with stored facts for exactly that DLL
+      # (Pin.Facts) carries them, so decide can still declare its refusal. For every other row decide
+      # declares none, so a loader refusal of it fails the rig and nothing is published.
       - name: Check out the rig's set script
         id: rigtool
         if: always() && steps.dl.outcome == 'success' && steps.cleanup.outcome == 'success'
@@ -2097,10 +2098,13 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          # out/rig-plugins.json: { tags: "Name=tag ...", plugins: [{ name, tag, gated, error }] }.
+          # out/rig-plugins.json: { tags: "Name=tag ...", plugins: [{ name, tag, gated, error,
+          # plugin?, rule3?, factsFrom? }] }. The last three are a pinned plugin's stored facts
+          # (Get-PinnedFacts); decide judges them with the loader's rule.
           $ErrorActionPreference = 'Stop'
           Set-StrictMode -Version Latest
           New-Item -ItemType Directory -Force out | Out-Null
+          . .\ci-gate\ci\scan-gate.ps1
           $plan = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'rig-plan.json') -Raw | ConvertFrom-Json
           $tagRx = '^[A-Za-z0-9][A-Za-z0-9._+-]*$'
           $tags = [Collections.Generic.List[string]]::new()
@@ -2108,7 +2112,10 @@ jobs:
             $why = 'not scanned: gated (a downloaded release DLL)'
             if ($e.tag -cmatch $tagRx) { $tags.Add("$($e.name)=$($e.tag)") }
             else { $why = "$why; its release tag is not a plain tag, so the rigs are not given it" }
-            [ordered]@{ name = $e.name; tag = $e.tag; gated = $true; error = $why }
+            $row = [ordered]@{ name = $e.name; tag = $e.tag; gated = $true; error = $why }
+            $facts = Get-PinnedFacts 'ci-rig\ci\plugin-names.json' $e.name $e.tag ([string]$e.asset.digest)
+            if ($facts) { foreach ($k in $facts.Keys) { $row[$k] = $facts[$k] } }
+            $row
           }
           [ordered]@{ branch = $env:BRANCH; tags = ($tags -join ' '); plugins = @($rows) } |
             ConvertTo-Json -Depth 4 | Set-Content out\rig-plugins.json -Encoding utf8
@@ -2520,6 +2527,8 @@ jobs:
                 -OutFile "$d\plugin-sdk\include\plugin_interface.h" -TimeoutSec 60
               $sln = @(Get-ChildItem "$d\src" -File -Filter *.sln)
               if ($sln.Count -ne 1) { throw "expected one solution at the repository root, found $($sln.Count)" }
+              # A DLL committed where the build writes its output would pass as built here.
+              if (Test-Path "$d\src\build\Client Release\Plugins\*.dll") { throw 'the source already holds a DLL in its build output folder' }
               & $msbuild $sln[0].FullName `
                 /p:Configuration="Client Release" `
                 /p:Platform=x64 `

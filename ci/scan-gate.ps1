@@ -16,7 +16,8 @@ function Get-ScanRefusal([string]$Source, [string]$Repo) {
 }
 
 # The check at the scanner call itself: the source and repository above, and the DLL is a file under
-# $BuiltIn, the folder this run's build of that plugin writes. Throws otherwise.
+# $BuiltIn, the folder this run's build of that plugin writes. A junction or link anywhere from the DLL
+# up to $BuiltIn is refused: the path check does not follow one. Throws otherwise.
 function Assert-ScanAllowed([string]$Source, [string]$Repo, [string]$Dll, [string]$BuiltIn) {
     $why = Get-ScanRefusal $Source $Repo
     if ($why) { throw $why }
@@ -25,4 +26,27 @@ function Assert-ScanAllowed([string]$Source, [string]$Repo, [string]$Dll, [strin
     if (-not (Resolve-Path -LiteralPath $Dll).ProviderPath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'not scanned: gated (the DLL is outside the folder this run built it in)'
     }
+    $item = Get-Item -LiteralPath $Dll -Force
+    while ($item -and ($item.FullName.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'not scanned: gated (a junction or link on the way to the DLL)' }
+        $item = if ($item.PSIsContainer) { $item.Parent } else { $item.Directory }
+    }
+}
+
+# The refusal facts of a pinned plugin whose DLL is not scanned: Pin.Facts in plugin-names.json, what a
+# past scan of exactly that DLL read. Returned only when the release asset's digest ($Digest, hex) is
+# exactly the Pin's, so a re-uploaded asset, a missing digest or a new Pin without Facts declares
+# nothing. The rig still checks the claim: a declared refusal the loader does not make fails it.
+function Get-PinnedFacts([string]$NamesPath, [string]$Name, [string]$Tag, [string]$Digest) {
+    if ($Digest -cnotmatch '^[0-9a-f]{64}$') { return $null }
+    $all = Get-Content -LiteralPath $NamesPath -Raw | ConvertFrom-Json
+    $hit = @($all | ForEach-Object { $_ } | Where-Object { $_.Name -ceq $Name })
+    if ($hit.Count -ne 1 -or -not $hit[0].PSObject.Properties['Pin']) { return $null }
+    $pin = $hit[0].Pin
+    if (-not $pin.PSObject.Properties['Facts'] -or $pin.Tag -cne $Tag -or $pin.Digest -cne "sha256:$Digest") { return $null }
+    $f = $pin.Facts
+    foreach ($k in 'InterfaceVersion', 'GameBuild', 'Migrated', 'ObservedIn') { if (-not $f.PSObject.Properties[$k]) { return $null } }
+    if ($f.Migrated -isnot [bool]) { return $null }
+    [ordered]@{ plugin = [ordered]@{ interfaceVersion = [int]$f.InterfaceVersion; gameBuild = [string]$f.GameBuild }
+                rule3 = [ordered]@{ migrated = $f.Migrated }; factsFrom = [string]$f.ObservedIn }
 }
