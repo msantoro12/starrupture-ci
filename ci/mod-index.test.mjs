@@ -448,6 +448,76 @@ test('entries: the page_url may not walk back out of the repository, and a lette
   refused([entry({ page_url: kelvin, download_url: 'https://github.com/klone/r/releases/download/t/x.dll' })], /belong to the repository page_url names/);
 });
 
+const COMMIT = 'c'.repeat(40);
+const THUMB = (over = {}) => ({
+  thumbnail_url: `https://raw.githubusercontent.com/AlienXAXS/StarRupture-Plugin-Codex/${COMMIT}/images/thumbnail.png`,
+  thumbnail_sha256: SHA,
+  thumbnail_size: 20000,
+  ...over,
+});
+
+test('thumbnails: a good entry passes, with or without install keys, and an entry without thumbnails is unchanged', () => {
+  assert.equal(checkBody(asText([entry(THUMB())])), undefined);
+  assert.equal(checkBody(asText([{ id: 'x', name: 'X', page_url: 'https://github.com/alienxaxs/starrupture-plugin-codex/', ...THUMB() }])), undefined, 'browse-only entry, repository compared without case');
+  assert.equal(checkBody(asText([entry()])), undefined);
+  for (const size of [1, 512 * 1024]) assert.equal(checkBody(asText([entry(THUMB({ thumbnail_size: size }))])), undefined);
+});
+
+test('thumbnails: one or two of the three keys are refused, naming the missing ones', () => {
+  for (const k of ['thumbnail_url', 'thumbnail_sha256', 'thumbnail_size']) {
+    const t = THUMB(); delete t[k];
+    refused([entry(t)], new RegExp(`all or none, missing ${k}$`));
+  }
+  refused([entry({ thumbnail_url: THUMB().thumbnail_url })], /missing thumbnail_sha256, thumbnail_size/);
+  refused([entry({ thumbnail_size: 5 })], /missing thumbnail_url, thumbnail_sha256/);
+});
+
+test('thumbnails: thumbnail_url is the raw.githubusercontent.com image of a full lowercase commit of the page_url repository', () => {
+  const raw = 'https://raw.githubusercontent.com/AlienXAXS/StarRupture-Plugin-Codex';
+  const bad = [
+    `https://github.com/AlienXAXS/StarRupture-Plugin-Codex/raw/${COMMIT}/images/thumbnail.png`,
+    `http://raw.githubusercontent.com/AlienXAXS/StarRupture-Plugin-Codex/${COMMIT}/images/thumbnail.png`,
+    `https://evil.test/AlienXAXS/StarRupture-Plugin-Codex/${COMMIT}/images/thumbnail.png`,
+    `${raw}/${'c'.repeat(39)}/images/thumbnail.png`,
+    `${raw}/${'c'.repeat(41)}/images/thumbnail.png`,
+    `${raw}/${'C'.repeat(40)}/images/thumbnail.png`,
+    `${raw}/main/images/thumbnail.png`,
+    `${raw}/${COMMIT}/images/thumb.png`,
+    `${raw}/${COMMIT}/thumbnail.png`,
+    `${raw}/${COMMIT}/images/thumbnail.png?x=1`,
+    `${raw}/${COMMIT}/images/thumbnail.png#x`,
+    `${raw}/${COMMIT}/images/thumbnail.png/`,
+    `${raw}/${COMMIT}/extra/images/thumbnail.png`,
+    `https://raw.githubusercontent.com/../${COMMIT}/images/thumbnail.png`,
+  ];
+  for (const u of bad) refused([entry(THUMB({ thumbnail_url: u }))], /thumbnail_url must be/);
+  for (const u of [5, null, ['x'], { a: 1 }, '']) refused([entry(THUMB({ thumbnail_url: u }))], /thumbnail_url must be/);
+  const other = `https://raw.githubusercontent.com/Mallory/Evil/${COMMIT}/images/thumbnail.png`;
+  refused([entry(THUMB({ thumbnail_url: other }))], /thumbnail_url must belong to the repository page_url names/);
+  refused([entry(THUMB({ thumbnail_url: `https://raw.githubusercontent.com/AlienXAXS/Other/${COMMIT}/images/thumbnail.png` }))], /belong to the repository page_url names/);
+  refused([entry({ ...THUMB({ thumbnail_url: other }), page_url: 'https://www.nexusmods.com/starrupture/mods/1' })], /belong to the repository page_url names/);
+});
+
+test('thumbnails: thumbnail_sha256 is 64 lowercase hex, thumbnail_size is plain digits from 1 to 512 KiB', () => {
+  for (const h of ['AB'.repeat(32), 'ab'.repeat(31), 'ab'.repeat(33), 'zz'.repeat(32), 5, null]) refused([entry(THUMB({ thumbnail_sha256: h }))], /thumbnail_sha256 must be/);
+  for (const n of [0, -1, 524289, 1.5, '20000', null, [1], {}]) refused([entry(THUMB({ thumbnail_size: n }))], /thumbnail_size must be/);
+  const good = JSON.stringify(entry(THUMB({ thumbnail_size: 1234 })));
+  for (const raw of ['1.5e3', '1234.0', '1E3', '-1234', '0']) refused(`[${good.replace('"thumbnail_size":1234', `"thumbnail_size":${raw}`)}]\n`, /thumbnail_size must be/);
+  for (const raw of ['01234', '+1234']) refused(`[${good.replace('"thumbnail_size":1234', `"thumbnail_size":${raw}`)}]\n`, /not valid JSON/);
+  assert.equal(checkBody(`[${good.replace('"thumbnail_size":1234', '"thumbnail_size" : 1234 ')}]\n`), undefined);
+});
+
+test('thumbnails: nested, duplicate and escaped thumbnail keys are refused per entry', () => {
+  const plain = JSON.stringify(entry(THUMB()));
+  const nested = JSON.stringify({ id: 'a', name: 'A', page_url: 'https://github.com/X/Y', meta: THUMB() });
+  refused(`[${nested}]\n`, /entry 1 \(a\): the key thumbnail_url must be a direct member/);
+  refused(`[${plain},${nested}]\n`, /entry 2 \(a\): the key thumbnail_url must be a direct member/);
+  for (const k of ['thumbnail_url', 'thumbnail_sha256', 'thumbnail_size']) {
+    refused(`[${plain.slice(0, -1)},"${k}":${JSON.stringify(THUMB()[k])}}]\n`, new RegExp(`entry 1 \\(codex\\): the key ${k} appears more than once`));
+    refused(`[${plain.replace(`"${k}"`, `"${k.replace('_', '\\u005f')}"`)}]\n`, /key written with a backslash escape/);
+  }
+});
+
 test('entries: signing and verifying run the same check, so a bad index never gets a signature', () => {
   const k = pair();
   const bad = asText([entry({ download_url: 'https://example.com/Codex.dll' })]);
