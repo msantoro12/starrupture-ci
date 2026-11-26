@@ -85,7 +85,7 @@ test('B5: one plugin that fails to fetch, check out or build never fails the plu
 });
 
 test('test_autopilot: dispatch only, refused with publish on, never publishable, and the publish job skips it', () => {
-  assert.match(dispatch, /test_autopilot:\n\s+description: .*never publishes.*\n\s+type: boolean\n\s+default: false/);
+  assert.match(dispatch, /test_autopilot:\n\s+description: 'Non-live test run: .*no publish, fork push or PR write.*vmap-layouts-rehearsal.*\n\s+type: boolean\n\s+default: false/);
   assert.ok(!call.includes('test_autopilot'), 'sr-watch calls the workflow and cannot pass it');
   assert.match(job('plugin-plan'), /throw 'test_autopilot needs map_mode on and publish off: a test run never publishes'/);
   const mm = job('map-mode');
@@ -1112,7 +1112,7 @@ test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the o
 
 test('alert (leg C1): the PR gets the chain-passed label after a clean run, loses it after an alert, and one ready note that is edited in place', { skip: !bash }, () => {
   const s = step(job('alert'), 'Mark the pull request');
-  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' \}\}\n/);
+  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' && inputs\.test_autopilot != true \}\}\n/);
   const script = runOf(job('alert'), 'Mark the pull request');
   const run = (env, files = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'alert-pr-'));
@@ -3603,6 +3603,41 @@ test('the keys step appends ModLoader\'s native keys to keys-ModLoader.txt, as i
 
 // ------------------------------------------------------------ the stored reference layout (public has no older build to scan)
 
+// The release layout-store reads and writes, as its job env gives it for these inputs.
+const jobEnv = (name, key) => job(name).match(new RegExp(`\\n {6}${key}: (\\$\\{\\{ [^\\n]*\\}\\})\\n`))[1];
+const layoutRelease = (inputs) => evalExpr(jobEnv('layout-store', 'LAYOUT_RELEASE'), { needs: {}, inputs });
+
+test('test_autopilot is non-live: no fork push, no PR write, rehearsal layouts and groups of its own; other runs are as before', () => {
+  const live = { test_autopilot: false, refresh_layout: false, rehearsal: false, pr: '26' };
+  const testRun = { ...live, test_autopilot: true };
+  const groupOf = (name, inputs) => evalExpr(job(name).match(/\n {4}concurrency:\n(?: {6}#[^\n]*\n)* {6}group: (\$\{\{ [^\n]*\}\})\n/)[1], { needs: {}, inputs });
+  assert.equal(layoutRelease(testRun), 'vmap-layouts-rehearsal');
+  assert.equal(groupOf('layout-store', live), 'vmap-layouts');
+  assert.equal(groupOf('layout-store', testRun), 'vmap-layouts-rehearsal');
+  assert.equal(groupOf('map-mode', live), 'vmap-map-mode');
+  assert.equal(groupOf('map-mode', testRun), 'vmap-map-mode-rehearsal');
+  // One Steam session at a time: a test run's check waits in the same group as a live one.
+  assert.match(job('check'), /\n {4}concurrency:\n {6}group: sr-client-check-\$\{\{ inputs\.branch \}\}\n {6}cancel-in-progress: false\n/);
+  // auto-apply is the only job with the plugin forks' keys.
+  const apply = (inputs) => evalExpr(jobIf('auto-apply'), { needs: { check: { outputs: { autofix: '[{"name":"x"}]' } } }, inputs });
+  assert.equal(apply(live), true);
+  assert.equal(apply(testRun), false);
+  // The two PR writes: the alert job's label and ready note, and the report comment.
+  const mark = step(job('alert'), 'Mark the pull request').match(/\n {8}if: (\$\{\{ .* \}\})\n/)[1].replace(/steps\.what\.outcome == 'success'/, 'true');
+  assert.equal(evalExpr(mark, { needs: {}, inputs: live }), true);
+  assert.equal(evalExpr(mark, { needs: {}, inputs: testRun }), false);
+  assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: live }), '26');
+  assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: testRun }), '');
+  assert.deepEqual([...job('report').matchAll(/gh pr \w+ (\S+)/g)].map((m) => m[1]), ['$env:PR']);
+  // The rehearsal release is named only by the job that writes it: nothing else in either workflow reads it.
+  assert.equal(wf.replace(job('layout-store'), '').replace(/^ *#.*\n/gm, '').replace(/^ {8}description: .*\n/gm, '').includes('vmap-layouts-rehearsal'), false);
+  assert.ok(!watch.includes('vmap-layouts-rehearsal'));
+  // The jobs that can write releases or deploy keys: no new one, so each is covered above or by its own test_autopilot condition.
+  const writers = [...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1])
+    .filter((n) => /\n {6}(contents|actions): write|secrets\.(SR_DEPLOYKEY|VMAP_SIGN_KEY \}\})|\n {4}environment: fork-push/.test(job(n)));
+  assert.deepEqual(writers.sort(), ['auto-apply', 'catalog', 'feed-loader-cleanup', 'layout-store', 'publish', 'push-loader']);
+});
+
 test('layout-store: the writer job runs only for a successful public map-mode check on main, with the job token and no environment or secret', () => {
   const whole = job('layout-store');
   const j = whole.slice(0, whole.indexOf('\n\n  #') < 0 ? undefined : whole.indexOf('\n\n  #') + 1); // without the comment block of the next job
@@ -3620,16 +3655,18 @@ test('layout-store: the writer job runs only for a successful public map-mode ch
   assert.ok(!/\n {4}environment:/.test(j), 'no environment');
   assert.ok(!/secrets\./.test(j), 'no secret');
   assert.match(j, /GH_TOKEN: \$\{\{ github\.token \}\}/);
-  // The only code it runs is this repository's ci/ at main; the only thing it writes is a layout asset of the vmap-layouts release.
+  // The only code it runs is this repository's ci/ at main; the only thing it writes is a layout asset of the release LAYOUT_RELEASE names.
   const checkouts = [...j.matchAll(/uses: actions\/checkout@[^\n]*\n {8}with:\n((?: {10}[^\n]*\n)+)/g)].map((m) => m[1]);
   assert.equal(checkouts.length, 1);
   assert.ok(!/repository:|ref:/.test(checkouts[0]), 'the default checkout: this repository at the run\'s ref (main)');
   assert.deepEqual([...j.matchAll(/gh release (?:upload|create|edit|delete) (\S+)( \S+)?/g)].map((m) => m[0]).filter((x) => !x.startsWith('gh release create')),
-    ['gh release upload vmap-layouts "$name"']);
-  assert.ok(j.includes('gh release upload vmap-layouts "$name" --clobber'), 'a new asset or an extended one');
-  assert.deepEqual([...j.matchAll(/gh api (\S+)/g)].map((m) => m[1]), ['"repos/$GH_REPO/releases/tags/vmap-layouts"'], 'the only API call is a read of the release');
+    ['gh release upload "$LAYOUT_RELEASE" "$name"']);
+  assert.ok(j.includes('gh release upload "$LAYOUT_RELEASE" "$name" --clobber'), 'a new asset or an extended one');
+  assert.deepEqual([...j.matchAll(/gh api (\S+)/g)].map((m) => m[1]), ['"repos/$GH_REPO/releases/tags/$LAYOUT_RELEASE"'], 'the only API call is a read of the release');
   assert.ok(!/gh api[^\n]*(-X|--method|-f |-F |--input)/.test(j));
-  assert.ok(j.includes('gh release create vmap-layouts --latest=false'), 'the new release never becomes the repository\'s Latest');
+  assert.ok(j.includes('gh release create "$LAYOUT_RELEASE" --latest=false'), 'the new release never becomes the repository\'s Latest');
+  assert.equal(layoutRelease({ test_autopilot: false }), 'vmap-layouts', 'a normal run stores on the live release');
+  assert.equal(layoutRelease({ test_autopilot: null }), 'vmap-layouts', 'a schedule has no inputs');
   assert.ok(!/environment: vmap-sign|VMAP_SIGN_KEY/.test(j));
   assert.ok(!/layout-store/.test(job('alert')), 'a store problem is not an alert of the update chain');
   // No pull request trigger: a fork cannot start any run of this workflow.
@@ -3658,7 +3695,8 @@ test('layout-store: the writer extends a stored CL only with the same exe and an
     const gh = `#!/bin/bash
 echo "$*" >> "$FAKE_DIR/calls.log"
 if [ "$1" = api ]; then cat "$FAKE_DIR/release-api.json"; exit 0; fi
-if [ "$1 $2" = "release view" ]; then exit 0; fi
+if [ "$1 $2" = "release view" ]; then [ -z "\${NO_RELEASE:-}" ]; exit $?; fi
+if [ "$1 $2" = "release create" ]; then exit 0; fi
 if [ "$1 $2" = "release download" ]; then
   if [ "$7" = verify ]; then if [ -n "\${TAMPER:-}" ]; then echo '{}' > "$7/$5"; else cp "$FAKE_DIR/uploaded.json" "$7/$5"; fi; exit 0; fi
   if [ -n "\${FAIL_DOWNLOAD:-}" ] || [ ! -f "$FAKE_DIR/stored-asset.json" ]; then echo "gh: download failed" >&2; exit 1; fi
@@ -3671,9 +3709,20 @@ exit 1
     mkdirSync(join(dir, 'bin'), { recursive: true });
     writeFileSync(join(dir, 'bin', 'gh'), gh);
     chmodSync(join(dir, 'bin', 'gh'), 0o755);
-    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', RUN_ID: '42', WORKFLOW_SHA: 'f'.repeat(40), PATH: join(dir, 'bin') + delimiter + process.env.PATH, ...(o.env ?? {}) } });
+    const r = spawnSync(bash, ['-c', script], { cwd: dir, encoding: 'utf8', windowsHide: true, env: { ...process.env, FAKE_DIR: dir, GH_REPO: 'msantoro12/starrupture-ci', RUN_ID: '42', WORKFLOW_SHA: 'f'.repeat(40), LAYOUT_RELEASE: layoutRelease({ test_autopilot: Boolean(o.testRun) }), PATH: join(dir, 'bin') + delimiter + process.env.PATH, ...(o.env ?? {}) } });
     return { r, dir, uploaded: existsSync(join(dir, 'uploaded.json')) ? JSON.parse(readFileSync(join(dir, 'uploaded.json'), 'utf8')) : null };
   };
+  // A test_autopilot run: every release call names the rehearsal prerelease, and a missing one is created as a prerelease. A live run creates a normal one.
+  for (const [testRun, tag, extra] of [[true, 'vmap-layouts-rehearsal', ['--prerelease']], [false, 'vmap-layouts', []]]) {
+    const made = run('a'.repeat(64), undefined, { testRun, env: { NO_RELEASE: '1' } });
+    assert.equal(made.r.status, 0, made.r.stderr);
+    const c = calls(made.dir);
+    const create = c.find((l) => l.startsWith('release create '));
+    assert.ok(create.startsWith(`release create ${tag} --latest=false `), create);
+    assert.equal(create.includes(' --prerelease '), extra.length > 0, create);
+    for (const l of c) assert.ok(l.startsWith('api ') ? l === `api repos/msantoro12/starrupture-ci/releases/tags/${tag}` : l.split(' ')[2] === tag, l);
+    assert.ok(c.some((l) => l.startsWith(`release upload ${tag} `)), c.join('\n'));
+  }
   const first = run('a'.repeat(64));
   assert.equal(first.r.status, 0, first.r.stderr);
   assert.equal(first.uploaded.cl, 127004);

@@ -31,9 +31,30 @@ state/steam.json                      recorded build ids (baseline, on main)
 
 Merging the update PR into main means the update is handled: it advances `state/steam.json`, so the watcher stops reporting that build.
 
+### Non-live runs of the client check
+
+A hand run of `sr-client-check.yml` is non-live only with all of these together: `--ref main`, `map_mode=true`, `test_autopilot=true` and `publish=false`:
+
+`gh workflow run sr-client-check.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f map_mode=true -f test_autopilot=true -f publish=false`
+
+`publish=false` on its own is **not** non-live, and neither is `proof_run=true`: such a run can still push plugin fixes to the plugin forks, label and comment on a PR, and store the public layout on `vmap-layouts` (a proof run can also push a loader candidate branch and run the rigs).
+
+With `test_autopilot=true`:
+
+- nothing is pushed to a plugin fork (`auto-apply` does not start) or to the loader fork, no candidate loader is built, no rig runs, and no version object map or plugin catalog is published;
+- no PR is labelled or commented on, even with `pr` set;
+- the public layout is stored on the `vmap-layouts-rehearsal` prerelease, which the first such run creates and no job reads;
+- `layout-store` and `map-mode` wait in concurrency groups of their own, so they never replace a live run's waiting job.
+
+These follow the input itself, so they also hold for a run that is refused (`publish` on or `map_mode` off).
+
+The run still opens or comments on the `pipeline-alert` issue like any run (a live run of the same branch uses the same issue), keeps its own run artifacts, and signs in to Steam with the CI account.
+
+**It can drop a waiting live check.** To keep one Steam session at a time, its `check` job shares the group `sr-client-check-<branch>` with live runs, and GitHub keeps only one waiting job per group. If a test run's check starts waiting while a live check of the same branch is already waiting, the live one is cancelled (a later live check likewise cancels a waiting test run). A test run reaches that group only after its build jobs, so start one only when no run of `sr-watch.yml`, `sr-layout-refresh.yml` or `sr-client-check.yml` is going or waiting, and not just before one is due (the watcher's polls, the 04:47 UTC refresh). If it cancelled a watcher's check, run that again with `gh workflow run sr-watch.yml --ref main -f force=true`.
+
 ### Keeping the saved layout current
 
-Every public check saves the layout it scanned, as `layout-CL-<CL>.json` on the `vmap-layouts` release, and the next public update uses it as its reference layout. The saved file lists only the keys the plugins asked for when it was saved, and a public check runs only when Steam's public build changes. A key a plugin adds later would stay out of the file while that build is live, and could not be added once Steam stops serving the build.
+Every public check saves the layout it scanned, as `layout-CL-<CL>.json` on the `vmap-layouts` release, and the next public update uses it as its reference layout (a `test_autopilot` run saves to `vmap-layouts-rehearsal` instead, see "Non-live runs of the client check"). The saved file lists only the keys the plugins asked for when it was saved, and a public check runs only when Steam's public build changes. A key a plugin adds later would stay out of the file while that build is live, and could not be added once Steam stops serving the build.
 
 `sr-layout-refresh.yml` fixes that. It runs at 04:47 UTC every day. It runs in the watcher's concurrency group, `sr-watch`, and skips the day if a run of `sr-client-check.yml`, `sr-client-rig.yml`, `sr-data-extract.yml` or `sr-symbol-lookup.yml` is going or waiting. Otherwise it calls `sr-client-check.yml` for the public build with `map_mode` and `refresh_layout` on: the same checks and the same keys as a normal public run, then the `store the public layout` job merges the new keys into the saved file for the same exe. The run goes red if a key source did not build or scan, since its keys would be missing.
 
@@ -198,11 +219,11 @@ Copied from the loader's `release.yml` and the plugins' `release.yml` build step
 | `sr-server-check` / `server-publish` | `contents: write`, environment `vmap-sign` | the only job that reads `VMAP_SIGN_KEY`; uploads to `vmap-feed-rehearsal` unless the `live` dispatch input is on |
 | `sr-client-check` / `build-scanner` | `contents: read` | check out the loader, build the scanner |
 | `sr-client-check` / `check` | `contents: read`, environment `steam-client` | the only job that can read the Steam login; checks out no repository |
-| `sr-client-check` / `layout-store` | `contents: write`, no environment, no secret; runs from `main` only | keeps the layout of each public build on the `vmap-layouts` release, for the next update's field rows |
+| `sr-client-check` / `layout-store` | `contents: write`, no environment, no secret; runs from `main` only | keeps the layout of each public build on the `vmap-layouts` release, for the next update's field rows (a `test_autopilot` run: the `vmap-layouts-rehearsal` prerelease) |
 | `sr-layout-refresh` / `idle` | `actions: read` | lists the runs that are going or waiting |
 | `sr-layout-refresh` / `refresh` (caller) | `contents: write`, `pull-requests: write`, `issues: write`, `actions: write`, `checks: read` (a ceiling, the same as the watcher's call) | covers the called workflow; only `layout-store` (`contents: write`) and the check run for a refresh; passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` by name |
-| `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR; no environment, no secrets |
-| `sr-client-check` / `alert` | `contents: read`, `issues: write`, `pull-requests: write`, `actions: read`, `checks: read` | the alert issue, the `chain-passed-<branch>` label and ready note on the PR, the failed steps, annotations and logs of the run |
+| `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR (not on a `test_autopilot` run); no environment, no secrets |
+| `sr-client-check` / `alert` | `contents: read`, `issues: write`, `pull-requests: write`, `actions: read`, `checks: read` | the alert issue, the `chain-passed-<branch>` label and ready note on the PR (neither on a `test_autopilot` run), the failed steps, annotations and logs of the run |
 | `sr-client-check` / `login-expiry` | none | reads the repo variable `STEAM_CI_LOGIN_AT` |
 | `sr-client-rig` / `rig` | `contents: read`, `actions: read`, environment `steam-client` | the one job; reads the Steam login in the install, launch and leak-gate steps only; `actions: read` is for fetching a candidate run's artifact |
 | `sr-symbol-lookup` / `lookup` | `contents: read`, environment `steam-client` | the one job; reads the Steam login in the secrets check, the install and the leak-gate steps only, and removes it before the lookup reads any game file; no write permission |
