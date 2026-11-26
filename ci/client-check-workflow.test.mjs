@@ -85,7 +85,7 @@ test('B5: one plugin that fails to fetch, check out or build never fails the plu
 });
 
 test('test_autopilot: dispatch only, refused with publish on, never publishable, and the publish job skips it', () => {
-  assert.match(dispatch, /test_autopilot:\n\s+description: 'Non-live test run: .*no publish, fork push or PR write.*vmap-layouts-rehearsal.*\n\s+type: boolean\n\s+default: false/);
+  assert.match(dispatch, /test_autopilot:\n\s+description: 'Non-live test run: .*no publish, fork push or PR write.*where no update reads them.*\n\s+type: boolean\n\s+default: false/);
   assert.ok(!call.includes('test_autopilot'), 'sr-watch calls the workflow and cannot pass it');
   assert.match(job('plugin-plan'), /throw 'test_autopilot needs map_mode on and publish off: a test run never publishes'/);
   const mm = job('map-mode');

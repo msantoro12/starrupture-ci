@@ -284,7 +284,7 @@ on:
       # choose and, when that is M, the chain runs on (export, TEST-key sign,
       # promote plan) with nothing publishable. Refused with publish on.
       test_autopilot:
-        description: 'Non-live test run: past a disabled autopilot to the promote plan; no publish, fork push or PR write; layouts go to vmap-layouts-rehearsal (needs map_mode, publish off)'
+        description: 'Non-live test run: past a disabled autopilot to the promote plan; no publish, fork push or PR write; layouts are stored where no update reads them (needs map_mode, publish off)'
         type: boolean
         default: false
       # Dispatch only, for a proof run of the feed-path rig: sr-watch cannot pass it (the call
