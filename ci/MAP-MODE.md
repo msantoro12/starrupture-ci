@@ -485,7 +485,9 @@ built for as well as the new one.
   job writes it, with the job's own token, only from `main`. A file already stored for a CL
   is extended with new keys only for the same exe, and only if an Actions job uploaded it;
   an unchanged one is not uploaded again. The job is red when the check left nothing to
-  store, because that build cannot be fetched again once `public` moves.
+  store, because that build cannot be fetched again once `public` moves. A `test_autopilot`
+  run stores on the `vmap-layouts-rehearsal` prerelease instead, which nothing reads
+  (`.github/sr-pipeline/README.md`, "Non-live runs of the client check").
 - When `public` moves, field rows read the file for the CL the header was built for.
   `ci/layout-store.mjs reference` accepts it only if all of these hold: it is for that CL;
   its image stamp and image size are the header's build row for that CL (another Steam build id of the same exe is the same build);
@@ -554,8 +556,9 @@ built for as well as the new one.
   Above the limit the file is refused, and the update holds until the header is built
   for a newer CL.
 - The one-time seed, so the build `public` runs today is stored before it moves:
-  `gh workflow run sr-client-check.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f map_mode=true -f test_autopilot=true`.
-  Dispatch it a second time to see the stored layout read back.
+  `gh workflow run sr-client-check.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f map_mode=true -f refresh_layout=true`.
+  It writes the real `vmap-layouts` release (a `test_autopilot` run does not). Dispatch it
+  a second time to see the stored layout read back.
 - To compare a stored base with the live-scan base on a build that really moved, dispatch a
   test run of the other Steam branch (`-f branch=<the other branch>`) with
   `-f stored_reference=true -f map_mode=true -f test_autopilot=true`. It takes the stored
