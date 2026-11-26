@@ -284,7 +284,7 @@ on:
       # choose and, when that is M, the chain runs on (export, TEST-key sign,
       # promote plan) with nothing publishable. Refused with publish on.
       test_autopilot:
-        description: 'Test run: carry on past a disabled autopilot as far as the promote plan; never publishes (needs map_mode, publish off)'
+        description: 'Non-live test run: past a disabled autopilot to the promote plan; no publish, fork push or PR write; layouts go to vmap-layouts-rehearsal (needs map_mode, publish off)'
         type: boolean
         default: false
       # Dispatch only, for a proof run of the feed-path rig: sr-watch cannot pass it (the call
@@ -2730,6 +2730,9 @@ jobs:
   # was saved, so sr-layout-refresh.yml runs a public check once a day with refresh_layout on, which ends here: every
   # job after the check and this one is off for it. It has no map-mode job or alert to name a key source that failed,
   # so the last step turns the refresh's own run red for one.
+  # A test_autopilot run is non-live: its layout goes to the vmap-layouts-rehearsal prerelease, which no job
+  # reads (the field rows read vmap-layouts only), in a concurrency group of its own, so it can neither change
+  # a stored layout nor replace a live run's waiting store.
   layout-store:
     name: store the public layout
     needs: [check, key-sources-plan]
@@ -2739,13 +2742,15 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: vmap-layouts
+      group: ${{ inputs.test_autopilot == true && 'vmap-layouts-rehearsal' || 'vmap-layouts' }}
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.run_id }}
       WORKFLOW_SHA: ${{ github.sha }}
+      # The one release this job reads and writes. It follows the raw input, so a test run that was refused cannot reach the live one either.
+      LAYOUT_RELEASE: ${{ inputs.test_autopilot == true && 'vmap-layouts-rehearsal' || 'vmap-layouts' }}
     steps:
       - name: Check out the store tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2770,22 +2775,26 @@ jobs:
           cl="$(node -p "String(JSON.parse(require('fs').readFileSync('res/result.json','utf8')).checks?.exe?.cl ?? '')")"
           [[ "$cl" =~ ^[0-9]+$ ]] || { echo "::error title=Layout store::the check recorded no CL for the exe, so nothing is stored"; exit 1; }
           name="layout-CL-$cl.json"
-          gh release view vmap-layouts > /dev/null 2>&1 || gh release create vmap-layouts --latest=false --title "Reference layouts" --notes "The layout of each public build, one asset per CL, written by the client check. The field rows of the next update compare against it."
+          create=(--title "Reference layouts" --notes "The layout of each public build, one asset per CL, written by the client check. The field rows of the next update compare against it.")
+          if [ "$LAYOUT_RELEASE" != vmap-layouts ]; then
+            create=(--prerelease --title "Reference layouts (rehearsal)" --notes "Layouts stored by test_autopilot runs of the client check. No update reads them.")
+          fi
+          gh release view "$LAYOUT_RELEASE" > /dev/null 2>&1 || gh release create "$LAYOUT_RELEASE" --latest=false "${create[@]}"
           mkdir -p stored verify
-          gh api "repos/$GH_REPO/releases/tags/vmap-layouts" > stored/release.json
+          gh api "repos/$GH_REPO/releases/tags/$LAYOUT_RELEASE" > stored/release.json
           listed="$(node -p "String((JSON.parse(require('fs').readFileSync('stored/release.json','utf8')).assets ?? []).some((a) => a.name === process.argv[1]))" "$name")"
           # A stored asset that cannot be downloaded fails the job: it is never replaced by a record built from this run alone.
           existing=()
           if [ "$listed" = true ]; then
-            gh release download vmap-layouts --pattern "$name" --dir stored
+            gh release download "$LAYOUT_RELEASE" --pattern "$name" --dir stored
             existing=(--existing "stored/$name" --release stored/release.json)
           fi
           node tool/ci/layout-store.mjs record --out "$name" --result res/result.json --scanner res/scanner.json --layout res/layout-target.json \
             --run "$RUN_ID" --sha "$WORKFLOW_SHA" "${existing[@]}"
           # Nothing is written when the stored asset already holds these keys: it stays as it is.
           [ -f "$name" ] || exit 0
-          gh release upload vmap-layouts "$name" --clobber
-          gh release download vmap-layouts --pattern "$name" --dir verify --clobber
+          gh release upload "$LAYOUT_RELEASE" "$name" --clobber
+          gh release download "$LAYOUT_RELEASE" --pattern "$name" --dir verify --clobber
           cmp "$name" "verify/$name" || { echo "::error title=Layout store::$name on the release is not the file that was uploaded"; exit 1; }
 
       # A key source that did not build or scan leaves its keys out of the layout, and a refresh has no map-mode job or
@@ -2834,9 +2843,10 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-    # One chain at a time reads the vmap-feed history.
+    # One chain at a time reads the vmap-feed history. A test run publishes nothing and waits in a group of
+    # its own: GitHub keeps one waiting job per group, so it never replaces a live chain's.
     concurrency:
-      group: vmap-map-mode
+      group: ${{ inputs.test_autopilot == true && 'vmap-map-mode-rehearsal' || 'vmap-map-mode' }}
       cancel-in-progress: false
     outputs:
       decision: ${{ steps.chain.outputs.decision }}
@@ -5076,8 +5086,9 @@ jobs:
       # The PR carries what the chain concluded: chain-passed-<branch> only after a
       # run with no alert line (sr-watch reads it), and one line when the only thing
       # holding the publish is the autopilot switch.
+      # Never for a test_autopilot run: sr-watch reads the chain-passed label as a live result.
       - name: Mark the pull request
-        if: ${{ !cancelled() && steps.what.outcome == 'success' && inputs.pr != '' }}
+        if: ${{ !cancelled() && steps.what.outcome == 'success' && inputs.pr != '' && inputs.test_autopilot != true }}
         env:
           ALERT: ${{ steps.what.outputs.alert }}
           PASSED: ${{ steps.what.outputs.passed }}
@@ -5108,10 +5119,11 @@ jobs:
   # fix from the plugin's commit and the plan with the apply tool, and pushes
   # only when the result is the tree the check job built and scanned. Never
   # forces: a branch that already holds another tree gets a run-id suffix.
+  # A test_autopilot run never starts it, so it pushes to no fork.
   auto-apply:
     name: auto-apply ${{ matrix.name }}
     needs: [plugin-plan, check]
-    if: ${{ !cancelled() && inputs.refresh_layout != true && inputs.rehearsal != true && startsWith(needs.check.outputs.autofix, '[{') }}
+    if: ${{ !cancelled() && inputs.refresh_layout != true && inputs.rehearsal != true && inputs.test_autopilot != true && startsWith(needs.check.outputs.autofix, '[{') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: fork-push
@@ -5235,7 +5247,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      PR: ${{ inputs.pr }}
+      # Blank for a test_autopilot run: it comments on no PR (the run summary still holds the result).
+      PR: ${{ inputs.test_autopilot != true && inputs.pr || '' }}
       BRANCH: ${{ inputs.branch }}
       EXPECTED_BUILDID: ${{ inputs.buildid }}
       BUILD_RESULT: ${{ needs.build.result }}
