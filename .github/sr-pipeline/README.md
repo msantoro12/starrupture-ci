@@ -37,7 +37,7 @@ A hand run of `sr-client-check.yml` is non-live only with all of these together:
 
 `gh workflow run sr-client-check.yml --repo msantoro12/starrupture-ci --ref main -f branch=public -f map_mode=true -f test_autopilot=true -f publish=false`
 
-`publish=false` on its own is **not** non-live, and neither is `proof_run=true`: such a run can still push plugin fixes to the plugin forks, label and comment on a PR, and store the public layout on `vmap-layouts` (a proof run can also push a loader candidate branch and run the rigs).
+`publish=false` on its own is **not** non-live, and neither is `proof_run=true`: such a run can still push plugin fixes to the plugin forks, push a loader candidate branch and run the rigs, label and comment on a PR, and store the public layout on `vmap-layouts`.
 
 With `test_autopilot=true`:
 
