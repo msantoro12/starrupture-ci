@@ -1,7 +1,7 @@
 # Function and global keys the dedicated server's plugins look up, one key per line, for sr-server-check.yml.
 # `map-mode.mjs complete --keys` reads them (a `function` line needs a function or global row on the build's CL).
 # The server scan (sr-aobscan-server, made into rows by ci/server-scan-rows.mjs) makes the rows of the keys the loader's scanner knows;
-# the run only reports which of these the file still lacks; the field and size keys in server-keys.txt are what it gates on.
+# a key the file still lacks does not gate the run (it is reported and raised as a pipeline alert); the field and size keys in server-keys.txt are what it gates on.
 # Not listed: the compiled SDK's by-name calls through UObject::ProcessEvent (they carry no address), and two names the
 # PDB has not settled (UpdatePause, FJsonObjectConverter::UStructToJsonObjectString). Add them when they have a row.
 #

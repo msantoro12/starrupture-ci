@@ -5,6 +5,8 @@
 //   node ci/pipeline-alert.mjs causes --repo <owner/name> --run <id> --out <file.jsonl> [--tries <n>]
 //   node ci/pipeline-alert.mjs outside --causes <file.jsonl> --owner <login> --run-url <url> --out <file.md>
 //   node ci/pipeline-alert.mjs raise --title <title> --body-file <file.md> --owner <login>
+//   node ci/pipeline-alert.mjs rows --report <function-keys.json> --repo <owner/name> --buildid <id>
+//        --cl <n> --owner <login> --run-url <url> --out <file.md>
 //
 // causes: one JSON line per failed job of the run that can fail it (not the planner data extract),
 // { id, name, step, error }. `step` is the first failed step (jobs API) and `error` its first error line other than "Process completed with exit
@@ -16,10 +18,13 @@
 // sr-watch runs itself, the compile check, sr-build-all.yml, and the server check, sr-server-check.yml).
 // No such job, no file.
 // raise: comments on the open issue with that exact title, or opens it.
+// rows: the server file's function keys with no row (the report's `missing`), raised under one
+// title, once per build and set of keys. None missing, nothing posted.
 //
 // Exit codes: 0 done; 2 usage error.
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isMain } from './layout-diff.mjs';
 
@@ -67,6 +72,9 @@ export const EXTRACT_JOB_NAME = 'planner data extract';
 export const MOD_INDEX_JOB_PREFIX = 'mod index';
 
 // The jobs of a client check are listed as "client-check (<branch>) / <job>"; they have their own alert.
+// sr-server-check.yml's row alert ("server-check (<branch>) / server-row-alert" when called). It is continue-on-error, so it is no cause either.
+export const ROW_ALERT_JOB_NAME = 'server-row-alert';
+
 export const inClientCheck = (name) => /^client-check \(/.test(String(name ?? ''));
 
 export function outsideBody(jobs, { owner, runUrl }) {
@@ -90,7 +98,7 @@ export async function collectCauses({ repo, run, tries = 6, wait = 10000, call =
   const listed = call(['api', `repos/${repo}/actions/runs/${run}/jobs?per_page=100`, '--paginate',
     '--jq', '.jobs[] | select(.conclusion == "failure") | {id, name, step: ([.steps[] | select(.conclusion == "failure")][0].name // "")}'], 'jobs list');
   const jobs = String(listed ?? '').split('\n').filter((l) => l.trim()).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
-    .filter((j) => j.name !== EXTRACT_JOB_NAME && !j.name.startsWith(MOD_INDEX_JOB_PREFIX));
+    .filter((j) => j.name !== EXTRACT_JOB_NAME && !j.name.startsWith(MOD_INDEX_JOB_PREFIX) && j.name.split(' / ').pop() !== ROW_ALERT_JOB_NAME);
   for (const j of jobs) {
     const ann = call(['api', `repos/${repo}/check-runs/${j.id}/annotations`], `annotations of job ${j.id}`);
     let rows = [];
@@ -120,6 +128,43 @@ export function raise({ title, bodyFile, owner, call = gh }) {
   return null;
 }
 
+export const ROWS_TITLE = 'SR server version object map: listed functions have no row';
+
+// One report per build and set of keys, whatever order they come in.
+export function rowsMarker(buildid, keys) {
+  const sum = createHash('sha256').update([...keys].sort().join('\n')).digest('hex').slice(0, 12);
+  return `<!-- sr-server-rows:${buildid}:${sum} -->`;
+}
+
+export function rowsBody(keys, { buildid, cl, owner, runUrl }) {
+  return [rowsMarker(buildid, keys),
+    `@${owner} server build ${buildid} (CL-${cl}), [run](${runUrl}): ${keys.length} function key(s) of ci/server-function-keys.txt have no row in the server's version object map file.`, '',
+    ...[...keys].sort().map((k) => `- \`${k}\``), '',
+    'The other rows are in the server file as usual: the run does not fail or hold for this. A key gets its row once the loader\'s server scanner finds it. This is raised once for this build and set of keys.'].join('\n') + '\n';
+}
+
+// True when an issue with this title carries the marker. Closed issues count, so closing the
+// alert does not bring it back. A call that fails throws: nothing is posted on a partial read.
+export function alreadyRaised({ title, marker, repo, call = gh }) {
+  process.env.TITLE = title;
+  const found = String(call(['issue', 'list', '--state', 'all', '--limit', '100', '--search', `${title} in:title`, '--json', 'number,title',
+    '--jq', '.[] | select(.title == env.TITLE) | .number']) ?? '');
+  return found.split(/\s+/).filter(Boolean).some((n) =>
+    String(call(['api', `repos/${repo}/issues/${n}`, '--jq', '.body // ""'])).includes(marker)
+    || String(call(['api', `repos/${repo}/issues/${n}/comments`, '--paginate', '--jq', '.[].body'])).includes(marker));
+}
+
+// report: what `map-mode.mjs complete --report` wrote for ci/server-function-keys.txt.
+export function raiseRows({ report, buildid, cl, owner, runUrl, repo, bodyFile, call = gh }) {
+  const keys = JSON.parse(readFileSync(report, 'utf8'))?.missing;
+  if (!Array.isArray(keys)) throw new Error(`${report} has no missing list`);
+  if (!keys.length) return 'none-missing';
+  if (alreadyRaised({ title: ROWS_TITLE, marker: rowsMarker(buildid, keys), repo, call })) return 'already-raised';
+  writeFileSync(bodyFile, rowsBody(keys, { buildid, cl, owner, runUrl }));
+  raise({ title: ROWS_TITLE, bodyFile, owner, call });
+  return 'raised';
+}
+
 function args(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i += 2) {
@@ -134,11 +179,11 @@ if (isMain(import.meta.url)) {
   let a;
   try {
     a = args(rest);
-    const need = { causes: ['repo', 'run', 'out'], outside: ['causes', 'owner', 'run-url', 'out'], raise: ['title', 'body-file', 'owner'] }[cmd];
+    const need = { causes: ['repo', 'run', 'out'], outside: ['causes', 'owner', 'run-url', 'out'], raise: ['title', 'body-file', 'owner'], rows: ['report', 'repo', 'buildid', 'cl', 'owner', 'run-url', 'out'] }[cmd];
     if (!need) throw new Error(`unknown command ${cmd ?? '(none)'}`);
     for (const k of need) if (!a[k]) throw new Error(`--${k} is required`);
   } catch (e) {
-    console.error(`${e.message}\nusage: pipeline-alert.mjs causes --repo r --run id --out f [--tries n] | outside --causes f --owner o --run-url u --out f | raise --title t --body-file f --owner o`);
+    console.error(`${e.message}\nusage: pipeline-alert.mjs causes --repo r --run id --out f [--tries n] | outside --causes f --owner o --run-url u --out f | raise --title t --body-file f --owner o | rows --report f --repo r --buildid b --cl n --owner o --run-url u --out f`);
     process.exit(2);
   }
   if (cmd === 'causes') {
@@ -150,6 +195,8 @@ if (isMain(import.meta.url)) {
     const md = outsideBody(jobs, { owner: a.owner, runUrl: a['run-url'] });
     if (md) writeFileSync(a.out, md);
     console.log(md ? md : 'No failed job outside the client check.');
+  } else if (cmd === 'rows') {
+    console.log(raiseRows({ report: a.report, repo: a.repo, buildid: a.buildid, cl: a.cl, owner: a.owner, runUrl: a['run-url'], bodyFile: a.out }));
   } else {
     raise({ title: a.title, bodyFile: a['body-file'], owner: a.owner });
   }

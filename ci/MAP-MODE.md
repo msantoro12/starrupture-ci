@@ -1334,7 +1334,7 @@ rows and four function rows, with three keys not placed and one row not for the 
    the build line, the field and size rows and those rows from those files, then
    `published-base.mjs take --asset version-map-server.v1.txt` checks the signature of the published server file and
    adds every line it has (the first server file has none to take). `map-mode.mjs complete --keys ci/server-keys.txt`
-   stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but only reported:
+   stops the job when a layout key has no row. `ci/server-function-keys.txt` is checked the same way but does not gate:
    a key the scanner does not know has no row. The job also fails with `server build <CL> is missing loader rows: <keys>;
    the server would start with its plugins off` unless the file carries the 7 rows in `ci/server-required-rows.txt`
    (the loader's field rows and the Game-SDK global rows). CL 127004, the loader's own baseline, is skipped. A new
@@ -1355,6 +1355,16 @@ cannot set it. Without `live` the job reads the live release's assets before and
 live run also takes the default loader and scanner inputs only. The version identity check
 (`decide.mjs identity --repo ModLoaderServer`) runs in `server-map` and again before the release key is used, unless
 `rehearsal` is set.
+
+A key of `ci/server-function-keys.txt` with no row also raises a pipeline alert; every other row is made and
+uploaded as usual. The job `server-row-alert` runs after a good `server-map` (`ci/pipeline-alert.mjs rows`) and
+opens, or comments on, the issue "SR server version object map: listed functions have no row", naming the build, the CL and the
+keys. Each build and set of missing keys is raised once, closed issues included, so a later run on the same server
+build posts nothing; another build or another set is raised again. A rehearsal and a test run (a branch other than
+`main`, or loader or scanner inputs other than the defaults) raise nothing. Nothing needs the job and it is
+`continue-on-error`, so it cannot fail or hold the run. If the job itself fails, the run stays green and only that job shows red. Nothing closes the issue: close it once the rows are in.
+It needs `issues: write`, and GitHub refuses to start a run whose caller grants a called job less than it asks
+for, so every job that calls `sr-server-check.yml` grants it.
 
 ## Alerts
 

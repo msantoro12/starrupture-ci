@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { addBuild, addField, addFunction, emit, emptyMap } from './version-map.mjs';
 import { dirname, join } from 'node:path';
@@ -68,7 +68,9 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
   assert.match(wf, /\npermissions: \{\}\n/);
   for (const name of ['server-scanner', 'server-layout', 'server-map']) assert.match(job(wf, name), /\n {4}permissions:\n {6}contents: read\n/, `${name}: contents: read`);
   assert.match(publish, /\n {4}permissions:\n {6}contents: write\n/, 'server-publish: contents: write (the upload)');
-  assert.ok(!/(?:pull-requests|issues|actions|checks|id-token|packages):/.test(wf), 'asks for no other permission');
+  assert.ok(!/(?:pull-requests|actions|checks|id-token|packages):/.test(wf), 'asks for no other permission');
+  assert.equal([...wf.matchAll(/\n +issues: \w+/g)].length, 1, 'issues is asked for once');
+  assert.match(job(wf, 'server-row-alert'), /\n {4}permissions:\n {6}contents: read\n {6}issues: write\n/, 'by the row alert job only');
   const build = job(wf, 'server-scanner');
   assert.ok(build.includes("'^(msantoro12|AlienXAXS)/StarRupture-ModLoader$'") && build.includes('is not allowed'));
   assert.ok((wf.match(/persist-credentials: false/g) ?? []).length === (wf.match(/uses: actions\/checkout@/g) ?? []).length, 'no checkout keeps the token');
@@ -305,7 +307,7 @@ test('sr-watch: the server-check job calls the workflow per matrix entry with th
   assert.match(j, /\n {4}needs: poll\n/);
   assert.ok(j.includes("if: needs.poll.outputs.changed == 'true' && needs.poll.outputs.skip != 'true' && startsWith(needs.poll.outputs.server_matrix, '[{')"));
   assert.match(j, /fail-fast: false\n\s+max-parallel: 1\n\s+matrix:\n\s+include: \$\{\{ fromJSON\(needs\.poll\.outputs\.server_matrix\) \}\}/);
-  assert.match(j, /\n {4}permissions:\n {6}contents: write\n {4}uses: \.\/\.github\/workflows\/sr-server-check\.yml\n/, 'contents: write is the ceiling of the called signing job');
+  assert.match(j, /\n {4}permissions:\n {6}contents: write\n {6}issues: write.*\n {4}uses: \.\/\.github\/workflows\/sr-server-check\.yml\n/, 'the ceiling of the called signing job and row alert job');
   assert.match(j, /with:\n\s+buildid: \$\{\{ matrix\.buildid \}\}\n\s+rehearsal: \$\{\{ inputs\.rehearsal == true \}\}\n/);
   assert.match(j, /\n {4}secrets:\n {6}VMAP_SIGN_KEY_TEST: \$\{\{ secrets\.VMAP_SIGN_KEY_TEST \}\}\n {6}VMAP_SIGN_KEY: \$\{\{ secrets\.VMAP_SIGN_KEY \}\}\n/);
   assert.ok(!/inherit|secrets\.(?!VMAP_SIGN_KEY(?:_TEST)?\b)/.test(j), 'nothing but the two signing keys is passed');
@@ -317,9 +319,49 @@ test('sr-watch: the server-check job calls the workflow per matrix entry with th
 test('job names: none ends in a name the client check alert looks up (check, build-scanner), so a failed server job is never quoted as a client cause', () => {
   const client = read('.github', 'workflows', 'sr-client-check.yml');
   const names = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n {4}name: (.*)\n/g)].map((m) => m[2]);
-  assert.deepEqual(names, ['server-scanner', 'server-layout', 'server-map', 'server-publish']);
+  assert.deepEqual(names, ['server-scanner', 'server-layout', 'server-map', 'server-row-alert', 'server-publish']);
   for (const n of names) assert.ok(!new RegExp(`\\n {2}${n}:\\n`).test(client), `${n} is not a job of the client check`);
   for (const n of ['check', 'build-scanner']) assert.ok(!names.some((x) => x === n || x.endsWith(` / ${n}`)));
+});
+
+// GitHub refuses to start the whole run, whatever a job's `if`, when a job of a called workflow asks for more
+// than the calling job grants. A called job with no permissions block of its own takes the caller's whole grant.
+test('permissions: every job of the called workflow names its own, and every caller grants all of them', () => {
+  const level = { none: 0, read: 1, write: 2 };
+  const perms = (j) => {
+    const block = j.match(/\n {4}permissions:\n((?: {6}[a-z-]+: \w+.*\n)+)/);
+    assert.ok(block, `a permissions block: ${j.split('\n')[0]}`);
+    return Object.fromEntries([...block[1].matchAll(/ {6}([a-z-]+): (\w+)/g)].map((m) => [m[1], level[m[2]]]));
+  };
+  const jobsOf = (text) => [...text.slice(text.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => job(text, m[1]));
+  const asked = jobsOf(wf).map(perms);
+  assert.equal(asked.length, 5);
+  const callers = readdirSync(join(here, '..', '.github', 'workflows')).filter((f) => f.endsWith('.yml'))
+    .flatMap((f) => jobsOf(read('.github', 'workflows', f)))
+    .filter((j) => /\n {4}uses: \S*\/sr-server-check\.yml(?:@\S+)?\n/.test(j));
+  assert.equal(callers.length, 1);
+  for (const caller of callers) {
+    const granted = perms(caller);
+    for (const a of asked) for (const [scope, n] of Object.entries(a)) assert.ok((granted[scope] ?? 0) >= n, `${caller.split('\n')[0]} grants ${scope}`);
+  }
+});
+
+test('row alert: after a good server map, off a rehearsal or test run, report only, and nothing waits for it', () => {
+  const j = job(wf, 'server-row-alert');
+  assert.match(j, /\n {4}needs: \[server-layout, server-map\]\n/);
+  const defaults = publish.match(/SCANNER_DEFAULTS: \$\{\{ (.*) \}\}\n/)[1];
+  assert.equal(j.match(/\n {4}if: (.*)\n/)[1],
+    "${{ !cancelled() && needs.server-map.result == 'success' && inputs.rehearsal != true && github.ref == 'refs/heads/main' && " + defaults + ' }}');
+  assert.match(j, /\n {4}continue-on-error: true\n/);
+  assert.ok(!/needs:.*server-row-alert|needs\.server-row-alert/.test(wf), 'nothing needs it');
+  assert.ok(!/secrets\.|\n\s+environment:/.test(j), 'no secret, no environment');
+  assert.ok(stepOf(j, 'Download the server map result').includes('name: server-map-${{ needs.server-layout.outputs.build_id }}\n'));
+  const step = stepOf(j, 'Raise the listed functions with no row');
+  assert.ok(step.includes('GH_REPO: ${{ github.repository }}') && step.includes('GH_TOKEN: ${{ github.token }}'));
+  assert.ok(step.includes('node tool/ci/pipeline-alert.mjs rows --report map/function-keys.json --repo "$GH_REPO" --buildid "$BUILD_ID" --cl "$cl" --owner "$OWNER" --run-url "$RUN_URL" --out rows.md'));
+  // The report is the one the key list step writes, and the artifact carries it.
+  assert.ok(map.includes('--keys tool/ci/server-function-keys.txt --report out/function-keys.json'));
+  assert.match(stepOf(map, 'Upload the server map result'), /\n {12}out\/function-keys\.json\n/);
 });
 
 test('sr-watch: the extract and the client chain do not wait for the server check, and the download has its own concurrency group', () => {
