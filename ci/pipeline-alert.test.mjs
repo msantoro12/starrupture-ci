@@ -152,13 +152,8 @@ test('causes: the server row alert job, which cannot fail the run, is not a caus
   const gh = fakeGh({ jobs: [LIVE_JOBS[0], { id: 6, name: `server-check (public) / ${ROW_ALERT_JOB_NAME}`, step: 'Raise' }, { id: 5, name: ROW_ALERT_JOB_NAME, step: '' }, LIVE_JOBS[1]] });
   const jobs = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: gh.call });
   assert.deepEqual(jobs.map((j) => j.id), [LIVE_JOBS[0].id, LIVE_JOBS[1].id]);
-  const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-server-check.yml'), 'utf8').replace(/
-/g, '
-');
-  assert.ok(wf.includes(`
-  ${ROW_ALERT_JOB_NAME}:
-    name: ${ROW_ALERT_JOB_NAME}
-`));
+  const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-server-check.yml'), 'utf8');
+  assert.match(wf, new RegExp(`  ${ROW_ALERT_JOB_NAME}:\\r?\\n    name: ${ROW_ALERT_JOB_NAME}\\r?\\n`));
 });
 
 // A fake gh over a set of issues: { n: { state, title, body, comments } }.
