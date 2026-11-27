@@ -94,8 +94,8 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
 
 test('no run block takes an expression: every input and output reaches a script through env', () => {
   assert.equal(runSteps(windows).length, 11, 'every run step of the Windows jobs was found');
-  assert.equal(runSteps(map).length, 12, 'every run step of server-map was found');
-  assert.equal(runSteps(publish).length, 9, 'every run step of server-publish was found');
+  assert.equal(runSteps(map).length, 13, 'every run step of server-map was found');
+  assert.equal(runSteps(publish).length, 10, 'every run step of server-publish was found');
   for (const r of runSteps(wf)) assert.ok(!r.includes('${{'), r.split('\n').find((l) => l.includes('${{')));
   assert.match(wf, /\n {4}env:\n {6}EXPECTED_BUILDID: \$\{\{ inputs\.buildid \}\}\n {6}SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.scanner_sha256 \}\}\n {6}SERVER_SCANNER_SHA256: \$\{\{ needs\.server-scanner\.outputs\.server_scanner_sha256 \}\}\n/);
 });
@@ -456,4 +456,22 @@ test('required rows: a header with all seven passes; one missing two names them 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('gate: each signing of a server file comes right after the publish gate on that same file, before the key is read', () => {
+  const signs = [...wf.matchAll(/vmap-sign\.mjs sign (\S+)/g)].map((m) => m[1]);
+  assert.deepEqual(signs, ['out/server.feed.txt', 'chain/server.feed.txt']);
+  for (const [text, gate, sign, call] of [
+    [map, 'Gate the server file for older loaders', 'Sign with the TEST key as a dry run', 'out/server.feed.txt --result chk/server-result.json'],
+    [publish, 'Gate the server file for older loaders before signing', 'Sign with the release key and verify', 'chain/server.feed.txt --result chain/server-result.json'],
+  ]) {
+    const at = text.indexOf(`- name: ${gate}\n`);
+    const signAt = text.indexOf(`- name: ${sign}`);
+    assert.ok(at >= 0 && at < signAt, `${gate} runs before ${sign}`);
+    const step = text.slice(at, signAt);
+    assert.ok(step.includes(`node tool/ci/server-publish-gate.mjs ${call}\n`), call);
+    assert.equal(step.match(/- name: /g).length, 1, 'no step between the gate and the signing');
+    assert.doesNotMatch(step, /\n {8}(if|continue-on-error):|\|\||secrets\./);
+  }
+  assert.ok(map.includes('out/server-result.json'), 'the publish job gets the scanned exe identity');
 });

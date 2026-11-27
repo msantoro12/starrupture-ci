@@ -389,6 +389,93 @@ the four field rows the loader reads (`ACrCrafter::CraftComponent`, `UWorld::Gam
 `FName::AppendString`, `GWorld`; the loader only logs GNames). `ci/server-required-rows.txt` lists them and the `server-map`
 job fails, naming the missing keys, when the new build lacks one. The loader's own baseline CL is not checked. The global
 rows need the server scanner leg, which is not built yet, so until it lands every new server build stops at this check.
+While [the publish gate](#the-publish-gate) stands, a file for any build but 127004 is refused as well, with or
+without these rows.
+
+## The publish gate
+
+A released server loader without the same-exe binding (v1.27.0) trusts a signed server file too far: it
+reads whatever is published. `ci/server-publish-gate.mjs` judges the final text of the server file, carried
+and published-base lines included, and refuses it before a signing key is read.
+
+```
+node ci/server-publish-gate.mjs <server feed> --result <server-result.json>
+```
+
+`server-result.json` holds the scanned exe's build number, time stamp and image size. Exit 0 means the file
+may be signed. Any other exit stops the run (3: refused, each broken rule printed; 2: the file, the result
+or a built-in table can't be read). An unknown build number, stamp or size refuses too.
+
+Rules:
+
+1. Every build line, and so every row, is build number 127004, the one the built-in table holds, and carries
+   the scanned exe's time stamp and image size where the line has them. The file has a build line.
+2. On the built-in table's own exe (same build number, stamp and size), a row for a name the table has, as a
+   row or as absent, repeats a built-in row exactly: same values, fingerprint and kind. New names are free.
+3. On a rebuilt exe with the table's build number, the file replaces every built-in row the loader could
+   still serve: every field and size row, and every function row that has a pattern or is marked absent. An
+   address-only function row is not needed, because v1.27.0 tries it on its own exe only (`version_map.cpp`,
+   `Select`). All of v1.27.0's function rows are address-only.
+
+**Why CL-127004 only.** v1.27.0 uses rows of other build numbers
+(`memory_scanner/version_map.cpp:976-1039`): it merges a file's rows with its built-in CL-127004 table,
+even when the file holds just one other build number. So while any v1.27.0 server may run, every published
+server file is for CL-127004 and nothing else.
+
+**This blocks every other server build.** A file for a new server build number is refused, whether it comes
+after a CL-127004 file or is the first one published. A file with two build numbers is refused too. Nothing
+gets signed. It stays that way until the project lead decides otherwise.
+
+The loader at commit `5fb474c8` does not use another build's rows on a server: `RowOfBuild`
+(`memory_scanner/version_map.cpp:306-315`) filters the functions (`:1014`) and the sizes and members
+(`:1365`, `:1383`). The code at `:1063-1075` is the client's fallback and does nothing on a server.
+
+**A rebuilt 127004 exe.** Rule 3 needs every v1.27.0 field row. The pipeline does not produce
+`FHttpServerRequest::Verb` or `FTransform::Translation`, so a pipeline file for a rebuilt 127004 exe is
+refused. The pipeline adds no rows of its own to get past this.
+
+**The built-in table.** `ci/data/loader-server-table/v1.27.0/version_map.server.h` is a copy of
+`StarRupture-ModLoader-Core/hooks/game/version_map.server.h` at the tag `v1.27.0`, the released loader
+without the binding. Earlier tags have no server table. `LOADER_TABLES` in the script records its git blob
+id; another blob, or a table the script can't read in full, refuses the publish. Nothing notices a newly
+released loader. If another loader without the binding is released and its table differs, copy that table to
+`ci/data/loader-server-table/<tag>/` and add its `LOADER_TABLES` entry by hand. The file is then judged
+against every listed table.
+
+The unreleased 1.28.0 candidate's table is not listed, although it differs from v1.27.0's: the list holds
+released loaders only. If 1.28.0 is released without the same-exe binding, add its table by hand, as above,
+before the next server publish.
+
+**Paths covered.** `sr-server-check.yml` signs a server file twice, and each signing comes right after a gate
+step on that same file:
+
+| Job | Gate step | Signing |
+|---|---|---|
+| `server-map` | Gate the server file for older loaders | TEST key dry run |
+| `server-publish` | Gate the server file for older loaders before signing | release key |
+
+Only `server-publish` uploads a server file (`vmap-publish.sh feed`, live and rehearsal), after its own
+signing, so live publishes, rehearsals and manual runs all pass the gate. The other workflows don't publish
+one: `vmap-sign.yml` signs the client fixture with the TEST key, `sr-client-check.yml` signs and uploads the
+client file, and `engine-test.yml` only starts a test server with a file it is given. The client's version
+object map is not touched.
+
+**Retiring the gate.** Nothing switches it off by itself; the project lead decides. The rules have two
+different conditions, both about the oldest server loader still in use:
+
+- The CL-127004-only rule, and with it the refusal of a second build, needs that loader to have the
+  `RowOfBuild` filter (above).
+- The exact stamp and size rule and the built-in rules (2 and 3) need it to have the same-exe binding.
+
+When only one condition is met, change the script and its tests to drop that part. When both are met, remove
+the gate in one change:
+
+1. Delete both gate steps, and their comments, from `sr-server-check.yml`.
+2. Delete `ci/server-publish-gate.mjs`, `ci/server-publish-gate.test.mjs` (and its name in the test list in
+   `sr-node-tests.yml`) and `ci/data/loader-server-table/`.
+3. In `ci/server-check-workflow.test.mjs`, delete the `gate:` test and set the run step counts back to 12
+   (`server-map`) and 9 (`server-publish`).
+4. Delete this section, and the comments elsewhere that point to it.
 
 ## What never goes in
 
