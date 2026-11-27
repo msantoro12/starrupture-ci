@@ -1053,6 +1053,16 @@ test('carriedFieldKeys: a key with a retired entry, on any build, is not carried
   assert.deepEqual(carriedFieldKeys(p, 130002, new Set(), { retired: list(['function', 'ATest::Native', '130001', 'x']) }).keys, ['ATest::Native'], 'a function entry is another kind');
 });
 
+test('carriedFieldKeys: extra keys join the carried ones once, unless the run lists or has retired them', () => {
+  const p = published().read();
+  const extra = ['ATest::Native', 'UTest::Extra'];
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(), { extra }), { from: 130001, keys: ['ATest::Native', 'UTest::Extra'] }, 'a key of the feed is not asked twice');
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(['UTest::Extra']), { extra }).keys, ['ATest::Native']);
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(), { extra, retired: list(['field', 'UTest::Extra', '127004', 'x']) }).keys, ['ATest::Native']);
+  assert.deepEqual(carriedFieldKeys(p, 130002, new Set(['ATest::Native']), { extra, retired: list(['build', '-', '130001', 'x']) }).keys, ['UTest::Extra']);
+  assert.deepEqual(carriedFieldKeys(p, 130001, new Set(), { extra }), { from: null, keys: [] }, 'a build the file holds');
+});
+
 test('restore-published and carry-keys on the command line', () => {
   const s = scratch({ h: fixture('loader.h'), 'k1.txt': k1Fixture(), 'retired.txt': 'build\t-\t128786\tthe fixture build is not the loader fixture one\n', 'keys.txt': '# the run\nGWorld\n' });
   try {
@@ -1078,6 +1088,10 @@ test('restore-published and carry-keys on the command line', () => {
     assert.match(c.out, /1 field keys of CL-130001/);
     assert.equal(run('carry-keys', s.path('keys.txt'), ...k1, '--cl', '130001', '--out', s.path('none.txt')).code, 0);
     assert.equal(readFileSync(s.path('none.txt'), 'utf8'), '');
+    writeFileSync(s.path('extra.txt'), '# more\r\nUTest::Extra\r\n\r\nATest::Native\r\n');
+    const e = run('carry-keys', s.path('keys.txt'), ...k1, '--cl', '130002', '--extra', s.path('extra.txt'), '--out', s.path('both.txt'));
+    assert.equal(e.code, 0, e.err);
+    assert.equal(readFileSync(s.path('both.txt'), 'utf8'), 'ATest::Native\nUTest::Extra\n');
   } finally { s.done(); }
 });
 

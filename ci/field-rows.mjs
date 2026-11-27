@@ -69,7 +69,8 @@
 // is unchanged.
 //
 // Carried keys (`--carry-keys`, one key per line): field keys that the newest published build has a
-// row for and no key list names any more (version-map.mjs carry-keys). The scan of the new build was asked
+// row for and no key list names any more, and the --extra keys that have no published row yet
+// (version-map.mjs carry-keys). The scan of the new build was asked
 // for them too. One that resolves gets a row, with a note; one that does not gets a note and nothing else:
 // no absent row, no degraded plugin, no refusal.
 //

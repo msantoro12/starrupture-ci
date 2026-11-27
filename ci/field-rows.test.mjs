@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { addBuild, emit, exportFeed, parse, parseFeed, parseKeys, unionKeys } from './version-map.mjs';
+import { addBuild, addField, emit, exportFeed, parse, parseFeed, parseKeys, unionKeys } from './version-map.mjs';
 import { fieldRows, keysFromCheck, parseUses, LOADER_FIELD_KEYS } from './field-rows.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -787,4 +787,44 @@ test('the command line takes --carry-keys: one key per line, comments and blank 
     'UCrCarried::Member: carried from the published build; resolved on CL-130000, row written',
     "UCrNotAsked::Member: carried from the published build; not in the new build's report on CL-130000, no row",
   ]);
+});
+
+// ci/extra-carry-keys.txt: the keys `version-map.mjs carry-keys --extra` adds to the carried list.
+const EXTRA = readFileSync(join(here, 'extra-carry-keys.txt'), 'utf8').split(/\r?\n/).filter((l) => l && !l.startsWith('#'));
+const extraEntries = () => EXTRA.map((key, i) => ent(key, 0x10 * i, 4));
+const withHandRows = () => {
+  const map = parse(header(), 'the header');
+  for (const e of extraEntries()) addField(map, { key: e.key, cl: 130000, offset: e.offset, size: e.size });
+  return emit(map);
+};
+
+test('an extra carry key the new build resolves gets its row', () => {
+  assert.deepEqual(EXTRA, ['TClassMap<EClassRepNodeMapping>::Map', 'FObjectKey::ObjectIndex', 'FObjectKey::ObjectSerialNumber']);
+  const out = fieldRows(header(), { cl: 130000, keys: keys(), next: [...next(), ...extraEntries()], base: base(), carried: EXTRA });
+  assert.deepEqual(out.problems, []);
+  for (const e of extraEntries()) assert.deepEqual(row(out.text, e.key), { key: e.key, cl: 130000, offset: e.offset, size: 4, mask: 0, member: null });
+});
+
+test('an extra carry key that does not resolve writes nothing and holds nothing, on a new build and over hand rows', () => {
+  for (const result of ['MISSING', 'NOMEMBER', 'NOTYPE', 'AMBIGUOUS', 'BITFIELD', 'BADKEY', null]) {
+    const report = [...next(), ...(result ? EXTRA.map((key) => ({ key, result })) : [])];
+    for (const start of [header(), withHandRows()]) {
+      const plain = fieldRows(start, { cl: 130000, keys: keys(), next: next(), base: base() });
+      const out = fieldRows(start, { cl: 130000, keys: keys(), next: report, base: base(), carried: EXTRA });
+      assert.deepEqual(out.problems, [], String(result));
+      assert.deepEqual([out.text, out.absent, out.degraded], [plain.text, plain.absent, plain.degraded], String(result));
+      assert.equal(out.notes.length, plain.notes.length + EXTRA.length, String(result));
+    }
+  }
+});
+
+test('extra carry keys over hand rows: equal values pass and add nothing, a different value is refused', () => {
+  const hand = withHandRows();
+  const plain = fieldRows(hand, { cl: 130000, keys: keys(), next: next(), base: base() });
+  const same = fieldRows(hand, { cl: 130000, keys: keys(), next: [...next(), ...extraEntries()], base: base(), carried: EXTRA });
+  assert.deepEqual(same.problems, []);
+  assert.deepEqual([same.added, same.text], [plain.added, plain.text]);
+  const other = fieldRows(hand, { cl: 130000, keys: keys(), next: [...next(), ent(EXTRA[1], 0x99, 4)], base: base(), carried: EXTRA });
+  assert.equal(other.text, null);
+  assert.ok(other.problems.some((p) => p.includes(EXTRA[1])));
 });

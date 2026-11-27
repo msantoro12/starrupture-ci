@@ -808,6 +808,10 @@ one:
   hold, never an absent row and never a degraded plugin.
 - A key with an entry in `ci/retired-rows.txt` (a field entry on any build, or the whole newest build) is not carried.
 
+`ci/extra-carry-keys.txt` adds keys that have no published row yet, under the same rules, except
+that retiring a whole build does not stop the extra keys being carried (their notes also read "carried from
+the published build"). A line can go once the published feed has the key.
+
 A build the file already holds carries nothing; its rows are kept as above. The carry only adds rows to
 what the run measures. The scanner and the loader are not involved.
 

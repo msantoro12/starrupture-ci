@@ -4400,7 +4400,7 @@ test('a re-measure puts the published rows back after field-rows, and only a tes
 test('carried field keys: only the target build is asked for them, and a failure costs the carry, not the layout', () => {
   const c = job('check');
   assert.ok(c.includes("if ($cl -and (Test-Path $publishedFile)) {"), 'only where the published base was taken');
-  assert.ok(c.includes("node 'ci-base\\ci\\version-map.mjs' carry-keys \"$work\\keys-all.txt\" --published $publishedFile --cl $cl --retired 'ci-base\\ci\\retired-rows.txt' --out out\\layout-carry-keys.txt"));
+  assert.ok(c.includes("node 'ci-base\\ci\\version-map.mjs' carry-keys \"$work\\keys-all.txt\" --published $publishedFile --cl $cl --retired 'ci-base\\ci\\retired-rows.txt' --extra 'ci-base\\ci\\extra-carry-keys.txt' --out out\\layout-carry-keys.txt"));
   assert.ok(c.includes('$keyFile = if ($b.key -eq \'target\') { $scanKeys } else { "$work\\keys-all.txt" }'), 'the reference build is scanned for the plain key list');
   assert.ok(c.includes('::warning title=Carried field keys::'));
   assert.ok(c.includes('            out/layout-carry-keys.txt\n'));

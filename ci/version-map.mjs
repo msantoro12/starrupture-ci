@@ -31,7 +31,7 @@
 //   node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retired <file>] [--changed <file>]
 //   node ci/version-map.mjs restore-published <header> --published <signed feed> --cl <CL> [--retired <file>]
 //        [--changed <file>] [--report <file>]
-//   node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>]
+//   node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>] [--extra <file>]
 //
 // init writes an empty map; it refuses to overwrite a file.
 // add-build, add-function, add-absent, add-field and add-absent-field add one
@@ -62,7 +62,8 @@
 // and did not measure again, or measured as absent where the published row has an address (or with fewer owners);
 // a row it measured with other content stays, and check-preserve holds on it. It puts back nothing when the
 // run's build row for --cl is not the published one. carry-keys <keys file> writes (--out) the field keys of
-// the newest published build that the key list does not name, for a build the file does not hold yet. The retired
+// the newest published build that the key list does not name, plus those of --extra (ci/extra-carry-keys.txt), for
+// a build the file does not hold yet. The retired
 // list is honoured by both, the changed list by restore-published. Both read the file only after its signature verifies.
 // Both lists: tab-separated `<function|field|build> <key> <CL> <reason>`, a reason on every entry;
 // see ci/retired-rows.txt.
@@ -852,13 +853,16 @@ export function restorePublished(map, published, cl, { retired = NO_ROWS, change
 // The field keys a build new to the published file carries over: every key with a field row on the
 // newest build of the file (the highest CL), that `have` (the run's key list) does not name and no
 // retired entry names on any build. A build the file already holds has none: restorePublished keeps
-// its rows. Returns { from: the newest CL, or null when there are none to carry, keys: sorted }.
-export function carriedFieldKeys(published, cl, have, { retired = NO_ROWS } = {}) {
+// its rows. `extra` (ci/extra-carry-keys.txt) joins them: keys the published file has no row for yet,
+// under the same rules, except that a retired build says nothing about them.
+// Returns { from: the newest CL, or null when there are none to carry, keys: sorted }.
+export function carriedFieldKeys(published, cl, have, { retired = NO_ROWS, extra = [] } = {}) {
   const none = { from: null, keys: [] };
   if (!published.builds.length || published.builds.some((b) => b.cl === cl)) return none;
   const from = Math.max(...published.builds.map((b) => b.cl));
-  const keys = [...new Set(published.fields.filter((r) => r.cl === from).map((r) => r.key))]
-    .filter((key) => !have.has(key) && !retired.hasKey('field', key) && !retired.has('build', '-', from))
+  const feed = retired.has('build', '-', from) ? [] : published.fields.filter((r) => r.cl === from).map((r) => r.key);
+  const keys = [...new Set([...feed, ...extra])]
+    .filter((key) => !have.has(key) && !retired.hasKey('field', key))
     .sort(cmp);
   return keys.length ? { from, keys } : none;
 }
@@ -1107,7 +1111,7 @@ export function main(argv) {
     writeFileSync(opt.out, text);
     process.stderr.write(`version-map: ${opt.out}: feed format ${FEED_FORMAT}, ${text.split('\n').length - 1} lines, ${Buffer.byteLength(text)} bytes\n`);
   } else if (['import-published', 'check-preserve', 'restore-published', 'carry-keys'].includes(cmd)) {
-    only(opt, ['published', 'retired', 'allow-test-key', ...(cmd === 'carry-keys' ? ['cl', 'out'] : ['changed', ...(cmd === 'restore-published' ? ['cl', 'report'] : [])])], cmd);
+    only(opt, ['published', 'retired', 'allow-test-key', ...(cmd === 'carry-keys' ? ['cl', 'out', 'extra'] : ['changed', ...(cmd === 'restore-published' ? ['cl', 'report'] : [])])], cmd);
     need(typeof opt.published === 'string', '--published is required');
     let published;
     try {
@@ -1129,10 +1133,12 @@ export function main(argv) {
       if (opt.report) writeFileSync(opt.report, JSON.stringify({ cl, kept: out.kept, differs: out.differs }, null, 2) + '\n');
     } else if (cmd === 'carry-keys') {
       need(typeof opt.out === 'string', '--out is required');
-      const have = new Set(readFile(file, 'the key list').toString('utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#')));
-      const out = carriedFieldKeys(published, num(opt, 'cl', { required: true }), have, { retired: lists.retired });
+      const keyLines = (path, what) => readFile(path, what).toString('utf8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+      const have = new Set(keyLines(file, 'the key list'));
+      const extra = opt.extra ? keyLines(opt.extra, 'the extra carry keys') : [];
+      const out = carriedFieldKeys(published, num(opt, 'cl', { required: true }), have, { retired: lists.retired, extra });
       writeFileSync(opt.out, out.keys.map((k) => `${k}\n`).join(''));
-      process.stdout.write(out.from === null ? 'carry-keys: no field keys to carry\n' : `carry-keys: ${out.keys.length} field keys of CL-${out.from} are not in the key list\n`);
+      process.stdout.write(out.from === null ? 'carry-keys: no field keys to carry\n' : `carry-keys: ${out.keys.length} field keys of CL-${out.from}${extra.length ? ' and the extra list' : ''} are not in the key list\n`);
     } else if (cmd === 'import-published') {
       const out = importPublished(load(), published, lists);
       if (!out.map) {
