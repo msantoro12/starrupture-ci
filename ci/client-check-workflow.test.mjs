@@ -137,7 +137,7 @@ test('alert: a failed job or a HOLD other than "nothing new" opens or updates on
   assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, rig-feed-other, feed-loader-cleanup, feed-gate\]/);
   assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' && inputs\.refresh_layout != true \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
-  assert.ok(a.includes('/^G3: CL-([0-9]+) is not newer than CL-\1$/'), 'nothing new is the same-build G3 reason');
+  assert.ok(a.includes('/^G3: CL-([0-9]+) is not newer than CL-\\1$/'), 'nothing new is the same-build G3 reason');
   assert.ok(a.includes('result === "failure"'));
   assert.ok(a.includes('node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"'));
   assert.ok(a.includes('node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl'));
