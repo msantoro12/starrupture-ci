@@ -6,10 +6,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXTRACT_JOB_NAME, MOD_INDEX_JOB_PREFIX, causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise } from './pipeline-alert.mjs';
+import { EXTRACT_JOB_NAME, MOD_INDEX_JOB_PREFIX, ROWS_TITLE, causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise, raiseRows, rowsMarker } from './pipeline-alert.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(join(here, 'fixtures', 'live-run-1', n), 'utf8');
@@ -145,4 +146,84 @@ test('sr-watch: the extract job is named EXTRACT_JOB_NAME and cannot fail the ru
   const j = watchWf.slice(watchWf.indexOf('\n  planner-extract:\n'));
   assert.ok(j.startsWith(`\n  planner-extract:\n    name: ${EXTRACT_JOB_NAME}\n`), 'the job name is the constant');
   assert.match(j.slice(0, j.indexOf('\n    steps:')), /\n    continue-on-error: true\n/);
+});
+
+// A fake gh over a set of issues: { n: { state, title, body, comments } }.
+function issueGh(issues) {
+  const calls = [];
+  return { calls, call: (a) => {
+    calls.push(a.join(' '));
+    if (a[0] === 'issue' && a[1] === 'list') {
+      const open = a.includes('open');
+      const nums = Object.entries(issues).filter(([, i]) => i.title === process.env.TITLE && (!open || i.state === 'OPEN')).map(([n]) => n);
+      return (open ? nums.slice(0, 1) : nums).map((n) => `${n}\n`).join('');
+    }
+    const m = a[0] === 'api' && /issues\/(\d+)(\/comments)?$/.exec(a[1]);
+    if (m) return m[2] ? (issues[m[1]].comments ?? []).join('\n') : issues[m[1]].body;
+    return '';
+  } };
+}
+
+const rowsRun = (missing, issues, { buildid = '25642172' } = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'rows-'));
+  const report = join(dir, 'function-keys.json');
+  const bodyFile = join(dir, 'rows.md');
+  writeFileSync(report, JSON.stringify({ missing, line: 'x' }));
+  const gh = issueGh(issues);
+  const result = raiseRows({ report, buildid, cl: '128786', owner: 'o', runUrl: 'https://x/run/1', repo: 'o/r', bodyFile, call: gh.call });
+  const body = existsSync(bodyFile) ? readFileSync(bodyFile, 'utf8') : null;
+  rmSync(dir, { recursive: true, force: true });
+  return { result, body, calls: gh.calls };
+};
+const posted = (calls) => calls.filter((c) => /^issue (create|comment|edit) |^label /.test(c));
+
+test('rows: nothing missing posts nothing and reads nothing', () => {
+  const r = rowsRun([], {});
+  assert.equal(r.result, 'none-missing');
+  assert.deepEqual(r.calls, []);
+});
+
+test('rows: a missing key opens one issue that names the keys, the build and the CL', () => {
+  const r = rowsRun(['B::Two', 'A::One'], {});
+  assert.equal(r.result, 'raised');
+  assert.ok(r.calls.some((c) => c.startsWith(`issue create --title ${ROWS_TITLE} `) && c.includes('--label pipeline-alert --assignee o')));
+  assert.ok(r.body.startsWith(rowsMarker('25642172', ['A::One', 'B::Two']) + '\n'));
+  assert.match(r.body, /@o server build 25642172 \(CL-128786\), \[run\]\(https:\/\/x\/run\/1\): 2 function key/);
+  assert.ok(r.body.includes('- `A::One`\n- `B::Two`\n'));
+});
+
+test('rows: a build and key set already reported is not repeated, in an open or a closed issue, body or comment', () => {
+  const marker = rowsMarker('25642172', ['A::One', 'B::Two']);
+  for (const issue of [
+    { state: 'OPEN', title: ROWS_TITLE, body: marker },
+    { state: 'CLOSED', title: ROWS_TITLE, body: marker },
+    { state: 'OPEN', title: ROWS_TITLE, body: 'older', comments: ['other', marker + '\ntext'] },
+  ]) {
+    const r = rowsRun(['B::Two', 'A::One'], { 5: issue });
+    assert.equal(r.result, 'already-raised');
+    assert.equal(r.body, null);
+    assert.deepEqual(posted(r.calls), []);
+  }
+});
+
+test('rows: another build or another key set comments on the open issue', () => {
+  const issues = { 5: { state: 'OPEN', title: ROWS_TITLE, body: rowsMarker('25642172', ['A::One']) } };
+  for (const r of [rowsRun(['A::One'], issues, { buildid: '25700000' }), rowsRun(['A::One', 'B::Two'], issues)]) {
+    assert.equal(r.result, 'raised');
+    assert.ok(r.calls.some((c) => c.startsWith('issue comment 5 ')));
+    assert.ok(!r.calls.some((c) => c.startsWith('issue create')));
+  }
+});
+
+test('rows: a read that fails posts nothing, and a report with no missing list is an error', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rows-'));
+  const report = join(dir, 'function-keys.json');
+  const opts = { report, buildid: '1', cl: '2', owner: 'o', runUrl: 'u', repo: 'o/r', bodyFile: join(dir, 'b.md') };
+  const calls = [];
+  writeFileSync(report, JSON.stringify({ missing: ['A::One'] }));
+  assert.throws(() => raiseRows({ ...opts, call: (a) => { calls.push(a.join(' ')); if (a[0] === 'api') throw new Error('HTTP 502'); return '5\n'; } }), /HTTP 502/);
+  assert.deepEqual(posted(calls), []);
+  writeFileSync(report, '{}');
+  assert.throws(() => raiseRows({ ...opts, call: () => '' }), /has no missing list/);
+  rmSync(dir, { recursive: true, force: true });
 });
