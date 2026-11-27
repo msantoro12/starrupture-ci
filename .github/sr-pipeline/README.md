@@ -116,11 +116,12 @@ While a loader release is being prepared, the `loader_ref` default of `sr-server
 - A live publish still takes the released loader only. A hand dispatch with `live` on must set `loader_ref` to `main`; with the default, `server-publish` stops before it reads the signing key.
 - The row alert runs for the default inputs, so for the release branch. A run on another ref, `main` included, raises nothing.
 
-To move the default back at the release, once the loader's `main` holds it and before the release branch is deleted (a run on a deleted branch fails), change three lines of `sr-server-check.yml` to `main`:
+To move the default back at the release, once the loader's `main` holds it and before the release branch is deleted (a run on a deleted branch fails), change three lines of `sr-server-check.yml` to `main`, and reword one input description:
 
 1. `on.workflow_call.inputs.loader_ref.default`
 2. `on.workflow_dispatch.inputs.loader_ref.default`
 3. `inputs.loader_ref == '...'` in the `if` of the job `server-row-alert`
+4. the `description` of `on.workflow_dispatch.inputs.loader_ref` (near line 90): take out "the default is the next release; a live publish needs main"
 
 Leave `SCANNER_DEFAULTS` as it is. Then take the "Until loader 1.28.0 is on main" sentences out of the workflow's header comment and shorten this section. `ci/server-check-workflow.test.mjs` needs no edit: it fails when the two defaults and the alert's `if` disagree. For the next release branch, change the same three lines to its name.
 
