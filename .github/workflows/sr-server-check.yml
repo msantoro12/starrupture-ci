@@ -606,7 +606,7 @@ jobs:
           node tool/ci/map-mode.mjs complete out/server.h --cl "$CL" --keys tool/ci/server-function-keys.txt --report out/function-keys.json > function-keys.txt 2>&1 || code=$?
           cat function-keys.txt
           case "$code" in 0|3) ;; *) echo "::error::map-mode complete exited $code on the function key list"; exit 2 ;; esac
-          { echo "### Server function and global keys"; echo; sed 's/^/    /' function-keys.txt; echo; echo "Reported only: the scan makes the rows of the keys the loader's scanner knows; the others have no scanner row yet."; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### Server function and global keys"; echo; sed 's/^/    /' function-keys.txt; echo; echo "Not gating: the scan makes the rows of the keys the loader's scanner knows; server-row-alert raises the others."; } >> "$GITHUB_STEP_SUMMARY"
 
       # The loader's own rows (ci/server-required-rows.txt): a new server build without them starts with its plugins off.
       # The function and global rows come from the scan (sr-aobscan-server): a new build whose scan did not find one stops here.
