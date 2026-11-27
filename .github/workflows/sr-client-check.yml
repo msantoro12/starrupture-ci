@@ -4144,6 +4144,45 @@ jobs:
           "sha=$($env:LOADER_SHA)" >> $env:GITHUB_OUTPUT
           "Candidate loader $($env:TAG): artifact $($env:ARTIFACT) of run $($env:GITHUB_RUN_ID), loader commit $($env:LOADER_SHA)" >> $env:GITHUB_STEP_SUMMARY
 
+  # A rehearsal's loader branch is a test branch: once the candidate loader is built from its commit (or the
+  # build ended any other way), nothing else reads it, so it is deleted. Only the run-suffixed branch this run
+  # pushed, and only while it still holds the commit this run pushed (the lease). An ordinary run keeps its branch.
+  rehearsal-branch-cleanup:
+    name: delete the rehearsal loader branch
+    needs: [push-loader, candidate-loader]
+    if: ${{ always() && inputs.rehearsal == true && needs.push-loader.outputs.branch != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: fork-push
+    permissions: {}
+    steps:
+      - name: Delete the branch and check it is gone
+        env:
+          DEPLOY_KEY: ${{ secrets.SR_DEPLOYKEY_MODLOADER }}
+          BRANCH_NAME: ${{ needs.push-loader.outputs.branch }}
+          SHA: ${{ needs.push-loader.outputs.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$BRANCH_NAME" =~ ^auto/update-[0-9]+-${RUN_ID}-[0-9]+$ ]] \
+            || { echo "::error::$BRANCH_NAME is not a branch this run pushed; nothing was deleted"; exit 2; }
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::push-loader named no loader commit; nothing was deleted'; exit 2; }
+          ssh_dir="$RUNNER_TEMP/ssh"
+          mkdir -m 700 "$ssh_dir"
+          trap 'rm -f "$ssh_dir/key"' EXIT
+          (umask 077; printf '%s\n' "$DEPLOY_KEY" > "$ssh_dir/key")
+          # GitHub's published host keys, not trust on first use.
+          curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
+          url=git@github.com:msantoro12/StarRupture-ModLoader.git
+          git init -q "$RUNNER_TEMP/del"
+          if [ -n "$(git -C "$RUNNER_TEMP/del" ls-remote "$url" "refs/heads/$BRANCH_NAME")" ]; then
+            git -C "$RUNNER_TEMP/del" push -q --force-with-lease="refs/heads/$BRANCH_NAME:$SHA" "$url" ":refs/heads/$BRANCH_NAME"
+          fi
+          left="$(git -C "$RUNNER_TEMP/del" ls-remote "$url" "refs/heads/$BRANCH_NAME")"
+          [ -z "$left" ] || { echo "::error::$BRANCH_NAME is still on the loader fork"; exit 1; }
+          echo "Rehearsal branch $BRANCH_NAME is gone from the loader fork." >> "$GITHUB_STEP_SUMMARY"
+
   # ---- Client rig: the candidate loader in the real game, on both branches ----
   # A REQUIRED gate on the unattended path (owner: "we will do auto verify and
   # deploy with the github rig for version updates"). Two calls of the reusable
@@ -5071,7 +5110,7 @@ jobs:
             const out = (kv) => fs.appendFileSync(e.GITHUB_OUTPUT, Object.entries(kv).map(([k, v]) => k + "=" + v + "\n").join(""));
             // A HOLD never counts as passed, quiet or not; the one exception is the chain that is ready and held by the autopilot alone.
             const passed = lines.length === 0 && d !== null && (d.decision !== "HOLD" || readyHold);
-            if (passed && readyHold) fs.writeFileSync("ready.md", "<!-- sr-ready-held:" + e.BRANCH + " -->\n**Ready, publish held (autopilot off).** CL-" + (d.cl ?? "?") + " on `" + e.BRANCH + "`: every gate and job passed, [run](" + e.RUN_URL + ").\n");
+            if (passed && readyHold) fs.writeFileSync("ready.md", "<!-- sr-ready-held:" + e.BRANCH + " -->\n@" + e.OWNER + " **Ready, publish held (autopilot off).** CL-" + (d.cl ?? "?") + " on `" + e.BRANCH + "`: every gate and job passed, [run](" + e.RUN_URL + ").\n");
             if (!lines.length && !review.length) {
               console.log("Nothing to alert on.");
               out({ alert: "false", passed: String(passed), ready: String(passed && readyHold) });
