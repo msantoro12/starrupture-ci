@@ -116,3 +116,4 @@ ACrPCGActorBase::LocalSeed
 ACrPCGVolume::LocalSeed
 ACrPCGGatherableSpawnerVolume::LocalSeed
 UObject::ClassPrivate
+ACrTechnologyKeeper::bUnlockAllBuildings
