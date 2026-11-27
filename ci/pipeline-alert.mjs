@@ -72,6 +72,9 @@ export const EXTRACT_JOB_NAME = 'planner data extract';
 export const MOD_INDEX_JOB_PREFIX = 'mod index';
 
 // The jobs of a client check are listed as "client-check (<branch>) / <job>"; they have their own alert.
+// sr-server-check.yml's row alert ("server-check (<branch>) / server-row-alert" when called). It is continue-on-error, so it is no cause either.
+export const ROW_ALERT_JOB_NAME = 'server-row-alert';
+
 export const inClientCheck = (name) => /^client-check \(/.test(String(name ?? ''));
 
 export function outsideBody(jobs, { owner, runUrl }) {
@@ -95,7 +98,7 @@ export async function collectCauses({ repo, run, tries = 6, wait = 10000, call =
   const listed = call(['api', `repos/${repo}/actions/runs/${run}/jobs?per_page=100`, '--paginate',
     '--jq', '.jobs[] | select(.conclusion == "failure") | {id, name, step: ([.steps[] | select(.conclusion == "failure")][0].name // "")}'], 'jobs list');
   const jobs = String(listed ?? '').split('\n').filter((l) => l.trim()).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
-    .filter((j) => j.name !== EXTRACT_JOB_NAME && !j.name.startsWith(MOD_INDEX_JOB_PREFIX));
+    .filter((j) => j.name !== EXTRACT_JOB_NAME && !j.name.startsWith(MOD_INDEX_JOB_PREFIX) && j.name.split(' / ').pop() !== ROW_ALERT_JOB_NAME);
   for (const j of jobs) {
     const ann = call(['api', `repos/${repo}/check-runs/${j.id}/annotations`], `annotations of job ${j.id}`);
     let rows = [];
@@ -125,7 +128,7 @@ export function raise({ title, bodyFile, owner, call = gh }) {
   return null;
 }
 
-export const ROWS_TITLE = 'SR server map: listed functions have no row';
+export const ROWS_TITLE = 'SR server version object map: listed functions have no row';
 
 // One report per build and set of keys, whatever order they come in.
 export function rowsMarker(buildid, keys) {
@@ -135,7 +138,7 @@ export function rowsMarker(buildid, keys) {
 
 export function rowsBody(keys, { buildid, cl, owner, runUrl }) {
   return [rowsMarker(buildid, keys),
-    `@${owner} server build ${buildid} (CL-${cl}), [run](${runUrl}): ${keys.length} function key(s) of ci/server-function-keys.txt have no row in the server file.`, '',
+    `@${owner} server build ${buildid} (CL-${cl}), [run](${runUrl}): ${keys.length} function key(s) of ci/server-function-keys.txt have no row in the server's version object map file.`, '',
     ...[...keys].sort().map((k) => `- \`${k}\``), '',
     'The other rows are in the server file as usual: the run does not fail or hold for this. A key gets its row once the loader\'s server scanner finds it. This is raised once for this build and set of keys.'].join('\n') + '\n';
 }

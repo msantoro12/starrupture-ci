@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXTRACT_JOB_NAME, MOD_INDEX_JOB_PREFIX, ROWS_TITLE, causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise, raiseRows, rowsMarker } from './pipeline-alert.mjs';
+import { EXTRACT_JOB_NAME, MOD_INDEX_JOB_PREFIX, ROWS_TITLE, ROW_ALERT_JOB_NAME, causeText, collectCauses, firstAnnotationError, firstLogError, inClientCheck, jobError, outsideBody, raise, raiseRows, rowsMarker } from './pipeline-alert.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(join(here, 'fixtures', 'live-run-1', n), 'utf8');
@@ -146,6 +146,19 @@ test('sr-watch: the extract job is named EXTRACT_JOB_NAME and cannot fail the ru
   const j = watchWf.slice(watchWf.indexOf('\n  planner-extract:\n'));
   assert.ok(j.startsWith(`\n  planner-extract:\n    name: ${EXTRACT_JOB_NAME}\n`), 'the job name is the constant');
   assert.match(j.slice(0, j.indexOf('\n    steps:')), /\n    continue-on-error: true\n/);
+});
+
+test('causes: the server row alert job, which cannot fail the run, is not a cause', async () => {
+  const gh = fakeGh({ jobs: [LIVE_JOBS[0], { id: 6, name: `server-check (public) / ${ROW_ALERT_JOB_NAME}`, step: 'Raise' }, { id: 5, name: ROW_ALERT_JOB_NAME, step: '' }, LIVE_JOBS[1]] });
+  const jobs = await collectCauses({ repo: 'o/r', run: '1', tries: 1, wait: 0, call: gh.call });
+  assert.deepEqual(jobs.map((j) => j.id), [LIVE_JOBS[0].id, LIVE_JOBS[1].id]);
+  const wf = readFileSync(join(here, '..', '.github', 'workflows', 'sr-server-check.yml'), 'utf8').replace(/
+/g, '
+');
+  assert.ok(wf.includes(`
+  ${ROW_ALERT_JOB_NAME}:
+    name: ${ROW_ALERT_JOB_NAME}
+`));
 });
 
 // A fake gh over a set of issues: { n: { state, title, body, comments } }.

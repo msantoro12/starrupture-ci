@@ -1358,11 +1358,11 @@ live run also takes the default loader and scanner inputs only. The version iden
 
 A key of `ci/server-function-keys.txt` with no row also raises a pipeline alert; every other row is made and
 uploaded as usual. The job `server-row-alert` runs after a good `server-map` (`ci/pipeline-alert.mjs rows`) and
-opens, or comments on, the issue "SR server map: listed functions have no row", naming the build, the CL and the
+opens, or comments on, the issue "SR server version object map: listed functions have no row", naming the build, the CL and the
 keys. Each build and set of missing keys is raised once, closed issues included, so a later run on the same server
 build posts nothing; another build or another set is raised again. A rehearsal and a test run (a branch other than
 `main`, or loader or scanner inputs other than the defaults) raise nothing. Nothing needs the job and it is
-`continue-on-error`, so it cannot fail or hold the run. Nothing closes the issue: close it once the rows are in.
+`continue-on-error`, so it cannot fail or hold the run. If the job itself fails, the run stays green and only that job shows red. Nothing closes the issue: close it once the rows are in.
 It needs `issues: write`, and GitHub refuses to start a run whose caller grants a called job less than it asks
 for, so every job that calls `sr-server-check.yml` grants it.
 
