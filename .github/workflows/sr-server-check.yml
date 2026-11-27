@@ -667,6 +667,12 @@ jobs:
             echo "::error::the version identity check did not pass for the server file (identity exit $ident); nothing was signed or staged"; exit 2
           fi
 
+      # Released loaders without the same-exe binding read whatever is published (ci/VERSION-MAP.md, "The publish gate").
+      - name: Gate the server file for older loaders
+        run: |
+          set -euo pipefail
+          node tool/ci/server-publish-gate.mjs out/server.feed.txt --result chk/server-result.json
+
       # The chain's one seq, above the server file's own last seq (not the client's), and a signature with the TEST key (k1,
       # which no released loader trusts) to prove the path before the publish job uses the release key.
       - name: Sign with the TEST key as a dry run and record the seq
@@ -868,6 +874,12 @@ jobs:
               echo "::error::the version identity check did not pass for the server file (identity exit $ident); nothing was signed or uploaded"; exit 2
             fi
           fi
+
+      # The same file the next step signs, judged again before the release key is read.
+      - name: Gate the server file for older loaders before signing
+        run: |
+          set -euo pipefail
+          node tool/ci/server-publish-gate.mjs chain/server.feed.txt --result chain/server-result.json
 
       - name: Sign with the release key and verify
         env:
