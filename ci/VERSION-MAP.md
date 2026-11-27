@@ -463,7 +463,8 @@ the project lead decides to retire it. The one-build-number rule goes with it, a
 change:
 
 1. Delete both gate steps, and their comments, from `sr-server-check.yml`.
-2. Delete `ci/server-publish-gate.mjs`, `ci/server-publish-gate.test.mjs` and `ci/data/loader-server-table/`.
+2. Delete `ci/server-publish-gate.mjs`, `ci/server-publish-gate.test.mjs` (and its name in the test list in
+   `sr-node-tests.yml`) and `ci/data/loader-server-table/`.
 3. In `ci/server-check-workflow.test.mjs`, delete the `gate:` test and set the run step counts back to 12
    (`server-map`) and 9 (`server-publish`).
 4. Delete this section, and the comments elsewhere that point to it.
