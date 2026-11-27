@@ -549,7 +549,7 @@ jobs:
           set -euo pipefail
           mkdir -p out
           node tool/ci/server-scan-rows.mjs chk/server-scan.json --result chk/server-result.json --keys tool/ci/server-function-keys.txt \
-            --out out/server-scan-rows.json --summary out/server-scan-summary.md
+            --out out/server-scan-rows.json --summary out/server-scan-summary.md --name-check out/server-name-check.json
           cat out/server-scan-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Write the build line, the layout rows and the scan rows into a server header
@@ -698,6 +698,7 @@ jobs:
             out/identity.json
             out/map-report.json
             out/server-scan-rows.json
+            out/server-name-check.json
             out/base.json
             out/preserve.json
             out/complete-report.json
@@ -795,6 +796,7 @@ jobs:
           [ "$REHEARSAL" != true ] || { echo "::error::live and rehearsal are both set: a rehearsal never writes the live release"; exit 2; }
           [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a live publish runs from main only (this run is on $GITHUB_REF)"; exit 2; }
           [ "$SCANNER_DEFAULTS" = true ] || { echo "::error::a live publish takes loader_ref main and the default loader repository and scanner inputs only"; exit 2; }
+          node tool/ci/server-scan-rows.mjs live-check chain/server-name-check.json
           echo "This run publishes to the LIVE vmap-feed release."
 
       # Read only: what the live release holds now (its asset list is read again after a staging upload), the

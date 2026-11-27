@@ -265,6 +265,10 @@ test('server-publish: staging by default, the live release only with the live in
   // The live gate: never with a rehearsal, never off main.
   const gate = stepOf(publish, 'Refuse a live publish that is not allowed');
   assert.ok(gate.includes("if: ${{ env.LIVE == 'true' }}\n") && gate.includes('"$GITHUB_REF" = refs/heads/main') && gate.includes('"$REHEARSAL" != true'));
+  assert.ok(gate.includes('server-scan-rows.mjs live-check chain/server-name-check.json'), 'rows without the name check never go live');
+  assert.ok(stepOf(map, 'Make the function and global rows from the scan').includes('--name-check out/server-name-check.json'));
+  assert.match(stepOf(map, 'Upload the server map result'), /\n +out\/server-name-check\.json\n/);
+  assert.equal((publish.match(/live-check/g) ?? []).length, 1, 'only the live gate asks: a run without live behaves as before');
   assert.ok(publish.indexOf('Refuse a live publish') < publish.indexOf('Sign with the release key'), 'refused before the key is used');
   // A run without live: the live assets are read before the signing and after the upload, and must be equal.
   const before = stepOf(publish, 'Read the live release');

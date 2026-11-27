@@ -1357,6 +1357,17 @@ default is (`.github/sr-pipeline/README.md`, "The server check's loader ref"). T
 (`decide.mjs identity --repo ModLoaderServer`) runs in `server-map` and again before the release key is used, unless
 `rehearsal` is set.
 
+**Name check.** A scanner that checks names gives each scan row `viaCall` (the address was reached by following a call
+site) and `nameMatch` (`true`: the exe's PDB has the key's qualified name at exactly that address; `false`: it does not;
+`null`: no PDB, an unreadable one, or not a function row). `server-scan-rows.mjs` drops a row with `nameMatch` false,
+and a `viaCall` row unless `nameMatch` is true, so call-site rows fail closed without a PDB. The job summary names each
+dropped key and why. A dropped key has no row like any other: the key list only reports it (and raises the alert
+below), but a dropped row of `ci/server-required-rows.txt` stops a new build at the required-rows check. A line the
+published server file already has for that CL still comes from the base. A scanner without the fields drops nothing,
+so staging and rehearsal runs work as before, but a `live` run is refused: `server-map` records whether every listed
+OK row carried both fields (`server-name-check.json`) and `server-publish` checks it (`server-scan-rows.mjs live-check`)
+before it reads the signing key.
+
 A key of `ci/server-function-keys.txt` with no row also raises a pipeline alert; every other row is made and
 uploaded as usual. The job `server-row-alert` runs after a good `server-map` (`ci/pipeline-alert.mjs rows`) and
 opens, or comments on, the issue "SR server version object map: listed functions have no row", naming the build, the CL and the

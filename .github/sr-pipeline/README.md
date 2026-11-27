@@ -114,6 +114,7 @@ While a loader release is being prepared, the `loader_ref` default of `sr-server
 
 - A run with the default builds the tip of that branch. Its server file is signed and uploaded to `vmap-feed-rehearsal` like any run without `live`. A commit on the branch that stops `tools/AobScan` building fails the check.
 - A live publish still takes the released loader only. A hand dispatch with `live` on must set `loader_ref` to `main`; with the default, `server-publish` stops before it reads the signing key.
+- A live publish also needs name-checked rows. The scanner marks each row `viaCall` and `nameMatch`; the server check drops a row with `nameMatch` false, and a `viaCall` row without `nameMatch` true (the summary names it, and it counts as a missing row). While the scanner lacks the fields, runs without `live` work as before and `server-publish` refuses a `live` one (`ci/MAP-MODE.md`, "Name check").
 - The row alert runs for the default inputs, so for the release branch. A run on another ref, `main` included, raises nothing.
 
 To move the default back at the release, once the loader's `main` holds it and before the release branch is deleted (a run on a deleted branch fails), change three lines of `sr-server-check.yml` to `main`, and reword one input description:
