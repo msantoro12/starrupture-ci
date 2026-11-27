@@ -114,9 +114,9 @@ export function scannedExe(result) {
 
 const hex8 = (v) => `0x${v.toString(16).toUpperCase().padStart(8, '0')}`;
 
-// Rule 1: one build line, and every line carries the scanned exe's build, and its time stamp and
-// image size where the line has them. Read from the raw lines, so each offender is named. The
-// columns are [CL, stamp, size].
+// Rule 1, its line half: a build line, and every line carries the scanned exe's build, and its time
+// stamp and image size where the line has them. Read from the raw lines, so each offender is named.
+// The columns are [CL, stamp, size].
 const COLUMNS = { build: [1, 2, 3], function: [3, 4, 5], absent: [3, 4, 5], field: [2] };
 function lineReasons(text, exe) {
   const want = [String(exe.cl), hex8(exe.stamp), hex8(exe.size)];
@@ -131,7 +131,7 @@ function lineReasons(text, exe) {
       reasons.push(`line ${i + 1}: not the scanned exe's build, stamp and size (CL-${want.join(' ')}): ${JSON.stringify(line)}`);
     }
   });
-  if (builds !== 1) reasons.push(`the file has ${builds} build lines, expected exactly one for CL-${exe.cl}`);
+  if (!builds) reasons.push(`the file has no build line for CL-${exe.cl}`);
   return reasons;
 }
 
@@ -139,10 +139,14 @@ const FUNCTION_VALUES = ['fp', 'kind', 'absent', 'pattern', 'resultOffset', 'fol
 const FIELD_VALUES = ['offset', 'size', 'mask', 'member'];
 const same = (a, b, values) => values.every((v) => String(a[v] ?? '') === String(b[v] ?? ''));
 
-// Rules 2 and 3, against one loader's table, for a file whose lines all passed rule 1.
+// Against one loader's table, for a file whose lines all carry the scanned exe: the other half of
+// rule 1 (the build number is one the table holds, because that loader merges a file of any other
+// number with its built-in rows), then rules 2 and 3.
 function tableReasons(feed, table, exe) {
   const own = table.builds.find((b) => b.cl === exe.cl);
-  if (!own) return [];
+  if (!own) {
+    return [`the build line and every row are CL-${exe.cl}: loader ${table.ref} would merge them with its built-in rows, so every line must be ${table.builds.map((b) => `CL-${b.cl}`).join(' or ')}`];
+  }
   const here = (rows) => rows.filter((r) => r.cl === exe.cl);
   const functions = here(table.functions);
   const fields = here(table.fields);

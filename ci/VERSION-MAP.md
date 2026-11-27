@@ -406,8 +406,8 @@ or a built-in table can't be read). An unknown build number, stamp or size refus
 
 Rules:
 
-1. The file has exactly one build line. Every line carries the scanned exe's build number, and its time stamp
-   and image size where the line has them.
+1. Every build line, and so every row, is build number 127004, the one the built-in table holds, and carries
+   the scanned exe's time stamp and image size where the line has them. The file has a build line.
 2. On the built-in table's own exe (same build number, stamp and size), a row for a name the table has, as a
    row or as absent, repeats a built-in row exactly: same values, fingerprint and kind. New names are free.
 3. On a rebuilt exe with the table's build number, the file replaces every built-in row the loader could
@@ -415,21 +415,18 @@ Rules:
    address-only function row is not needed, because v1.27.0 tries it on its own exe only (`version_map.cpp`,
    `Select`). All of v1.27.0's function rows are address-only.
 
-For a build number the table doesn't hold, only rule 1 applies.
+**Why CL-127004 only.** v1.27.0 uses rows of other build numbers
+(`memory_scanner/version_map.cpp:976-1039`): it merges a file's rows with its built-in CL-127004 table,
+even when the file holds just one other build number. So while any v1.27.0 server may run, every published
+server file is for CL-127004 and nothing else.
 
-**One build number per file.** The loaders can take rows from a line with another build number:
+**This blocks every other server build.** A file for a new server build number is refused, whether it comes
+after a CL-127004 file or is the first one published. A file with two build numbers is refused too. Nothing
+gets signed. It stays that way until the project lead decides otherwise.
 
-- v1.27.0 `version_map.cpp:1027-1039` keeps the pattern rows of the newest other build number (`latestCL`),
-  and `Select` (`version_map.cpp:800-806`) scans for those patterns again.
-- The loader with the binding, commit `5fb474c8`, does the same (`version_map.cpp:1063-1075`). Its
-  `BindToExe` (`version_feed.cpp:150` on) filters only the build numbers its own table holds.
-
-So a file with a second build number is refused. **This blocks a second server build.** Once a server file is
-live, a file for a newer build is refused either way: with the published lines kept, by this gate; without
-them, by the keep-published-lines check (`published-base.mjs preserve`). Nothing gets signed. It stays that
-way until the project lead decides otherwise. Don't get around it with a `build` entry in
-`ci/retired-rows.txt`: that takes the older build out of the live server file, and the client file reads the
-same list, so it loses that build number too.
+The loader at commit `5fb474c8` does not use another build's rows on a server: `RowOfBuild`
+(`memory_scanner/version_map.cpp:306-315`) filters the functions (`:1014`) and the sizes and members
+(`:1365`, `:1383`). The code at `:1063-1075` is the client's fallback and does nothing on a server.
 
 **A rebuilt 127004 exe.** Rule 3 needs every v1.27.0 field row. The pipeline does not produce
 `FHttpServerRequest::Verb` or `FTransform::Translation`, so a pipeline file for a rebuilt 127004 exe is
@@ -457,10 +454,15 @@ one: `vmap-sign.yml` signs the client fixture with the TEST key, `sr-client-chec
 client file, and `engine-test.yml` only starts a test server with a file it is given. The client's version
 object map is not touched.
 
-**Retiring the gate.** Nothing switches it off by itself. When the minimum server loader has the binding,
-the project lead decides to retire it. The one-build-number rule goes with it, and the binding at
-`5fb474c8` does not cover rows from another build number (above), so settle that first. Then, in one
-change:
+**Retiring the gate.** Nothing switches it off by itself; the project lead decides. The rules have two
+different conditions, both about the oldest server loader still in use:
+
+- The CL-127004-only rule, and with it the refusal of a second build, needs that loader to have the
+  `RowOfBuild` filter (above).
+- The exact stamp and size rule and the built-in rules (2 and 3) need it to have the same-exe binding.
+
+When only one condition is met, change the script and its tests to drop that part. When both are met, remove
+the gate in one change:
 
 1. Delete both gate steps, and their comments, from `sr-server-check.yml`.
 2. Delete `ci/server-publish-gate.mjs`, `ci/server-publish-gate.test.mjs` (and its name in the test list in

@@ -61,7 +61,7 @@ test('scanned exe: an unknown build, stamp or size is refused', () => {
   }
 });
 
-test('lines: every line must carry the scanned exe, with one build line', () => {
+test('lines: every line must carry the scanned exe, and there is a build line', () => {
   assert.deepEqual(judge(OWN, { fields: [NEW_FIELD] }), []);
   const good = feedFor(OWN, { ...builtIn(OWN) });
   const refused = (text, pattern) => assert.match(gateReasons(text, OWN, tables).join('\n'), pattern);
@@ -69,10 +69,10 @@ test('lines: every line must carry the scanned exe, with one build line', () => 
   refused(feedFor({ ...OWN, size: 0x0F000000 }), /line 2: not the scanned exe/);
   refused(good.replace('0x2E3595FF\t0x0E2A8000\t1', '0x11111111\t0x0E2A8000\t1'), /line 3: not the scanned exe.*function/);
   refused(`${good}field\tUZed::Other\t135000\t0x10\t0x8\t0x00\t-\n`, /not the scanned exe.*135000/);
-  refused(good.replace('\nfunction', '\nbuild\t135000\t0x22222222\t0x0F000000\tserver steam_build 2\nfunction'), /line 3: not the scanned exe[\s\S]*2 build lines/);
-  refused(good.replace('\nfunction', '\nbuild\t127004\t0x2E3595FF\t0x0E2A8000\tagain\nfunction'), /2 build lines/);
+  // A two-build file is refused.
+  refused(good.replace('\nfunction', '\nbuild\t135000\t0x22222222\t0x0F000000\tserver steam_build 2\nfunction'), /line 3: not the scanned exe's build.*135000/);
   refused(`${good}vtable\tx\n`, /not a build, function, absent or field line/);
-  refused('format\t1\n', /0 build lines/);
+  refused('format\t1\n', /no build line/);
 });
 
 test('same exe: built-in rows repeated exactly and new names pass', () => {
@@ -115,8 +115,11 @@ test('rebuilt exe: a built-in pattern or absent function row must be replaced un
   assert.match(gateReasons(feedFor(REBUILT, { fields }), REBUILT, patterned).join('\n'), /ModLoader\/Site/);
 });
 
-test('another build number: no built-in row is for that exe, so nothing is compared', () => {
-  assert.deepEqual(judge(NEW_CL, { fields: [{ ...real.fields[0], cl: NEW_CL.cl, offset: 0x999 }] }), []);
+test('build number: a file of CL-127004 passes; one of another number alone is refused, rows or none', () => {
+  assert.deepEqual(judge(OWN, { fields: [NEW_FIELD] }), []);
+  const refusal = ['the build line and every row are CL-135000: loader v1.27.0 would merge them with its built-in rows, so every line must be CL-127004'];
+  assert.deepEqual(judge(NEW_CL, { fields: [{ ...NEW_FIELD, cl: NEW_CL.cl }] }), refusal);
+  assert.deepEqual(judge(NEW_CL), refusal);
 });
 
 test('every listed table is judged', () => {
