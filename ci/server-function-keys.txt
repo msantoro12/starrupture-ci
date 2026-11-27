@@ -32,6 +32,15 @@ function UReplicationGraph::RemoveNetworkActor
 function FPaths::ProjectSavedDir
 function UCrSaveGameUtils::WriteUserFile
 function UCrSaveGameUtils::SaveGameInternal
+function ACrAPHelper::GetBoxCollisionResult
+function ACrAPHelperActorCustom::CheckMainMeshCollision
+function ACrAPHelperActorCustom::CheckStability
+function ACrAPHelperDynamicPillar::CheckStability
+function ACrTechnologyKeeper::CheckAvailableBuildings
+function UCrBuildingComponent::GetPlacementResourceConditionResult
+function UCrBuildingStabilitySubsystem::IsSocketFree
+function UCrSocketSnapPlacementMethod::GetSnappedSocket
+function ACrGatherableBaseActor::DepleteResource
 #
 # Globals
 function GWorld
