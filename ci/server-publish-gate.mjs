@@ -192,7 +192,7 @@ export function main(argv, tables = LOADER_TABLES) {
   let reasons;
   let exe;
   try {
-    exe = scannedExe(JSON.parse(readFileSync(result, 'utf8').replace(/^﻿/, '')));
+    exe = scannedExe(JSON.parse(readFileSync(result, 'utf8').replace(/^\uFEFF/, '')));
     reasons = gateReasons(readFileSync(file, 'utf8'), exe, loadTables(tables));
   } catch (e) {
     process.stdout.write(`::error::server publish gate: refused, it could not judge the file: ${e.message}\n`);

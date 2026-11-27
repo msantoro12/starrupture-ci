@@ -389,6 +389,8 @@ the four field rows the loader reads (`ACrCrafter::CraftComponent`, `UWorld::Gam
 `FName::AppendString`, `GWorld`; the loader only logs GNames). `ci/server-required-rows.txt` lists them and the `server-map`
 job fails, naming the missing keys, when the new build lacks one. The loader's own baseline CL is not checked. The global
 rows need the server scanner leg, which is not built yet, so until it lands every new server build stops at this check.
+While [the publish gate](#the-publish-gate) stands, a file for any build but 127004 is refused as well, with or
+without these rows.
 
 ## The publish gate
 
@@ -439,6 +441,10 @@ id; another blob, or a table the script can't read in full, refuses the publish.
 released loader. If another loader without the binding is released and its table differs, copy that table to
 `ci/data/loader-server-table/<tag>/` and add its `LOADER_TABLES` entry by hand. The file is then judged
 against every listed table.
+
+The unreleased 1.28.0 candidate's table is not listed, although it differs from v1.27.0's: the list holds
+released loaders only. If 1.28.0 is released without the same-exe binding, add its table by hand, as above,
+before the next server publish.
 
 **Paths covered.** `sr-server-check.yml` signs a server file twice, and each signing comes right after a gate
 step on that same file:

@@ -131,7 +131,7 @@ test('command: exit 0 passes, 3 refuses naming the row, 2 when it cannot judge',
   const dir = mkdtempSync(join(tmpdir(), 'gate-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const put = (name, text) => { writeFileSync(join(dir, name), text); return join(dir, name); };
-  const result = put('server-result.json', '﻿{"cl":127004,"imageStamp":"0x2E3595FF","imageSize":"0x0E2A8000"}');
+  const result = put('server-result.json', '\uFEFF{"cl":127004,"imageStamp":"0x2E3595FF","imageSize":"0x0E2A8000"}');
   const said = [];
   t.mock.method(process.stdout, 'write', (s) => { said.push(String(s)); return true; });
   const field = builtIn(OWN).fields[0];
