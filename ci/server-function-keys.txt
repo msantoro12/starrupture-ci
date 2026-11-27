@@ -30,8 +30,8 @@ function UCrSaveSubsystem::SaveNextSaveGame
 function UReplicationGraph::AddNetworkActor
 function UReplicationGraph::RemoveNetworkActor
 function FPaths::ProjectSavedDir
-function UCrSaveGameUtils::WriteUserFile
-function UCrSaveGameUtils::SaveGameInternal
+# UCrSaveGameUtils::WriteUserFile and UCrSaveGameUtils::SaveGameInternal are not listed: neither name has a symbol in
+# the game's debug data. If BetterSaving comes back, re-add them under verified names.
 function ACrAPHelper::GetBoxCollisionResult
 function ACrAPHelperActorCustom::CheckMainMeshCollision
 function ACrAPHelperActorCustom::CheckStability

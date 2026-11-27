@@ -5,7 +5,15 @@
 // turns the report into the scan rows `map-mode.mjs server --scan` writes into the server header.
 //
 //   node ci/server-scan-rows.mjs <server-scan.json> --result <server-result.json> --keys <server-function-keys.txt>
-//        --out <server-scan-rows.json> [--summary <markdown file>]
+//        --out <server-scan-rows.json> [--summary <markdown file>] [--name-check <file>]
+//   node ci/server-scan-rows.mjs live-check <name check file>     (exit 2 unless every OK row was name checked)
+//
+// Name check: a scanner that has it gives each row `viaCall` (the address was reached by following a call
+// site) and `nameMatch` (true: the exe's PDB has the key's qualified name at exactly that rva; false: it
+// does not; null: no PDB, an unreadable one, or not a function row). A row with nameMatch false gets no row,
+// and a viaCall row gets one only with nameMatch true. A dropped key is a key with no row like any other.
+// A scanner without the fields drops nothing, but its rows are not published live: --name-check records
+// the listed OK rows that lack them, and live-check refuses that record.
 //
 // It refuses (exit 2, nothing written) a report that is not the server's, one made from another exe
 // than the one server-result.json describes (CL, PE stamp and image size must all match), a listed
@@ -46,12 +54,23 @@ function checkExe(scan, result) {
   }
 }
 
-// Returns { rows: [{ key, kind, fp, rva }] by key, notOk: [{ key, result, matches, required, reason }], skipped: [key] }.
+// Why a row fails the name check, or null. A field of another type is refused: it cannot be judged.
+function nameDrop(r) {
+  if (r.viaCall !== undefined && typeof r.viaCall !== 'boolean') throw new MapError(`${r.key}: viaCall must be true or false`);
+  if (![undefined, null, true, false].includes(r.nameMatch)) throw new MapError(`${r.key}: nameMatch must be true, false or null`);
+  if (r.nameMatch === false) return "dropped: the PDB does not have the key's name at this address";
+  if (r.viaCall === true && r.nameMatch !== true) return 'dropped: reached through a call site and no PDB name confirms it';
+  return null;
+}
+
+// Returns { rows: [{ key, kind, fp, rva }] by key, notOk: [{ key, result, matches, required, reason }], skipped: [key],
+// unchecked: [listed OK key without both name check fields], nameChecked: there are listed OK rows and none is unchecked }.
 // result: the parsed server-result.json; functionKeys: the Set of the `function` keys of ci/server-function-keys.txt.
 export function convertServerScan(scan, result, { functionKeys }) {
   checkExe(scan, result);
   if (!Array.isArray(scan.patterns)) throw new MapError('the scan report has no patterns array');
-  const out = { rows: [], notOk: [], skipped: [] };
+  const out = { rows: [], notOk: [], skipped: [], unchecked: [], nameChecked: false };
+  let judged = 0;
   const seen = new Set();
   for (const r of scan.patterns) {
     if (typeof r?.key !== 'string' || !r.key) continue;
@@ -60,6 +79,10 @@ export function convertServerScan(scan, result, { functionKeys }) {
     seen.add(r.key);
     const notOk = (reason) => out.notOk.push({ key: r.key, result: r.result, matches: r.matches, required: r.required === true, reason });
     if (r.result !== 'OK') { notOk(`the scan result is ${r.result}`); continue; }
+    judged++;
+    if (r.viaCall === undefined || r.nameMatch === undefined) out.unchecked.push(r.key);
+    const drop = nameDrop(r);
+    if (drop) { notOk(drop); continue; }
     const kind = kindOf(r.kind);
     // The same rule as the server header: global keys are function starts and data, the one scoped key is kind "any".
     if (!(isGlobalKind(kind) || (r.key === SERVER_SCOPED_KEY && kind === KIND.ANY))) { notOk(`kind ${r.kind} is not one a server file takes`); continue; }
@@ -72,6 +95,8 @@ export function convertServerScan(scan, result, { functionKeys }) {
   out.rows.sort((a, b) => cmp(a.key, b.key));
   out.notOk.sort((a, b) => cmp(a.key, b.key));
   out.skipped.sort(cmp);
+  out.unchecked.sort(cmp);
+  out.nameChecked = judged > 0 && out.unchecked.length === 0;
   return out;
 }
 
@@ -87,15 +112,35 @@ export function summaryOf(conv, cl) {
   return lines.join('\n') + '\n';
 }
 
+// A live publish takes only rows the scanner name checked. Returns why not, or null.
+export function liveRefusal(check) {
+  if (check?.nameChecked === true) return null;
+  const keys = Array.isArray(check?.unchecked) && check.unchecked.length ? ` (no viaCall or nameMatch: ${check.unchecked.join(', ')})` : '';
+  return `the server scan rows were not name checked${keys}; a live publish needs a scanner that checks names`;
+}
+
+function liveCheck(file) {
+  let why;
+  try {
+    why = liveRefusal(JSON.parse(readFileSync(file, 'utf8')));
+  } catch (e) {
+    why = `the name check record cannot be read: ${e.message}`;
+  }
+  if (!why) return EXIT_OK;
+  process.stdout.write(`::error::${why}\n`);
+  return EXIT_ERROR;
+}
+
 export function main(argv) {
   const [file, ...rest] = argv;
+  if (file === 'live-check' && rest.length === 1) return liveCheck(rest[0]);
   const o = {};
   for (let i = 0; i < rest.length; i += 2) {
     if (!rest[i]?.startsWith('--') || rest[i + 1] === undefined) { process.stderr.write(`server-scan-rows: bad argument ${rest[i]}\n`); return EXIT_ERROR; }
     o[rest[i].slice(2)] = rest[i + 1];
   }
   if (!file || file.startsWith('--') || !o.result || !o.keys || !o.out) {
-    process.stderr.write('usage: server-scan-rows.mjs <server-scan.json> --result <server-result.json> --keys <server-function-keys.txt> --out <rows.json> [--summary <file>]\n');
+    process.stderr.write('usage: server-scan-rows.mjs <server-scan.json> --result <server-result.json> --keys <server-function-keys.txt> --out <rows.json> [--summary <file>] [--name-check <file>]\n       server-scan-rows.mjs live-check <name check file>\n');
     return EXIT_ERROR;
   }
   const json = (p) => JSON.parse(readFileSync(p, 'utf8').replace(/^﻿/, ''));
@@ -103,6 +148,7 @@ export function main(argv) {
     const result = json(o.result);
     const conv = convertServerScan(json(file), result, { functionKeys: parseKeys(readFileSync(o.keys, 'utf8'), o.keys).functions });
     writeFileSync(o.out, JSON.stringify(scanRowsFile(conv.rows), null, 2) + '\n');
+    if (o['name-check']) writeFileSync(o['name-check'], JSON.stringify({ nameChecked: conv.nameChecked, unchecked: conv.unchecked }) + '\n');
     const md = summaryOf(conv, result.cl);
     if (o.summary) writeFileSync(o.summary, md);
     process.stdout.write(md.replace(/^### .*\n\n/, ''));

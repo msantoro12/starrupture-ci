@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MapError, parseKeys } from './version-map.mjs';
 import { serverMode } from './map-mode.mjs';
-import { convertServerScan, scanRowsFile, summaryOf } from './server-scan-rows.mjs';
+import { convertServerScan, liveRefusal, scanRowsFile, summaryOf } from './server-scan-rows.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TOOL = join(here, 'server-scan-rows.mjs');
@@ -164,4 +164,99 @@ test('command: another exe, a client report, a missing file: exit 2 and no rows 
   assert.equal(run(dir, clientPath).status, 2);
   assert.equal(run(dir, join(dir, 'nope.json')).status, 2);
   assert.equal(spawnSync(process.execPath, [TOOL], { encoding: 'utf8', windowsHide: true }).status, 2);
+});
+
+// ---- the name check ------------------------------------------------------------------------------
+
+// The fixture as a scanner with the name check writes it: every row direct and confirmed, then `edits` by key.
+const named = (edits = {}) => {
+  const scan = scanFixture();
+  scan.patterns = scan.patterns.map((r) => ({ ...r, viaCall: false, nameMatch: true, ...edits[r.key] }));
+  return scan;
+};
+const PE = 'UObject::ProcessEvent';
+const keysOf = (out) => out.rows.map((r) => r.key);
+
+test('name check: confirmed rows, and direct rows with no PDB answer, keep their rows', () => {
+  for (const edit of [{}, { viaCall: true, nameMatch: true }, { viaCall: false, nameMatch: null }]) {
+    const out = convert(named({ [PE]: edit }));
+    assert.deepEqual(out.rows, EXPECTED);
+    assert.equal(out.nameChecked, true);
+    assert.deepEqual(out.unchecked, []);
+  }
+});
+
+test('name check: nameMatch false drops the row, call site or not, and the summary says why', () => {
+  for (const viaCall of [false, true]) {
+    const out = convert(named({ [PE]: { viaCall, nameMatch: false } }));
+    assert.ok(!keysOf(out).includes(PE));
+    assert.equal(out.rows.length, 5);
+    assert.match(summaryOf(out, 127004), /- no row: UObject::ProcessEvent \(dropped: the PDB does not have the key's name at this address/);
+    assert.equal(out.nameChecked, true);
+  }
+});
+
+test('name check: a call-site row without a true nameMatch is dropped (no PDB fails closed)', () => {
+  const out = convert(named({ [PE]: { viaCall: true, nameMatch: null } }));
+  assert.ok(!keysOf(out).includes(PE));
+  assert.match(summaryOf(out, 127004), /- no row: UObject::ProcessEvent \(dropped: reached through a call site/);
+  assert.ok(!keysOf(convert(edited(PE, (r) => ({ ...r, viaCall: true })))).includes(PE), 'no nameMatch at all');
+});
+
+test('name check: a field of another type is refused', () => {
+  assert.throws(() => convert(named({ [PE]: { nameMatch: 'false' } })), /nameMatch must be/);
+  assert.throws(() => convert(named({ [PE]: { viaCall: 'true' } })), /viaCall must be/);
+  assert.throws(() => convert(named({ [PE]: { viaCall: null } })), /viaCall must be/);
+});
+
+test('name check: an old scanner makes the same rows and summary as before and is not live', () => {
+  const out = convert();
+  assert.deepEqual(out.rows, EXPECTED);
+  assert.ok(!/dropped/.test(summaryOf(out, 127004)));
+  assert.equal(out.nameChecked, false);
+  assert.deepEqual(out.unchecked, EXPECTED.map((r) => r.key).sort());
+  assert.match(liveRefusal(out), /not name checked \(no viaCall or nameMatch: .*UObject::ProcessEvent/);
+  const partial = named();
+  delete partial.patterns.find((r) => r.key === PE).nameMatch;
+  assert.deepEqual(convert(partial).unchecked, [PE]);
+  assert.equal(convert(partial).nameChecked, false);
+  assert.notEqual(liveRefusal({ nameChecked: 'true' }), null);
+});
+
+test('name check: a dropped listed key is a missing key: map-mode complete reports it (exit 3)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ssr-name-'));
+  const scanPath = join(dir, 'scan.json');
+  writeFileSync(scanPath, JSON.stringify(named({ [PE]: { viaCall: true, nameMatch: null } })));
+  const r = run(dir, scanPath);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /no row: UObject::ProcessEvent \(dropped:/);
+  const h = join(dir, 'server.h');
+  const mode = (...args) => spawnSync(process.execPath, [join(here, 'map-mode.mjs'), ...args], { encoding: 'utf8', windowsHide: true });
+  assert.equal(mode('server', h, '--cl', '127004', '--stamp', '0x2E3595FF', '--size', '0x0E2A8000', '--build-id', '25642172', '--scan', r.out).status, 0);
+  const report = join(dir, 'function-keys.json');
+  assert.equal(mode('complete', h, '--cl', '127004', '--keys', KEYS_FILE, '--report', report).status, 3);
+  assert.ok(JSON.parse(readFileSync(report, 'utf8')).missing.includes(PE));
+});
+
+test('live-check: passes a checked record only; unchecked, missing and unreadable records exit 2', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ssr-live-'));
+  const record = (name, scan) => {
+    const scanPath = join(dir, `${name}.json`);
+    writeFileSync(scanPath, JSON.stringify(scan));
+    const resultPath = join(dir, 'server-result.json');
+    writeFileSync(resultPath, JSON.stringify(RESULT));
+    const file = join(dir, `${name}.check.json`);
+    const made = spawnSync(process.execPath, [TOOL, scanPath, '--result', resultPath, '--keys', KEYS_FILE, '--out', join(dir, 'rows.json'), '--name-check', file], { encoding: 'utf8', windowsHide: true });
+    assert.equal(made.status, 0, made.stderr);
+    return file;
+  };
+  const live = (file) => spawnSync(process.execPath, [TOOL, 'live-check', file], { encoding: 'utf8', windowsHide: true });
+  assert.equal(live(record('new', named())).status, 0);
+  const old = live(record('old', scanFixture()));
+  assert.equal(old.status, 2);
+  assert.match(old.stdout, /::error::the server scan rows were not name checked/);
+  assert.equal(live(join(dir, 'nope.json')).status, 2);
+  const bad = join(dir, 'bad.json');
+  writeFileSync(bad, 'not json');
+  assert.equal(live(bad).status, 2);
 });
