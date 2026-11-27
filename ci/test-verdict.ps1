@@ -466,6 +466,7 @@ function Size-Entry([string]$Plugin, [string]$Key, $RowCL, $Row, $Refl, [string]
 }
 $szMatch = Size-Entry 'AxRuptureTimer' 'FCrEnviroWaveSettings' 129402 44 44 'match'
 $szMismatch = Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 52 'mismatch'
+$szOtherCL = Size-Entry 'Codex' 'FAuSimpleItem' 130045 48 52 'mismatch'
 $szRowOnly = Size-Entry 'BetterCheats' 'FMassEntityManager' 129402 176 $null 'row-only'
 $szNoRow = Size-Entry 'BetterCheats' 'FMassEntityManager' $null $null $null 'no-row'
 $szReflOnly = Size-Entry 'Compass' 'FCrPlayerPersonalMarkerData' $null $null 40 'reflected-only'
@@ -528,6 +529,15 @@ $rigCases = [ordered]@{
  'unchanged pattern miss'    = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"outcome": "partial"' '"outcome": "unchanged"'; Edit-Report $c '"patternMisses": []' ('"patternMisses": [ ' + $missRow.Replace('REQ', 'true') + ' ]') }; Fail = 'compat_report_ok' }
  'sizes empty'               = @{ Run = $tb; Mut = { param($c) Add-Sizes $c '' } }
  'sizes mismatch'            = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szMismatch" };                                Fail = 'compat_report_ok' }
+ 'sizes mismatch, other CL'  = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szOtherCL" } }
+ 'sizes other CL + same CL'  = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szOtherCL, $szMismatch" };                             Fail = 'compat_report_ok' }
+ 'sizes other CL, no version' = @{ Run = $tb; Mut = { param($c) Edit-Report $c '"productVersion": "++Earth20+Kobalt-PTR2-CL-129402",' ''; Add-Sizes $c $szOtherCL }; Fail = 'compat_report_ok' }
+ 'sizes other CL, bad version' = @{ Run = $tb; Mut = { param($c) Edit-Report $c 'Kobalt-PTR2-CL-129402"' 'Kobalt-PTR2-CL-129402x"'; Add-Sizes $c $szOtherCL }; Fail = 'compat_report_ok' }
+ 'sizes mismatch, null row CL' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' $null 48 52 'mismatch') }; Fail = 'compat_report_ok' }
+ 'sizes mismatch, no row CL' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c ($szOtherCL -replace '"rowCL": 130045, ', '') }; Fail = 'compat_report_ok' }
+ 'sizes mismatch, text row CL' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' '"130045"' 48 52 'mismatch') }; Fail = 'compat_report_ok' }
+ 'sizes mismatch, zero row CL' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 0 48 52 'mismatch') }; Fail = 'compat_report_ok' }
+ 'sizes no row, other CL'    = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'BetterCheats' 'FMassEntityManager' 130045 176 $null 'no-row') }; Fail = 'compat_report_ok' }
  'sizes unreflected, row'    = @{ Run = $tb; Mut = { param($c) Add-Sizes $c $szRowOnly } }
  'sizes unreflected, no row' = @{ Run = $tb; Mut = { param($c) Add-Sizes $c "$szMatch, $szNoRow" };                                   Fail = 'compat_report_ok' }
  'sizes result says match'   = @{ Run = $tb; Mut = { param($c) Add-Sizes $c (Size-Entry 'Codex' 'FAuSimpleItem' 129402 48 52 'match') };  Fail = 'compat_report_ok' }
@@ -615,6 +625,12 @@ foreach ($k in $rigCases.Keys) {
             if ($md -notmatch [regex]::Escape("Note: $l1")) { $problems += 'summary.md lacks the match line' }
             if ($r.Out -notmatch 'compat_report_ok\s+PASS') { $problems += 'compat_report_ok not PASS' }
             if (@($j.notes) -notcontains $moved) { $problems += 'the layout-moved note went missing' }
+        }
+        if ($k -eq 'sizes mismatch, other CL') {
+            $l = 'size row Codex: FAuSimpleItem row 0x30 (CL-130045), reflected 0x34: MISMATCH, not failed: the row is for CL-130045, this game is CL-129402'
+            if (@($j.notes) -notcontains $l) { $problems += "verdict.json lacks: $l" }
+            if ($md -notmatch [regex]::Escape("Note: $l")) { $problems += 'summary.md lacks the other-CL line' }
+            if ($r.Out -notmatch 'compat_report_ok\s+PASS') { $problems += 'compat_report_ok not PASS' }
         }
         if ($k -eq 'sizes unreflected, row' -and @($j.notes) -notcontains 'size row BetterCheats: FMassEntityManager row 0xB0 (CL-129402), reflected none: unreflected, row only') { $problems += 'row-only line missing' }
         if ($k -eq 'sizes pending, the one key') {
