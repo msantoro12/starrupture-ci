@@ -429,7 +429,8 @@ jobs:
   # field layout of ci/server-keys.txt from its PDB, keeps the result in the server-check-<build id>
   # artifact, makes the server's part of the version object map from it and signs it. No Steam login. The two
   # secrets passed, by name: VMAP_SIGN_KEY_TEST (the map job's TEST-key dry run) and VMAP_SIGN_KEY (the signing job's
-  # environment vmap-sign holds it); contents: write is the ceiling for that job's upload. The upload goes to the vmap-feed-rehearsal prerelease: this call
+  # environment vmap-sign holds it); contents: write is the ceiling for that job's upload and issues: write for its
+  # row alert (every job there names its own permissions, so no other job gets either). The upload goes to the vmap-feed-rehearsal prerelease: this call
   # does not pass `live` (the called workflow declares it for a hand dispatch only), so a scheduled or
   # dispatched watch never writes the live release from here. Its own concurrency group (sr-server-check) for the
   # download, not the client rig's.
@@ -446,6 +447,7 @@ jobs:
         include: ${{ fromJSON(needs.poll.outputs.server_matrix) }}
     permissions:
       contents: write
+      issues: write    # the called workflow's server-row-alert job; every caller of it must grant this
     uses: ./.github/workflows/sr-server-check.yml
     with:
       buildid: ${{ matrix.buildid }}

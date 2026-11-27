@@ -18,6 +18,8 @@ name: SR server check
 #     its version identity and signs it once with the TEST key (k1, secret VMAP_SIGN_KEY_TEST) as a dry run
 #   - server-publish signs that file with the release key (k2, secret VMAP_SIGN_KEY, environment vmap-sign) and
 #     uploads it with the shared routine (ci/vmap-publish.sh)
+# Beside server-publish, server-row-alert raises a pipeline alert for a listed function with no row. It holds
+# no secret, nothing needs it and it cannot fail the run.
 # The upload goes to the vmap-feed-rehearsal prerelease ALWAYS, unless the `live` input is set. `live` is a
 # dispatch input of this workflow only (a workflow_call caller such as sr-watch cannot set it), needs main, and
 # is the owner's switch: nothing in this repository turns it on. A run without it reads the live vmap-feed
@@ -699,6 +701,47 @@ jobs:
             out/function-keys.json
           if-no-files-found: warn
           retention-days: 14
+
+  # ---- Alert on a listed function with no row ----
+  # A key of ci/server-function-keys.txt with no row in the server file is raised as a pipeline alert
+  # (ci/pipeline-alert.mjs rows), once per build and set of missing keys. Report only: nothing needs this
+  # job and it cannot fail the run. A rehearsal and a test run (a branch other than main, or other loader or
+  # scanner inputs than the defaults) raise nothing.
+  server-row-alert:
+    name: server-row-alert
+    needs: [server-layout, server-map]
+    if: ${{ !cancelled() && needs.server-map.result == 'success' && inputs.rehearsal != true && github.ref == 'refs/heads/main' && inputs.loader_repo == 'AlienXAXS/StarRupture-ModLoader' && inputs.loader_ref == 'main' && inputs.scanner_repo == 'msantoro12/StarRupture-ModLoader' && inputs.scanner_ref == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out the alert script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          sparse-checkout: ci
+          persist-credentials: false
+
+      - name: Download the server map result
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server-map-${{ needs.server-layout.outputs.build_id }}
+          path: map
+
+      - name: Raise the listed functions with no row
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: msantoro12
+          BUILD_ID: ${{ needs.server-layout.outputs.build_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cl="$(node -p "JSON.parse(require('fs').readFileSync('map/server-chain.json','utf8')).cl")"
+          node tool/ci/pipeline-alert.mjs rows --report map/function-keys.json --repo "$GH_REPO" --buildid "$BUILD_ID" --cl "$cl" --owner "$OWNER" --run-url "$RUN_URL" --out rows.md
 
   # ---- Sign the server file and publish it ----
   # Staging only unless the `live` input is set (a hand dispatch of this workflow, on the owner's OK):
