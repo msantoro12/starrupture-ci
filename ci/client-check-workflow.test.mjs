@@ -1044,7 +1044,7 @@ test('alert (leg C1): a HOLD whose only reason is "autopilot is disabled", every
   assert.equal(a.status, 0, a.stderr);
   assert.equal(a.md, null, 'no alert.md, so the issue step is skipped');
   assert.deepEqual(a.outputs, { alert: 'false', passed: 'true', ready: 'true' });
-  assert.equal(a.ready, '<!-- sr-ready-held:public_test_branch -->\n@msantoro12 **Ready, publish held (autopilot off).** CL-129402 on `public_test_branch`: every gate and job passed, [run](https://github.com/o/r/actions/runs/9).\n');
+  assert.equal(a.ready, '<!-- sr-ready-held:public_test_branch:CL-129402 -->\n@msantoro12 **Ready, publish held (autopilot off).** CL-129402 on `public_test_branch`: every gate and job passed, [run](https://github.com/o/r/actions/runs/9).\n');
   assert.equal(a.ready.trim().split('\n').length - 1, 1, 'one line besides the marker');
   // A test run (dispatch) says nothing on a PR.
   assert.equal(alertRun({ decision: { ...HOLD_ONLY_AUTOPILOT, test: true, candidate: undefined } }).outputs.ready, 'false');

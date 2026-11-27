@@ -1378,7 +1378,7 @@ the issue "SR map mode: <branch> needs attention", labelled `pipeline-alert`, as
 
 A HOLD whose only reason is "autopilot is disabled" with everything else passing is the
 normal waiting state, not an alert: the PR gets one "Ready, publish held (autopilot off)"
-comment (edited in place), which mentions the owner so it reaches him whatever his watch settings are, and no issue is
+comment (one per CL, so a later build posts a new one; a rerun edits it), which mentions the owner so it reaches him whatever his watch settings are, and no issue is
 opened. A run with no alert line labels the PR `chain-passed-<branch>`, except one that ended in a HOLD: a HOLD never
 counts as passed, quiet or not. The one exception is that ready, publish-held state with the candidate chain passing,
 which gets the label and the comment. A `test_autopilot` or rehearsal run writes neither. `sr-watch.yml`, when it skips a build because its game-update PR
