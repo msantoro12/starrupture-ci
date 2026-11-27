@@ -1352,7 +1352,8 @@ rows and four function rows, with three keys not placed and one row not for the 
 The upload goes to the `vmap-feed-rehearsal` prerelease every time. The live `vmap-feed` release is written only by a
 hand dispatch of `sr-server-check.yml` from `main` with the `live` input on (owner's OK, every time); `sr-watch.yml`
 cannot set it. Without `live` the job reads the live release's assets before and after and fails if they differ. A
-live run also takes the default loader and scanner inputs only. The version identity check
+live run also takes `loader_ref` `main`, the default repositories and no scanner override, whatever the `loader_ref`
+default is (`.github/sr-pipeline/README.md`, "The server check's loader ref"). The version identity check
 (`decide.mjs identity --repo ModLoaderServer`) runs in `server-map` and again before the release key is used, unless
 `rehearsal` is set.
 
@@ -1360,8 +1361,8 @@ A key of `ci/server-function-keys.txt` with no row also raises a pipeline alert;
 uploaded as usual. The job `server-row-alert` runs after a good `server-map` (`ci/pipeline-alert.mjs rows`) and
 opens, or comments on, the issue "SR server version object map: listed functions have no row", naming the build, the CL and the
 keys. Each build and set of missing keys is raised once, closed issues included, so a later run on the same server
-build posts nothing; another build or another set is raised again. A rehearsal and a test run (a branch other than
-`main`, or loader or scanner inputs other than the defaults) raise nothing. Nothing needs the job and it is
+build posts nothing; another build or another set is raised again. A rehearsal and a test run (the workflow on a
+branch other than `main`, or loader or scanner inputs other than the defaults) raise nothing. Nothing needs the job and it is
 `continue-on-error`, so it cannot fail or hold the run. If the job itself fails, the run stays green and only that job shows red. Nothing closes the issue: close it once the rows are in.
 It needs `issues: write`, and GitHub refuses to start a run whose caller grants a called job less than it asks
 for, so every job that calls `sr-server-check.yml` grants it.
