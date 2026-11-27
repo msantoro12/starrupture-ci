@@ -81,7 +81,8 @@
 // `firstPublish`. Every other gate, the plugin verdicts and the release limits apply as always.
 // --rehearsal (sr-watch's hand-started rehearsal, never with --test-autopilot or --first-publish): the
 // already-released checks are not applied, so a build that is already released can go through
-// the whole chain; every other reason, the autopilot included, holds as always. The result carries
+// the whole chain, and G3 passes a CL that equals the header's (an older one still holds); every other reason, the
+// autopilot included, holds as always. The result carries
 // `rehearsal`, and the publish job signs it only for a run that is a rehearsal itself.
 //
 // Gate result shapes:
@@ -168,7 +169,9 @@ function checkSimpleGate(name, loaded) {
 // supersede: the run carries a supersede input. G3 then does not hold a CL that equals previousCl (the loader's
 // header already maps it, which is how a CL stands once the loader's change for it has merged): it is returned as
 // notNewer, and decide() holds it unless the supersede passes its own checks. A CL older than previousCl holds as ever.
-function checkG3(loaded, { firstPublish = false, supersede = false } = {}) {
+// rehearsal: sr-watch's rehearsal re-runs the build the header already maps and publishes nothing live, so a CL
+// that equals previousCl (only that) passes.
+function checkG3(loaded, { firstPublish = false, supersede = false, rehearsal = false } = {}) {
   const bad = checkEnvelope('G3', loaded);
   if (bad) return { error: bad };
   const v = loaded.value;
@@ -178,6 +181,7 @@ function checkG3(loaded, { firstPublish = false, supersede = false } = {}) {
   const bypass = v.proof === true || (firstPublish && v.firstPublish === true);
   if (!bypass && Number(v.cl) <= Number(v.previousCl)) {
     const why = `G3: CL-${v.cl} is not newer than CL-${v.previousCl}`;
+    if (rehearsal && Number(v.cl) === Number(v.previousCl)) return { cl: v.cl, proof: false };
     if (supersede && Number(v.cl) === Number(v.previousCl)) return { cl: v.cl, proof: false, notNewer: why };
     return { error: why };
   }
@@ -678,7 +682,7 @@ export function decide(inputs) {
 
   const g1 = checkSimpleGate('G1 compile', inputs.g1);
   const g2 = checkSimpleGate('G2 interface', inputs.g2);
-  const g3 = checkG3(inputs.g3, { firstPublish: inputs.firstPublish === true, supersede: supersedeGiven });
+  const g3 = checkG3(inputs.g3, { firstPublish: inputs.firstPublish === true, supersede: supersedeGiven, rehearsal: inputs.rehearsal === true });
   const g4 = checkG4(inputs.g4);
   const g5 = checkG5(inputs.g5);
   const plugins = checkPlugins(inputs.plugins, new Set(Array.isArray(inputs.fields?.value?.rows) ? inputs.fields.value.rows : []), g3.cl);

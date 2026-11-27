@@ -273,6 +273,18 @@ test('a first publish whose rows the base already holds uses the base commit; an
   assert.equal(g.branch, 'auto/update-129402-79-1');
 });
 
+test('a rehearsal of a build the base already maps pushes an empty run-suffixed commit; only as a proof run', () => {
+  const f = fork();
+  const same = f.header('old rows\n');
+  assert.throws(() => push(f, { header: same, rehearsal: true }), /no rows to push/, 'not without proof');
+  const r = push(f, { header: same, proof: true, rehearsal: true, runId: 80, runAttempt: 1 });
+  assert.equal(r.pushed, true);
+  assert.equal(r.branch, 'auto/update-129402-80-1');
+  assert.notEqual(r.sha, f.base.sha);
+  assert.equal(r.tree, f.base.tree);
+  assert.deepEqual(refs(f), ['refs/heads/auto/update-129402-80-1', 'refs/heads/main']);
+});
+
 test('git never sees a force, a tag, a delete or a ref outside auto/update-<CL>', () => {
   const f = fork();
   const calls = [];

@@ -447,6 +447,14 @@ test('release limits: a rehearsal skips the once-per-CL reason and the version i
   holds(decide(base({ g3, history: published, rehearsal: true, firstPublish: true })), /never a test run or a first publish/);
 });
 
+test('G3 rehearsal: only a CL equal to the header\'s passes; an older one holds, and nothing else lifts it', () => {
+  const g3 = (cl, previousCl = '127004') => ok({ ok: true, cl, previousCl });
+  assert.equal(decide(base({ g3: g3('127004'), rehearsal: true })).decision, 'M');
+  holds(decide(base({ g3: g3('127003'), rehearsal: true })), /CL-127003 is not newer than CL-127004/);
+  for (const flag of ['true', 1, null, undefined]) holds(decide(base({ g3: g3('127004'), rehearsal: flag })), /not newer/);
+  holds(decide(base({ g3: g3('127004'), testAutopilot: true })), /not newer/);
+});
+
 test('release limits: checkReleaseLimits skips the once-per-CL reason only with rehearsal', () => {
   const args = { historyLoaded: hist(rel('127004')), repo: 'ModLoader', cl: '127004', path: 'M' };
   assert.equal(checkReleaseLimits(args).length, 1);

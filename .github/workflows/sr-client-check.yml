@@ -3944,6 +3944,8 @@ jobs:
       PROOF: ${{ inputs.proof_run == true || inputs.rehearsal == true || needs.map-mode.outputs.first_publish == 'true' }}
       # A first publish whose candidate header is its base's own has no commit to push: the base is the candidate.
       FIRST_PUBLISH: ${{ needs.map-mode.outputs.first_publish == 'true' }}
+      # A rehearsal of the build the loader already maps has no rows to push: it pushes an empty commit instead.
+      REHEARSAL: ${{ inputs.rehearsal == true && contains(github.workflow_ref, '/.github/workflows/sr-watch.yml@') }}
     steps:
       - name: Check the first-publish base
         if: ${{ needs.map-mode.outputs.first_publish == 'true' }}
@@ -4011,7 +4013,7 @@ jobs:
           curl -fsS https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > "$ssh_dir/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts -o StrictHostKeyChecking=yes"
           out="$(node tool/ci/staging.mjs push --repo "$PUSH_REPO" --plan chain/stage-plan.json --build chain/build.json \
-            --header chain/version_map.generated.h --checkout loader --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" --proof "$PROOF" --first-publish "$FIRST_PUBLISH")"
+            --header chain/version_map.generated.h --checkout loader --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" --proof "$PROOF" --first-publish "$FIRST_PUBLISH" --rehearsal "$REHEARSAL")"
           echo "$out" >> "$GITHUB_OUTPUT"
           echo "Loader fork: $(echo $out)" >> "$GITHUB_STEP_SUMMARY"
 
@@ -5026,7 +5028,8 @@ jobs:
             let readyHold = false;
             if (d && d.decision === "HOLD") {
               const reasons = d.reasons ?? [];
-              const nothingNew = reasons.some((x) => /^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/.test(x));
+              // Quiet only for the build the loader already maps and nothing else; an older CL, or any other reason beside it, alerts.
+              const nothingNew = reasons.length > 0 && reasons.every((x) => /^G3: CL-([0-9]+) is not newer than CL-\1$/.test(x));
               const autopilotOnly = reasons.length === 1 && reasons[0] === AUTOPILOT;
               // Ready only when the chain went on to stage and run the rigs (the candidate chain); a dispatch with publish on stops at the HOLD.
               if (autopilotOnly) readyHold = d.candidate === true && d.test !== true;
@@ -5066,7 +5069,8 @@ jobs:
             }
 
             const out = (kv) => fs.appendFileSync(e.GITHUB_OUTPUT, Object.entries(kv).map(([k, v]) => k + "=" + v + "\n").join(""));
-            const passed = lines.length === 0 && d !== null;
+            // A HOLD never counts as passed, quiet or not; the one exception is the chain that is ready and held by the autopilot alone.
+            const passed = lines.length === 0 && d !== null && (d.decision !== "HOLD" || readyHold);
             if (passed && readyHold) fs.writeFileSync("ready.md", "<!-- sr-ready-held:" + e.BRANCH + " -->\n**Ready, publish held (autopilot off).** CL-" + (d.cl ?? "?") + " on `" + e.BRANCH + "`: every gate and job passed, [run](" + e.RUN_URL + ").\n");
             if (!lines.length && !review.length) {
               console.log("Nothing to alert on.");
@@ -5086,9 +5090,9 @@ jobs:
       # The PR carries what the chain concluded: chain-passed-<branch> only after a
       # run with no alert line (sr-watch reads it), and one line when the only thing
       # holding the publish is the autopilot switch.
-      # Never for a test_autopilot run: sr-watch reads the chain-passed label as a live result.
+      # Never for a test_autopilot or rehearsal run: sr-watch reads the chain-passed label as a live result.
       - name: Mark the pull request
-        if: ${{ !cancelled() && steps.what.outcome == 'success' && inputs.pr != '' && inputs.test_autopilot != true }}
+        if: ${{ !cancelled() && steps.what.outcome == 'success' && inputs.pr != '' && inputs.test_autopilot != true && inputs.rehearsal != true }}
         env:
           ALERT: ${{ steps.what.outputs.alert }}
           PASSED: ${{ steps.what.outputs.passed }}
@@ -5247,8 +5251,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      # Blank for a test_autopilot run: it comments on no PR (the run summary still holds the result).
-      PR: ${{ inputs.test_autopilot != true && inputs.pr || '' }}
+      # Blank for a test_autopilot or rehearsal run: it comments on no PR (the run summary still holds the result).
+      PR: ${{ inputs.test_autopilot != true && inputs.rehearsal != true && inputs.pr || '' }}
       BRANCH: ${{ inputs.branch }}
       EXPECTED_BUILDID: ${{ inputs.buildid }}
       BUILD_RESULT: ${{ needs.build.result }}

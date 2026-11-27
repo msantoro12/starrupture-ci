@@ -137,7 +137,7 @@ test('alert: a failed job or a HOLD other than "nothing new" opens or updates on
   assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, rig-feed-other, feed-loader-cleanup, feed-gate\]/);
   assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' && inputs\.refresh_layout != true \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
-  assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
+  assert.ok(a.includes('/^G3: CL-([0-9]+) is not newer than CL-\1$/'), 'nothing new is the same-build G3 reason');
   assert.ok(a.includes('result === "failure"'));
   assert.ok(a.includes('node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"'));
   assert.ok(a.includes('node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl'));
@@ -1021,7 +1021,14 @@ test('alert (leg C1): a HOLD is a line with its reasons, except "nothing new" an
   const held = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G4: 2 required patterns missed', 'G5: 3 used classes changed'] } });
   assert.equal(held.outputs.alert, 'true');
   assert.match(held.md, /- decide: \*\*HOLD\*\* on CL-129402\n  - G4: 2 required patterns missed\n  - G5: 3 used classes changed/);
-  assert.equal(alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G3: CL-129402 is not newer than CL-129402'] } }).outputs.alert, 'false');
+  const same = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G3: CL-129402 is not newer than CL-129402'] } });
+  assert.equal(same.outputs.alert, 'false');
+  assert.equal(same.outputs.passed, 'false', 'a quiet HOLD never counts as passed');
+  for (const reasons of [['G3: CL-129000 is not newer than CL-129402'], ['G3: CL-129402 is not newer than CL-129402', 'G1 compile: failed']]) {
+    const r = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons } });
+    assert.equal(r.outputs.alert, 'true', reasons.join());
+    assert.equal(r.outputs.passed, 'false', reasons.join());
+  }
   // The autopilot switch beside another reason is still an alert, and lists both.
   const both = alertRun({ decision: { decision: 'HOLD', cl: 129402, candidate: true, reasons: [AUTOPILOT_HOLD, 'G1 compile: failed'] } });
   assert.equal(both.outputs.alert, 'true');
@@ -3626,6 +3633,8 @@ test('test_autopilot is non-live: no fork push, no PR write, rehearsal layouts a
   const mark = step(job('alert'), 'Mark the pull request').match(/\n {8}if: (\$\{\{ .* \}\})\n/)[1].replace(/steps\.what\.outcome == 'success'/, 'true');
   assert.equal(evalExpr(mark, { needs: {}, inputs: live }), true);
   assert.equal(evalExpr(mark, { needs: {}, inputs: testRun }), false);
+  assert.equal(evalExpr(mark, { needs: {}, inputs: { ...live, rehearsal: true } }), false);
+  assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: { ...live, rehearsal: true } }), '');
   assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: live }), '26');
   assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: testRun }), '');
   assert.deepEqual([...job('report').matchAll(/gh pr \w+ (\S+)/g)].map((m) => m[1]), ['$env:PR']);
