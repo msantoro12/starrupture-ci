@@ -2345,7 +2345,7 @@ jobs:
           $scanKeys = "$work\keys-all.txt"
           $publishedFile = 'published-base\version-map-client.v1.txt'
           if ($cl -and (Test-Path $publishedFile)) {
-            node 'ci-base\ci\version-map.mjs' carry-keys "$work\keys-all.txt" --published $publishedFile --cl $cl --retired 'ci-base\ci\retired-rows.txt' --out out\layout-carry-keys.txt
+            node 'ci-base\ci\version-map.mjs' carry-keys "$work\keys-all.txt" --published $publishedFile --cl $cl --retired 'ci-base\ci\retired-rows.txt' --extra 'ci-base\ci\extra-carry-keys.txt' --out out\layout-carry-keys.txt
             if ($LASTEXITCODE -ne 0) {
               Remove-Item out\layout-carry-keys.txt -ErrorAction SilentlyContinue
               Write-Host "::warning title=Carried field keys::version-map.mjs carry-keys exited $LASTEXITCODE; no field keys are carried on this build"

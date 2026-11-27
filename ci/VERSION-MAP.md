@@ -66,7 +66,7 @@ node ci/version-map.mjs import-published <header> --published <signed feed> [--r
 node ci/version-map.mjs check-preserve <feed> --published <signed feed> [--retired <file>] [--changed <file>]
 node ci/version-map.mjs restore-published <header> --published <signed feed> --cl <CL> [--retired <file>]
      [--changed <file>] [--report <file>]
-node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>]
+node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <CL> --out <file> [--retired <file>] [--extra <file>]
 ```
 
 - `init` writes an empty map and refuses to overwrite a file. `--built-cl` is
@@ -124,7 +124,7 @@ node ci/version-map.mjs carry-keys <keys file> --published <signed feed> --cl <C
   as absent. A row the run measured with other content stays. See `MAP-MODE.md`, "A re-measure keeps
   published rows".
 - `carry-keys` writes to `--out` the field keys of the newest published build that the key list
-  does not name, for a build the published file does not hold yet. See `MAP-MODE.md`, "Carried field keys".
+  does not name, for a build the published file does not hold yet, with the keys of `--extra` added. See `MAP-MODE.md`, "Carried field keys".
 
 Exit codes: 0 ok; 3 `check` found a coverage problem, or `import-published` or
 `check-preserve` holds (rows differ, rows lost); 4 the signed feed's signature does not

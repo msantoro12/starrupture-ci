@@ -1,0 +1,7 @@
+# Extra carry keys: field keys the loader reads that no published build has a row for yet and no
+# component's key list names. The client check asks a new build's scan for them with the carried keys
+# of the published feed (ci/MAP-MODE.md, "Carried field keys"): a key that resolves gets a row, one
+# that does not gets a note only. One key per line. A line can go once the key is in the published feed.
+TClassMap<EClassRepNodeMapping>::Map
+FObjectKey::ObjectIndex
+FObjectKey::ObjectSerialNumber
