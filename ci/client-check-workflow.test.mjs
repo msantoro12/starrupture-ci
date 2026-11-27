@@ -936,7 +936,9 @@ const runBash = (script, { cwd, env, files = {} }) => {
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'gh'), FAKE_GH);
   chmodSync(join(bin, 'gh'), 0o755);
-  return spawnSync(bash, ['-c', script], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env, FAKE_DIR: cwd, RUNNER_TEMP: cwd, PATH: bin + delimiter + process.env.PATH } });
+  // From a file: Windows bash silently cuts a -c argument at about 8K characters.
+  writeFileSync(join(bin, 'step.sh'), script);
+  return spawnSync(bash, [join(bin, 'step.sh').replaceAll('\\', '/')], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env, FAKE_DIR: cwd, RUNNER_TEMP: cwd, PATH: bin + delimiter + process.env.PATH } });
 };
 const calls = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
 const alertRun = ({ env = {}, result, decision, jobs = [], logs = {}, noChain = false, extra = {} } = {}) => {
@@ -1119,7 +1121,7 @@ test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the o
 
 test('alert (leg C1): the PR gets the chain-passed label after a clean run, loses it after an alert, and one ready note that is edited in place', { skip: !bash }, () => {
   const s = step(job('alert'), 'Mark the pull request');
-  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' && inputs\.test_autopilot != true \}\}\n/);
+  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' && inputs\.test_autopilot != true && inputs\.rehearsal != true \}\}\n/);
   const script = runOf(job('alert'), 'Mark the pull request');
   const run = (env, files = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'alert-pr-'));
@@ -3336,7 +3338,7 @@ test('proof_run: a dispatch input only; sr-watch cannot set it; it never publish
   // The push: the run-suffixed name only.
   const push = job('push-loader');
   assert.match(push, /\n {6}PROOF: \$\{\{ inputs\.proof_run == true \|\| inputs\.rehearsal == true \|\| needs\.map-mode\.outputs\.first_publish == 'true' \}\}\n/);
-  assert.ok(runOf(push, 'Commit the header and push the branch').includes('--run-attempt "$RUN_ATTEMPT" --proof "$PROOF" --first-publish "$FIRST_PUBLISH")'));
+  assert.ok(runOf(push, 'Commit the header and push the branch').includes('--run-attempt "$RUN_ATTEMPT" --proof "$PROOF" --first-publish "$FIRST_PUBLISH" --rehearsal "$REHEARSAL")'));
   // The rest of the chain runs for it as for the unattended chain: nothing else keys on proof_run.
   for (const name of ['push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'feed-plan', 'feed-loader', 'rig-feed', 'feed-gate', 'rig-gate']) assert.ok(!jobIf(name).includes('proof_run'), name);
 });
@@ -4485,7 +4487,13 @@ test('rehearsal: the hold skip is conditioned on the input, on public, map mode 
   assert.equal(evalExpr(env, ctx({}, 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main')), false);
   // The flag reaches decide.mjs only through that variable, and nothing else in the file skips the limits.
   assert.ok(mm.includes('if [ "$REHEARSAL" = true ]; then rehearsal_flag=(--rehearsal); fi'));
-  assert.equal(wf.match(/--rehearsal/g)?.length, 1, 'the one flag line; the decide call takes it from there');
+  assert.equal(wf.match(/--rehearsal/g)?.length, 2, 'the decide flag line and the push-loader one');
+  // push-loader's empty commit is for the same runs only: a rehearsal called by sr-watch.
+  const pushEnv = job('push-loader').match(/\n {6}REHEARSAL: (\$\{\{ .* \}\})\n/)?.[1];
+  assert.ok(pushEnv && job('push-loader').includes('--rehearsal "$REHEARSAL")'));
+  assert.equal(evalExpr(pushEnv, ctx()), true);
+  assert.equal(evalExpr(pushEnv, ctx({ rehearsal: false })), false);
+  assert.equal(evalExpr(pushEnv, ctx({}, 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main')), false);
   assert.ok(mm.includes('"${rehearsal_flag[@]}"'));
   // A run that says rehearsal without being one stops at once, before anything is read.
   const refuse = step(mm, 'Refuse a rehearsal that is not one');
@@ -5370,7 +5378,7 @@ test('rehearsal branch cleanup: only a rehearsal, after the candidate loader, an
   const real = 'git@github.com:msantoro12/StarRupture-ModLoader.git';
   const script = runOf(j, 'Delete the branch and check it is gone');
   assert.ok(script.includes(real));
-  const run = (branch, at = sha) => spawnSync(bash, ['-c', 'curl() { echo; }; jq() { :; }\n' + script.replace(real, url)], {
+  const run = (branch, at = sha) => spawnSync(bash, ['-c', 'curl() { echo; }; jq() { :; }; mkdir() { command mkdir "${@: -1}"; }\n' + script.replace(real, url)], {
     cwd: dir, encoding: 'utf8', windowsHide: true,
     env: { ...process.env, DEPLOY_KEY: 'k', BRANCH_NAME: branch, SHA: at, RUN_ID: '9', RUNNER_TEMP: mkdtempSync(join(tmpdir(), 'reh-tmp-')).replaceAll('\\', '/'), GITHUB_STEP_SUMMARY: join(dir, 'summary').replaceAll('\\', '/') },
   });

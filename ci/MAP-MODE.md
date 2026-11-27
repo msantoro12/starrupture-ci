@@ -1143,19 +1143,22 @@ path from the poll to the signed feed. Start it with the `rehearsal` input of `s
 - The chain runs as always: the check, the layout, the map mode agreement, the candidate loader, every
   rig and the rig gate, `decide.mjs` and the preserve and verify checks. The only reasons
   `decide.mjs --rehearsal` skips are the already-released ones ("already released for CL-n" and the version identity
-  checks, which would hold a build that is served on purpose). The
-  autopilot and the attempts limit still hold, and the result carries
+  checks, which would hold a build that is served on purpose), and G3 also passes a CL equal to the one the loader
+  header maps (an older CL still holds). The autopilot and the attempts limit still hold, and the result carries
   `"rehearsal": true`.
+- A rehearsal of the build the loader already maps has no rows to push, so `push-loader` pushes an empty commit on its
+  run-suffixed branch. The candidate loader and the rigs then run on it as in any run.
 - The publish job signs with the release key in the `vmap-sign` environment, on the live published
   file as its base, with a seq above the live one, then uploads to the `vmap-feed-rehearsal` prerelease
   (same asset names, never the Latest release) and verifies the staged copy. The steps that write the
   `vmap-feed` release are off for it. It reads that release before and after and fails if it moved.
   The loader never fetches `vmap-feed-rehearsal`: it reads `releases/latest/download/` of its own
   repository, and `vmap-publish.yml` only copies the `vmap-feed` release.
-- Nothing else is written: no state commit, no game-update PR, no alert issue, no planner extract, no
-  layout store, no auto-fix push to a plugin fork, no entry in the release history that
-  `decide.mjs` counts. The loader fork gets one run-suffixed `auto/update-<CL>-<run>-<attempt>`
-  branch, the same as a proof run.
+- Nothing else is written: no state commit, no game-update PR, no PR label or comment, no alert issue, no planner
+  extract, no layout store, no auto-fix push to a plugin fork, no entry in the release history that
+  `decide.mjs` counts. The loader fork gets one run-suffixed `auto/update-<CL>-<run>-<attempt>` branch, and the
+  `rehearsal-branch-cleanup` job deletes it once the candidate loader build has ended, however it ended: only a branch
+  with this run's id, and only while it still holds the commit this run pushed. (A proof run keeps its branch.)
 - `sr-client-check.yml` refuses a `rehearsal` that is not one (not public, no map mode, no publish, or
   not called from `sr-watch.yml`), and the publish job refuses a chain whose rehearsal mark and own
   rehearsal flag disagree.
@@ -1365,8 +1368,9 @@ the issue "SR map mode: <branch> needs attention", labelled `pipeline-alert`, as
   the job's failure annotations or else its log (jobs API; `ci/pipeline-alert.mjs`); a map mode that never uploaded its artifact says so;
 - a client check that did not run: `result.json` status `skipped` or `no-login`, with the
   reason it recorded;
-- a map-mode HOLD, with the decide reasons, except "nothing new" (G3) and the autopilot switch
-  alone;
+- a map-mode HOLD, with the decide reasons. Two are quiet: "nothing new" (every reason is the G3 one for the same
+  build, "CL-n is not newer than CL-n") and the autopilot switch alone. An older CL, or any other reason beside either,
+  alerts;
 - staged rows that were not pushed (`push-loader`), a candidate loader that did not build or
   pass its tests (`candidate-loader`);
 - the rig gate failing, or a rig job that did not end with `success` and verdict `PASS`, with
@@ -1374,8 +1378,10 @@ the issue "SR map mode: <branch> needs attention", labelled `pipeline-alert`, as
 
 A HOLD whose only reason is "autopilot is disabled" with everything else passing is the
 normal waiting state, not an alert: the PR gets one "Ready, publish held (autopilot off)"
-comment (edited in place) and no issue is opened. A run with no alert line labels the PR
-`chain-passed-<branch>`. `sr-watch.yml`, when it skips a build because its game-update PR
+comment (edited in place), which mentions the owner so it reaches him whatever his watch settings are, and no issue is
+opened. A run with no alert line labels the PR `chain-passed-<branch>`, except one that ended in a HOLD: a HOLD never
+counts as passed, quiet or not. The one exception is that ready, publish-held state with the candidate chain passing,
+which gets the label and the comment. A `test_autopilot` or rehearsal run writes neither. `sr-watch.yml`, when it skips a build because its game-update PR
 is open, checks that PR: its current build (the last commit) is over 6 hours old and it has no
 `chain-passed-<branch>` label for a changed client branch means the branch's alert issue gets a comment (or is opened), once per PR and
 build (a `<!-- sr-stale-pr:N:BUILDID -->` marker in the issue or its comments says it was
