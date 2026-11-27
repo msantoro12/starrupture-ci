@@ -62,7 +62,8 @@
 // and did not measure again, or measured as absent where the published row has an address (or with fewer owners);
 // a row it measured with other content stays, and check-preserve holds on it. It puts back nothing when the
 // run's build row for --cl is not the published one. carry-keys <keys file> writes (--out) the field keys of
-// the newest published build that the key list does not name, for a build the file does not hold yet. The retired
+// the newest published build that the key list does not name, plus those of --extra (ci/extra-carry-keys.txt), for
+// a build the file does not hold yet. The retired
 // list is honoured by both, the changed list by restore-published. Both read the file only after its signature verifies.
 // Both lists: tab-separated `<function|field|build> <key> <CL> <reason>`, a reason on every entry;
 // see ci/retired-rows.txt.
