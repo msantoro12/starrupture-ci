@@ -79,7 +79,8 @@ test('trust: the scanner and the layout check hold no secret; the TEST key is re
   assert.ok(!/\$\{\{ inputs\./.test((map + publish).replace(/LIVE: .*\n|REHEARSAL: .*\n|SCANNER_DEFAULTS: .*\n/g, '')), 'an input reaches those jobs through nothing but the three flags');
   const dflt = (name) => wf.match(new RegExp(`      ${name}:\\n(?:        .*\\n)*?        default: '([^']*)'`))[1];
   const sd = publish.match(/SCANNER_DEFAULTS: (.*)\n/)[1];
-  for (const n of ['loader_repo', 'loader_ref', 'scanner_repo', 'scanner_ref']) assert.ok(sd.includes(`inputs.${n} == '${dflt(n)}'`), `a live run compares ${n} with its dispatch default`);
+  for (const n of ['loader_repo', 'scanner_repo', 'scanner_ref']) assert.ok(sd.includes(`inputs.${n} == '${dflt(n)}'`), `a live run compares ${n} with its dispatch default`);
+  assert.ok(sd.includes("inputs.loader_ref == 'main'"), 'a live run takes the released loader, whatever the loader_ref default is');
   assert.match(stepOf(publish, 'Refuse a live publish that is not allowed'), /SCANNER_DEFAULTS" = true/);
   // No override by default, on either trigger, and a live run takes none.
   const refOf = (t) => t.match(/      scanner_ref:\n(?:        .*\n)*?        default: '([^']*)'/)[1];
@@ -350,8 +351,11 @@ test('row alert: after a good server map, off a rehearsal or test run, report on
   const j = job(wf, 'server-row-alert');
   assert.match(j, /\n {4}needs: \[server-layout, server-map\]\n/);
   const defaults = publish.match(/SCANNER_DEFAULTS: \$\{\{ (.*) \}\}\n/)[1];
+  const loaderRefDefaults = [...wf.matchAll(/\n      loader_ref:\n(?:        .*\n)*?        default: '([^']*)'/g)].map((m) => m[1]);
+  assert.equal(loaderRefDefaults.length, 2);
+  assert.equal(loaderRefDefaults[0], loaderRefDefaults[1], 'a call and a dispatch scan the same loader ref');
   assert.equal(j.match(/\n {4}if: (.*)\n/)[1],
-    "${{ !cancelled() && needs.server-map.result == 'success' && inputs.rehearsal != true && github.ref == 'refs/heads/main' && " + defaults + ' }}');
+    "${{ !cancelled() && needs.server-map.result == 'success' && inputs.rehearsal != true && github.ref == 'refs/heads/main' && " + defaults.replace("inputs.loader_ref == 'main'", `inputs.loader_ref == '${loaderRefDefaults[0]}'`) + ' }}');
   assert.match(j, /\n {4}continue-on-error: true\n/);
   assert.ok(!/needs:.*server-row-alert|needs\.server-row-alert/.test(wf), 'nothing needs it');
   assert.ok(!/secrets\.|\n\s+environment:/.test(j), 'no secret, no environment');
