@@ -222,8 +222,9 @@ Copied from the loader's `release.yml` and the plugins' `release.yml` build step
 | `sr-client-check` / `layout-store` | `contents: write`, no environment, no secret; runs from `main` only | keeps the layout of each public build on the `vmap-layouts` release, for the next update's field rows (a `test_autopilot` run: the `vmap-layouts-rehearsal` prerelease) |
 | `sr-layout-refresh` / `idle` | `actions: read` | lists the runs that are going or waiting |
 | `sr-layout-refresh` / `refresh` (caller) | `contents: write`, `pull-requests: write`, `issues: write`, `actions: write`, `checks: read` (a ceiling, the same as the watcher's call) | covers the called workflow; only `layout-store` (`contents: write`) and the check run for a refresh; passes `STEAM_CI_USERNAME`, `STEAM_CI_LOGIN_CACHE` by name |
-| `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR (not on a `test_autopilot` run); no environment, no secrets |
-| `sr-client-check` / `alert` | `contents: read`, `issues: write`, `pull-requests: write`, `actions: read`, `checks: read` | the alert issue, the `chain-passed-<branch>` label and ready note on the PR (neither on a `test_autopilot` run), the failed steps, annotations and logs of the run |
+| `sr-client-check` / `report` | `contents: read`, `pull-requests: write` | comment on the PR (not on a `test_autopilot` or rehearsal run); no environment, no secrets |
+| `sr-client-check` / `alert` | `contents: read`, `issues: write`, `pull-requests: write`, `actions: read`, `checks: read` | the alert issue, the `chain-passed-<branch>` label and ready note on the PR (neither on a `test_autopilot` or rehearsal run), the failed steps, annotations and logs of the run |
+| `sr-client-check` / `rehearsal-branch-cleanup` | none (`permissions: {}`), environment `fork-push` | a rehearsal only: reads the loader fork's deploy key and deletes the run-suffixed branch this run pushed, only while it still holds the pushed commit |
 | `sr-client-check` / `login-expiry` | none | reads the repo variable `STEAM_CI_LOGIN_AT` |
 | `sr-client-rig` / `rig` | `contents: read`, `actions: read`, environment `steam-client` | the one job; reads the Steam login in the install, launch and leak-gate steps only; `actions: read` is for fetching a candidate run's artifact |
 | `sr-symbol-lookup` / `lookup` | `contents: read`, environment `steam-client` | the one job; reads the Steam login in the secrets check, the install and the leak-gate steps only, and removes it before the lookup reads any game file; no write permission |
@@ -356,6 +357,10 @@ Limits: the boot is a load check, so it shows the rows were read and handed to p
 2. Commit an older client public `buildid` into `state/steam.json` on main, then run the watcher again.
 3. Expect: a `game-update/...` PR with the checklist, a `build-all` run, and when it finishes a PR comment with one row per component.
 4. Merge the PR; main holds the current ids again.
+
+To run the whole chain on the build already released, without publishing anything live, start a rehearsal: `gh workflow run sr-watch.yml --ref main -f rehearsal=true` (what it does and does not write: `ci/MAP-MODE.md`, "Rehearsal").
+
+A run that is ready and held only by the autopilot switch opens no alert issue: its game-update PR gets the `chain-passed-<branch>` label and a "Ready, publish held" comment that mentions the owner. Any other HOLD except "nothing new" for the same build raises the alert (`ci/MAP-MODE.md`, "Alerts").
 
 ## Releases are stopped by version identity, not time
 

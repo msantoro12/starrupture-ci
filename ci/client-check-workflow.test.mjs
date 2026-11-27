@@ -137,7 +137,7 @@ test('alert: a failed job or a HOLD other than "nothing new" opens or updates on
   assert.match(a, /needs: \[build, plugin-plan, check, map-mode, publish, push-loader, candidate-loader, rig-branch, rig-other, rig-gate, feed-plan, feed-loader, rig-feed, rig-feed-other, feed-loader-cleanup, feed-gate\]/);
   assert.match(a, /if: \$\{\{ always\(\) && inputs\.branch && inputs\.branch != 'expiry-only' && inputs\.refresh_layout != true \}\}/);
   assert.match(a, /permissions:\n\s+contents: read\n\s+issues: write/);
-  assert.ok(a.includes('/^G3: CL-[0-9]+ is not newer than CL-[0-9]+$/'), 'nothing new is the G3 reason');
+  assert.ok(a.includes('/^G3: CL-([0-9]+) is not newer than CL-\\1$/'), 'nothing new is the same-build G3 reason');
   assert.ok(a.includes('result === "failure"'));
   assert.ok(a.includes('node ci/pipeline-alert.mjs raise --title "SR map mode: $BRANCH needs attention" --body-file alert.md --owner "$OWNER"'));
   assert.ok(a.includes('node ci/pipeline-alert.mjs causes --repo "$GH_REPO" --run "$RUN_ID" --out failed-jobs.jsonl'));
@@ -479,10 +479,10 @@ test('public: a build first seen on public is staged too, so it is pushed and ge
   assert.match(job('candidate-loader'), /needs: \[push-loader\]/);
 });
 
-test('loader key: only push-loader reads it, in the fork-push environment; it is declared by the call and passed by name by sr-watch', () => {
+test('loader key: only push-loader and the rehearsal branch cleanup read it, in the fork-push environment; it is declared by the call and passed by name by sr-watch', () => {
   const readers = [...wf.matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1]).filter((n) => /secrets\.SR_DEPLOYKEY_MODLOADER/.test(job(n)));
-  assert.deepEqual(readers, ['push-loader']);
-  assert.match(job('push-loader'), /\n {4}environment: fork-push\n/);
+  assert.deepEqual(readers, ['push-loader', 'rehearsal-branch-cleanup']);
+  for (const n of readers) assert.match(job(n), /\n {4}environment: fork-push\n/);
   assert.match(call, /\n {6}SR_DEPLOYKEY_MODLOADER:\n {8}description: [^\n]+\n {8}required: false\n/);
   // Same mechanism as the Steam login (called-login.test.mjs): the calling job has no environment of its own and passes the secret by name.
   const caller = watch.slice(watch.indexOf('  client-check:\n'));
@@ -936,7 +936,9 @@ const runBash = (script, { cwd, env, files = {} }) => {
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'gh'), FAKE_GH);
   chmodSync(join(bin, 'gh'), 0o755);
-  return spawnSync(bash, ['-c', script], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env, FAKE_DIR: cwd, RUNNER_TEMP: cwd, PATH: bin + delimiter + process.env.PATH } });
+  // From a file: Windows bash silently cuts a -c argument at about 8K characters.
+  writeFileSync(join(bin, 'step.sh'), script);
+  return spawnSync(bash, [join(bin, 'step.sh').replaceAll('\\', '/')], { cwd, encoding: 'utf8', windowsHide: true, env: { ...process.env, ...env, FAKE_DIR: cwd, RUNNER_TEMP: cwd, PATH: bin + delimiter + process.env.PATH } });
 };
 const calls = (dir) => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean) : []);
 const alertRun = ({ env = {}, result, decision, jobs = [], logs = {}, noChain = false, extra = {} } = {}) => {
@@ -1021,7 +1023,14 @@ test('alert (leg C1): a HOLD is a line with its reasons, except "nothing new" an
   const held = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G4: 2 required patterns missed', 'G5: 3 used classes changed'] } });
   assert.equal(held.outputs.alert, 'true');
   assert.match(held.md, /- decide: \*\*HOLD\*\* on CL-129402\n  - G4: 2 required patterns missed\n  - G5: 3 used classes changed/);
-  assert.equal(alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G3: CL-129402 is not newer than CL-129402'] } }).outputs.alert, 'false');
+  const same = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons: ['G3: CL-129402 is not newer than CL-129402'] } });
+  assert.equal(same.outputs.alert, 'false');
+  assert.equal(same.outputs.passed, 'false', 'a quiet HOLD never counts as passed');
+  for (const reasons of [['G3: CL-129000 is not newer than CL-129402'], ['G3: CL-129402 is not newer than CL-129402', 'G1 compile: failed']]) {
+    const r = alertRun({ decision: { decision: 'HOLD', cl: 129402, reasons } });
+    assert.equal(r.outputs.alert, 'true', reasons.join());
+    assert.equal(r.outputs.passed, 'false', reasons.join());
+  }
   // The autopilot switch beside another reason is still an alert, and lists both.
   const both = alertRun({ decision: { decision: 'HOLD', cl: 129402, candidate: true, reasons: [AUTOPILOT_HOLD, 'G1 compile: failed'] } });
   assert.equal(both.outputs.alert, 'true');
@@ -1035,7 +1044,7 @@ test('alert (leg C1): a HOLD whose only reason is "autopilot is disabled", every
   assert.equal(a.status, 0, a.stderr);
   assert.equal(a.md, null, 'no alert.md, so the issue step is skipped');
   assert.deepEqual(a.outputs, { alert: 'false', passed: 'true', ready: 'true' });
-  assert.equal(a.ready, '<!-- sr-ready-held:public_test_branch -->\n**Ready, publish held (autopilot off).** CL-129402 on `public_test_branch`: every gate and job passed, [run](https://github.com/o/r/actions/runs/9).\n');
+  assert.equal(a.ready, '<!-- sr-ready-held:public_test_branch:CL-129402 -->\n@msantoro12 **Ready, publish held (autopilot off).** CL-129402 on `public_test_branch`: every gate and job passed, [run](https://github.com/o/r/actions/runs/9).\n');
   assert.equal(a.ready.trim().split('\n').length - 1, 1, 'one line besides the marker');
   // A test run (dispatch) says nothing on a PR.
   assert.equal(alertRun({ decision: { ...HOLD_ONLY_AUTOPILOT, test: true, candidate: undefined } }).outputs.ready, 'false');
@@ -1112,7 +1121,7 @@ test('alert (leg C1): the issue is labelled pipeline-alert and assigned to the o
 
 test('alert (leg C1): the PR gets the chain-passed label after a clean run, loses it after an alert, and one ready note that is edited in place', { skip: !bash }, () => {
   const s = step(job('alert'), 'Mark the pull request');
-  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' && inputs\.test_autopilot != true \}\}\n/);
+  assert.match(s, /\n {8}if: \$\{\{ !cancelled\(\) && steps\.what\.outcome == 'success' && inputs\.pr != '' && inputs\.test_autopilot != true && inputs\.rehearsal != true \}\}\n/);
   const script = runOf(job('alert'), 'Mark the pull request');
   const run = (env, files = {}) => {
     const dir = mkdtempSync(join(tmpdir(), 'alert-pr-'));
@@ -3329,7 +3338,7 @@ test('proof_run: a dispatch input only; sr-watch cannot set it; it never publish
   // The push: the run-suffixed name only.
   const push = job('push-loader');
   assert.match(push, /\n {6}PROOF: \$\{\{ inputs\.proof_run == true \|\| inputs\.rehearsal == true \|\| needs\.map-mode\.outputs\.first_publish == 'true' \}\}\n/);
-  assert.ok(runOf(push, 'Commit the header and push the branch').includes('--run-attempt "$RUN_ATTEMPT" --proof "$PROOF" --first-publish "$FIRST_PUBLISH")'));
+  assert.ok(runOf(push, 'Commit the header and push the branch').includes('--run-attempt "$RUN_ATTEMPT" --proof "$PROOF" --first-publish "$FIRST_PUBLISH" --rehearsal "$REHEARSAL")'));
   // The rest of the chain runs for it as for the unattended chain: nothing else keys on proof_run.
   for (const name of ['push-loader', 'candidate-loader', 'rig-branch', 'rig-other', 'feed-plan', 'feed-loader', 'rig-feed', 'feed-gate', 'rig-gate']) assert.ok(!jobIf(name).includes('proof_run'), name);
 });
@@ -3626,6 +3635,8 @@ test('test_autopilot is non-live: no fork push, no PR write, rehearsal layouts a
   const mark = step(job('alert'), 'Mark the pull request').match(/\n {8}if: (\$\{\{ .* \}\})\n/)[1].replace(/steps\.what\.outcome == 'success'/, 'true');
   assert.equal(evalExpr(mark, { needs: {}, inputs: live }), true);
   assert.equal(evalExpr(mark, { needs: {}, inputs: testRun }), false);
+  assert.equal(evalExpr(mark, { needs: {}, inputs: { ...live, rehearsal: true } }), false);
+  assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: { ...live, rehearsal: true } }), '');
   assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: live }), '26');
   assert.equal(evalExpr(jobEnv('report', 'PR'), { needs: {}, inputs: testRun }), '');
   assert.deepEqual([...job('report').matchAll(/gh pr \w+ (\S+)/g)].map((m) => m[1]), ['$env:PR']);
@@ -3635,7 +3646,7 @@ test('test_autopilot is non-live: no fork push, no PR write, rehearsal layouts a
   // The jobs that can write releases or deploy keys: no new one, so each is covered above or by its own test_autopilot condition.
   const writers = [...wf.slice(wf.indexOf('\njobs:\n')).matchAll(/\n {2}([a-z][\w-]*):\n/g)].map((m) => m[1])
     .filter((n) => /\n {6}(contents|actions): write|secrets\.(SR_DEPLOYKEY|VMAP_SIGN_KEY \}\})|\n {4}environment: fork-push/.test(job(n)));
-  assert.deepEqual(writers.sort(), ['auto-apply', 'catalog', 'feed-loader-cleanup', 'layout-store', 'publish', 'push-loader']);
+  assert.deepEqual(writers.sort(), ['auto-apply', 'catalog', 'feed-loader-cleanup', 'layout-store', 'publish', 'push-loader', 'rehearsal-branch-cleanup']);
 });
 
 test('layout-store: the writer job runs only for a successful public map-mode check on main, with the job token and no environment or secret', () => {
@@ -4476,7 +4487,13 @@ test('rehearsal: the hold skip is conditioned on the input, on public, map mode 
   assert.equal(evalExpr(env, ctx({}, 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main')), false);
   // The flag reaches decide.mjs only through that variable, and nothing else in the file skips the limits.
   assert.ok(mm.includes('if [ "$REHEARSAL" = true ]; then rehearsal_flag=(--rehearsal); fi'));
-  assert.equal(wf.match(/--rehearsal/g)?.length, 1, 'the one flag line; the decide call takes it from there');
+  assert.equal(wf.match(/--rehearsal/g)?.length, 2, 'the decide flag line and the push-loader one');
+  // push-loader's empty commit is for the same runs only: a rehearsal called by sr-watch.
+  const pushEnv = job('push-loader').match(/\n {6}REHEARSAL: (\$\{\{ .* \}\})\n/)?.[1];
+  assert.ok(pushEnv && job('push-loader').includes('--rehearsal "$REHEARSAL")'));
+  assert.equal(evalExpr(pushEnv, ctx()), true);
+  assert.equal(evalExpr(pushEnv, ctx({ rehearsal: false })), false);
+  assert.equal(evalExpr(pushEnv, ctx({}, 'msantoro12/starrupture-ci/.github/workflows/sr-client-check.yml@refs/heads/main')), false);
   assert.ok(mm.includes('"${rehearsal_flag[@]}"'));
   // A run that says rehearsal without being one stops at once, before anything is read.
   const refuse = step(mm, 'Refuse a rehearsal that is not one');
@@ -5332,4 +5349,44 @@ test('scanner: the loader ref\'s own unless scanner_ref lays another over it, th
   x = pick('', { own: false });
   assert.notEqual(x.r.status, 0, 'a loader with no scanner and no override fails');
   assert.match(x.r.stdout + x.r.stderr, /give scanner_ref/);
+});
+
+test('rehearsal branch cleanup: only a rehearsal, after the candidate loader, and only the branch this run pushed at the commit it pushed', () => {
+  const j = job('rehearsal-branch-cleanup');
+  assert.match(j, /\n {4}needs: \[push-loader, candidate-loader\]\n/);
+  assert.match(j, /\n {4}permissions: \{\}\n/);
+  const runs = (rehearsal, branch) => evalExpr(jobIf('rehearsal-branch-cleanup'), { inputs: { rehearsal }, needs: { 'push-loader': { outputs: { branch } } } });
+  assert.equal(runs(true, 'auto/update-130045-9-1'), true);
+  assert.equal(runs(false, 'auto/update-130045-9-1'), false, 'an ordinary run keeps its branch');
+  assert.equal(runs(true, ''), false, 'nothing was pushed');
+
+  const dir = mkdtempSync(join(tmpdir(), 'reh-del-'));
+  const git = (cwd, ...args) => {
+    const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8', windowsHide: true });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  git(dir, 'init', '-q', '--bare', 'fork.git');
+  git(dir, 'init', '-q', 'work');
+  const work = join(dir, 'work');
+  git(work, 'commit', '-q', '--allow-empty', '-m', 'one');
+  const sha = git(work, 'rev-parse', 'HEAD');
+  const url = join(dir, 'fork.git').replaceAll('\\', '/');
+  for (const b of ['auto/update-130045', 'auto/update-130045-9-1', 'auto/update-130045-8-1']) git(work, 'push', '-q', url, `HEAD:refs/heads/${b}`);
+  const heads = () => git(work, 'ls-remote', '--heads', url).split('\n').map((l) => l.split('refs/heads/')[1]).sort();
+
+  const real = 'git@github.com:msantoro12/StarRupture-ModLoader.git';
+  const script = runOf(j, 'Delete the branch and check it is gone');
+  assert.ok(script.includes(real));
+  const run = (branch, at = sha) => spawnSync(bash, ['-c', 'curl() { echo; }; jq() { :; }; mkdir() { command mkdir "${@: -1}"; }\n' + script.replace(real, url)], {
+    cwd: dir, encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, DEPLOY_KEY: 'k', BRANCH_NAME: branch, SHA: at, RUN_ID: '9', RUNNER_TEMP: mkdtempSync(join(tmpdir(), 'reh-tmp-')).replaceAll('\\', '/'), GITHUB_STEP_SUMMARY: join(dir, 'summary').replaceAll('\\', '/') },
+  });
+  for (const foreign of ['auto/update-130045', 'auto/update-130045-8-1', 'main']) assert.equal(run(foreign).status, 2, foreign);
+  assert.notEqual(run('auto/update-130045-9-1', 'a'.repeat(40)).status, 0, 'a branch that moved is not deleted');
+  assert.deepEqual(heads(), ['auto/update-130045', 'auto/update-130045-8-1', 'auto/update-130045-9-1']);
+  const ok = run('auto/update-130045-9-1');
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(heads(), ['auto/update-130045', 'auto/update-130045-8-1']);
+  assert.equal(run('auto/update-130045-9-1').status, 0, 'already gone is fine');
 });

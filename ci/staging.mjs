@@ -171,10 +171,12 @@ const defaultGit = (args, { cwd } = {}) => execFileSync('git', args, { cwd, enco
 // build, header, checkout, runId, runAttempt, proof?, firstPublish?, url? }; git is replaceable for tests.
 // A first publish (firstPublish: true, with proof: true) whose candidate header is the base's own
 // header has nothing to commit: its base is a branch of the fork already, so the base commit is the
-// candidate (branch '', pushed false). Any other run with no rows to push is refused.
+// candidate (branch '', pushed false). A rehearsal (rehearsal: true, with proof: true) of the build the base
+// already maps pushes an empty commit as the run-suffixed branch, so the candidate is on the fork as in any
+// run; its base need not be a fork branch. Any other run with no rows to push is refused.
 // Returns { branch, sha, tree, pushed }.
 export function pushLoader(opts, git = defaultGit) {
-  const { repo, plan, build, header, checkout, runId, runAttempt, proof = false, firstPublish = false } = opts;
+  const { repo, plan, build, header, checkout, runId, runAttempt, proof = false, firstPublish = false, rehearsal = false } = opts;
   need(plan && plan.repo === LOADER_REPO && typeof plan.branch === 'string' && typeof plan.message === 'string', 'the stage plan holds no loader branch and message');
   checkTarget(repo, plan.branch);
   need(/^[0-9]+$/.test(String(runId)) && /^[0-9]+$/.test(String(runAttempt)), 'run id and attempt must be numeric');
@@ -186,9 +188,10 @@ export function pushLoader(opts, git = defaultGit) {
   g('add', '--', HEADER_PATH);
   const changed = g('diff', '--cached', '--name-only').split('\n').filter(Boolean);
   if (firstPublish && changed.length === 0) return { branch: '', sha: build.repo.sha, tree: build.repo.tree, pushed: false };
-  need(changed.length > 0, 'the candidate header equals the loader header; there are no rows to push');
-  need(changed.length === 1 && changed[0] === HEADER_PATH, `the commit would change more than the header: ${changed.join(', ')}`);
-  g('-c', 'user.name=github-actions[bot]', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com', 'commit', '-q', '-m', plan.message);
+  const empty = changed.length === 0 && rehearsal && proof;
+  need(changed.length > 0 || empty, 'the candidate header equals the loader header; there are no rows to push');
+  need(empty || (changed.length === 1 && changed[0] === HEADER_PATH), `the commit would change more than the header: ${changed.join(', ')}`);
+  g('-c', 'user.name=github-actions[bot]', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com', 'commit', '-q', ...(empty ? ['--allow-empty'] : []), '-m', plan.message);
   const sha = g('rev-parse', 'HEAD');
   const tree = g('rev-parse', 'HEAD^{tree}');
   const url = opts.url ?? `git@github.com:${repo}.git`;
@@ -236,7 +239,7 @@ export function main(argv) {
       return 0;
     }
     if (cmd === 'push' && o.repo && o.plan && o.build && o.header && o.checkout && o['run-id'] && o['run-attempt']) {
-      const r = pushLoader({ repo: o.repo, plan: readJson(o.plan), build: readJson(o.build), header: o.header, checkout: o.checkout, runId: o['run-id'], runAttempt: o['run-attempt'], proof: o.proof === 'true', firstPublish: o['first-publish'] === 'true' });
+      const r = pushLoader({ repo: o.repo, plan: readJson(o.plan), build: readJson(o.build), header: o.header, checkout: o.checkout, runId: o['run-id'], runAttempt: o['run-attempt'], proof: o.proof === 'true', firstPublish: o['first-publish'] === 'true', rehearsal: o.rehearsal === 'true' });
       process.stderr.write(r.pushed ? `pushed ${r.branch} at ${r.sha} to ${o.repo}\n` : r.branch === '' ? `the candidate header is the base header; the base commit ${r.sha} is the candidate\n` : `${r.branch} already holds this tree at ${r.sha}; nothing to push\n`);
       process.stdout.write(`branch=${r.branch}\nsha=${r.sha}\n`);
       return 0;
