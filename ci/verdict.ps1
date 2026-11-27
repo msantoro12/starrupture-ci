@@ -95,7 +95,10 @@
 #                    Its optional "sizes" array holds one entry per struct-size request:
 #                    { plugin, key, rowCL, rowSize, reflectedSize, result }, result one of
 #                    match, mismatch, row-only, no-row, reflected-only. Each entry is a note
-#                    line; mismatch and no-row fail. No "sizes", or an empty one, changes nothing.
+#                    line; mismatch and no-row fail. A mismatch is only a note when rowCL (an integer)
+#                    and the CL ending the report's productVersion are both readable and differ: the row
+#                    is for another build and the game's own size was used. No "sizes", or an empty
+#                    one, changes nothing.
 #   modloader.log    ModLoader\Logs\ModLoader.log (logging at INFO)
 #   proxy.log        ModLoader\Logs\Proxy.log
 #   autoupdate.log   ModLoader\Logs\AutoUpdate.log
@@ -297,6 +300,10 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null, [bool]$Fallback = $false)
         }
         if ($shape.Count -gt 0) { $bad.Add("$name has no usable " + ($shape -join ', ')); continue }
         $parsed++
+        # The running game's CL, read the way the loader reads it; 0 when it cannot be read.
+        $version = Get-Prop $r 'productVersion'
+        $runCL = 0L
+        if ($version -is [string] -and $version -cmatch 'CL-([1-9][0-9]{0,8})\z') { $runCL = [long]$Matches[1] }
         if ($outcome -ceq 'safe-off') { $bad.Add("$name outcome is safe-off: every plugin is switched off") }
         elseif ($outcome -cne 'partial' -and $outcome -cne 'unchanged') { $bad.Add("$name outcome is '$outcome', not partial or unchanged") }
         foreach ($m in @($r.patternMisses)) {
@@ -352,7 +359,12 @@ function Get-CompatJudgement($Ml, $Boot, $Set = $null, [bool]$Fallback = $false)
                 $sizeCounts[$res] = 1 + $(if ($sizeCounts.Contains($res)) { $sizeCounts[$res] } else { 0 })
                 switch -CaseSensitive ($res) {
                     'match'          { $sizeLines.Add($line + 'match') }
-                    'mismatch'       { $sizeLines.Add($line + 'MISMATCH'); $bad.Add("${name}: ${plugin}: $key size row is $rowText, the game reflects $reflText") }
+                    'mismatch'       {
+                        # The loader hands out the game's own size here, so a row proven to be for another build is not a wrong value.
+                        if ($runCL -gt 0 -and ($rowCL -is [int] -or $rowCL -is [long]) -and $rowCL -gt 0 -and $rowCL -ne $runCL) {
+                            $sizeLines.Add($line + "MISMATCH, not failed: the row is for CL-$rowCL, this game is CL-$runCL")
+                        } else { $sizeLines.Add($line + 'MISMATCH'); $bad.Add("${name}: ${plugin}: $key size row is $rowText, the game reflects $reflText") }
+                    }
                     'row-only'       { $sizeLines.Add($line + 'unreflected, row only') }
                     'reflected-only' { $sizeLines.Add($line + 'no row, reflected only') }
                     'no-row'         { $sizeLines.Add($line + $(if ($Fallback) { 'NO ROW, feature stays off' } else { 'NO ROW' })); if (-not $Fallback) { $bad.Add("${name}: ${plugin}: $key is unreflected and has no size row") } }
