@@ -29,8 +29,11 @@ name: SR server check
 # Two scanners are built from one tree: Client Release for --layout (handled before any client-only code,
 # it reads the PDB alone) and Server Release (sr-aobscan-server.exe) for the address scan. The scanner is
 # the loader ref's own tools/AobScan; a scanner_ref (blank by default) lays scanner_repo@scanner_ref's copy
-# over it, for a replay or an older loader. A live publish takes the default inputs only, so never an
-# override (SCANNER_DEFAULTS requires a blank scanner_ref).
+# over it, for a replay or an older loader.
+# Until loader 1.28.0 is on main, the loader_ref default is release/1.28.0 (.github/sr-pipeline/README.md,
+# "The server check's loader ref": what to set back at the release). A live publish still takes the released
+# loader only: loader_ref main and the default repositories, never a scanner override (SCANNER_DEFAULTS
+# requires a blank scanner_ref).
 #
 # Trust: the scanner is built from the same two owners the client check allows (msantoro12 and
 # AlienXAXS) and runs on a runner that holds no secret. Only the two jobs after it hold one: server-map the TEST key
@@ -55,7 +58,7 @@ on:
         default: 'AlienXAXS/StarRupture-ModLoader'
       loader_ref:
         type: string
-        default: 'main'
+        default: 'release/1.28.0'
       scanner_repo:
         type: string
         default: 'msantoro12/StarRupture-ModLoader'
@@ -80,13 +83,13 @@ on:
         type: boolean
         default: false
       loader_repo:
-        description: 'Loader repository the scanner is built in (the released line: AlienXAXS main)'
+        description: 'Loader repository the scanner is built in'
         type: string
         default: 'AlienXAXS/StarRupture-ModLoader'
       loader_ref:
-        description: 'Loader branch the scanner is built in'
+        description: 'Loader branch the scanner is built in (the default is the next release; a live publish needs main)'
         type: string
-        default: 'main'
+        default: 'release/1.28.0'
       scanner_repo:
         description: 'Repository of the scanner_ref override (only tools/AobScan is taken from it; unused when scanner_ref is blank)'
         type: string
@@ -710,7 +713,7 @@ jobs:
   server-row-alert:
     name: server-row-alert
     needs: [server-layout, server-map]
-    if: ${{ !cancelled() && needs.server-map.result == 'success' && inputs.rehearsal != true && github.ref == 'refs/heads/main' && inputs.loader_repo == 'AlienXAXS/StarRupture-ModLoader' && inputs.loader_ref == 'main' && inputs.scanner_repo == 'msantoro12/StarRupture-ModLoader' && inputs.scanner_ref == '' }}
+    if: ${{ !cancelled() && needs.server-map.result == 'success' && inputs.rehearsal != true && github.ref == 'refs/heads/main' && inputs.loader_repo == 'AlienXAXS/StarRupture-ModLoader' && inputs.loader_ref == 'release/1.28.0' && inputs.scanner_repo == 'msantoro12/StarRupture-ModLoader' && inputs.scanner_ref == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     continue-on-error: true
@@ -791,7 +794,7 @@ jobs:
           set -euo pipefail
           [ "$REHEARSAL" != true ] || { echo "::error::live and rehearsal are both set: a rehearsal never writes the live release"; exit 2; }
           [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a live publish runs from main only (this run is on $GITHUB_REF)"; exit 2; }
-          [ "$SCANNER_DEFAULTS" = true ] || { echo "::error::a live publish takes the default loader and scanner inputs only"; exit 2; }
+          [ "$SCANNER_DEFAULTS" = true ] || { echo "::error::a live publish takes loader_ref main and the default loader repository and scanner inputs only"; exit 2; }
           echo "This run publishes to the LIVE vmap-feed release."
 
       # Read only: what the live release holds now (its asset list is read again after a staging upload), the
